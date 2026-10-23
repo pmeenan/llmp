@@ -1,0 +1,994 @@
+{
+  "arms": {
+    "ds-candidate-default": {
+      "binary": "dsv4_engine_target_gpu_test",
+      "build": "candidate",
+      "drafter_artifact": "dspark_drafter",
+      "drafter_id": "e14bf29f28c408a742ba6ab19879e415b1ec13019c0ed33b87b7802232a0bd90",
+      "expected_drafter_policy": "max_decode_rows 16\nproduct pair_experts\nproduct vector_floats\nenable owner_row_invariant\nwhen solo past 8 max_decode_rows 8\nwhen solo past 8 vector_rows 8\n",
+      "expected_target_policy": "max_decode_rows 16\nproduct compact_experts\nproduct d2r_experts\nproduct dense_pair\nproduct pair_experts\nproduct pair_glu\nproduct pair_glu_q8\nproduct vector_floats\nenable owner_row_invariant\nwhen solo past 8 max_decode_rows 8\nwhen solo past 8 vector_rows 8\n",
+      "export_dir": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/ds-candidate-default/export",
+      "filter": "Dsv4EngineTargetGpu.DISABLED_U4DiagnosticDspark",
+      "host": "spark-c4e2",
+      "model": "dsv4-dspark",
+      "output_parent": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/ds-candidate-default",
+      "target_artifact": "deepseek4_target",
+      "target_id": "01a5e5ba5a911528fd58268406ac6cff032e767fd09a20fd4c9cbf84f2043f13",
+      "transport": "configured-default"
+    },
+    "ds-candidate-full-head": {
+      "binary": "dsv4_engine_target_gpu_test",
+      "build": "candidate",
+      "drafter_artifact": "dspark_drafter",
+      "drafter_id": "e14bf29f28c408a742ba6ab19879e415b1ec13019c0ed33b87b7802232a0bd90",
+      "expected_drafter_policy": "max_decode_rows 16\nproduct pair_experts\nproduct vector_floats\nenable owner_row_invariant\nwhen solo past 8 max_decode_rows 8\nwhen solo past 8 vector_rows 8\n",
+      "expected_target_policy": "max_decode_rows 16\nproduct compact_experts\nproduct d2r_experts\nproduct dense_pair\nproduct pair_experts\nproduct pair_glu\nproduct pair_glu_q8\nproduct vector_floats\nenable owner_row_invariant\nwhen solo past 8 max_decode_rows 8\nwhen solo past 8 vector_rows 8\n",
+      "export_dir": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/ds-candidate-full-head/export",
+      "filter": "Dsv4EngineTargetGpu.DISABLED_U4DiagnosticDspark",
+      "host": "spark-c4e2",
+      "model": "dsv4-dspark",
+      "output_parent": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/ds-candidate-full-head",
+      "target_artifact": "deepseek4_target",
+      "target_id": "01a5e5ba5a911528fd58268406ac6cff032e767fd09a20fd4c9cbf84f2043f13",
+      "transport": "full-head"
+    },
+    "ds-reference-default": {
+      "binary": "dsv4_engine_target_gpu_test",
+      "build": "reference",
+      "drafter_artifact": "dspark_drafter",
+      "drafter_id": "e14bf29f28c408a742ba6ab19879e415b1ec13019c0ed33b87b7802232a0bd90",
+      "expected_drafter_policy": "max_decode_rows 16\nproduct pair_experts\nproduct vector_floats\nenable owner_row_invariant\nwhen solo past 8 max_decode_rows 8\nwhen solo past 8 vector_rows 8\n",
+      "expected_target_policy": "max_decode_rows 16\nproduct compact_experts\nproduct d2r_experts\nproduct dense_pair\nproduct pair_experts\nproduct pair_glu\nproduct pair_glu_q8\nproduct vector_floats\nenable owner_row_invariant\nwhen solo past 8 max_decode_rows 8\nwhen solo past 8 vector_rows 8\n",
+      "export_dir": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/ds-reference-default/export",
+      "filter": "Dsv4EngineTargetGpu.DISABLED_U4DiagnosticDspark",
+      "host": "spark-c4e2",
+      "model": "dsv4-dspark",
+      "output_parent": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/ds-reference-default",
+      "target_artifact": "deepseek4_target",
+      "target_id": "01a5e5ba5a911528fd58268406ac6cff032e767fd09a20fd4c9cbf84f2043f13",
+      "transport": "configured-default"
+    },
+    "ds-reference-full-head": {
+      "binary": "dsv4_engine_target_gpu_test",
+      "build": "reference",
+      "drafter_artifact": "dspark_drafter",
+      "drafter_id": "e14bf29f28c408a742ba6ab19879e415b1ec13019c0ed33b87b7802232a0bd90",
+      "expected_drafter_policy": "max_decode_rows 16\nproduct pair_experts\nproduct vector_floats\nenable owner_row_invariant\nwhen solo past 8 max_decode_rows 8\nwhen solo past 8 vector_rows 8\n",
+      "expected_target_policy": "max_decode_rows 16\nproduct compact_experts\nproduct d2r_experts\nproduct dense_pair\nproduct pair_experts\nproduct pair_glu\nproduct pair_glu_q8\nproduct vector_floats\nenable owner_row_invariant\nwhen solo past 8 max_decode_rows 8\nwhen solo past 8 vector_rows 8\n",
+      "export_dir": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/ds-reference-full-head/export",
+      "filter": "Dsv4EngineTargetGpu.DISABLED_U4DiagnosticDspark",
+      "host": "spark-c4e2",
+      "model": "dsv4-dspark",
+      "output_parent": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/ds-reference-full-head",
+      "target_artifact": "deepseek4_target",
+      "target_id": "01a5e5ba5a911528fd58268406ac6cff032e767fd09a20fd4c9cbf84f2043f13",
+      "transport": "full-head"
+    },
+    "g26-candidate-default": {
+      "binary": "gemma_assistant_v1_gpu_test",
+      "build": "candidate",
+      "drafter_artifact": "gemma26_assistant",
+      "drafter_id": "1dfcaca928a242c51ff73985c3cabfb986a1679512be0f43e6e379ac38158e98",
+      "expected_drafter_policy": "max_decode_rows 16\n",
+      "expected_target_policy": "max_decode_rows 16\ndisable owner_padded_reads\n",
+      "export_dir": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/g26-candidate-default/export",
+      "filter": "GemmaAssistantV1Gpu.DISABLED_U4DiagnosticGemma26",
+      "host": "spark-56f5",
+      "model": "gemma26",
+      "output_parent": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/g26-candidate-default",
+      "target_artifact": "gemma26_target",
+      "target_id": "a1f1c523b126353f0d186dff0602f91651b05d65118006ed48958ae4f275e9e1",
+      "transport": "configured-default"
+    },
+    "g26-candidate-full-head": {
+      "binary": "gemma_assistant_v1_gpu_test",
+      "build": "candidate",
+      "drafter_artifact": "gemma26_assistant",
+      "drafter_id": "1dfcaca928a242c51ff73985c3cabfb986a1679512be0f43e6e379ac38158e98",
+      "expected_drafter_policy": "max_decode_rows 16\n",
+      "expected_target_policy": "max_decode_rows 16\ndisable owner_padded_reads\n",
+      "export_dir": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/g26-candidate-full-head/export",
+      "filter": "GemmaAssistantV1Gpu.DISABLED_U4DiagnosticGemma26",
+      "host": "spark-56f5",
+      "model": "gemma26",
+      "output_parent": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/g26-candidate-full-head",
+      "target_artifact": "gemma26_target",
+      "target_id": "a1f1c523b126353f0d186dff0602f91651b05d65118006ed48958ae4f275e9e1",
+      "transport": "full-head"
+    },
+    "g26-reference-default": {
+      "binary": "gemma_assistant_v1_gpu_test",
+      "build": "reference",
+      "drafter_artifact": "gemma26_assistant",
+      "drafter_id": "1dfcaca928a242c51ff73985c3cabfb986a1679512be0f43e6e379ac38158e98",
+      "expected_drafter_policy": "max_decode_rows 16\n",
+      "expected_target_policy": "max_decode_rows 16\ndisable owner_padded_reads\n",
+      "export_dir": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/g26-reference-default/export",
+      "filter": "GemmaAssistantV1Gpu.DISABLED_U4DiagnosticGemma26",
+      "host": "spark-56f5",
+      "model": "gemma26",
+      "output_parent": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/g26-reference-default",
+      "target_artifact": "gemma26_target",
+      "target_id": "a1f1c523b126353f0d186dff0602f91651b05d65118006ed48958ae4f275e9e1",
+      "transport": "configured-default"
+    },
+    "g26-reference-full-head": {
+      "binary": "gemma_assistant_v1_gpu_test",
+      "build": "reference",
+      "drafter_artifact": "gemma26_assistant",
+      "drafter_id": "1dfcaca928a242c51ff73985c3cabfb986a1679512be0f43e6e379ac38158e98",
+      "expected_drafter_policy": "max_decode_rows 16\n",
+      "expected_target_policy": "max_decode_rows 16\ndisable owner_padded_reads\n",
+      "export_dir": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/g26-reference-full-head/export",
+      "filter": "GemmaAssistantV1Gpu.DISABLED_U4DiagnosticGemma26",
+      "host": "spark-56f5",
+      "model": "gemma26",
+      "output_parent": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/g26-reference-full-head",
+      "target_artifact": "gemma26_target",
+      "target_id": "a1f1c523b126353f0d186dff0602f91651b05d65118006ed48958ae4f275e9e1",
+      "transport": "full-head"
+    },
+    "g31-candidate-default": {
+      "binary": "gemma_assistant_v1_gpu_test",
+      "build": "candidate",
+      "drafter_artifact": "gemma31_assistant",
+      "drafter_id": "d9eee1ae6004e7635f2985e8c2f2b1edb0a117428f56e233e14898cf0bcb7e75",
+      "expected_drafter_policy": "max_decode_rows 16\n",
+      "expected_target_policy": "max_decode_rows 16\ndisable owner_padded_reads\n",
+      "export_dir": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/g31-candidate-default/export",
+      "filter": "GemmaAssistantV1Gpu.DISABLED_U4DiagnosticGemma31",
+      "host": "spark-c4e2",
+      "model": "gemma31",
+      "output_parent": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/g31-candidate-default",
+      "target_artifact": "gemma31_target",
+      "target_id": "090809981d2909085798273e665a0db58351a8e6029b13bc04ced857c9130943",
+      "transport": "configured-default"
+    },
+    "g31-candidate-full-head": {
+      "binary": "gemma_assistant_v1_gpu_test",
+      "build": "candidate",
+      "drafter_artifact": "gemma31_assistant",
+      "drafter_id": "d9eee1ae6004e7635f2985e8c2f2b1edb0a117428f56e233e14898cf0bcb7e75",
+      "expected_drafter_policy": "max_decode_rows 16\n",
+      "expected_target_policy": "max_decode_rows 16\ndisable owner_padded_reads\n",
+      "export_dir": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/g31-candidate-full-head/export",
+      "filter": "GemmaAssistantV1Gpu.DISABLED_U4DiagnosticGemma31",
+      "host": "spark-c4e2",
+      "model": "gemma31",
+      "output_parent": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/g31-candidate-full-head",
+      "target_artifact": "gemma31_target",
+      "target_id": "090809981d2909085798273e665a0db58351a8e6029b13bc04ced857c9130943",
+      "transport": "full-head"
+    },
+    "g31-reference-default": {
+      "binary": "gemma_assistant_v1_gpu_test",
+      "build": "reference",
+      "drafter_artifact": "gemma31_assistant",
+      "drafter_id": "d9eee1ae6004e7635f2985e8c2f2b1edb0a117428f56e233e14898cf0bcb7e75",
+      "expected_drafter_policy": "max_decode_rows 16\n",
+      "expected_target_policy": "max_decode_rows 16\ndisable owner_padded_reads\n",
+      "export_dir": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/g31-reference-default/export",
+      "filter": "GemmaAssistantV1Gpu.DISABLED_U4DiagnosticGemma31",
+      "host": "spark-c4e2",
+      "model": "gemma31",
+      "output_parent": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/g31-reference-default",
+      "target_artifact": "gemma31_target",
+      "target_id": "090809981d2909085798273e665a0db58351a8e6029b13bc04ced857c9130943",
+      "transport": "configured-default"
+    },
+    "g31-reference-full-head": {
+      "binary": "gemma_assistant_v1_gpu_test",
+      "build": "reference",
+      "drafter_artifact": "gemma31_assistant",
+      "drafter_id": "d9eee1ae6004e7635f2985e8c2f2b1edb0a117428f56e233e14898cf0bcb7e75",
+      "expected_drafter_policy": "max_decode_rows 16\n",
+      "expected_target_policy": "max_decode_rows 16\ndisable owner_padded_reads\n",
+      "export_dir": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/g31-reference-full-head/export",
+      "filter": "GemmaAssistantV1Gpu.DISABLED_U4DiagnosticGemma31",
+      "host": "spark-c4e2",
+      "model": "gemma31",
+      "output_parent": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/g31-reference-full-head",
+      "target_artifact": "gemma31_target",
+      "target_id": "090809981d2909085798273e665a0db58351a8e6029b13bc04ced857c9130943",
+      "transport": "full-head"
+    },
+    "qwen-candidate-plain": {
+      "binary": "qwen38_engine_serving_gpu_test",
+      "build": "candidate",
+      "expected_target_policy": "max_decode_rows 16\nenable owner_row_invariant\n",
+      "export_dir": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/qwen-candidate-plain/export",
+      "filter": "Qwen38EngineServingGpu.DISABLED_U4DiagnosticPlainQwen38",
+      "host": "spark-56f5",
+      "model": "qwen38-plain",
+      "output_parent": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/qwen-candidate-plain",
+      "target_artifact": "qwen38_gguf",
+      "target_id": "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8",
+      "transport": "configured-default"
+    },
+    "qwen-reference-plain": {
+      "binary": "qwen38_engine_serving_gpu_test",
+      "build": "reference",
+      "expected_target_policy": "max_decode_rows 16\nenable owner_row_invariant\n",
+      "export_dir": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/qwen-reference-plain/export",
+      "filter": "Qwen38EngineServingGpu.DISABLED_U4DiagnosticPlainQwen38",
+      "host": "spark-56f5",
+      "model": "qwen38-plain",
+      "output_parent": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-remaining-transfer-r1/qwen-reference-plain",
+      "target_artifact": "qwen38_gguf",
+      "target_id": "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8",
+      "transport": "configured-default"
+    }
+  },
+  "artifacts": {
+    "deepseek4_target": {
+      "id": "01a5e5ba5a911528fd58268406ac6cff032e767fd09a20fd4c9cbf84f2043f13",
+      "index_sha256": "4f84772b3cfa5912e6a5ece00f438b9b8ac330679dd848a1896810f7d48a8e80",
+      "manifest_sha256": "115009913ef53b64002af7c1bf2a0d70888211f9d0fa3351951203d754c461b6",
+      "source": [
+        {
+          "bytes": 5257664,
+          "name": "DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.gguf",
+          "sha256": "de65c5bb660817b95cc281bf54935f9d1bcc3b22535f2eae63b35a14c7c5724b"
+        },
+        {
+          "bytes": 49437013568,
+          "name": "DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00002-of-00003.gguf",
+          "sha256": "c8728a298862cd8736782e2e4056e5e3e03c415ba552a38173264494e41ef327"
+        },
+        {
+          "bytes": 47390237120,
+          "name": "DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00003-of-00003.gguf",
+          "sha256": "a4bae0788c025c1b2388754592c98fefa1372981748ac9875039bf6a30e6eeb4"
+        }
+      ],
+      "source_metadata": [
+        {
+          "bytes": 5257664,
+          "path": "meta/DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.kv.gguf",
+          "sha256": "de65c5bb660817b95cc281bf54935f9d1bcc3b22535f2eae63b35a14c7c5724b"
+        },
+        {
+          "bytes": 106,
+          "path": "meta/DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00002-of-00003.kv.gguf",
+          "sha256": "7b6f84206b7288876e66450f2ef1c2bf64ed7e193359a54124bebf66491ef7b6"
+        },
+        {
+          "bytes": 106,
+          "path": "meta/DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00003-of-00003.kv.gguf",
+          "sha256": "f3c9af5de30326e227deb5ed47518ae5b35b56cd4e81f61b1bc4b18d78f992c5"
+        }
+      ],
+      "spec_sha256": "44c7eb37336be510acca6fe22ad676036bd8a40504593d1145e560879f7493de"
+    },
+    "dspark_drafter": {
+      "id": "e14bf29f28c408a742ba6ab19879e415b1ec13019c0ed33b87b7802232a0bd90",
+      "index_sha256": "272e5fcdac70d1f56cd6b4515819a7643dbdef5ce0038a6f7f228fbeb864a36d",
+      "manifest_sha256": "e309cd0ec130f0cbbc06c4975d716ba11b88a737aba4d031df42099585f1661d",
+      "source": [
+        {
+          "bytes": 10896057440,
+          "name": "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf",
+          "sha256": "2c7ac54b0b64a99df1f139a9f1371a00198265e1d6a614b77597d20a655a4249"
+        }
+      ],
+      "source_metadata": [
+        {
+          "bytes": 5248193,
+          "path": "meta/dspark-DeepSeek-V4-Flash-0731-Q8_0.kv.gguf",
+          "sha256": "fcf6886653e8a64b70d51de8896febe2d69ae3dba8e300ed4684b518bbfcddff"
+        }
+      ],
+      "spec_sha256": "362a0d7ba26d65a9ca564b97786708dae036e5b337abc361c675ab93859f640a"
+    },
+    "gemma26_assistant": {
+      "id": "1dfcaca928a242c51ff73985c3cabfb986a1679512be0f43e6e379ac38158e98",
+      "index_sha256": "de53a90ac8f36712d2442b9ba38285ed9491a2109effd5ae53035051978b8505",
+      "manifest_sha256": "b1b04ae6339ebbd4eae528d65b56b30d98706fa187692b0520caa2751b52d54f",
+      "source": [
+        {
+          "bytes": 461766816,
+          "name": "mtp-gemma-4-26B-A4B-it.gguf",
+          "sha256": "6326fb9f5e487aa8dcdd313a091e3c67724cb2a666ec3b7d2895b5b26d93ed1b"
+        }
+      ],
+      "source_metadata": [
+        {
+          "bytes": 15764656,
+          "path": "meta/mtp-gemma-4-26B-A4B-it.kv.gguf",
+          "sha256": "f9139d76248f46c9e0a039876dfc4be2f11de7f54b81b0d615f97b93dc17608c"
+        }
+      ],
+      "spec_sha256": "68ff238bdd53a407398c6ce4a4a924545348afed0da25f835c9deee27c0ef045"
+    },
+    "gemma26_target": {
+      "id": "a1f1c523b126353f0d186dff0602f91651b05d65118006ed48958ae4f275e9e1",
+      "index_sha256": "417e2bec84b8443b053cb404d20268f31ae3da7c31a90524cc1dbe1663965501",
+      "manifest_sha256": "3d8de8f1de65d78d3cc36a3a3e458a688b22a674037cd971d8e295551d0ab3c5",
+      "source": [
+        {
+          "bytes": 16947541728,
+          "name": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+          "sha256": "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f"
+        }
+      ],
+      "source_metadata": [
+        {
+          "bytes": 15784342,
+          "path": "meta/gemma-4-26B-A4B-it-UD-Q4_K_M.kv.gguf",
+          "sha256": "5d15e0c84e29af2ed9b4525dacdd31ccd7bae061eb28dde2dad984a9b1e45a59"
+        }
+      ],
+      "spec_sha256": "192b6aabb06a3aed27642931b9a34a446ec1ad131b4b5c4734584d36aadbcb05"
+    },
+    "gemma31_assistant": {
+      "id": "d9eee1ae6004e7635f2985e8c2f2b1edb0a117428f56e233e14898cf0bcb7e75",
+      "index_sha256": "05a0a5618a79b04ebd8df8e2b51eafea815a2c158c72e1d109c13afc63cd1ffc",
+      "manifest_sha256": "e896dfec3187112d634353d55d9fdf442e99622c4ff0ad7e452c254350ad6f48",
+      "source": [
+        {
+          "bytes": 514687104,
+          "name": "mtp-gemma-4-31B-it.gguf",
+          "sha256": "5ae8b0117bed601e8924c6305bd5b0585de361d51f0e77091bcb4252cf1f27de"
+        }
+      ],
+      "source_metadata": [
+        {
+          "bytes": 15764653,
+          "path": "meta/mtp-gemma-4-31B-it.kv.gguf",
+          "sha256": "81e4444a11b9608cf80ef4ab0e2bbbafa29e5b5c737c017ce46023a1b8caca93"
+        }
+      ],
+      "spec_sha256": "95baca720b7d34edfab6fba8ee275aa2e64f94652748ed15819fdbee4bcdd591"
+    },
+    "gemma31_target": {
+      "id": "090809981d2909085798273e665a0db58351a8e6029b13bc04ced857c9130943",
+      "index_sha256": "87e7f05fcdd842877e243781dad9aee98709ebfcfc3b1ce3c7224a697cc7852b",
+      "manifest_sha256": "b29cf16db21ff94b72340d77347c531c1b7a4e5a26a3e4938aebf7439fc96cdd",
+      "source": [
+        {
+          "bytes": 18822970304,
+          "name": "gemma-4-31B-it-UD-Q4_K_XL.gguf",
+          "sha256": "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575"
+        }
+      ],
+      "source_metadata": [
+        {
+          "bytes": 15784340,
+          "path": "meta/gemma-4-31B-it-UD-Q4_K_XL.kv.gguf",
+          "sha256": "79c54f13f654d98e93ba1496062c017baea53ddaed59de086fe3fa7cf09d8461"
+        }
+      ],
+      "spec_sha256": "c0f37f67eb41ae311aa5ccbc700c4bd2a33921a7725ba6737a0e0873afd4705d"
+    },
+    "qwen38_gguf": {
+      "id": "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8",
+      "index_sha256": "40803567725558418f1993e1c50948870d92ea7022fea40151846334fbd03d70",
+      "manifest_sha256": "61827c2fdd87aabd0ee6371054358b6f90433d9452ceef1910edcbe130268be1",
+      "source": [
+        {
+          "bytes": 10946624,
+          "name": "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf",
+          "sha256": "268f81fdedf3149a538f252308927a4d5d1f6e062c178568a51e3b519744f8a8"
+        },
+        {
+          "bytes": 49567921344,
+          "name": "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.gguf",
+          "sha256": "cfe600b236b88c7fad1613a5ca5e83b9f2beb63cbd44c32b2be50a44747c695f"
+        },
+        {
+          "bytes": 32382955968,
+          "name": "Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf",
+          "sha256": "f1912ba34c79427d2295a58dcb2b732b5931af5bef7a373c60557a57d9ee7250"
+        }
+      ],
+      "source_metadata": [
+        {
+          "bytes": 10946618,
+          "path": "meta/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.kv.gguf",
+          "sha256": "7c1460a95eb2e95377c32b14deb92cf74fe504d4feb5a62a40d48f78e9e0dcb8"
+        },
+        {
+          "bytes": 106,
+          "path": "meta/Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.kv.gguf",
+          "sha256": "0bd485a7f050b5ac258c3722f25f2be38a7ef3e597696f3e4d7e09ec461ff978"
+        },
+        {
+          "bytes": 106,
+          "path": "meta/Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.kv.gguf",
+          "sha256": "2fd68e0dc3770fdd9e4d52a5e9570394855926807e0e020b879651ded2b004c6"
+        }
+      ],
+      "spec_sha256": "74116647d445819311c58dc16336099c95d675d827a5cd4125cfd88fadbd47cb"
+    }
+  },
+  "conditions": "Remaining models only after complete Gemma31 screen passes independent full-plan and exact observation review.",
+  "enabled": false,
+  "execution_order": [
+    "g31-candidate-default",
+    "g31-candidate-full-head",
+    "g31-reference-full-head",
+    "g31-reference-default"
+  ],
+  "hosts": {
+    "spark-56f5": {
+      "actual_hostname": "spark-56f5",
+      "binaries": {
+        "candidate": {
+          "gemma_assistant_v1_gpu_test": {
+            "bytes": 302558512,
+            "mode": "0555",
+            "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/bin/gemma-candidate",
+            "sha256": "aa324294f2394083d5f651ec29a75680892c63abd4365acb7d147c89cfd3c28a"
+          },
+          "qwen38_engine_serving_gpu_test": {
+            "bytes": 304664368,
+            "mode": "0555",
+            "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/bin/qwen-candidate",
+            "sha256": "bdfc1e651a8f548e792683fda5fa647a1f3cc843a9a826f59509880ba47a22f9"
+          }
+        },
+        "reference": {
+          "gemma_assistant_v1_gpu_test": {
+            "bytes": 302564600,
+            "mode": "0555",
+            "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/bin/gemma-reference",
+            "sha256": "2a069364f74f4c724fc06be924064319b9d7781d130a4182358f097e636107c6"
+          },
+          "qwen38_engine_serving_gpu_test": {
+            "bytes": 304670448,
+            "mode": "0555",
+            "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/bin/qwen-reference",
+            "sha256": "1987fd3989c10c17be9de43e6df52521545dd161784b82d8225afa91c3fa38aa"
+          }
+        }
+      },
+      "libraries": {
+        "ld-linux-aarch64.so.1": {
+          "bytes": 203968,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/ld-linux-aarch64.so.1",
+          "sha256": "390027e5f45f236bd1838bc54bf464c5ff01d260ab9f8b415ea8276641bce505"
+        },
+        "libc.so.6": {
+          "bytes": 1722920,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libc.so.6",
+          "sha256": "0f1905dc27dbc6715875c70527bc8da846a10084c9c483e9d8ff76dce8d69d0e"
+        },
+        "libcublas.so.13": {
+          "bytes": 71959256,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libcublas.so.13",
+          "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+        },
+        "libcublasLt.so.13": {
+          "bytes": 648206104,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libcublasLt.so.13",
+          "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+        },
+        "libcuda.so.1": {
+          "bytes": 96460560,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libcuda.so.1",
+          "sha256": "b11359b073ae9e49df81dc4f5c156378bd97fb9f6197ef64edc46e22c670bed4"
+        },
+        "libdl.so.2": {
+          "bytes": 67440,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libdl.so.2",
+          "sha256": "1c16b2692a155191c97d7fdc5ce937d37c242435f05745046a794a9832b16af4"
+        },
+        "libgcc_s.so.1": {
+          "bytes": 133696,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libgcc_s.so.1",
+          "sha256": "f2d3ad2bf0b61f6bc944cc37d7b6ab7f88d2582b41ff989ca164803f56cc5f20"
+        },
+        "libm.so.6": {
+          "bytes": 591800,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libm.so.6",
+          "sha256": "5e0391562de36de323fb9cb0f2c1b6bd6d034c840b1dac018499f5fe4ded1b4a"
+        },
+        "libpthread.so.0": {
+          "bytes": 67440,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libpthread.so.0",
+          "sha256": "6f1ab9e7d7de142dc5e2feaf6d19faceff0a0f40d5e225c922899f5362b8c353"
+        },
+        "librt.so.1": {
+          "bytes": 67512,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/librt.so.1",
+          "sha256": "93d0d5ab643b50ac1a61c2c7baf670e8aa94973fa5a2584d13db05295d5b5a0e"
+        }
+      },
+      "library_dir": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib",
+      "models_root": "/home/pmeenan/.local/share/llmp",
+      "store_path": "/home/pmeenan/.local/share/llmp/u2-v1-artifacts",
+      "test_data_directory": "/home/pmeenan/src/llmp/tests/unit/data"
+    },
+    "spark-c4e2": {
+      "actual_hostname": "spark-c4e2",
+      "binaries": {
+        "candidate": {
+          "dsv4_engine_target_gpu_test": {
+            "bytes": 302907312,
+            "mode": "0555",
+            "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/bin/dsv4-candidate",
+            "sha256": "ce7f7217b2f0c3ffd5b68b37284603184a1c29c4aedbdb027fd34cea122eba89"
+          },
+          "gemma_assistant_v1_gpu_test": {
+            "bytes": 302558512,
+            "mode": "0555",
+            "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/bin/gemma-candidate",
+            "sha256": "aa324294f2394083d5f651ec29a75680892c63abd4365acb7d147c89cfd3c28a"
+          }
+        },
+        "reference": {
+          "dsv4_engine_target_gpu_test": {
+            "bytes": 302913400,
+            "mode": "0555",
+            "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/bin/dsv4-reference",
+            "sha256": "f0acb19b94cfe59a0a2a7c4e48516b2f5da44959ea7d0789cf22ed752ae477b1"
+          },
+          "gemma_assistant_v1_gpu_test": {
+            "bytes": 302564600,
+            "mode": "0555",
+            "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/bin/gemma-reference",
+            "sha256": "2a069364f74f4c724fc06be924064319b9d7781d130a4182358f097e636107c6"
+          }
+        }
+      },
+      "libraries": {
+        "ld-linux-aarch64.so.1": {
+          "bytes": 203968,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/ld-linux-aarch64.so.1",
+          "sha256": "390027e5f45f236bd1838bc54bf464c5ff01d260ab9f8b415ea8276641bce505"
+        },
+        "libc.so.6": {
+          "bytes": 1722920,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libc.so.6",
+          "sha256": "0f1905dc27dbc6715875c70527bc8da846a10084c9c483e9d8ff76dce8d69d0e"
+        },
+        "libcublas.so.13": {
+          "bytes": 71959256,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libcublas.so.13",
+          "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+        },
+        "libcublasLt.so.13": {
+          "bytes": 648206104,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libcublasLt.so.13",
+          "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+        },
+        "libcuda.so.1": {
+          "bytes": 96460560,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libcuda.so.1",
+          "sha256": "b11359b073ae9e49df81dc4f5c156378bd97fb9f6197ef64edc46e22c670bed4"
+        },
+        "libdl.so.2": {
+          "bytes": 67440,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libdl.so.2",
+          "sha256": "1c16b2692a155191c97d7fdc5ce937d37c242435f05745046a794a9832b16af4"
+        },
+        "libgcc_s.so.1": {
+          "bytes": 133696,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libgcc_s.so.1",
+          "sha256": "f2d3ad2bf0b61f6bc944cc37d7b6ab7f88d2582b41ff989ca164803f56cc5f20"
+        },
+        "libm.so.6": {
+          "bytes": 591800,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libm.so.6",
+          "sha256": "5e0391562de36de323fb9cb0f2c1b6bd6d034c840b1dac018499f5fe4ded1b4a"
+        },
+        "libpthread.so.0": {
+          "bytes": 67440,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libpthread.so.0",
+          "sha256": "6f1ab9e7d7de142dc5e2feaf6d19faceff0a0f40d5e225c922899f5362b8c353"
+        },
+        "librt.so.1": {
+          "bytes": 67512,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/librt.so.1",
+          "sha256": "93d0d5ab643b50ac1a61c2c7baf670e8aa94973fa5a2584d13db05295d5b5a0e"
+        }
+      },
+      "library_dir": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib",
+      "models_root": "/home/pmeenan/.local/share/llmp",
+      "store_path": "/home/pmeenan/.local/share/llmp/u2-v1-artifacts",
+      "test_data_directory": "/home/pmeenan/src/llmp/tests/unit/data"
+    }
+  },
+  "identity_crosswalk": {
+    "file": "identity-map.json",
+    "sha256": "28052ba4cc9094f1225c8cdf6e93428176ecc7ca1db647b3a968311130aea05b"
+  },
+  "inputs": {
+    "dsv4-dspark": {
+      "context": 3072,
+      "generation_budgets": [
+        8,
+        8
+      ],
+      "prefill_chunk": 512,
+      "slots": 1,
+      "token_count": 2560,
+      "token_ids_i32le_sha256": "8246ae3ecd8dffcd72cdab83b54197a8c44edcb2b23548f685ceb54820a8266d",
+      "token_recipe": "100+(i*7919+17)%30000,i=0..2559"
+    },
+    "gemma26": {
+      "context": 8192,
+      "generation_budgets": [
+        48,
+        16
+      ],
+      "prefill_chunk": 1024,
+      "slots": 4,
+      "token_count": 144,
+      "token_ids": [
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563
+      ],
+      "token_ids_i32le_sha256": "1e0536dc481a282efae12fe9266c5d60147bc6facdecbeec3aea5bda79d9ec84"
+    },
+    "gemma31": {
+      "context": 8192,
+      "generation_budgets": [
+        48,
+        16
+      ],
+      "prefill_chunk": 256,
+      "slots": 4,
+      "token_count": 144,
+      "token_ids": [
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563,
+        2,
+        818,
+        5279,
+        529,
+        7001,
+        563
+      ],
+      "token_ids_i32le_sha256": "1e0536dc481a282efae12fe9266c5d60147bc6facdecbeec3aea5bda79d9ec84"
+    },
+    "qwen38-plain": {
+      "context": 512,
+      "generation_budgets": [
+        8,
+        8
+      ],
+      "prefill_chunk": 16,
+      "slots": 1,
+      "token_count": 5,
+      "token_ids": [
+        113,
+        8032,
+        15951,
+        23870,
+        31789
+      ],
+      "token_ids_i32le_sha256": "40dd7747b0ce0429b38cbcaf0198ff7e3891dd14fc3bed0289f9b499d2ceb694"
+    }
+  },
+  "prerequisites": {
+    "candidate_build": "PASS native5targets on spark",
+    "historical_git_banner": "RemoteGit61f8426f.dirty is not source identity; use frozen source maps/compiler receipts.",
+    "observer_controls": "4/4 PASS,0skips on spark",
+    "reference_build": "PASS native5targets on spark-b",
+    "reference_guard_controls": "2/2 PASS on spark-b",
+    "source_review": "u4-observer-exporter-source-review-r2.json and u4-upstream-reference-guard-source-review-r2.json CLEAN"
+  },
+  "schema_version": 1,
+  "source_difference": {
+    "other": [
+      "tests/unit/planner_test.cc",
+      "docs/plan.md"
+    ],
+    "production": [
+      "src/planner/fusions.cc",
+      "src/planner/fusions.h",
+      "src/planner/pattern.cc"
+    ]
+  },
+  "sources": {
+    "candidate": {
+      "module_digest": "60d55b3721b3696646ef62835242837a7c55716fa81dcf0c57c0bbc6904ad89c",
+      "path_count": 2935,
+      "sha256": "f0d38f4ebd9bbe9b8a2726286e16a1cc8069c94f5cea3074a77afdc4c66396ab"
+    },
+    "reference": {
+      "module_digest": "2e2303d1b45514df0f494bd6cb73ae877b53647270cb45f34bcbd17969047127",
+      "path_count": 2935,
+      "sha256": "21a22f47768d4339aa7e9949cfab5cf095942149455f4ac96a2599d60d8cb2ff"
+    }
+  }
+}
