@@ -751,8 +751,10 @@ D-122).
       fails all four unchanged numerical bounds: +13.2747% PPL, mean/max
       absolute NLL differences 0.57510/19.09824 and 33.7383% within 0.1 nat.
       Its matching 128-token replies remain truncated. The generic reduction-schedule
-      repair passes operand and replay checks; its [prospective R control](experiments/m35-component-numerics/gemma31-multirow-repair/PROTOCOL.md)
-      reuses the original A under unchanged bounds. No repair qualification is claimed.
+      repair passes operand and replay checks. Its [registered R comparison](experiments/m35-component-numerics/gemma31-multirow-repair/RESULTS.md)
+      matches all 1,070 original-A teacher scores exactly under unchanged bounds.
+      The [matched C2 speed check](experiments/m35-component-numerics/gemma31-multirow-repair-speed/PROTOCOL.md)
+      is registered separately; assistant/state and broader transfer qualification remain open.
       Current Gemma26/Gemma31 assistant and DSpark controls retain 15/6/3 frozen
       differences, reproduced exactly with the legacy drafter path
       ([attribution](experiments/m35-stored-drafter/RESULTS.md)).
