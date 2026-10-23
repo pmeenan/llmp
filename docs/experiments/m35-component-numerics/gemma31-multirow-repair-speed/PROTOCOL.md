@@ -36,3 +36,19 @@ including its relational plan review, and bind both arms' manual receipts and
 the pair report. Run read-only preflight plus all six actual argv through the
 real parser with process, service, and network calls forbidden. This bundle's
 validation is setup-only; actual collection remains externally disabled.
+
+## Launch correction before any timing sample
+
+The original registration `623dbf46` reached runtime startup once, then failed
+before readiness or any request: A's disabled-pattern lines were not ascending.
+The failed arm/output and supervisor records remain untouched under the first
+output namespace. This amendment sorts those same four disabled names into
+the parser's required canonical order, exactly matching the authenticated
+original A quality policy. The pattern set, R policy, binary, workload, six-arm
+order and acceptance bounds are unchanged. The original A policy was exercised
+successfully by its retained quality runtime, and the policy parser source is
+unchanged in R's audited source ledger. This is a syntax correction, not tuning.
+
+Use fresh `output-r2` paths and a new reviewed registration commit before the
+first actual timing arm. No completed timing sample is retried or replaced;
+the earlier service never became ready and produced no request sample.
