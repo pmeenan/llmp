@@ -522,9 +522,12 @@ are in [tokenizer.md](tokenizer.md#chat-templates).
   UD-Q2_K_XL, three shards
   ([pins.json](experiments/fast-swap/pins.json)).
 - **Artifact:** v0 `8a355bfb…`, from the GGUF by `import_m3.py`
-  ([dsv4-native](experiments/dsv4-native/README.md#what-runs)); v1 `d2046349…`
-  from the staged, manifest-verified GGUF by `llmp import`, bit-identical to
-  v0 ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)).
+  ([dsv4-native](experiments/dsv4-native/README.md#what-runs)); current v1
+  `01a5e5ba…` from the staged, manifest-verified GGUF by `llmp import`
+  (previous v1 `d2046349…`). The refreshed spec retains source
+  `temperature=1, top_p=1`; the index and encoded payload remain unchanged
+  ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md),
+  [sampling refresh and retained numerical failures](experiments/m35-generic-import/deepseek-sampling.md)).
 - **Components:** the target; optionally [DSpark](#dspark) as its drafter
   (the configuration's `drafter` key).
 - **Template:** `e643c31f…` (above), read from the artifact.

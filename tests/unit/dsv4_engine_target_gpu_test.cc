@@ -5,7 +5,7 @@
 // domain's arithmetic, the automatic serving envelope (the route's only one:
 // every other request is refused before its source is read), and the
 // publication screens (Published*) of the published v1 artifacts (the target
-// d2046349 and the DSpark drafter e14bf29f; LLMP_DSV4_TARGET_STORE, else
+// 01a5e5ba and the DSpark drafter e14bf29f; LLMP_DSV4_TARGET_STORE, else
 // tests/support/v1_frozen.h V1Store) against their frozen digests
 // (tests/unit/data/v1_frozen/dsv4_*.json). The serving tests
 // (dsv4_engine_serving_gpu_test.cc) cover the rest of its service.
@@ -53,7 +53,7 @@ constexpr std::uint32_t kContext = 3072, kChunk = 512, kPrefix = 2560;
 constexpr std::uint32_t kVocab = 129280;
 
 constexpr std::string_view kArtifact =
-    "d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f";
+    "01a5e5ba5a911528fd58268406ac6cff032e767fd09a20fd4c9cbf84f2043f13";
 
 constexpr std::string_view kDsparkArtifact =
     "e14bf29f28c408a742ba6ab19879e415b1ec13019c0ed33b87b7802232a0bd90";
@@ -102,7 +102,11 @@ Status File(const fs::path& path, std::uint64_t bytes, std::string_view digest) 
   return {};
 }
 Status Metadata(const fs::path& artifact) {
-  if (auto s = File(artifact / "manifest.json", 14663, kArtifact); !s) return s;
+  // The semantic artifact ID differs from the serialized manifest's digest.
+  if (auto s = File(artifact / "manifest.json", 14757,
+                    "115009913ef53b64002af7c1bf2a0d70888211f9d0fa3351951203d754c461b6");
+      !s)
+    return s;
   if (auto s = File(artifact / "index.json", 5058896,
                     "4f84772b3cfa5912e6a5ece00f438b9b8ac330679dd848a1896810f7d48a8e80");
       !s)

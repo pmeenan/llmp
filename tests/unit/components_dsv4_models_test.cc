@@ -3,7 +3,7 @@
 
 // The DeepSeek V4 mappings on the published v1 artifacts (label `models`;
 // skipped when the store or the target is absent): DeepSeek V4 Flash 0731's
-// UD-Q2_K_XL (d2046349) and the DSpark drafter (e14bf29f) composed with it.
+// UD-Q2_K_XL (01a5e5ba) and the DSpark drafter (e14bf29f) composed with it.
 // The target's stored spec is validated against its tensors and equals the
 // spec of the unit tests' fixture (dsv4_fixture.h, synthesized with the
 // family's values, tests/support/families/dsv4.h), so the unit tests'
@@ -120,6 +120,10 @@ TEST(ComponentsDsv4Models, EveryInstalledTargetAndItsDrafterMakeTheirSpecs) {
   const sp::Source mine = fx::SourceOf("deepseek4", fx::Resources(p), mapping);
   auto fixture = sp::Synthesize(mapping, mine, *values);
   ASSERT_TRUE(fixture.has_value()) << fixture.error();
+  // Normalization, rather than structural synthesis, reads sampling from
+  // source metadata. Apply the checkpoint's independently verified defaults
+  // to this structural fixture before comparing the complete published spec.
+  fixture->stages.front().sampling = {.temperature = 1.0, .top_p = 1.0};
   EXPECT_EQ(sp::ToJson(*spec), sp::ToJson(*fixture));
   EXPECT_EQ(target->source.tensors.size(), mine.tensors.size());
   // The M3 runner's state, in both window modes.

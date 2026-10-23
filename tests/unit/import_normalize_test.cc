@@ -1506,10 +1506,27 @@ TEST(ImportNormalizeDsv4Test, CompleteCapturedTargetKeepsAllEncodingsAndLayerSem
   ASSERT_EQ(plan->spec().stages.size(), 1U);
   EXPECT_EQ(plan->spec().stages[0].side.size(), 3U);
   EXPECT_EQ(plan->spec().stages[0].layers.size(), 43U);
-  // The spec the approved artifact stores (runtime/approvals.cc), which
-  // the retired profile's synthesis made.
+  // This captured synthetic source predates the GGUF sampling defaults and
+  // remains the no-default control for the historical spec.
   EXPECT_EQ(base::ToHex(plan->spec().Digest()),
             "ddaaa1d38bd6a501b9ef891bc0f639a70f41b19ff85a85674be5d77470e7a8e8");
+  EXPECT_TRUE(plan->spec().stages[0].sampling.empty());
+
+  auto sampled = input;
+  Value(sampled, "general.sampling.temp", 1.0);
+  Value(sampled, "general.sampling.top_p", 1.0);
+  auto sampled_cost = NormalizationBound(sampled);
+  ASSERT_TRUE(sampled_cost) << test_support::Failed(sampled_cost, &Error::ToString).value_or("");
+  auto sampled_plan = test_support::NormalizeWithFixtureTarget(
+      std::move(sampled), {sampled_cost->metadata_bytes, sampled_cost->work_units});
+  ASSERT_TRUE(sampled_plan) << test_support::Failed(sampled_plan, &Error::ToString).value_or("");
+  ASSERT_EQ(sampled_plan->spec().stages.size(), 1U);
+  ASSERT_TRUE(sampled_plan->spec().stages[0].sampling.temperature.has_value());
+  EXPECT_EQ(*sampled_plan->spec().stages[0].sampling.temperature, 1.0);
+  ASSERT_TRUE(sampled_plan->spec().stages[0].sampling.top_p.has_value());
+  EXPECT_EQ(*sampled_plan->spec().stages[0].sampling.top_p, 1.0);
+  EXPECT_EQ(base::ToHex(sampled_plan->spec().Digest()),
+            "44c7eb37336be510acca6fe22ad676036bd8a40504593d1145e560879f7493de");
   std::set<Encoding> encodings;
   for (std::size_t i = 0; i != input.tensors.size(); ++i) {
     EXPECT_EQ(plan->routes()[i].extent, input.tensors[i].extent);

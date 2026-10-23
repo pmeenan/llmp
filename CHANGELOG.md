@@ -28,6 +28,10 @@ The entries below record each change; the record of the milestone is
   block geometry, CPU reference decoding and validated stored specs. Device
   execution support remains separate (M3.5 U3b).
 
+- DeepSeek V4 Flash 0731's native target spec retains its GGUF sampling
+  defaults (`temperature=1`, `top_p=1`) with unchanged indexed payload and
+  refreshed target/DSpark composition identity
+  ([proof and remaining numerical gaps](docs/experiments/m35-generic-import/deepseek-sampling.md)).
 - ModelOpt MXFP4 weight imports preserve packed codes and block scales through
   the generic importer. Qwen2, Llama and Mistral share one canonical mapping
   per architecture across GGUF, HF and EXL3 source dialects

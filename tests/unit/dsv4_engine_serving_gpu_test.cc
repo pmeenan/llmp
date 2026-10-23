@@ -90,7 +90,7 @@ namespace en = llmp::engine;
 namespace cfg = llmp::config;
 namespace fs = std::filesystem;
 
-constexpr const char* kTarget = "d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f";
+constexpr const char* kTarget = "01a5e5ba5a911528fd58268406ac6cff032e767fd09a20fd4c9cbf84f2043f13";
 constexpr const char* kDrafter = "e14bf29f28c408a742ba6ab19879e415b1ec13019c0ed33b87b7802232a0bd90";
 constexpr std::uint32_t kVocab = 129280;
 // The speed gate's diagnostic tuple (its NEW arm): the node's cap (112 GiB,

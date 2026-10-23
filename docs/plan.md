@@ -602,7 +602,12 @@ D-122).
       Gemma26 and Gemma31 now retain their source sampling defaults with
       [complete payload and paired canonical identity proofs](experiments/m35-generic-import/gemma-sampling-refresh.md).
       The Qwen GGUF sampling/provenance refresh is complete. DeepSeek’s
-      target refresh remains open. Four adopted drafter publications now have
+      [target sampling refresh](experiments/m35-generic-import/deepseek-sampling.md)
+      is installed on both Sparks with unchanged index and encoded payload,
+      native paired-spec validation and five positive import/metadata controls.
+      Its nine frozen target differences reproduce exactly with the old artifact;
+      the three DSpark differences reproduce the retained legacy negatives.
+      Numerical qualification remains open. Four adopted drafter publications now have
       [complete stored execution and parity proofs](experiments/m35-stored-drafter/RESULTS.md);
       five integrated model controls pass. Three frozen numerical cases retain
       their exact legacy-control negatives; numerical qualification and broader
