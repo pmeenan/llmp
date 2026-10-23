@@ -11,7 +11,7 @@ target_include_directories(llmp_surface_versions INTERFACE "${PROJECT_SOURCE_DIR
 
 # Invariant checks (check.h), typed identities (ids.h), byte counts
 # (bytes.h) and SHA-256 (sha256.h).
-add_library(llmp_base STATIC check.cc sha256.cc)
+add_library(llmp_base STATIC check.cc sha256.cc sha256_aarch64.cc)
 target_include_directories(llmp_base PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_base PRIVATE llmp_warnings)
 

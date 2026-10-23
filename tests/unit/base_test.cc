@@ -16,6 +16,7 @@
 
 #include "base/report.h"
 #include "base/sha256.h"
+#include "base/sha256_internal.h"
 
 namespace {
 
@@ -133,6 +134,78 @@ TEST(Sha256, UpdatesInPiecesHashTheWhole) {
       hash.Update(std::span<const std::byte>());
     }
     EXPECT_EQ(llmp::base::ToHex(hash.Finish()), want) << piece;
+  }
+}
+
+namespace sha = llmp::base::sha256_internal;
+
+llmp::base::Sha256Digest ScalarDigest(std::span<const std::byte> message) {
+  sha::State state = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+                      0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+  std::vector<std::uint8_t> padded;
+  for (auto byte : message) padded.push_back(std::to_integer<std::uint8_t>(byte));
+  padded.push_back(0x80);
+  while (padded.size() % 64 != 56) padded.push_back(0);
+  const auto bits = static_cast<std::uint64_t>(message.size()) * 8;
+  for (unsigned i = 0; i < 8; ++i)
+    padded.push_back(static_cast<std::uint8_t>(bits >> (56 - 8 * i)));
+  sha::Scalar(state, padded.data(), padded.size() / 64);
+  llmp::base::Sha256Digest digest{};
+  for (std::size_t i = 0; i < state.size(); ++i)
+    for (unsigned byte = 0; byte < 4; ++byte)
+      digest[i * 4 + byte] = static_cast<std::uint8_t>(state[i] >> (24 - 8 * byte));
+  return digest;
+}
+
+TEST(Sha256, CompressionDispatchPreservesStatesAcrossBlocksAndAlignments) {
+  EXPECT_EQ(sha::Select(false), sha::Scalar);
+  const auto hardware = sha::ArmCompressor();
+  EXPECT_EQ(sha::Select(true), hardware ? hardware : sha::Scalar);
+  for (const auto compressor : {sha::Select(false), sha::Select(true)}) {
+    sha::State empty{1, 2, 3, 4, 5, 6, 7, 8};
+    const auto before = empty;
+    compressor(empty, nullptr, 0);
+    EXPECT_EQ(empty, before);
+    for (std::size_t offset = 0; offset < 32; ++offset) {
+      for (std::size_t count : {1U, 2U, 3U, 16U, 31U}) {
+        // The last block ends exactly at the allocation boundary.
+        std::vector<std::uint8_t> input(offset + count * 64);
+        for (std::size_t i = 0; i < input.size(); ++i)
+          input[i] = static_cast<std::uint8_t>((i * 29 + offset * 17) % 256);
+        sha::State expected{0, 0xffffffff, 0x87654321, 17, 0x80000000, 0x12345678, 91, 0xfedcba98};
+        auto actual = expected;
+        for (std::size_t block = 0; block < count; ++block)
+          sha::Scalar(expected, input.data() + offset + block * 64, 1);
+        compressor(actual, input.data() + offset, count);
+        EXPECT_EQ(actual, expected) << offset << " " << count;
+      }
+    }
+  }
+}
+
+TEST(Sha256, IncrementalCopiesAndPaddingMatchScalarAcrossEverySplit) {
+  for (std::size_t length :
+       {0U, 1U, 55U, 56U, 63U, 64U, 65U, 119U, 120U, 127U, 128U, 129U, 511U, 1024U}) {
+    for (std::size_t offset : {0U, 1U, 7U, 15U}) {
+      std::vector<std::byte> storage(length + offset);
+      for (std::size_t i = 0; i < storage.size(); ++i)
+        storage[i] = static_cast<std::byte>((i * 131 + length) % 256);
+      const auto message = std::span<const std::byte>(storage).subspan(offset);
+      const auto expected = ScalarDigest(message);
+      EXPECT_EQ(llmp::base::Sha256().Update(message).Finish(), expected);
+      for (std::size_t split = 0; split <= length; ++split) {
+        llmp::base::Sha256 prefix;
+        prefix.Update(message.first(split));
+        auto checkpoint = prefix;
+        prefix.Update(message.subspan(split));
+        for (auto byte : message.subspan(split)) {
+          checkpoint.Update(std::span(&byte, 1));
+          checkpoint.Update(std::span<const std::byte>());
+        }
+        EXPECT_EQ(prefix.Finish(), expected) << length << " " << offset << " " << split;
+        EXPECT_EQ(checkpoint.Finish(), expected) << length << " " << offset << " " << split;
+      }
+    }
   }
 }
 

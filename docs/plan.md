@@ -667,6 +667,10 @@ D-122).
         `FindMapping` for structure; startup composing and admitting once,
         opening each artifact once and taking context and sampling from the
         spec rather than re-parsing kept `config.json` and GGUF metadata.
+        A shared [ARM SHA2 hash path](experiments/m35-sha256-arm/README.md)
+        preserves every verification pass and digest, with a portable fallback.
+        Its bounded synthetic screen passes; actual refreshed publications and
+        complete payload/spec proofs remain required for these migrations.
         **Exit:** a dense family of a known shape is one mapping file and one
         registry line, and every published v1 artifact re-imports
         content-identical apart from the new provenance fields.

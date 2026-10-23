@@ -1,0 +1,119 @@
+{
+  "schema": "llmp.sha256-arm-screen.v1",
+  "date": "2026-10-22",
+  "host": "spark",
+  "scope": "Shared base SHA-256; synthetic in-memory hashing only. No import, model, disk, or migration speed claim.",
+  "criterion": "Each exact fixed 512MiB/1GiB digest matches baseline and elapsed seconds are lower than its frozen exclusive scalar baseline; one candidate run, no import throughput claim",
+  "verdict": "PASS",
+  "results": [
+    {
+      "bytes": 536870912,
+      "seconds": 0.352398934,
+      "sha256": "cd6e3ce5b147d91e9efa445d99c9a388c7493a3860079d36f55074036f671236",
+      "baseline_seconds": 1.507837609,
+      "candidate_over_baseline": 0.23371146328795409,
+      "passed": true
+    },
+    {
+      "bytes": 1073741824,
+      "seconds": 0.699465563,
+      "sha256": "f0ab1de44271fe76ee72c0d821732da2d8d510e6ff3602e09de310f075c62c84",
+      "baseline_seconds": 2.996729239,
+      "candidate_over_baseline": 0.23340966340803268,
+      "passed": true
+    }
+  ],
+  "source": {
+    "base_commit": "16b03c19",
+    "prerequisite_patch_sha256": "320d90c2f799fb9c54f6a6770fbff027063f6c6b704a2b2247d2dc406063203a",
+    "checked_sha_patch_sha256": "fc67fd345813d87ddf44332806f239aba7e53bab5790b1c6ab05cf8d980ee8e4",
+    "checked_source_manifest_sha256": "e421635b6f058fe539c26ae7832e991c5ddc73b3d758f71028783f9fca531e50",
+    "checked_paths": {
+      "src/base/CMakeLists.txt": "c6236ba08ca754a449d27ead13a33a48fa3f6ab1281a54e56b9004a7a1292daa",
+      "src/base/sha256.cc": "58a6c9457e8a75eff3e7dff039ba17d8428bd275c6db2bb650a437edc4b60897",
+      "src/base/sha256_aarch64.cc": "f187bf2c74884be510f3dcabf911ddefc830c6de5b5f8f17d8899087bf6d7dc4",
+      "src/base/sha256_internal.h": "6f9e67c66ad25cabc4272066ebb0636e92263dc83aca68971dd9b7a3194636ff",
+      "tests/unit/base_test.cc": "9768c88bc4d109ca481b0df8df0f8dd6be5fb658add4b3841b5c587985618667"
+    },
+    "later_delta": "Only private-header comment spacing and documentation; checked R1 source/binaries retained separately."
+  },
+  "native": {
+    "binary_sha256": {
+      "artifact_test": "9358c09d480512bb01a8b13df894db50d5b37862cacf2abe3aa4a8a52276cba5",
+      "artifact_v1_test": "9a53d5e4f1599ee7b7ddc86e7192f836ad01b798830a7157096e5528ef213522",
+      "base_test": "783224e2f14837b4f0426065f853f3cd21b8d9d942ffa889ea1803a07f91d342",
+      "import_test": "9ad713a8c6504cb1333e707950a91c3c201ceaec79f4687617c53ff9fa20b95c",
+      "import_writer_test": "17a13fd882ed419c3be332d88dc362b363477c5a9bf425668131659380d1f615"
+    },
+    "compiler_sha256": "a71e8163bfd8166f0b79e4fb6c345b821ae1c41a68410b058dc6439154ffb721",
+    "compiler_version": "Ubuntu clang version 22.1.8 (++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80)\nTarget: aarch64-unknown-linux-gnu\nThread model: posix\nInstalledDir: /home/pmeenan/.local/share/llmp/sdk/aarch64-2c4eb5b2f68f3fa5/pkgs/llvm/usr/lib/llvm-22/bin\n",
+    "ctest_sha256": "35a0f6e7d60b5af14b566cb01850ffba91c16c04e619bf926985801648a46ee3",
+    "kernel_receipt_sha256": "7c1b86c9b2d6005a8ff1b9dc29d855148497af7779a8b48bd439ae718c43931d",
+    "registered_tests": 141,
+    "source_manifest_sha256": "e421635b6f058fe539c26ae7832e991c5ddc73b3d758f71028783f9fca531e50",
+    "targets": [
+      "artifact_test",
+      "artifact_v1_test",
+      "base_test",
+      "import_test",
+      "import_writer_test"
+    ]
+  },
+  "driver": {
+    "base_library_sha256": "ac794cc972eb971d2c19fc91f72a1cf34ae7c5ce84b0df2c6db0157b150d9b0b",
+    "binary_sha256": "e097eab0cf600a1e35e84726f0ada849f4e140d31f8f7e1a595a2bbe69c6bb7c",
+    "command": [
+      "/home/pmeenan/.local/share/llmp/sdk/aarch64-2c4eb5b2f68f3fa5/bin/clang++",
+      "--target=aarch64-linux-gnu",
+      "-march=armv8-a",
+      "--gcc-install-dir=/home/pmeenan/.local/share/llmp/sdk/aarch64-2c4eb5b2f68f3fa5/gcc/aarch64-linux-gnu/lib/gcc/aarch64-linux-gnu/16",
+      "-O2",
+      "-std=c++23",
+      "-fno-exceptions",
+      "-static-libstdc++",
+      "-static-libgcc",
+      "-I/home/pmeenan/src/llmp/src",
+      "/tmp/llmp-source-fold-hash-feasibility/driver.cc",
+      "/home/pmeenan/src/llmp/build/spark-native/src/base/libllmp_base.a",
+      "-o",
+      "/tmp/llmp-sha256-arm-evidence/driver"
+    ],
+    "compiler_sha256": "a71e8163bfd8166f0b79e4fb6c345b821ae1c41a68410b058dc6439154ffb721",
+    "criterion": "Each exact fixed 512MiB/1GiB digest matches baseline and elapsed seconds are lower than its frozen exclusive scalar baseline; one candidate run, no import throughput claim",
+    "dependencies": {
+      "/lib/aarch64-linux-gnu/libc.so.6": "0f1905dc27dbc6715875c70527bc8da846a10084c9c483e9d8ff76dce8d69d0e",
+      "/lib/aarch64-linux-gnu/libm.so.6": "5e0391562de36de323fb9cb0f2c1b6bd6d034c840b1dac018499f5fe4ded1b4a",
+      "/lib/ld-linux-aarch64.so.1": "390027e5f45f236bd1838bc54bf464c5ff01d260ab9f8b415ea8276641bce505"
+    },
+    "fixed_baseline_receipt_sha256": "c01829b8695f460e376b1a3f83645c79de483fce654ad871008aea48271f3991",
+    "objects": {
+      "sha256.cc.o": {
+        "has_sha256_instructions": false,
+        "sha256": "3bfcfcf56a1d630b43eae81b6b337910e5005d282c81c008dec9de879d17e2a9"
+      },
+      "sha256_aarch64.cc.o": {
+        "has_sha256_instructions": true,
+        "sha256": "5cb176ca1a37ea0f304b1a7ff0cec65a9ac9be7c87f5bd47b5122d77a2ee4ed4"
+      }
+    },
+    "source_manifest_sha256": "e421635b6f058fe539c26ae7832e991c5ddc73b3d758f71028783f9fca531e50",
+    "source_sha256": "c05c50a88608fc534f8fb347124514a9f2bd1f2f8ebe5aeaedc4208d61d43032"
+  },
+  "baseline_receipt_sha256": "c01829b8695f460e376b1a3f83645c79de483fce654ad871008aea48271f3991",
+  "candidate_receipt_sha256": "ab9e7eab549d42d0513bddc4c6f88b4a0115c08f4310a57f53770cbd348de308",
+  "focused": {
+    "outer": 141,
+    "inner": 141,
+    "skipped": 0,
+    "audit_sha256": "729575945370882bbb3fc8b4de8d73d4d3f2bd4fdd5bac83d13ca67df79c0122"
+  },
+  "portable": {
+    "status": "PASS",
+    "tests": 12,
+    "skipped": 0,
+    "receipt_sha256": "b6c4641bff545e7ac83627a64360c225962a976ce94e8cc68125d92b98eba077",
+    "scope": "Explicit x86-64-v3 mini-CMake actual base target and base_test, not full CPU preset",
+    "prior_fixture_failure": "portable/raw.log: compiler-probe link missing static runtime flags; corrected scratch fixture only"
+  },
+  "raw_evidence": "/tmp/llmp-sha256-arm-evidence and /tmp/llmp-source-fold-hash-feasibility; retained through milestone closeout"
+}

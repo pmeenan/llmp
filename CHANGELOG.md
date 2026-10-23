@@ -24,6 +24,10 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- SHA-256 uses runtime-selected ARM SHA2 instructions where available, with a
+  portable scalar fallback and unchanged digests, artifact IDs and verification
+  passes ([bounded hash screen](docs/experiments/m35-sha256-arm/README.md)).
+
 - Opt-in quality runs retain raw streamed replies and timing records, and
   stop collection after an incomplete or failed stream.
 
