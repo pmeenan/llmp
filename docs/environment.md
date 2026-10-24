@@ -397,6 +397,28 @@ downloaded itself, verified the same way. One sample each, on 2026-09-28:
   ([jumbo frames](#jumbo-frames-on-the-direct-link-2026-09-28), which also
   gives the faster recipe).
 
+### Retired Spark data (2026-10-23)
+
+Owner-authorized cleanup removed the v0 stores `m3-artifacts`,
+`qgguf-artifacts` and `artifact-layout-20260922` under
+`~/.local/share/llmp/` on both Sparks after checking every published
+manifest's version. U2 removed their readers and tests. The closed M3.6
+baseline/candidate executables and obsolete build outputs were also removed;
+small source copies, patches and provenance remain. Historical experiment
+paths describe the original runs rather than a retained executable install.
+
+Current v1 artifacts, checkpoint inputs, reference oracles, active build trees
+and the installed SDK remain available. Identical v1 weight-shard files share
+hard links after full SHA-256 verification against their manifests; artifact
+paths, manifests, stored specs and file contents are unchanged. Disposable
+package/download and container-build caches were cleared. The ordinary
+Hugging Face cache was only
+157 MiB on `spark` and 8 KiB on `spark-b`; alternate homes and container
+storage were checked too. Mia's 27 GiB packed PLE cache on each Spark remains
+for the [pinned reference launcher](experiments/fast-swap/baselines.md).
+Machine-readable cleanup and verification receipts are under
+`~/.local/share/llmp/cleanup-20261024/` on each host.
+
 ### Jumbo frames on the direct link (2026-09-28)
 
 Approved by the owner and applied on 2026-09-28. Owner environment, not

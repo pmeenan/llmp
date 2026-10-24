@@ -576,7 +576,9 @@ D-122).
       0 failures), and add the fuzz entry to engine.md's
       "add a container" checklist. **Exit:** no production source references
       v0 or `PlanGraph`, the shared suite passes without `m3-artifacts`, and
-      the fuzz run is recorded.
+      the fuzz run is recorded. Owner-authorized cleanup removed the retired
+      v0 stores on both Sparks on 2026-10-23; see the
+      [storage cleanup](environment.md#retired-spark-data-2026-10-23).
 - [x] **U3 One generic import route** (completed 2026-10-23; D-125).
       ModelOpt and MLX checkpoints use one mapping-driven normalization and
       publication pipeline; checkpoint-specific Qwen3.8 normalizers and the
