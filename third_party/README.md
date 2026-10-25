@@ -35,6 +35,12 @@ Patch 0009 extends the prepared ordinary MMVQ entry point with explicit
 immutable-weight metadata: PDL-capable kernels may prefetch only those weights
 before waiting, then signal after the unchanged dot loop. Other callers and
 pre-Hopper images retain their ordinary scheduling.
+Patch 0011 admits same-type BF16 indexed stores in the tensor constructor and
+CUDA dispatcher, reusing the existing indexed-copy kernel with I32 or I64
+indices. It adds no conversion, workspace, or new arithmetic.
+Patch 0012 dispatches F32 + F16 into F32 through the existing typed broadcast
+kernel, including the fused broadcast entry point. It reads half operands with
+their actual two-byte strides instead of interpreting them as F32 bytes.
 [licensing.md](../docs/licensing.md) records their audits.
 
 | Step | Where | Does |

@@ -31,6 +31,7 @@
 #include "format/layout.h"
 #include "format/tensor_format.h"
 #include "ir/builder.h"
+#include "ir/decompose.h"
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "ir/verify.h"
@@ -90,9 +91,9 @@ std::optional<std::uint16_t> StageIndex(const spec::ModelSpec& spec, std::string
   return static_cast<std::uint16_t>(at - spec.stages.begin());
 }
 
-// The source a node stores into, if it is a store: a cache store's cache,
-// a fused RoPE store's.
-std::optional<std::size_t> StoreTarget(const ir::Node& n) {
+// Sources overwritten without reading their previous contents. Other in-place
+// operations may both read and write; their writes come from the IR write set.
+std::optional<std::size_t> PureOverwriteTarget(const ir::Node& n) {
   if (n.key == ir::Primitive(ir::Op::kCacheStore)) return 0;
   if (n.key == ir::Fused(ir::FusedKind::kRopeStore)) return 2;
   return std::nullopt;
@@ -102,18 +103,19 @@ std::optional<std::size_t> StoreTarget(const ir::Node& n) {
 void MarkAccess(StepGraph& step) {
   const ir::Graph& g = step.graph;
   for (const ir::Node& n : g.nodes()) {
-    const auto target = StoreTarget(n);
+    const auto target = PureOverwriteTarget(n);
     for (std::size_t j = 0; j < n.nsrc; ++j) {
       if (!n.src[j].valid()) continue;
       const ir::TensorId root = g.root(n.src[j]);
       const auto st = std::ranges::find(step.state, root, &StepState::tensor);
       if (st == step.state.end()) continue;
-      if (target == j) {
-        st->written = true;
-      } else {
-        st->read = true;
-      }
+      if (target != j) st->read = true;
     }
+    ir::ForEachWrittenSource(n, [&](std::size_t source) {
+      const auto root = g.root(n.src[source]);
+      const auto st = std::ranges::find(step.state, root, &StepState::tensor);
+      if (st != step.state.end()) st->written = true;
+    });
   }
 }
 
@@ -1729,30 +1731,96 @@ std::expected<void, std::string> CheckStateWrites(const ir::Graph& g,
     return tensors.empty() ? t : (t.v < tensors.size() ? tensors[t.v] : ir::TensorId{});
   };
   for (const ir::Node& n : g.nodes()) {
-    const auto target = StoreTarget(n);
-    if (!target) continue;
-    const ir::TensorId root = g.root(n.src[*target]);
-    const ir::Role role = g.tensor(root).role;
-    // A store into an activation is the step's own (a mask built by stores).
-    if (role == ir::Role::kActivation || role == ir::Role::kOutput) continue;
-    const auto st =
-        std::ranges::find_if(state, [&](const StepState& s) { return mapped(s.tensor) == root; });
-    if (st == state.end()) return Refused("a store into a leaf that is no state");
-    if (st->borrowed) {
-      return Refused(std::format("a store into stage {}'s borrowed {} (layer {})", st->ref.stage,
-                                 st->ref.tensor, st->ref.layer));
-    }
-    if (st->ref.stage != stage && !st->tap) {
-      return Refused(
-          std::format("stage {}'s step stores into stage {}'s state, not a tap it writes", stage,
-                      st->ref.stage));
-    }
+    std::expected<void, std::string> allowed;
+    ir::ForEachWrittenSource(n, [&](std::size_t source) {
+      if (!allowed) return;
+      const ir::TensorId root = g.root(n.src[source]);
+      const ir::Role role = g.tensor(root).role;
+      // A write into an activation is the step's own (a mask built by stores).
+      if (role == ir::Role::kActivation || role == ir::Role::kOutput) return;
+      const auto st = std::ranges::find_if(
+          state, [&](const StepState& item) { return mapped(item.tensor) == root; });
+      if (st == state.end()) {
+        allowed = Refused("a store into a leaf that is no state");
+      } else if (st->borrowed) {
+        allowed = Refused(std::format("a store into stage {}'s borrowed {} (layer {})",
+                                      st->ref.stage, st->ref.tensor, st->ref.layer));
+      } else if (st->ref.stage != stage && !st->tap) {
+        allowed =
+            Refused(std::format("stage {}'s step stores into stage {}'s state, not a tap it writes",
+                                stage, st->ref.stage));
+      }
+    });
+    if (!allowed) return allowed;
   }
   return {};
 }
 
 std::expected<void, std::string> CheckStateWrites(const StepGraph& step, std::uint16_t stage) {
   return CheckStateWrites(step.graph, step.state, {}, stage);
+}
+
+namespace {
+
+std::expected<void, std::string> CheckStateAccessImpl(const ir::Graph& graph,
+                                                      std::span<const StepState> state,
+                                                      std::span<const ir::TensorId> tensors,
+                                                      bool exact_reads) {
+  const auto mapped = [&](ir::TensorId original) {
+    if (tensors.empty()) return original;
+    return original.valid() && original.v < tensors.size() ? tensors[original.v] : ir::TensorId{};
+  };
+  for (const StepState& declared : state) {
+    const auto tensor = mapped(declared.tensor);
+    if (!tensor.valid() || tensor.v >= graph.tensor_count() || graph.root(tensor) != tensor)
+      return Refused("state access declaration does not name a mapped graph root");
+    const auto* ref = std::get_if<ir::StateRef>(&graph.tensor(tensor).binding);
+    if (!ref || *ref != declared.ref)
+      return Refused("state access declaration differs from its graph leaf binding");
+    bool read = false;
+    bool written = false;
+    for (const ir::Node& node : graph.nodes()) {
+      const auto target = PureOverwriteTarget(node);
+      for (std::size_t source = 0; source < node.nsrc; ++source) {
+        if (!node.src[source].valid() || graph.root(node.src[source]) != tensor) continue;
+        if (target != source) read = true;
+      }
+      ir::ForEachWrittenSource(node, [&](std::size_t source) {
+        if (graph.root(node.src[source]) == tensor) written = true;
+      });
+    }
+    if ((read && !declared.read) || (exact_reads && declared.read != read) ||
+        declared.written != written)
+      return Refused(
+          std::format("state read/write flags differ: stage {} layer {} tensor {} segment {} "
+                      "declared {}/{} actual {}/{}",
+                      declared.ref.stage, declared.ref.layer, declared.ref.tensor,
+                      declared.ref.segment, declared.read, declared.written, read, written));
+  }
+  for (std::uint32_t i = 0; i < graph.tensor_count(); ++i) {
+    const ir::TensorId tensor{i};
+    const auto* ref = std::get_if<ir::StateRef>(&graph.tensor(tensor).binding);
+    if (!ref) continue;
+    const auto state_at = std::ranges::find_if(
+        state, [&](const StepState& entry) { return mapped(entry.tensor) == tensor; });
+    if (state_at == state.end() || state_at->ref != *ref)
+      return Refused("state access declarations omit an original graph state leaf");
+  }
+  return {};
+}
+
+}  // namespace
+
+std::expected<void, std::string> CheckStateAccess(const ir::Graph& graph,
+                                                  std::span<const StepState> state,
+                                                  std::span<const ir::TensorId> tensors) {
+  return CheckStateAccessImpl(graph, state, tensors, true);
+}
+
+std::expected<void, std::string> CheckMappedStateAccess(
+    const ir::Graph& graph, std::span<const StepState> state,
+    std::span<const ir::TensorId> original_to_planned) {
+  return CheckStateAccessImpl(graph, state, original_to_planned, false);
 }
 
 std::optional<std::pair<std::size_t, std::size_t>> NarrowPoint(const StageInstances& instances) {
@@ -2409,7 +2477,7 @@ std::expected<void, std::string> EmitInputValues(const StepInput& input,
                                                  const planner::StepShape& shape,
                                                  std::span<const std::int32_t> tokens,
                                                  InputValueSink& out) {
-  std::uint32_t rows = 0;
+  std::uint64_t rows = 0;
   for (const planner::Segment& s : shape.segments) rows += s.rows;
   switch (input.kind) {
     case InputKind::kStream:
@@ -2456,6 +2524,9 @@ std::expected<void, std::string> EmitInputValues(const StepInput& input,
       }
       return out.Finish();
     case InputKind::kOutputRows: {
+      for (const planner::Segment& s : shape.segments) {
+        if (s.outputs > s.rows) return Refused("output rows past a segment's rows");
+      }
       std::int64_t first = 0;
       for (const planner::Segment& s : shape.segments) {
         for (std::uint32_t i = s.rows - s.outputs; i < s.rows; ++i) out.push_back(first + i);
@@ -2464,6 +2535,7 @@ std::expected<void, std::string> EmitInputValues(const StepInput& input,
       return out.Finish();
     }
     case InputKind::kStoreCells:
+      if (input.cells.capacity == 0) return Refused("a store of no cells");
       // A fixed tensor's one row.
       if (input.cells.fixed) {
         out.push_back(0);
@@ -2471,8 +2543,12 @@ std::expected<void, std::string> EmitInputValues(const StepInput& input,
       }
       // A cell a row of the whole step (a verify's joined saves).
       if (input.cells.per_row && input.segment == ir::kJoinedSegment) {
-        for (std::uint32_t i = 0; i < rows; ++i)
-          out.push_back(std::int64_t{input.cells.first_row} + i);
+        if (rows != 0 && (input.cells.first_row > input.cells.capacity ||
+                          rows > input.cells.capacity - input.cells.first_row)) {
+          return Refused("joined rows past a per-row tensor's cells");
+        }
+        for (std::uint64_t i = 0; i < rows; ++i)
+          out.push_back(std::int64_t{input.cells.first_row} + static_cast<std::int64_t>(i));
         return out.Finish();
       }
       break;
@@ -2510,7 +2586,19 @@ std::expected<void, std::string> EmitInputValues(const StepInput& input,
   }
   if (input.kind == InputKind::kStoreCells || input.kind == InputKind::kOutputCells) {
     if (input.cells.block != 0) return Refused("a block tensor's cells are not a row's");
+    if (input.kind == InputKind::kOutputCells && s.outputs > s.rows) {
+      return Refused("output cells past a segment's rows");
+    }
     const std::uint32_t from = input.kind == InputKind::kStoreCells ? 0 : s.rows - s.outputs;
+    const std::uint64_t count = s.rows - from;
+    const std::uint64_t first =
+        input.cells.per_row ? input.cells.first_row : std::uint64_t{s.past} + from;
+    // Validate the complete range before touching the caller's sink. Rings may
+    // wrap more than once; per-row saves use their own consecutive cells.
+    if (count != 0 && (input.cells.per_row || !input.cells.ring) &&
+        (first > cap || count > cap - first)) {
+      return Refused("rows past a tensor's cells");
+    }
     for (std::uint32_t i = from; i < s.rows; ++i) {
       if (input.cells.per_row) {
         out.push_back(std::int64_t{input.cells.first_row} +

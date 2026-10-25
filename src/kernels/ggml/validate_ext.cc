@@ -955,10 +955,13 @@ std::expected<void, KernelFailure> CheckSetRowsExt(const ggml_tensor* node) {
   const ggml_tensor* values = node->src[0];
   const ggml_tensor* ids = node->src[1];
   const bool types = (values->type == GGML_TYPE_F32 &&
-                      (node->type == GGML_TYPE_F32 || node->type == GGML_TYPE_F16)) ||
-                     (values->type == GGML_TYPE_F16 && node->type == GGML_TYPE_F16);
+                      (node->type == GGML_TYPE_F32 || node->type == GGML_TYPE_F16 ||
+                       node->type == GGML_TYPE_BF16)) ||
+                     (values->type == GGML_TYPE_F16 && node->type == GGML_TYPE_F16) ||
+                     (values->type == GGML_TYPE_BF16 && node->type == GGML_TYPE_BF16);
   if (!types || (ids->type != GGML_TYPE_I32 && ids->type != GGML_TYPE_I64)) {
-    return Rejected("set_rows of F32 into F32 or F16, or F16 into F16, at I32 or I64 indices");
+    return Rejected(
+        "set_rows of F32 into float rows, or same-type F16/BF16 rows, at I32 or I64 indices");
   }
   if (AnyEmpty({node, values, ids}) || !AllSane({node, values, ids})) {
     return Rejected("set_rows on an empty or unmeasurable tensor");

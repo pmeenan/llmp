@@ -21,6 +21,7 @@
 #include "base/json_stream.h"
 #include "base/sha256.h"
 #include "execution/registry.h"
+#include "ir/verify.h"
 #include "planner/pattern.h"
 
 namespace llmp::planner {
@@ -28,6 +29,14 @@ namespace {
 
 std::unexpected<std::string> Error(std::string detail) {
   return std::unexpected(std::move(detail));
+}
+
+template <typename... Args>
+std::unexpected<std::string> DiagnosticError(ir::DiagnosticAdmission* diagnostic,
+                                             std::string_view format, const Args&... args) {
+  auto detail = ir::FormatDiagnostic(diagnostic, format, args...);
+  if (!detail) return std::unexpected(std::string{});
+  return std::unexpected(std::move(*detail));
 }
 
 bool NameChars(std::string_view s, bool dots) {
@@ -208,49 +217,52 @@ void Canonicalize(Policy& policy) {
   });
 }
 
-std::expected<void, std::string> Validate(const Policy& policy) {
+std::expected<void, std::string> Validate(const Policy& policy,
+                                          ir::DiagnosticAdmission* diagnostic) {
   std::string_view previous;
   for (const auto change : policy.numerical_candidates) {
     const auto name = NumericalChangeName(change);
     if (name.empty() || (!previous.empty() && name <= previous))
-      return Error("candidate numerical changes must be known, ascending and unique");
+      return DiagnosticError(diagnostic,
+                             "candidate numerical changes must be known, ascending and unique");
     previous = name;
   }
 
   if (!Bound(policy.products.compact_expert_min_rows))
-    return Error("compact_expert_min_rows outside 1 to 65,536");
+    return DiagnosticError(diagnostic, "compact_expert_min_rows outside 1 to 65,536");
   if (policy.max_decode_rows == 0 || policy.max_decode_rows > kMaxDecodeRowsBound) {
-    return Error(std::format("max_decode_rows {} outside 1 to {}", policy.max_decode_rows,
-                             kMaxDecodeRowsBound));
+    return DiagnosticError(diagnostic, "max_decode_rows {} outside 1 to {}", policy.max_decode_rows,
+                           kMaxDecodeRowsBound);
   }
   if (policy.vector_rows != 0 && !Bound(policy.vector_rows)) {
-    return Error(
-        std::format("vector_rows {} outside 1 to {}", policy.vector_rows, kMaxDecodeRowsBound));
+    return DiagnosticError(diagnostic, "vector_rows {} outside 1 to {}", policy.vector_rows,
+                           kMaxDecodeRowsBound);
   }
   if (policy.disabled.size() > kMaxDisabled || policy.enabled.size() > kMaxDisabled ||
       policy.ranks.size() > kMaxRanks || policy.rules.size() > kMaxStepRules) {
-    return Error("more enabled or disabled patterns, ranks or step rules than a policy holds");
+    return DiagnosticError(
+        diagnostic, "more enabled or disabled patterns, ranks or step rules than a policy holds");
   }
   for (std::size_t i = 0; i < policy.enabled.size(); ++i) {
     const std::string& name = policy.enabled[i];
     const Pattern* p = FindPattern(name);
     if (p == nullptr) {
-      return Error(std::format("no pattern {} to enable", name));
+      return DiagnosticError(diagnostic, "no pattern {} to enable", name);
     }
     if (i > 0 && policy.enabled[i - 1] >= name) {
-      return Error("enabled patterns are not ascending and unique");
+      return DiagnosticError(diagnostic, "enabled patterns are not ascending and unique");
     }
     if (std::ranges::contains(policy.disabled, name)) {
-      return Error(std::format("{} both enabled and disabled", name));
+      return DiagnosticError(diagnostic, "{} both enabled and disabled", name);
     }
   }
   for (std::size_t i = 0; i < policy.disabled.size(); ++i) {
     const std::string& name = policy.disabled[i];
     if (FindPattern(name) == nullptr) {
-      return Error(std::format("no pattern {} to disable", name));
+      return DiagnosticError(diagnostic, "no pattern {} to disable", name);
     }
     if (i > 0 && policy.disabled[i - 1] >= name) {
-      return Error("disabled patterns are not ascending and unique");
+      return DiagnosticError(diagnostic, "disabled patterns are not ascending and unique");
     }
   }
   for (std::size_t i = 0; i < policy.rules.size(); ++i) {
@@ -258,32 +270,33 @@ std::expected<void, std::string> Validate(const Policy& policy) {
     if (static_cast<std::size_t>(r.scope) >= kScopes.size() ||
         static_cast<std::size_t>(r.test) >= kTests.size() ||
         static_cast<std::size_t>(r.action) >= kActions.size()) {
-      return Error("a step rule of no scope, test or action");
+      return DiagnosticError(diagnostic, "a step rule of no scope, test or action");
     }
     if (r.test == RowTest::kUnder && r.rows == 0) {
-      return Error("a step rule under no rows holds for no step");
+      return DiagnosticError(diagnostic, "a step rule under no rows holds for no step");
     }
     if (r.action == StepAction::kDisable ? (r.value != 0 || FindPattern(r.pattern) == nullptr)
                                          : (!r.pattern.empty() || !Bound(r.value))) {
-      return Error(std::format("a step rule's action is not one: {}", RuleText(r)));
+      return DiagnosticError(diagnostic, "a step rule action is invalid");
     }
     if (i > 0 && !(RuleOrder(policy.rules[i - 1]) < RuleOrder(r))) {
-      return Error("step rules are not ascending and unique");
+      return DiagnosticError(diagnostic, "step rules are not ascending and unique");
     }
   }
   for (std::size_t i = 0; i < policy.ranks.size(); ++i) {
     const ClassRank& r = policy.ranks[i];
     if (!NameChars(r.device_class, false) || !NameChars(r.implementation, true)) {
-      return Error(std::format("a rank's class or implementation is not a name: {} {}",
-                               r.device_class, r.implementation));
+      return DiagnosticError(diagnostic, "a rank's class or implementation is not a name: {} {}",
+                             r.device_class, r.implementation);
     }
     if (i > 0 && !(RankOrder(policy.ranks[i - 1]) < RankOrder(r))) {
-      return Error("ranks are not in order");
+      return DiagnosticError(diagnostic, "ranks are not in order");
     }
     for (std::size_t j = 0; j < i; ++j) {
       if (policy.ranks[j].device_class == r.device_class &&
           policy.ranks[j].implementation == r.implementation) {
-        return Error(std::format("{} ranked twice on {}", r.implementation, r.device_class));
+        return DiagnosticError(diagnostic, "{} ranked twice on {}", r.implementation,
+                               r.device_class);
       }
     }
   }

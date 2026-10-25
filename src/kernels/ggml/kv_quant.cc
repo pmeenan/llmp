@@ -4,10 +4,13 @@
 #include "kernels/ggml/kv_quant.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -231,6 +234,65 @@ std::expected<void, KernelFailure> CheckSetRowsQuantGroup(
   return {};
 }
 
+std::expected<QuantStoreLaunchRecipe, KernelFailure> DescribeSetRowsQuantLaunch(
+    std::span<const ggml_tensor* const> nodes) {
+  if (nodes.empty() || nodes.size() > kSetRowsQuantGroupMax) {
+    return Rejected("a quantized store launch takes one through sixteen stores");
+  }
+  if (nodes.size() == 1) {
+    if (auto checked = CheckSetRowsQuant(nodes.front()); !checked)
+      return std::unexpected(checked.error());
+  } else if (auto checked = CheckSetRowsQuantGroup(nodes); !checked) {
+    return std::unexpected(checked.error());
+  }
+
+  const auto u32 = [](std::int64_t value) -> std::optional<std::uint32_t> {
+    if (value <= 0 || static_cast<std::uint64_t>(value) > UINT32_MAX) return {};
+    return static_cast<std::uint32_t>(value);
+  };
+  QuantStoreLaunchRecipe recipe{};
+  recipe.member_count = static_cast<std::uint32_t>(nodes.size());
+  recipe.grid_y = recipe.member_count;
+  std::uint32_t maximum = 0;
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    const ggml_tensor* node = nodes[i];
+    const ggml_tensor* values = node->src[0];
+    const ggml_tensor* ids = node->src[1];
+    auto blocks = u32(values->ne[0] / kBlockValues);
+    auto rows = u32(values->ne[1]);
+    auto planes = u32(values->ne[2]);
+    auto ids_planes = u32(ids->ne[1]);
+    auto ids_batches = u32(ids->ne[2]);
+    const std::int64_t element_count = ggml_nelements(values);
+    if (element_count <= 0) return Rejected("quantized store has positive row geometry");
+    const std::uint64_t total64 =
+        static_cast<std::uint64_t>(element_count) / static_cast<std::uint64_t>(kBlockValues);
+    if (!blocks || !rows || !planes || !ids_planes || !ids_batches || total64 == 0 ||
+        total64 > UINT32_MAX) {
+      return Rejected("quantized store geometry fits the kernel's integer descriptors");
+    }
+    auto& member = recipe.members[i];
+    const std::uint64_t id_size = ggml_type_size(ids->type);
+    for (unsigned d = 0; d < 3; ++d) {
+      member.values_stride[d] = values->nb[d + 1] / sizeof(float);
+      member.ids_stride[d] = ids->nb[d] / id_size;
+      member.destination_stride[d] = node->nb[d + 1];
+    }
+    member.blocks_per_row = *blocks;
+    member.rows = *rows;
+    member.planes = *planes;
+    member.ids_planes = *ids_planes;
+    member.ids_batches = *ids_batches;
+    member.total_blocks = static_cast<std::uint32_t>(total64);
+    member.type = node->type;
+    member.index_bytes = static_cast<std::uint8_t>(id_size);
+    maximum = std::max(maximum, member.total_blocks);
+  }
+  recipe.grid_x =
+      static_cast<std::uint32_t>((std::uint64_t{maximum} + recipe.block_x - 1) / recipe.block_x);
+  return recipe;
+}
+
 std::expected<void, KernelFailure> CheckRopeSetRowsQuant(const ggml_tensor* rope,
                                                          const ggml_tensor* set_rows) {
   if (auto checked = CheckRopeOperands(rope); !checked) {
@@ -283,6 +345,45 @@ std::expected<void, KernelFailure> CheckRopeSetRowsQuant(const ggml_tensor* rope
     return Rejected("a stale view, or a destination overlapping an operand");
   }
   return {};
+}
+
+std::expected<RopeQuantStoreLaunchRecipe, KernelFailure> DescribeRopeSetRowsQuantLaunch(
+    const ggml_tensor* rope, const ggml_tensor* set_rows) {
+  if (auto checked = CheckRopeSetRowsQuant(rope, set_rows); !checked)
+    return std::unexpected(checked.error());
+  const ggml_tensor* x = rope->src[0];
+  RopeQuantStoreLaunchRecipe recipe{};
+  recipe.x_head_stride = x->nb[1] / sizeof(float);
+  recipe.x_token_stride = x->nb[2] / sizeof(float);
+  recipe.destination_row_stride = set_rows->nb[1];
+  recipe.blocks_per_head = static_cast<std::uint32_t>(x->ne[0] / kBlockValues);
+  const std::uint64_t per_row =
+      std::uint64_t{recipe.blocks_per_head} * static_cast<std::uint64_t>(x->ne[1]);
+  const std::uint64_t total = per_row * static_cast<std::uint64_t>(x->ne[2]);
+  if (per_row == 0 || per_row > UINT32_MAX || total == 0 || total > UINT32_MAX)
+    return Rejected("quantized RoPE store geometry fits the kernel's integer descriptors");
+  recipe.blocks_per_row = static_cast<std::uint32_t>(per_row);
+  recipe.total_blocks = static_cast<std::uint32_t>(total);
+  recipe.grid_x = static_cast<std::uint32_t>((total + recipe.block_x - 1) / recipe.block_x);
+  recipe.n_dims = rope->op_params[1];
+  const int n_ctx_orig = rope->op_params[4];
+  float freq_base = 0;
+  float beta_fast = 0;
+  float beta_slow = 0;
+  std::memcpy(&freq_base, rope->op_params + 5, sizeof(float));
+  std::memcpy(&recipe.freq_scale, rope->op_params + 6, sizeof(float));
+  std::memcpy(&recipe.ext_factor, rope->op_params + 7, sizeof(float));
+  std::memcpy(&recipe.attn_factor, rope->op_params + 8, sizeof(float));
+  std::memcpy(&beta_fast, rope->op_params + 9, sizeof(float));
+  std::memcpy(&beta_slow, rope->op_params + 10, sizeof(float));
+  if (recipe.ext_factor > 0.0F) {
+    ggml_rope_yarn_corr_dims(recipe.n_dims, n_ctx_orig, freq_base, beta_fast, beta_slow,
+                             recipe.correction_dims);
+  }
+  recipe.theta_scale = std::pow(freq_base, -2.0F / static_cast<float>(recipe.n_dims));
+  recipe.type = set_rows->type;
+  recipe.has_frequency_factors = rope->src[2] != nullptr;
+  return recipe;
 }
 
 }  // namespace llmp::kernels::ggml

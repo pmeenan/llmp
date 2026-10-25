@@ -201,7 +201,9 @@ TEST_P(GgmlConstructionGpu, MissingPartialAndRefusedFunderCannotAllocateNativeSt
   b.Output(b.Scale(x, 2));
   auto graph = std::move(b).Finish();
   ASSERT_TRUE(graph);
-  pl::StepPlan plan{.graph = graph->Clone(),
+  auto clone = graph->Clone();
+  ASSERT_TRUE(clone) << clone.error().detail;
+  pl::StepPlan plan{.graph = std::move(*clone),
                     .steps = {},
                     .regions = {},
                     .placement = {},
@@ -222,6 +224,30 @@ TEST_P(GgmlConstructionGpu, MissingPartialAndRefusedFunderCannotAllocateNativeSt
   EXPECT_EQ(probe->requests, requests);
   EXPECT_EQ(probe->watch->allocations, 0U);
   ASSERT_NO_FATAL_FAILURE(Fund(GetParam()));
+}
+
+TEST_P(GgmlConstructionGpu, LibraryLoanReturnsBeforeOwnerDestructionAndCanBeRelent) {
+  ASSERT_NO_FATAL_FAILURE(Fund(GetParam()));
+  for (unsigned cycle = 0; cycle < 2; ++cycle) {
+    if (!GetParam() || cycle != 0)
+      ASSERT_TRUE(life->resources.OpenLibrary("descriptor library loan"));
+    ASSERT_TRUE(life->resources.OpenSelectedWorkspace("descriptor library source state",
+                                                      life->backend->persistent_bytes()));
+    ASSERT_TRUE(life->backend->LendLibrary(&life->resources.library()));
+    {
+      const auto& state = life->resources.selected_workspace();
+      auto launch =
+          life->backend->Launch({.base = 0, .size = llmp::base::Bytes(0)},
+                                {.base = state.base, .bytes = life->backend->persistent_bytes()});
+      ASSERT_TRUE(launch) << (launch ? "" : launch.error());
+      launch->reset();
+    }
+    life->backend->LaunchReleased();
+    std::vector<std::string> problems;
+    life->resources.Release(problems);
+    ASSERT_TRUE(problems.empty());
+    // The same backend and descriptor context survive destruction of each owner.
+  }
 }
 
 TEST_P(GgmlConstructionGpu, ReportsUseTheSamePayerWithoutRequiringADeclaration) {

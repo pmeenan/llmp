@@ -205,6 +205,10 @@ struct RunnerConfig {
   // A weight's address by role and part (the spec's binding to the
   // weights); unset: 0, for sources that bind none.
   std::function<std::uint64_t(const ir::WeightRef&, format::PartRole)> weight_address;
+  // Optional owner-authenticated contiguous readable range for a single
+  // ordinary weight part. Missing means that only its address is known.
+  std::function<std::optional<kernels::BoundedAddress>(const ir::WeightRef&, format::PartRole)>
+      weight_range;
   // Tables whose rows are read into bounded device slots before a step.
   // All row-addressable parts of each weight must be declared exactly once.
   // Their groups must contain only that resource and be placed kNone; a
@@ -655,6 +659,7 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
     PleTable table;
     std::uint32_t shard = 0;
     std::uint64_t capacity = 0;
+    std::optional<components::ComparisonRowStorage> comparison_storage;
     Mapped slots;
     void* landing_allocation = nullptr;  // raw owner retained if a read stalls
     std::byte* landing = nullptr;

@@ -110,15 +110,12 @@ __global__ void RopeQuantizedStore(const __grid_constant__ RopeStore s) {
   kv::StoreBlock(s.type, values, destination);
 }
 
-constexpr unsigned kThreads = 256;
-
 }  // namespace
 
 std::expected<void, KernelFailure> RopeSetRowsQuant(LaunchContext& launch, ggml_tensor* rope,
                                                     ggml_tensor* set_rows) {
-  if (auto checked = CheckRopeSetRowsQuant(rope, set_rows); !checked) {
-    return checked;
-  }
+  auto described = DescribeRopeSetRowsQuantLaunch(rope, set_rows);
+  if (!described) return std::unexpected(described.error());
   const ggml_tensor* x = rope->src[0];
   RopeStore s{};
   s.x = static_cast<const float*>(x->data);
@@ -127,41 +124,32 @@ std::expected<void, KernelFailure> RopeSetRowsQuant(LaunchContext& launch, ggml_
       rope->src[2] != nullptr ? static_cast<const float*>(rope->src[2]->data) : nullptr;
   s.ids = static_cast<const std::int64_t*>(set_rows->src[1]->data);
   s.destination = static_cast<char*>(set_rows->data);
-  s.x_head_stride = x->nb[1] / sizeof(float);
-  s.x_token_stride = x->nb[2] / sizeof(float);
-  s.destination_row = set_rows->nb[1];
-  s.blocks_per_head = init_fastdiv_values(static_cast<std::uint32_t>(x->ne[0] / kv::kBlockValues));
-  const auto per_row = static_cast<std::uint32_t>((x->ne[0] / kv::kBlockValues) * x->ne[1]);
-  s.blocks_per_row = init_fastdiv_values(per_row);
-  s.total = per_row * static_cast<std::uint32_t>(x->ne[2]);
-  // ggml_cuda_op_rope_impl's parameters (rope.cu): n_dims, n_ctx_orig and
-  // YaRN's from op_params, theta_scale and the correction dimensions on
-  // the host as it computes them.
-  s.n_dims = rope->op_params[1];
-  const int n_ctx_orig = rope->op_params[4];
-  float freq_base = 0;
-  float beta_fast = 0;
-  float beta_slow = 0;
-  std::memcpy(&freq_base, rope->op_params + 5, sizeof(float));
-  std::memcpy(&s.freq_scale, rope->op_params + 6, sizeof(float));
-  std::memcpy(&s.ext_factor, rope->op_params + 7, sizeof(float));
-  std::memcpy(&s.attn_factor, rope->op_params + 8, sizeof(float));
-  std::memcpy(&beta_fast, rope->op_params + 9, sizeof(float));
-  std::memcpy(&beta_slow, rope->op_params + 10, sizeof(float));
-  if (s.ext_factor > 0.0f) {
-    ggml_rope_yarn_corr_dims(s.n_dims, n_ctx_orig, freq_base, beta_fast, beta_slow, s.corr_dims.v);
-  }
-  s.theta_scale = powf(freq_base, -2.0f / static_cast<float>(s.n_dims));
-  s.type = set_rows->type;
-  const auto blocks = static_cast<unsigned>((std::uint64_t{s.total} + kThreads - 1) / kThreads);
-  const bool has_ff = s.freq_factors != nullptr;
-  return launch.Run(base::Bytes(0), [s, blocks, has_ff](ggml_backend_cuda_context& context) {
-    if (has_ff) {
-      RopeQuantizedStore<true><<<blocks, kThreads, 0, context.stream()>>>(s);
-    } else {
-      RopeQuantizedStore<false><<<blocks, kThreads, 0, context.stream()>>>(s);
-    }
-  });
+  s.x_head_stride = described->x_head_stride;
+  s.x_token_stride = described->x_token_stride;
+  s.destination_row = described->destination_row_stride;
+  s.blocks_per_head = init_fastdiv_values(described->blocks_per_head);
+  s.blocks_per_row = init_fastdiv_values(described->blocks_per_row);
+  s.total = described->total_blocks;
+  s.n_dims = described->n_dims;
+  s.freq_scale = described->freq_scale;
+  s.ext_factor = described->ext_factor;
+  s.attn_factor = described->attn_factor;
+  s.theta_scale = described->theta_scale;
+  s.corr_dims.v[0] = described->correction_dims[0];
+  s.corr_dims.v[1] = described->correction_dims[1];
+  s.type = described->type;
+  const auto blocks = described->grid_x;
+  const auto threads = described->block_x;
+  const auto shared = described->dynamic_shared_bytes;
+  const bool has_ff = described->has_frequency_factors;
+  return launch.Run(base::Bytes(described->pool_bytes),
+                    [s, blocks, threads, shared, has_ff](ggml_backend_cuda_context& context) {
+                      if (has_ff) {
+                        RopeQuantizedStore<true><<<blocks, threads, shared, context.stream()>>>(s);
+                      } else {
+                        RopeQuantizedStore<false><<<blocks, threads, shared, context.stream()>>>(s);
+                      }
+                    });
 }
 
 }  // namespace llmp::kernels::ggml

@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <functional>
@@ -39,6 +40,7 @@
 #include "components/step.h"
 #include "engine/component_source.h"
 #include "execution/registry.h"
+#include "expected_error.h"
 #include "families/qwen.h"
 #include "format/encoding.h"
 #include "ggml.h"
@@ -52,6 +54,7 @@
 #include "kernels/ggml/moe_layout.h"
 #include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/tensors.h"
+#include "kernels/ggml/validate_ext.h"
 #include "planner/plan.h"
 #include "planner/policy.h"
 #include "planner/step_shape.h"
@@ -1104,6 +1107,402 @@ TEST(GgmlLowerQwen38Test, KeptNormResultsAreNotReplacedByPreparedRows) {
       }
       EXPECT_EQ(separate, retained == 0 ? 0U : 1U);
     }
+  }
+}
+
+TEST(GgmlLowerQwen38Test, ConvertCapabilityChecksScalarStridesAndSignedAddressBounds) {
+  const auto* cap = kg::CapabilityOf("ggml.convert");
+  ASSERT_NE(cap, nullptr);
+  for (const auto encoding : {llmp::format::Encoding::kF16, llmp::format::Encoding::kBF16,
+                              llmp::format::Encoding::kF32}) {
+    const bool narrow = encoding == llmp::format::Encoding::kF32;
+    const std::uint64_t in_size = narrow ? 4 : 2, out_size = narrow ? 2 : 4;
+    std::array operands{
+        ex::OperandFormat{
+            .operand = 0,
+            .encoding = encoding,
+            .layout = llmp::format::Layout::kDense,
+            .ne = {8, 3, 2, 1},
+            .memory = ex::OperandMemory{.nb = {in_size, 12 * in_size, 48 * in_size, 96 * in_size},
+                                        .view_offset = in_size,
+                                        .root_alignment = 16}},
+        ex::OperandFormat{
+            .operand = ex::kOutputOperand,
+            .encoding = narrow ? llmp::format::Encoding::kF16 : llmp::format::Encoding::kF32,
+            .layout = llmp::format::Layout::kDense,
+            .ne = {8, 3, 2, 1},
+            .memory =
+                ex::OperandMemory{.nb = {out_size, 8 * out_size, 24 * out_size, 48 * out_size},
+                                  .root_alignment = 16}}};
+    ex::CapabilityQuery query{.operands = operands, .arch = 121};
+    ASSERT_TRUE(cap->accepts(query));
+    operands[0].memory->root_alignment = operands[1].memory->root_alignment = 0;
+    EXPECT_TRUE(cap->accepts(query));  // Unknown alignment is deferred to native Bind.
+    operands[0].memory->root_alignment = 1;
+    EXPECT_FALSE(cap->accepts(query));
+    operands[0].memory->root_alignment = operands[1].memory->root_alignment = 16;
+    operands[0].memory->nb[1] += 1;
+    EXPECT_FALSE(cap->accepts(query));
+    operands[0].memory->nb[1] -= 1;
+    operands[0].memory->nb[2] = static_cast<std::uint64_t>(INT64_MAX) - in_size + 1;
+    EXPECT_FALSE(cap->accepts(query));
+    operands[0].memory->nb[2] = 48 * in_size;
+    operands[1].memory->nb[1] += out_size;
+    EXPECT_FALSE(cap->accepts(query));
+    operands[1].memory->nb[1] -= out_size;
+    operands[0].memory->view_offset = 1;
+    EXPECT_FALSE(cap->accepts(query));
+    operands[0].memory->view_offset = in_size;
+    operands[0].ne[3] = operands[1].ne[3] = INT32_MAX;
+    EXPECT_FALSE(cap->accepts(query));
+  }
+  ir::Builder b;
+  const auto input = b.Input(ir::Dense(llmp::format::Encoding::kF16, ir::ShapeOf({8, 3})));
+  b.Output(b.Convert(input, llmp::format::Encoding::kF32));
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph);
+  const auto registry = PlanningRegistry();
+  const auto plan = pl::Plan(std::move(*graph), registry, Gb10(), {});
+  ASSERT_TRUE(plan) << llmp::test_support::Failed(plan, [](const auto& e) {
+                         return e.detail;
+                       }).value_or("");
+}
+
+TEST(GgmlLowerQwen38Test, Bf16MatrixCapabilityRefusesUnsupportedBatchAndStrideDomains) {
+  const auto* cap = kg::CapabilityOf(kg::kGemmBf16Name);
+  ASSERT_NE(cap, nullptr);
+  const ir::ProductParams params{};
+  std::array operands{ex::OperandFormat{.operand = 0,
+                                        .encoding = llmp::format::Encoding::kBF16,
+                                        .layout = llmp::format::Layout::kDense,
+                                        .ne = {32, 19, 1, 1},
+                                        .memory = ex::OperandMemory{.nb = {2, 64, 1216, 1216}}},
+                      ex::OperandFormat{.operand = 1,
+                                        .encoding = llmp::format::Encoding::kBF16,
+                                        .layout = llmp::format::Layout::kDense,
+                                        .ne = {32, 4, 3, 2},
+                                        .memory = ex::OperandMemory{.nb = {2, 64, 256, 768}}},
+                      ex::OperandFormat{.operand = ex::kOutputOperand,
+                                        .encoding = llmp::format::Encoding::kF32,
+                                        .layout = llmp::format::Layout::kDense,
+                                        .ne = {19, 4, 3, 2},
+                                        .memory = ex::OperandMemory{.nb = {4, 76, 304, 912}}}};
+  ex::CapabilityQuery query{
+      .operands = operands, .arch = 121, .params = std::as_bytes(std::span(&params, 1))};
+  ASSERT_TRUE(cap->accepts(query));
+  operands[0].ne[2] = 3;
+  EXPECT_FALSE(cap->accepts(query));
+  operands[0].ne[2] = 1;
+  operands[1].memory->nb[2] += 2;
+  EXPECT_FALSE(cap->accepts(query));
+  operands[1].memory->nb[2] -= 2;
+  operands[1].ne[3] = INT32_MAX;
+  operands[2].ne[3] = INT32_MAX;
+  EXPECT_FALSE(cap->accepts(query));
+  operands[1].ne[3] = operands[2].ne[3] = 2;
+  operands[2].ne[2] = 1;
+  EXPECT_FALSE(cap->accepts(query));
+  operands[2].ne[2] = 3;
+  ASSERT_TRUE(cap->accepts(query));
+}
+
+TEST(GgmlLowerQwen38Test, Bf16MatrixProductsKeepPackedActivationBatchAxes) {
+  constexpr std::uint32_t k = 32, n = 19, heads = 4, rows = 3;
+  for (const auto [batches, index_score] : {std::pair{1U, false}, {2U, false}, {1U, true}}) {
+    ir::Builder b;
+    const auto w =
+        b.Input(ir::Dense(llmp::format::Encoding::kBF16,
+                          index_score ? ir::ShapeOf({k, 1, n, 1}) : ir::ShapeOf({k, n})));
+    const auto x =
+        b.Input(ir::Dense(llmp::format::Encoding::kBF16, ir::ShapeOf({k, heads, rows, batches})));
+    if (index_score) {
+      b.Output(b.IndexScore(x, w, b.Fill(ir::ShapeOf({heads, rows}), 1.0F),
+                            b.Fill(ir::ShapeOf({n, rows}), 0.0F)));
+    } else {
+      b.Output(b.Unary(b.MatMul(w, x), ir::UnaryFn::kRelu));
+    }
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph);
+    co::StepGraph step{.graph = std::move(*graph),
+                       .inputs = {{.tensor = w, .kind = co::InputKind::kFeatures},
+                                  {.tensor = x, .kind = co::InputKind::kFeatures}},
+                       .weights = {},
+                       .state = {}};
+    const std::vector staged{w, x};
+    const auto registry = PlanningRegistry();
+    auto plan =
+        pl::Plan(step.graph.Clone(), registry, Gb10(), {},
+                 {.staged = staged, .written = &kg::WrittenBytes, .within = &kg::WithinRoot});
+    ASSERT_TRUE(plan) << llmp::test_support::Failed(plan, [](const auto& e) {
+                           return e.detail;
+                         }).value_or("");
+    const pl::StepShape shape{};
+    const kn::Addresses addresses{};
+    auto lowered = kg::LowerStep({*plan, step, shape, addresses}, registry, Device());
+    ASSERT_TRUE(lowered) << llmp::test_support::Failed(lowered, [](const auto& e) {
+                              return e.detail;
+                            }).value_or("");
+    std::size_t products = 0, relus = 0;
+    for (const auto* node : lowered->nodes) {
+      if (node->op == GGML_OP_CUSTOM && kg::LlmpOpOf(node) == kg::LlmpOp::kGemmBf16) {
+        ++products;
+        EXPECT_EQ(node->ne[0], n);
+        EXPECT_EQ(node->ne[1], heads * rows * batches);
+        EXPECT_EQ(node->src[1]->ne[1], heads * rows * batches);
+        EXPECT_EQ(node->src[1]->view_offs, 0U);
+      }
+      if (node->op == GGML_OP_UNARY && ggml_get_unary_op(node) == GGML_UNARY_OP_RELU) {
+        ++relus;
+        for (std::size_t axis = 0; axis < 4; ++axis)
+          EXPECT_EQ(node->ne[axis], (std::array<std::uint32_t, 4>{n, heads, rows, batches})[axis]);
+      }
+    }
+    EXPECT_EQ(products, 1U);
+    EXPECT_EQ(relus, 1U);
+  }
+}
+
+TEST(GgmlLowerQwen38Test, FillOwnsOnlyItsActualSourceFreeOutput) {
+  for (const auto encoding : {llmp::format::Encoding::kF16, llmp::format::Encoding::kF32}) {
+    for (const float value : {0.0F, -std::numeric_limits<float>::infinity(), 1.25F}) {
+      ir::Builder b;
+      const auto fill = b.Fill(ir::ShapeOf({17, 3, 2}), value, encoding);
+      b.Output(fill);
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph);
+      co::StepGraph step{.graph = std::move(*graph), .inputs = {}, .weights = {}, .state = {}};
+      const auto registry = PlanningRegistry();
+      const auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), {});
+      ASSERT_TRUE(plan) << llmp::test_support::Failed(plan, [](const auto& e) {
+                             return e.detail;
+                           }).value_or("");
+      const pl::StepShape shape{};
+      const kn::Addresses addresses{};
+      auto lowered = kg::LowerStep({*plan, step, shape, addresses}, registry, Device());
+      ASSERT_TRUE(lowered) << llmp::test_support::Failed(lowered, [](const auto& e) {
+                                return e.detail;
+                              }).value_or("");
+      ASSERT_EQ(lowered->nodes.size(), 1U);
+      ASSERT_EQ(lowered->physical_tensors.size(), 1U);  // No unused shape-template allocation.
+      ASSERT_EQ(lowered->physical_roots.size(), 1U);
+      const auto& physical = lowered->physical_tensors[0];
+      const auto* node = physical.descriptor;
+      ASSERT_EQ(node, lowered->nodes[0]);
+      EXPECT_EQ(node->op, GGML_OP_FILL);
+      EXPECT_EQ(node->type,
+                encoding == llmp::format::Encoding::kF16 ? GGML_TYPE_F16 : GGML_TYPE_F32);
+      EXPECT_TRUE(ggml_is_contiguous(node));
+      EXPECT_NE(node->data, nullptr);
+      EXPECT_EQ(node->view_src, nullptr);
+      for (const auto* source : node->src) EXPECT_EQ(source, nullptr);
+      const std::array<std::int64_t, 4> expected_shape{17, 3, 2, 1};
+      for (std::size_t d = 0; d < 4; ++d) EXPECT_EQ(node->ne[d], expected_shape[d]);
+      EXPECT_EQ(std::memcmp(node->op_params, &value, sizeof(value)), 0);
+      for (std::size_t word = 1; word < GGML_MAX_OP_PARAMS / sizeof(std::int32_t); ++word)
+        EXPECT_EQ(node->op_params[word], 0);
+      EXPECT_EQ(physical.tensor, plan->tensors.at(fill.v));
+      EXPECT_EQ(physical.root, plan->graph.root(physical.tensor));
+      EXPECT_EQ(lowered->physical_roots[0].backend_tensor, physical.id);
+      EXPECT_EQ(lowered->physical_roots[0].root, physical.root);
+      EXPECT_TRUE(kg::CheckFill(node));
+    }
+  }
+}
+
+TEST(GgmlLowerQwen38Test, OriginalDeviceMasksKeepTheirDeclaredFloatEncoding) {
+  for (const auto encoding : {llmp::format::Encoding::kF16, llmp::format::Encoding::kF32}) {
+    for (const std::uint32_t declared_rows : {3U, 32U}) {
+      ir::Builder b;
+      co::StepContext context(b, {{.rows = 3, .past = 9, .read_cells = 256, .outputs = 3}}, false);
+      const auto positions = context.SegmentPositions(0);
+      const auto cells = context.HeldPositions(0, {.capacity = 256});
+      b.Output(b.MaskBuild(positions, cells, declared_rows, {}, encoding));
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph);
+      co::StepGraph step{
+          .graph = std::move(*graph), .inputs = context.TakeInputs(), .weights = {}, .state = {}};
+      const pl::StepShape shape{
+          .segments = {{.rows = 3, .past = 9, .read_cells = 256, .outputs = 3}}};
+      std::vector<ir::TensorId> staged;
+      for (const auto& in : step.inputs)
+        if (in.kind != co::InputKind::kCellPositions) staged.push_back(in.tensor);
+      const auto registry = PlanningRegistry();
+      auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), {},
+                           {.staged = staged,
+                            .written = &kg::WrittenBytes,
+                            .within = &kg::WithinRoot,
+                            .shape = &shape});
+      ASSERT_TRUE(plan) << llmp::test_support::Failed(plan, [](const auto& e) {
+                             return e.detail;
+                           }).value_or("");
+      const kn::Addresses addresses{};
+      auto lowered = kg::LowerStep({*plan, step, shape, addresses, 256}, registry, Device());
+      ASSERT_TRUE(lowered) << llmp::test_support::Failed(lowered, [](const auto& e) {
+                                return e.detail;
+                              }).value_or("");
+      std::size_t masks = 0;
+      for (const auto* node : lowered->nodes) {
+        if (node->op != GGML_OP_CUSTOM || kg::LlmpOpOf(node) != kg::LlmpOp::kCausalMask) continue;
+        ++masks;
+        EXPECT_EQ(node->type,
+                  encoding == llmp::format::Encoding::kF32 ? GGML_TYPE_F32 : GGML_TYPE_F16);
+        EXPECT_EQ(node->ne[0], 256);
+        EXPECT_EQ(node->ne[1], declared_rows);
+        EXPECT_TRUE(kg::CheckCausalMask(node));
+      }
+      EXPECT_EQ(masks, 1U);
+    }
+  }
+}
+
+TEST(GgmlLowerQwen38Test, OriginalHostMasksKeepTheirDeclaredFloatEncoding) {
+  for (const auto encoding : {llmp::format::Encoding::kF16, llmp::format::Encoding::kF32}) {
+    for (const std::uint32_t sections : {1U, 3U}) {
+      ir::Builder b;
+      co::StepContext context(b, {{.rows = 3, .past = 9, .read_cells = 16, .outputs = 3}}, false);
+      const auto joined_positions = context.Positions(static_cast<std::uint8_t>(sections));
+      const auto positions =
+          b.View(joined_positions, ir::ShapeOf({3}), {4, 12, 12, 12}, 12ULL * (sections - 1));
+      const auto cells = context.HeldPositions(0, {.capacity = 16, .block = 4});
+      const auto features = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({8, 3})));
+      const auto before = b.Unary(features, ir::UnaryFn::kTanh);
+      b.Output(before);
+      const auto mask = b.MaskBuild(positions, cells, 5, {}, encoding);
+      b.Output(mask);
+      const auto after = b.Unary(before, ir::UnaryFn::kTanh);
+      b.Output(after);
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph) << llmp::test_support::Failed(graph, [](const auto& e) {
+                              return e.detail;
+                            }).value_or("");
+      co::StepGraph step{
+          .graph = std::move(*graph), .inputs = context.TakeInputs(), .weights = {}, .state = {}};
+      step.inputs.push_back({.tensor = features, .kind = co::InputKind::kFeatures});
+      const pl::StepShape shape{
+          .segments = {{.rows = 3, .past = 9, .read_cells = 16, .outputs = 3}}};
+      std::vector<ir::TensorId> staged;
+      for (const auto& in : step.inputs)
+        if (in.kind != co::InputKind::kCellPositions) staged.push_back(in.tensor);
+      const auto registry = PlanningRegistry();
+      auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), {},
+                           {.staged = staged,
+                            .written = &kg::WrittenBytes,
+                            .within = &kg::WithinRoot,
+                            .shape = &shape});
+      ASSERT_TRUE(plan) << llmp::test_support::Failed(plan, [](const auto& e) {
+                             return e.detail;
+                           }).value_or("");
+      const auto step_for = [&](ir::TensorId original) {
+        const auto id = plan->graph.producer(plan->tensors.at(original.v));
+        for (std::uint32_t i = 0; i < plan->steps.size(); ++i)
+          if (std::ranges::contains(plan->steps[i].nodes, id)) return i;
+        return UINT32_MAX;
+      };
+      const auto first = step_for(before), host = step_for(mask), last = step_for(after);
+      ASSERT_LT(first, host);
+      ASSERT_LT(host, last);
+      ASSERT_LT(last, plan->steps.size());
+      ASSERT_TRUE(plan->prologue.empty());
+      const kn::Addresses addresses{};
+      for (const auto region : {pl::Region{first, host}, pl::Region{host, last},
+                                pl::Region{first, last}, pl::Region{host, host}}) {
+        plan->regions = {region};
+        const kn::LowerInput input{*plan, step, shape, addresses};
+        auto lowered = kg::LowerStep(input, registry, Device());
+        ASSERT_TRUE(lowered) << llmp::test_support::Failed(lowered, [](const auto& e) {
+                                  return e.detail;
+                                }).value_or("");
+        ASSERT_EQ(lowered->plan.steps.size(), 2U);
+        if (region.first == host && region.last == host) {
+          EXPECT_TRUE(lowered->plan.regions.empty());
+        } else {
+          ASSERT_EQ(lowered->plan.regions.size(), 1U);
+          EXPECT_EQ(lowered->plan.regions[0].first, region.first == host ? 1U : 0U);
+          EXPECT_EQ(lowered->plan.regions[0].last, region.last == host ? 0U : 1U);
+        }
+        const bool f32 = encoding == llmp::format::Encoding::kF32;
+        const auto kind = f32 ? kn::InputKind::kMaskF32 : kn::InputKind::kMask;
+        const auto found = std::ranges::find(lowered->inputs, kind, &kn::InputSlot::kind);
+        ASSERT_NE(found, lowered->inputs.end());
+        EXPECT_EQ(found->bytes, found->read * found->mask_rows * (f32 ? 4 : 2));
+        EXPECT_EQ(found->mask_rows, 5U);
+        EXPECT_EQ(found->cells.block, 4U);
+        EXPECT_EQ(step.graph.tensor(found->tensor).format.encoding, encoding);
+      }
+      plan->regions.clear();
+      const auto position_input =
+          std::ranges::find(step.inputs, co::InputKind::kPositions, &co::StepInput::kind);
+      ASSERT_NE(position_input, step.inputs.end());
+      position_input->sections =
+          static_cast<std::uint8_t>(sections + 1);  // Inconsistent with the root's shape.
+      const kn::LowerInput wrong_generator{*plan, step, shape, addresses};
+      EXPECT_FALSE(kg::LowerStep(wrong_generator, registry, Device()));
+    }
+  }
+}
+
+TEST(GgmlLowerQwen38Test, QsaPrepTokenRowsComeFromTheLogicalHeadStrides) {
+  constexpr std::uint32_t d = 128, heads = 24, rows = 17;
+  for (const bool interleaved : {false, true}) {
+    SCOPED_TRACE(interleaved);
+    ir::Builder b;
+    const auto root_shape =
+        interleaved ? ir::ShapeOf({2 * d * heads, rows}) : ir::ShapeOf({d, heads, rows});
+    const auto input = b.Input(ir::Dense(llmp::format::Encoding::kF32, root_shape));
+    ir::TensorId x = input;
+    if (interleaved) {
+      const std::uint64_t row = 2ULL * d * heads * sizeof(float);
+      x = b.View(input, ir::ShapeOf({d, heads, rows}),
+                 {sizeof(float), 2ULL * d * sizeof(float), row, row * rows}, 0);
+    }
+    const auto norm = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({d})));
+    co::StepContext context(b, {{.rows = rows, .past = 7000, .read_cells = 7168, .outputs = rows}},
+                            false);
+    const auto positions = context.Positions(4);
+    ir::NormRopeParams params{.eps = 1e-6f};
+    params.rope.mode = ir::RopeMode::kInterleavedMulti;
+    params.rope.dims = 64;
+    params.rope.sections = {16, 16, 16, 16};
+    const std::array sources{x, norm, positions};
+    b.Output(b.Fused(ir::FusedKind::kRmsNormMulRope, sources, params)[0]);
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph) << llmp::test_support::Failed(graph, [](const auto& error) {
+                            return error.detail;
+                          }).value_or("");
+    co::StepGraph step{
+        .graph = std::move(*graph), .inputs = context.TakeInputs(), .weights = {}, .state = {}};
+    step.inputs.push_back({.tensor = input, .kind = co::InputKind::kFeatures});
+    step.inputs.push_back({.tensor = norm, .kind = co::InputKind::kFeatures});
+    const pl::StepShape shape{
+        .segments = {{.rows = rows, .past = 7000, .read_cells = 7168, .outputs = rows}}};
+    std::vector<ir::TensorId> staged;
+    for (const auto& in : step.inputs) staged.push_back(in.tensor);
+    const auto registry = PlanningRegistry();
+    auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), {},
+                         {.staged = staged,
+                          .written = &kg::WrittenBytes,
+                          .within = &kg::WithinRoot,
+                          .shape = &shape});
+    ASSERT_TRUE(plan) << llmp::test_support::Failed(plan, [](const auto& error) {
+                           return error.detail;
+                         }).value_or("");
+    const kn::Addresses addresses{};
+    const kn::LowerInput lower_input{*plan, step, shape, addresses};
+    auto lowered = kg::LowerStep(lower_input, registry, Device());
+    ASSERT_TRUE(lowered) << llmp::test_support::Failed(lowered, [](const auto& error) {
+                              return error.detail;
+                            }).value_or("");
+    std::size_t found = 0;
+    for (const auto* node : lowered->nodes) {
+      if (node->op != GGML_OP_CUSTOM || kg::LlmpOpOf(node) != kg::LlmpOp::kQsaPrep) continue;
+      ++found;
+      EXPECT_EQ(kg::LlmpOpInt(node, 3), rows);
+      EXPECT_EQ(node->ne[2], rows);
+      EXPECT_EQ(node->src[0]->ne[1], rows);
+      EXPECT_EQ(node->src[0]->nb[1], std::uint64_t{interleaved ? 2U : 1U} * d * heads * 4);
+      EXPECT_EQ(node->src[2]->ne[0], 4 * rows);
+    }
+    EXPECT_EQ(found, 1U);
   }
 }
 

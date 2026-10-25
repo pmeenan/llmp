@@ -4,6 +4,7 @@
 #include "planner/plan.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -30,6 +31,7 @@
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "ir/verify.h"
+#include "planner/alternative.h"
 #include "planner/lanes.h"
 #include "planner/pattern.h"
 #include "planner/placement.h"
@@ -51,6 +53,152 @@ std::unexpected<PlanFailure> Failed(PlanError error, std::string detail) {
   return std::unexpected(PlanFailure{.error = error, .detail = std::move(detail)});
 }
 
+PlanError ErrorOf(const ir::VerifyError& error, PlanError ordinary) {
+  return error.error == ir::GraphError::kAdmission ? PlanError::kAdmission : ordinary;
+}
+
+// Comparison-only phase inventories use the real graph dimensions at the
+// point the corresponding containers are about to be created.  The envelope
+// is the pinned libstdc++ allocator allowance used by IR funding.
+constexpr std::uint64_t kVectorEnvelope = 2 * sizeof(void*) + alignof(std::max_align_t);
+
+bool AddExact(std::uint64_t count, std::uint64_t stride, std::uint64_t& total) {
+  if (count != 0) {
+    if (stride == 0 || total > std::numeric_limits<std::uint64_t>::max() - kVectorEnvelope ||
+        count > (std::numeric_limits<std::uint64_t>::max() - total - kVectorEnvelope) / stride)
+      return false;
+    total += count * stride + kVectorEnvelope;
+  }
+  return true;
+}
+
+bool AddGeometric(std::uint64_t count, std::uint64_t stride, std::uint64_t& total) {
+  // Current and prospective doubled arrays may coexist while vector grows.
+  if (count != 0) {
+    if (stride == 0 || stride > std::numeric_limits<std::uint64_t>::max() / 3 ||
+        total > std::numeric_limits<std::uint64_t>::max() - 2 * kVectorEnvelope ||
+        count > (std::numeric_limits<std::uint64_t>::max() - total - 2 * kVectorEnvelope) /
+                    (3 * stride))
+      return false;
+    total += 3 * count * stride + 2 * kVectorEnvelope;
+  }
+  return true;
+}
+
+bool AddBits(std::uint64_t count, std::uint64_t& total) {
+  constexpr std::uint64_t word_bits = std::numeric_limits<unsigned long>::digits;
+  if (count > std::numeric_limits<std::uint64_t>::max() - (word_bits - 1)) return false;
+  const auto words = (count + word_bits - 1) / word_bits;
+  return AddExact(words, sizeof(unsigned long), total);
+}
+
+bool AddGrowingAllocations(std::uint64_t elements, std::uint64_t allocations, std::uint64_t stride,
+                           std::uint64_t& total) {
+  if (elements == 0) return true;
+  if (stride == 0 || stride > std::numeric_limits<std::uint64_t>::max() / 3 ||
+      elements > std::numeric_limits<std::uint64_t>::max() / (3 * stride))
+    return false;
+  const std::uint64_t payload = 3 * elements * stride;
+  if (allocations > std::numeric_limits<std::uint64_t>::max() / (2 * kVectorEnvelope)) return false;
+  const std::uint64_t overhead = 2 * allocations * kVectorEnvelope;
+  if (payload > std::numeric_limits<std::uint64_t>::max() - overhead ||
+      total > std::numeric_limits<std::uint64_t>::max() - payload - overhead)
+    return false;
+  total += payload + overhead;
+  return true;
+}
+
+std::optional<std::uint64_t> SelectionMetadataBytes(const ir::Graph& graph,
+                                                    std::size_t registry_size) {
+  const std::uint64_t n = graph.nodes().size();
+  const std::uint64_t t = graph.tensor_count();
+  std::uint64_t bytes = 0;
+  // Select owns missing/automatic/taken bitmaps, the reader index used by
+  // MatchContext, and up to one Selected record per launching node. A batch
+  // candidate may retain each member and its single-candidate result.
+  std::uint64_t edges = 0;
+  for (const auto& node : graph.nodes()) {
+    if (node.nsrc > std::numeric_limits<std::uint64_t>::max() - edges) return std::nullopt;
+    edges += node.nsrc;
+  }
+  if (!AddExact(t, sizeof(std::vector<ir::NodeId>), bytes) ||
+      !AddGrowingAllocations(edges, std::min(edges, t), sizeof(ir::NodeId), bytes) ||
+      !AddBits(t, bytes) || !AddBits(t, bytes) || !AddBits(n, bytes) || !AddBits(n, bytes) ||
+      !AddBits(n, bytes) || !AddGeometric(n, sizeof(Selected), bytes) ||
+      !AddGrowingAllocations(n, n, sizeof(ir::NodeId), bytes) ||
+      !AddGrowingAllocations(n, n, sizeof(std::size_t), bytes) ||
+      !AddGrowingAllocations(n, n, sizeof(std::string_view), bytes))
+    return std::nullopt;
+
+  // GroupedStoresMatch keeps one candidate index vector per participating
+  // member. Bound its real node-by-registry product before BatchAt runs.
+  std::uint64_t per_node = 0;
+  if (__builtin_mul_overflow(static_cast<std::uint64_t>(registry_size), std::uint64_t{3},
+                             &per_node) ||
+      __builtin_mul_overflow(per_node, static_cast<std::uint64_t>(sizeof(std::size_t)),
+                             &per_node) ||
+      (per_node != 0 && n > (std::numeric_limits<std::uint64_t>::max() - bytes) / per_node))
+    return std::nullopt;
+  bytes += n * per_node;
+  if (n != 0 && (n > std::numeric_limits<std::uint64_t>::max() / (2 * kVectorEnvelope) ||
+                 2 * n * kVectorEnvelope > std::numeric_limits<std::uint64_t>::max() - bytes))
+    return std::nullopt;
+  if (n != 0) bytes += 2 * n * kVectorEnvelope;
+  return bytes;
+}
+
+std::optional<std::uint64_t> DecompositionRecordsBytes(const std::vector<std::string>& names,
+                                                       const ir::Graph& graph,
+                                                       const std::vector<bool>& missing) {
+  std::uint64_t new_count = 0;
+  for (std::size_t i = 0; i < missing.size(); ++i) {
+    if (!missing[i] || !ir::HasDecomposition(graph.nodes()[i].key)) continue;
+    ++new_count;
+  }
+  constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
+  if (names.size() > std::numeric_limits<std::uint64_t>::max() - new_count) return std::nullopt;
+  const std::uint64_t total_count = names.size() + new_count;
+  const std::uint64_t old_capacity = names.capacity();
+  if (old_capacity > (std::numeric_limits<std::uint64_t>::max() - envelope) / sizeof(std::string) ||
+      total_count > std::numeric_limits<std::uint64_t>::max() / sizeof(std::string))
+    return std::nullopt;
+  const std::uint64_t old_bytes =
+      old_capacity == 0 ? 0 : old_capacity * sizeof(std::string) + envelope;
+  const std::uint64_t new_capacity = std::max(old_capacity, total_count);
+  if (new_capacity == 0) return std::uint64_t{0};
+  if (new_capacity > (std::numeric_limits<std::uint64_t>::max() - envelope) / sizeof(std::string))
+    return std::nullopt;
+  const std::uint64_t new_bytes = new_capacity * sizeof(std::string) + envelope;
+  // During explicit reserve, both vector allocations coexist. Afterwards the
+  // new vector is retained through selection; string payloads are separately
+  // charged by the diagnostic formatter that constructs each name.
+  if (total_count > old_capacity) {
+    if (old_bytes > std::numeric_limits<std::uint64_t>::max() - new_bytes) return std::nullopt;
+    return old_bytes + new_bytes;
+  }
+  return new_bytes;
+}
+
+std::optional<std::uint64_t> PrologueMetadataBytes(const ir::Graph& graph, std::size_t step_count,
+                                                   std::size_t invariant_count) {
+  std::uint64_t bytes = 0;
+  const std::uint64_t tensors = graph.tensor_count();
+  const std::uint64_t nodes = graph.nodes().size();
+  const std::uint64_t steps = step_count;
+  const std::uint64_t invariants = invariant_count;
+  // PrologueOf's fixed, demoted, written, prologue, and kept bitmaps, plus
+  // its dynamic step/preserved results. Plan also owns the planned-input and
+  // invariant result vectors while PrologueOf runs.
+  if (!AddBits(tensors, bytes) || !AddBits(nodes, bytes) || !AddBits(tensors, bytes) ||
+      !AddBits(steps, bytes) || !AddBits(invariants, bytes) ||
+      !AddGeometric(steps, sizeof(std::uint32_t), bytes) ||
+      !AddGeometric(tensors, sizeof(TensorId), bytes) ||
+      !AddGeometric(invariants, sizeof(TensorId), bytes) ||
+      !AddGeometric(invariants, sizeof(TensorId), bytes))
+    return std::nullopt;
+  return bytes;
+}
+
 std::string Describe(const ir::Graph& graph, NodeId id) {
   const ir::Node& n = graph.node(id);
   std::string text = std::format("node {} ({}", id.v, ir::OpKeyName(n.key));
@@ -64,29 +212,166 @@ std::string Describe(const ir::Graph& graph, NodeId id) {
   return text + ")";
 }
 
-// `graph` with the flagged nodes replaced by their decompositions, those
-// `drop` flags (if given) left out, and each of `repeats` (if given) left
-// out for the earlier node it names; `map` receives each old tensor's new
-// id (none for a dropped node's) and `from` each new node's old one.
-std::expected<ir::Graph, ir::VerifyError> ExpandNodes(
-    const ir::Graph& graph, const std::vector<bool>& expand, std::vector<TensorId>& map,
-    std::vector<NodeId>& from, const std::vector<bool>* drop = nullptr,
-    const std::vector<NodeId>* repeats = nullptr) {
+std::expected<std::string, ir::GraphError> PaidDescribeNoImplementation(
+    ir::DiagnosticAdmission* admission, const ir::Graph& graph, NodeId id) {
+  const ir::Node& node = graph.node(id);
+  constexpr std::string_view prefix = "no implementation computes node {} (";
+  constexpr std::string_view source_format = " {}[{}, {}, {}, {}]";
+  constexpr std::string_view suffix = ") on this device";
+  std::array<char, sizeof("no implementation computes node {} ({}) on this device") +
+                       ir::kMaxSources * sizeof(" {}[{}, {}, {}, {}]")>
+      format_buffer{};
+  std::size_t format_size = 0;
+  const auto append_format = [&](std::string_view part) {
+    std::copy(part.begin(), part.end(),
+              format_buffer.begin() + static_cast<std::ptrdiff_t>(format_size));
+    format_size += part.size();
+  };
+  append_format(prefix);
+  append_format("{}");
+  std::array<ir::DiagnosticValue, 2 + ir::kMaxSources * 5> values{};
+  std::size_t value_count = 0;
+  values[value_count++] = ir::DiagnosticArg(id.v);
+  values[value_count++] = ir::DiagnosticArg(node.key);
+  for (const TensorId source : node.sources()) {
+    if (!source.valid()) continue;
+    append_format(source_format);
+    const auto& tensor = graph.tensor(source);
+    values[value_count++] = ir::DiagnosticArg(format::Info(tensor.format.encoding).name);
+    for (const auto dim : tensor.shape().ne) values[value_count++] = ir::DiagnosticArg(dim);
+  }
+  append_format(suffix);
+  return ir::MakeDiagnostic(admission, std::string_view(format_buffer.data(), format_size),
+                            std::span<const ir::DiagnosticValue>(values).first(value_count));
+}
+
+// `graph` with flagged nodes decomposed, dropped or repeated. The returned
+// maps retain their direction; `seed_to_input` is a copy ancestry only.
+std::expected<PlanSeed, ir::VerifyError> CopyExpandImpl(
+    const ir::Graph& graph, const std::vector<bool>& expand,
+    const std::vector<bool>* drop = nullptr, const std::vector<NodeId>* repeats = nullptr,
+    std::span<const ComparisonOriginSetId> origin_sets = {}, ComparisonOriginDag* origins = nullptr,
+    PlannerMetadataAdmission* metadata_admission = nullptr) {
+  const bool track_origins = origins != nullptr;
+  if (expand.size() != graph.nodes().size() ||
+      (drop != nullptr && drop->size() != graph.nodes().size()) ||
+      (repeats != nullptr && repeats->size() != graph.nodes().size()))
+    return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+  if (repeats != nullptr)
+    for (std::uint32_t i = 0; i < repeats->size(); ++i) {
+      const NodeId target = (*repeats)[i];
+      if (target.valid() &&
+          (target.v >= i || graph.node(target).nout != graph.node(NodeId{i}).nout ||
+           (drop != nullptr && (*drop)[target.v])))
+        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+    }
+  if (track_origins != !origin_sets.empty() ||
+      (track_origins && origin_sets.size() != graph.nodes().size()))
+    return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
   ir::Builder b;
-  map.assign(graph.tensor_count(), TensorId{});
-  from.clear();
+  b.SetDiagnosticAdmission(metadata_admission);
+  if (auto funder = graph.storage_funder(); funder && !b.SetStorageFunder(std::move(funder)))
+    return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+  ir::StorageLoan metadata_loan;
+  std::vector<TensorId> map;
+  std::vector<NodeId> from;
+  std::vector<ComparisonOriginSetId> expanded_origin_sets;
+  ir::StorageLoan source_origins_loan;
+  std::vector<ComparisonOriginSetId> source_origins;
+  std::vector<NodeId> repeat_roots;
+  const auto funder = graph.storage_funder();
+  const auto reserve_metadata = [&](std::size_t from_capacity,
+                                    std::size_t origin_capacity) -> bool {
+    const auto grow = [](std::size_t current, std::size_t requested) {
+      if (requested <= current) return current;
+      if (current == 0 || current > std::numeric_limits<std::size_t>::max() / 2) return requested;
+      return std::max(requested, current * 2);
+    };
+    from_capacity = grow(from.capacity(), from_capacity);
+    origin_capacity = track_origins ? grow(expanded_origin_sets.capacity(), origin_capacity) : 0;
+    if (!funder) {
+      map.reserve(graph.tensor_count());
+      from.reserve(from_capacity);
+      if (track_origins) expanded_origin_sets.reserve(origin_capacity);
+      return true;
+    }
+    constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
+    const auto add_vector = [&](std::uint64_t count, std::uint64_t size, std::uint64_t& total) {
+      if (count > (std::numeric_limits<std::uint64_t>::max() - total) / size) return false;
+      total += count * size;
+      if (count != 0) {
+        if (envelope > std::numeric_limits<std::uint64_t>::max() - total) return false;
+        total += envelope;
+      }
+      return true;
+    };
+    std::uint64_t bytes = 0;
+    if (!add_vector(graph.tensor_count(), sizeof(TensorId), bytes) ||
+        !add_vector(from_capacity, sizeof(NodeId), bytes) ||
+        (track_origins && !add_vector(origin_capacity, sizeof(ComparisonOriginSetId), bytes)) ||
+        (track_origins && repeats != nullptr &&
+         !add_vector(graph.nodes().size(), sizeof(NodeId), bytes)))
+      return false;
+    auto next = ir::AcquireStorageLoan(funder, bytes);
+    if (!next) return false;
+    map.reserve(graph.tensor_count());
+    from.reserve(from_capacity);
+    if (track_origins) expanded_origin_sets.reserve(origin_capacity);
+    if (track_origins && repeats != nullptr) {
+      repeat_roots.reserve(graph.nodes().size());
+      repeat_roots.resize(graph.nodes().size());
+    }
+    metadata_loan = std::move(*next);
+    return true;
+  };
+  if (track_origins && !funder)
+    return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+  if (!reserve_metadata(0, 0))
+    return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+  map.resize(graph.tensor_count(), TensorId{});
+  if (track_origins && std::ranges::any_of(origin_sets, [&](ComparisonOriginSetId id) {
+        return id >= origins->entries().size();
+      }))
+    return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+  if (track_origins) {
+    constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
+    const std::uint64_t count = graph.nodes().size();
+    if (count != 0) {
+      if (count >
+          (std::numeric_limits<std::uint64_t>::max() - envelope) / sizeof(ComparisonOriginSetId))
+        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+      auto next = ir::AcquireStorageLoan(funder, count * sizeof(ComparisonOriginSetId) + envelope);
+      if (!next)
+        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+      source_origins_loan = std::move(*next);
+      source_origins.reserve(graph.nodes().size());
+    }
+    source_origins.assign(origin_sets.begin(), origin_sets.end());
+  }
   RewriteContext rc(graph, b, map);
-  std::vector<TensorId> sources;
-  std::vector<format::Encoding> encodings;
+  std::array<TensorId, ir::kMaxSources> sources{};
+  std::array<format::Encoding, ir::kMaxOutputs> encodings{};
   for (std::uint32_t i = 0; i < graph.nodes().size(); ++i) {
     const ir::Node& node = graph.nodes()[i];
     if (drop != nullptr && (*drop)[i]) continue;
     if (repeats != nullptr && (*repeats)[i].valid()) {
       // A repeat: the earlier node's outputs stand for its own.
-      const ir::Node& earlier = graph.node((*repeats)[i]);
+      const NodeId repeated_id = (*repeats)[i];
+      const NodeId earlier_id = track_origins ? repeat_roots[repeated_id.v] : repeated_id;
+      const ir::Node& earlier = graph.node(repeated_id);
       for (std::size_t k = 0; k < node.nout; ++k) rc.Set(node.out[k], rc.Map(earlier.out[k]));
+      if (track_origins && source_origins[earlier_id.v] != source_origins[i]) {
+        const std::array members = {source_origins[earlier_id.v], source_origins[i]};
+        auto joined = origins->AddUnion(members, metadata_admission);
+        if (!joined)
+          return std::unexpected(
+              ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+        source_origins[earlier_id.v] = *joined;
+      }
+      if (track_origins) repeat_roots[i] = earlier_id;
       continue;
     }
+    if (track_origins && repeats != nullptr) repeat_roots[i] = NodeId{i};
     if (!expand[i]) {
       rc.Copy(node);
     } else {
@@ -96,25 +381,39 @@ std::expected<ir::Graph, ir::VerifyError> ExpandNodes(
       } else {
         b.SetJoined();
       }
-      sources.clear();
-      for (const TensorId s : node.sources()) {
-        sources.push_back(rc.Map(s));
-      }
-      encodings.clear();
-      for (const TensorId o : node.outputs()) {
-        encodings.push_back(graph.tensor(o).format.encoding);
-      }
-      const ir::Outputs outs = ir::Decompose(b, node.key, node.params, sources, encodings);
+      for (std::size_t j = 0; j < node.nsrc; ++j) sources[j] = rc.Map(node.src[j]);
+      for (std::size_t j = 0; j < node.nout; ++j)
+        encodings[j] = graph.tensor(node.out[j]).format.encoding;
+      const ir::Outputs outs = ir::Decompose(
+          b, node.key, node.params, std::span<const TensorId>(sources).first(node.nsrc),
+          std::span<const format::Encoding>(encodings).first(node.nout));
       for (std::size_t k = 0; k < node.nout && k < outs.n; ++k) {
         rc.Set(node.out.at(k), outs[k]);
       }
     }
     if (!b.ok()) {
-      ir::VerifyError e = *b.error();
+      auto taken_error = b.TakeError();
+      ir::VerifyError e = std::move(*taken_error);
       e.node = i;
       return std::unexpected(std::move(e));
     }
-    from.resize(b.node_count(), NodeId{i});
+    const std::size_t next_node_count = b.node_count();
+    if (next_node_count > from.capacity()) {
+      if (!reserve_metadata(next_node_count, expanded_origin_sets.capacity()))
+        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+    }
+    from.resize(next_node_count, NodeId{i});
+  }
+  if (track_origins) {
+    if (from.size() > expanded_origin_sets.capacity() &&
+        !reserve_metadata(from.capacity(), from.size()))
+      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+    expanded_origin_sets.resize(from.size());
+    for (std::size_t i = 0; i < from.size(); ++i) {
+      if (!from[i].valid() || from[i].v >= source_origins.size())
+        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+      expanded_origin_sets[i] = source_origins[from[i].v];
+    }
   }
   for (const TensorId o : graph.outputs()) {
     b.Output(rc.Map(o));
@@ -122,7 +421,10 @@ std::expected<ir::Graph, ir::VerifyError> ExpandNodes(
   for (const TensorId k : graph.keep()) {
     b.Keep(rc.Map(k));
   }
-  return std::move(b).Finish();
+  auto finished = std::move(b).Finish();
+  if (!finished) return std::unexpected(std::move(finished.error()));
+  return PlanSeed(std::move(*finished), std::move(metadata_loan), std::move(map), std::move(from),
+                  std::move(expanded_origin_sets));
 }
 
 // A routing implementation that declares a pitched output
@@ -134,7 +436,21 @@ std::expected<ir::Graph, ir::VerifyError> ExpandNodes(
 // contract and do not acquire a copy here.
 std::expected<std::optional<ir::Graph>, ir::VerifyError> CompactRouteReaders(
     const ir::Graph& graph, std::span<const Selected> steps, const execution::Registry& registry,
-    std::vector<TensorId>& map, std::vector<NodeId>& from) {
+    std::vector<TensorId>& map, std::vector<NodeId>& from,
+    PlannerMetadataAdmission* metadata_admission = nullptr) {
+  if (metadata_admission != nullptr) {
+    std::uint64_t bytes = 0;
+    const std::uint64_t tensors = graph.tensor_count();
+    const std::uint64_t nodes = graph.nodes().size();
+    if (nodes > std::numeric_limits<std::uint64_t>::max() - tensors || !AddBits(tensors, bytes) ||
+        !AddBits(tensors, bytes) || !AddExact(tensors, sizeof(TensorId), bytes) ||
+        !AddExact(tensors, sizeof(TensorId), bytes) ||
+        !AddGeometric(nodes + tensors, sizeof(NodeId), bytes) ||
+        !AddExact(ir::kMaxSources, sizeof(std::pair<TensorId, TensorId>), bytes))
+      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+    if (auto paid = metadata_admission->Require(PlannerMetadataPhase::kAdopt, bytes); !paid)
+      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+  }
   std::vector<bool> pitched(graph.tensor_count(), false);
   for (const auto& step : steps) {
     const auto& capability = registry.at(step.implementation).capability;
@@ -166,6 +482,9 @@ std::expected<std::optional<ir::Graph>, ir::VerifyError> CompactRouteReaders(
   if (std::ranges::none_of(needed, [](bool value) { return value; })) return std::nullopt;
 
   ir::Builder b;
+  b.SetDiagnosticAdmission(metadata_admission);
+  if (auto funder = graph.storage_funder(); funder && !b.SetStorageFunder(std::move(funder)))
+    return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
   map.assign(graph.tensor_count(), TensorId{});
   from.clear();
   RewriteContext rc(graph, b, map);
@@ -185,7 +504,7 @@ std::expected<std::optional<ir::Graph>, ir::VerifyError> CompactRouteReaders(
     for (const auto& [t, original] : restore) rc.Set(t, original);
     for (const auto t : node.outputs())
       if (needed[t.v]) compact[t.v] = b.Cont(rc.Map(t));
-    if (!b.ok()) return std::unexpected(*b.error());
+    if (!b.ok()) return std::unexpected(std::move(*b.TakeError()));
     from.resize(b.node_count(), NodeId{i});
   }
   for (const auto t : graph.outputs()) b.Output(needed[t.v] ? compact[t.v] : rc.Map(t));
@@ -193,7 +512,7 @@ std::expected<std::optional<ir::Graph>, ir::VerifyError> CompactRouteReaders(
   for (std::size_t i = 0; i < needed.size(); ++i)
     if (needed[i]) map[i] = compact[i];
   auto result = std::move(b).Finish();
-  if (!result) return std::unexpected(result.error());
+  if (!result) return std::unexpected(std::move(result.error()));
   return std::optional<ir::Graph>(std::move(*result));
 }
 
@@ -350,6 +669,7 @@ std::vector<NodeId> Repeats(const ir::Graph& graph, const std::vector<bool>& aut
 struct Selection {
   std::vector<Selected> steps;
   std::vector<bool> missing;  // by node: no implementation
+  std::optional<PlanFailure> comparison_failure;
   bool complete = true;
 };
 
@@ -360,7 +680,11 @@ Selected One(const execution::Registry& registry, NodeId id, std::size_t impleme
 }
 
 Selection Select(const ir::Graph& graph, const SelectionView& view,
-                 std::span<const OwnerProductScope> scopes, std::span<const Applied> applied) {
+                 std::span<const OwnerProductScope> scopes, std::span<const Applied> applied,
+                 std::span<const TensorId> source_to_graph = {},
+                 std::span<const ComparisonOriginSetId> origin_sets = {},
+                 ComparisonOriginDag* origins = nullptr,
+                 ComparisonCaptureSession* comparison_capture = nullptr) {
   Selection out;
   out.missing.assign(graph.nodes().size(), false);
   const auto automatic = AutomaticNodes(graph, applied);
@@ -401,6 +725,10 @@ Selection Select(const ir::Graph& graph, const SelectionView& view,
       if (!singles) {
         continue;
       }
+      if (comparison_capture != nullptr && origins != nullptr &&
+          comparison_capture->ExcludesBatch(p.name, p.version, m->nodes, origin_sets, graph,
+                                            source_to_graph))
+        continue;
       context.Take(m->nodes);
       out.steps.push_back(std::move(step));
       batched = true;
@@ -523,6 +851,13 @@ Prologue PrologueOf(const ir::Graph& graph, std::span<const Selected> steps,
 
 }  // namespace
 
+std::expected<PlanSeed, ir::VerifyError> CopyExpand(
+    const ir::Graph& graph, const std::vector<bool>& expand, const std::vector<bool>* drop,
+    const std::vector<ir::NodeId>* repeats, std::span<const ComparisonOriginSetId> origin_sets,
+    ComparisonOriginDag* origins, PlannerMetadataAdmission* metadata_admission) {
+  return CopyExpandImpl(graph, expand, drop, repeats, origin_sets, origins, metadata_admission);
+}
+
 std::string_view PlanErrorName(PlanError error) {
   switch (error) {
     case PlanError::kNoImplementation:
@@ -535,6 +870,14 @@ std::string_view PlanErrorName(PlanError error) {
       return "bounds";
     case PlanError::kPolicy:
       return "policy";
+    case PlanError::kAdmission:
+      return "admission";
+    case PlanError::kStaleComparisonSite:
+      return "stale comparison site";
+    case PlanError::kAmbiguousComparisonSite:
+      return "ambiguous comparison site";
+    case PlanError::kMissingComparisonSite:
+      return "missing comparison site";
   }
   return "unknown";
 }
@@ -542,19 +885,61 @@ std::string_view PlanErrorName(PlanError error) {
 std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::Registry& registry,
                                           const DeviceFacts& device, const Policy& policy,
                                           const PlanOptions& options) {
+  const auto failed = [&](PlanError error,
+                          std::string_view detail) -> std::unexpected<PlanFailure> {
+    if (error == PlanError::kAdmission)
+      return std::unexpected(PlanFailure{.error = error, .detail = {}});
+    if (options.metadata_admission != nullptr) {
+      auto owned = ir::FormatDiagnostic(options.metadata_admission, "{}", detail);
+      if (!owned) return std::unexpected(PlanFailure{.error = PlanError::kAdmission, .detail = {}});
+      return std::unexpected(PlanFailure{.error = error, .detail = std::move(*owned)});
+    }
+    return std::unexpected(PlanFailure{.error = error, .detail = std::string(detail)});
+  };
+  const auto failed_diagnostic = [&](PlanError error, std::string_view format,
+                                     const auto&... args) -> std::unexpected<PlanFailure> {
+    if (error == PlanError::kAdmission)
+      return std::unexpected(PlanFailure{.error = error, .detail = {}});
+    if (options.metadata_admission != nullptr) {
+      auto owned = ir::FormatDiagnostic(options.metadata_admission, format, args...);
+      if (!owned) return std::unexpected(PlanFailure{.error = PlanError::kAdmission, .detail = {}});
+      return std::unexpected(PlanFailure{.error = error, .detail = std::move(*owned)});
+    }
+    return std::unexpected(PlanFailure{
+        .error = error, .detail = std::vformat(format, std::make_format_args(args...))});
+  };
+  const bool track_comparison_origins = options.comparison_capture != nullptr;
+  if (track_comparison_origins && options.metadata_admission == nullptr)
+    return failed(PlanError::kAdmission, "comparison lineage requires a metadata admission owner");
+  if (track_comparison_origins &&
+      (options.comparison_origins == nullptr ||
+       options.comparison_node_origins.size() != primitive.nodes().size() ||
+       options.owner_products != nullptr))
+    return failed(PlanError::kStaleComparisonSite,
+                  "comparison lineage or owner-product source mapping is unavailable");
+  if (options.metadata_admission != nullptr) {
+    const auto input_bytes = ComparisonPlanInputMetadataBytes(primitive, registry, policy, options);
+    if (!input_bytes) return std::unexpected(std::move(input_bytes.error()));
+    if (auto paid = options.metadata_admission->Require(PlannerMetadataPhase::kInput, *input_bytes);
+        !paid)
+      return std::unexpected(std::move(paid.error()));
+  }
   const auto primitive_digest = primitive.Digest();
-  if (auto valid = Validate(policy); !valid) {
-    return Failed(PlanError::kPolicy, valid.error());
+  if (auto valid = Validate(policy, options.metadata_admission); !valid) {
+    if (options.metadata_admission != nullptr && valid.error().empty())
+      return failed(PlanError::kAdmission, {});
+    return std::unexpected(
+        PlanFailure{.error = PlanError::kPolicy, .detail = std::move(valid.error())});
   }
   if (options.activation_alignment != 0 &&
       (options.activation_alignment & (options.activation_alignment - 1)) != 0)
-    return Failed(PlanError::kPlacement, "the activation base alignment is not a power of two");
+    return failed(PlanError::kPlacement, "the activation base alignment is not a power of two");
   if (options.alignment_staged) {
     for (const auto t : *options.alignment_staged) {
       if (!t.valid() || t.v >= primitive.tensor_count() || primitive.tensor(t).is_view() ||
           !std::ranges::contains(primitive.inputs(), t) ||
           (options.staged && !std::ranges::contains(*options.staged, t)))
-        return Failed(PlanError::kPlacement, "an aligned input is not actually staged");
+        return failed(PlanError::kPlacement, "an aligned input is not actually staged");
     }
   }
   SelectionView view(
@@ -563,7 +948,8 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
       {.base = options.activation_alignment,
        .offset = options.alignment,
        .staged = options.alignment_staged ? options.alignment_staged : options.staged,
-       .within = options.within});
+       .within = options.within},
+      options.fusion_comparisons, options.metadata_admission);
   std::optional<OwnerRewritten> owners;
   std::vector<OwnerProductScope> scopes;
   std::vector<NodeId> preserve;
@@ -571,27 +957,38 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
     if (options.shape != nullptr) {
       for (const auto& p : options.owner_products->products()) {
         if (p.owners.size() != options.shape->segments.size())
-          return Failed(PlanError::kPattern, "owner product and step partitions differ");
+          return failed(PlanError::kPattern, "owner product and step partitions differ");
         for (std::size_t i = 0; i < p.owners.size(); ++i)
           if (p.owners[i].slot != options.shape->segments[i].slot ||
               p.owners[i].rows != options.shape->segments[i].rows)
-            return Failed(PlanError::kPattern, "owner product and step rows differ");
+            return failed(PlanError::kPattern, "owner product and step rows differ");
       }
     }
-    auto split = SplitOwnerProducts(primitive, *options.owner_products);
-    if (!split) return Failed(PlanError::kPattern, split.error());
+    auto split = SplitOwnerProducts(primitive, *options.owner_products, options.metadata_admission);
+    if (!split) return failed(ErrorOf(split.error(), PlanError::kPattern), split.error().detail);
     owners = std::move(*split);
-    view.Forward(primitive, owners->rewrite.graph, owners->rewrite.tensors);
+    if (auto forwarded = view.Forward(primitive, owners->rewrite.graph, owners->rewrite.tensors);
+        !forwarded)
+      return failed(ErrorOf(forwarded.error(), PlanError::kPattern), forwarded.error().detail);
     scopes = owners->scopes;
     for (const auto& scope : scopes)
       preserve.push_back(owners->rewrite.graph.producer(scope.result));
   }
   const ir::Graph& pattern_input = owners ? owners->rewrite.graph : primitive;
-  auto rewritten = ApplyPatterns(pattern_input, view, options.shape, options.state_spans, preserve);
+  auto rewritten = ApplyPatterns(
+      pattern_input, view, options.shape, options.state_spans, preserve,
+      track_comparison_origins ? options.comparison_node_origins
+                               : std::span<const ComparisonOriginSetId>{},
+      track_comparison_origins ? options.comparison_origins : nullptr,
+      track_comparison_origins ? options.comparison_capture : nullptr,
+      track_comparison_origins ? options.comparison_source_to_graph : std::span<const TensorId>{},
+      track_comparison_origins ? options.comparison_graph_node_to_source
+                               : std::span<const NodeId>{},
+      options.metadata_admission);
   if (!rewritten) {
-    return Failed(
-        PlanError::kPattern,
-        std::format("a rewrite at node {}: {}", rewritten.error().node, rewritten.error().detail));
+    return failed_diagnostic(ErrorOf(rewritten.error(), PlanError::kPattern),
+                             "a rewrite at node {}: {}", rewritten.error().node,
+                             std::string_view(rewritten.error().detail));
   }
   // Observations do not participate in matching, qualification, selection or
   // keys. Attach the actual source context only after all rewrites completed.
@@ -600,7 +997,9 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
       proof.observed.bound_model = options.observed_bound_model;
       proof.observed.model_spec = options.observed_model_spec;
     }
-  view.Forward(pattern_input, rewritten->graph, rewritten->tensors);
+  if (auto forwarded = view.Forward(pattern_input, rewritten->graph, rewritten->tensors);
+      !forwarded)
+    return failed(ErrorOf(forwarded.error(), PlanError::kPattern), forwarded.error().detail);
   for (auto& scope : scopes) scope.result = rewritten->tensors.at(scope.result.v);
   if (owners) {
     for (auto& a : rewritten->applied) {
@@ -611,6 +1010,28 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
     std::size_t max_from = 0;
     for (const auto& nid : rewritten->from) {
       if (nid.v >= max_from) max_from = nid.v + 1;
+    }
+    if (options.metadata_admission != nullptr) {
+      std::uint64_t made_outputs = 0;
+      for (const Applied& a : owners->rewrite.applied) {
+        if (a.made.size() != 0 &&
+            rewritten->from.size() >
+                (std::numeric_limits<std::uint64_t>::max() - made_outputs) / a.made.size())
+          return failed(PlanError::kAdmission, "owner rewrite composition inventory overflows");
+        made_outputs += static_cast<std::uint64_t>(a.made.size()) * rewritten->from.size();
+      }
+      std::uint64_t bytes = 0;
+      if (!AddExact(max_from, sizeof(std::vector<NodeId>), bytes) ||
+          !AddGeometric(rewritten->from.size(), sizeof(NodeId), bytes) ||
+          !AddExact(rewritten->from.size(), kVectorEnvelope, bytes) ||
+          !AddGeometric(made_outputs, sizeof(NodeId), bytes) ||
+          !AddExact(owners->rewrite.tensors.size(), sizeof(TensorId), bytes) ||
+          !AddGeometric(rewritten->applied.size() + owners->rewrite.applied.size(), sizeof(Applied),
+                        bytes))
+        return failed(PlanError::kAdmission, "owner rewrite composition inventory overflows");
+      if (auto paid = options.metadata_admission->Require(PlannerMetadataPhase::kAdopt, bytes);
+          !paid)
+        return std::unexpected(std::move(paid.error()));
     }
     std::vector<std::vector<NodeId>> by_old(max_from);
     for (std::uint32_t i = 0; i < rewritten->from.size(); ++i) {
@@ -641,11 +1062,45 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
   std::vector<TensorId> tensors = std::move(rewritten->tensors);
   std::vector<NodeId> from = std::move(rewritten->from);
   std::vector<Applied> applied = std::move(rewritten->applied);
+  OwnedRewriteOrigins current_origins = std::move(rewritten->origin_sets);
   // `next` for `graph`, its tensors (`map`) and nodes (`back`) carried
   // through every map onto the primitive graph.
-  const auto adopt = [&](ir::Graph next, std::span<const TensorId> map,
-                         std::span<const NodeId> back) {
-    view.Forward(graph, next, map);
+  const auto adopt =
+      [&](ir::Graph next, std::span<const TensorId> map, std::span<const NodeId> back,
+          OwnedRewriteOrigins next_origins = {}) -> std::expected<void, ir::VerifyError> {
+    if (options.metadata_admission != nullptr) {
+      std::size_t max_back = 0;
+      for (const NodeId old : back) {
+        if (!old.valid() || old.v >= from.size())
+          return std::unexpected(
+              ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+        max_back = std::max(max_back, static_cast<std::size_t>(old.v) + 1);
+      }
+      std::uint64_t made_outputs = 0;
+      for (const Applied& a : applied) {
+        if (a.made.size() != 0 &&
+            back.size() >
+                (std::numeric_limits<std::uint64_t>::max() - made_outputs) / a.made.size())
+          return std::unexpected(
+              ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+        made_outputs += static_cast<std::uint64_t>(a.made.size()) * back.size();
+      }
+      std::uint64_t bytes = 0;
+      if (!AddExact(back.size(), sizeof(NodeId), bytes) ||
+          !AddExact(max_back, sizeof(std::vector<NodeId>), bytes) ||
+          !AddGeometric(back.size(), sizeof(NodeId), bytes) ||
+          !AddExact(back.size(), kVectorEnvelope, bytes) ||
+          !AddGeometric(made_outputs, sizeof(NodeId), bytes))
+        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+      if (auto paid = options.metadata_admission->Require(PlannerMetadataPhase::kAdopt, bytes);
+          !paid)
+        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+    }
+    if (options.comparison_capture &&
+        !options.comparison_capture->AdvanceCheckpointMap(graph.identity(), next.identity(), map))
+      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+    if (auto forwarded = view.Forward(graph, next, map); !forwarded)
+      return std::unexpected(std::move(forwarded.error()));
     for (auto& scope : scopes) scope.result = map[scope.result.v];
     for (TensorId& t : tensors) {
       t = t.valid() ? map[t.v] : t;
@@ -674,84 +1129,320 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
     }
     from = std::move(composed);
     graph = std::move(next);
+    if (track_comparison_origins) current_origins = std::move(next_origins);
+    return {};
   };
   // A node computed again (the same rows joined twice) runs once.
   if (const auto repeats = Repeats(graph, AutomaticNodes(graph, applied)); !repeats.empty()) {
-    std::vector<TensorId> map;
-    std::vector<NodeId> back;
-    auto joined = ExpandNodes(graph, std::vector<bool>(graph.nodes().size(), false), map, back,
-                              nullptr, &repeats);
+    auto joined = CopyExpand(
+        graph, std::vector<bool>(graph.nodes().size(), false), nullptr, &repeats,
+        track_comparison_origins ? std::span<const ComparisonOriginSetId>(current_origins.values)
+                                 : std::span<const ComparisonOriginSetId>{},
+        track_comparison_origins ? options.comparison_origins : nullptr,
+        options.metadata_admission);
     if (!joined) {
-      return Failed(PlanError::kPattern, std::format("joining repeated nodes at node {}: {}",
-                                                     joined.error().node, joined.error().detail));
+      return failed_diagnostic(ErrorOf(joined.error(), PlanError::kPattern),
+                               "joining repeated nodes at node {}: {}", joined.error().node,
+                               std::string_view(joined.error().detail));
     }
-    adopt(std::move(*joined), map, back);
+    if (auto adopted = adopt(std::move(joined->graph), joined->input_to_seed, joined->seed_to_input,
+                             OwnedRewriteOrigins{std::move(joined->metadata_loan),
+                                                 std::move(joined->seed_origin_sets)});
+        !adopted)
+      return failed(ErrorOf(adopted.error(), PlanError::kPattern), adopted.error().detail);
   }
   // What the rewrites left unread is not run (a split pattern's fused node
   // reading the vectors another node joined for the replaced readers).
   if (const auto unread = Unread(graph); !unread.empty()) {
-    std::vector<TensorId> map;
-    std::vector<NodeId> back;
-    auto pruned =
-        ExpandNodes(graph, std::vector<bool>(graph.nodes().size(), false), map, back, &unread);
+    auto pruned = CopyExpand(
+        graph, std::vector<bool>(graph.nodes().size(), false), &unread, nullptr,
+        track_comparison_origins ? std::span<const ComparisonOriginSetId>(current_origins.values)
+                                 : std::span<const ComparisonOriginSetId>{},
+        track_comparison_origins ? options.comparison_origins : nullptr,
+        options.metadata_admission);
     if (!pruned) {
-      return Failed(PlanError::kPattern, std::format("pruning unread nodes at node {}: {}",
-                                                     pruned.error().node, pruned.error().detail));
+      return failed_diagnostic(ErrorOf(pruned.error(), PlanError::kPattern),
+                               "pruning unread nodes at node {}: {}", pruned.error().node,
+                               std::string_view(pruned.error().detail));
     }
-    adopt(std::move(*pruned), map, back);
+    if (auto adopted = adopt(std::move(pruned->graph), pruned->input_to_seed, pruned->seed_to_input,
+                             OwnedRewriteOrigins{std::move(pruned->metadata_loan),
+                                                 std::move(pruned->seed_origin_sets)});
+        !adopted)
+      return failed(ErrorOf(adopted.error(), PlanError::kPattern), adopted.error().detail);
   }
   std::vector<std::string> decomposed;
   Selection selection;
   for (int pass = 0;; ++pass) {
-    selection = Select(graph, view, scopes, applied);
+    std::vector<TensorId> comparison_source_to_current;
+    std::vector<NodeId> comparison_current_to_source;
+    std::span<const TensorId> comparison_tensor_map;
+    std::span<const NodeId> comparison_node_map;
+    if (track_comparison_origins) {
+      const std::uint64_t tensor_count = options.comparison_source_to_graph.empty()
+                                             ? tensors.size()
+                                             : options.comparison_source_to_graph.size();
+      const std::uint64_t node_count = from.size();
+      if (tensor_count > (std::numeric_limits<std::uint64_t>::max() - 2 * kVectorEnvelope) /
+                             sizeof(TensorId) ||
+          node_count > (std::numeric_limits<std::uint64_t>::max() -
+                        tensor_count * sizeof(TensorId) - 2 * kVectorEnvelope) /
+                           sizeof(NodeId))
+        return failed(PlanError::kAdmission, "comparison directional map inventory overflows");
+      const auto map_bytes = tensor_count * sizeof(TensorId) + node_count * sizeof(NodeId) +
+                             (tensor_count == 0 ? 0 : kVectorEnvelope) +
+                             (node_count == 0 ? 0 : kVectorEnvelope);
+      if (auto paid =
+              options.metadata_admission->Require(PlannerMetadataPhase::kComparisonMap, map_bytes);
+          !paid)
+        return std::unexpected(std::move(paid.error()));
+      comparison_source_to_current.reserve(static_cast<std::size_t>(tensor_count));
+      for (std::size_t source_index = 0; source_index < tensor_count; ++source_index) {
+        const TensorId initial = options.comparison_source_to_graph.empty()
+                                     ? TensorId{static_cast<std::uint32_t>(source_index)}
+                                     : options.comparison_source_to_graph[source_index];
+        if (!initial.valid()) {
+          comparison_source_to_current.push_back(TensorId{});
+        } else if (initial.v >= tensors.size()) {
+          return failed(PlanError::kStaleComparisonSite,
+                        "comparison source tensor map is out of range");
+        } else {
+          comparison_source_to_current.push_back(tensors[initial.v]);
+        }
+      }
+      comparison_current_to_source.reserve(static_cast<std::size_t>(node_count));
+      for (const NodeId initial : from) {
+        if (!initial.valid())
+          return failed(PlanError::kStaleComparisonSite,
+                        "comparison source node map is out of range");
+        if (options.comparison_graph_node_to_source.empty()) {
+          comparison_current_to_source.push_back(initial);
+        } else if (initial.v >= options.comparison_graph_node_to_source.size() ||
+                   !options.comparison_graph_node_to_source[initial.v].valid()) {
+          return failed(PlanError::kStaleComparisonSite,
+                        "comparison source node map is out of range");
+        } else {
+          comparison_current_to_source.push_back(
+              options.comparison_graph_node_to_source[initial.v]);
+        }
+      }
+      comparison_tensor_map = comparison_source_to_current;
+      comparison_node_map = comparison_current_to_source;
+    }
+    if (options.metadata_admission != nullptr) {
+      const auto bytes = SelectionMetadataBytes(graph, registry.size());
+      if (!bytes) return failed(PlanError::kAdmission, "comparison selection inventory overflows");
+      if (auto paid = options.metadata_admission->Require(PlannerMetadataPhase::kSelection, *bytes);
+          !paid)
+        return std::unexpected(std::move(paid.error()));
+    }
+    const ComparisonCaptureMark decision_mark =
+        options.comparison_capture != nullptr ? options.comparison_capture->DecisionJournalMark()
+                                              : ComparisonCaptureMark{};
+    selection = Select(
+        graph, view, scopes, applied,
+        track_comparison_origins ? comparison_tensor_map : std::span<const TensorId>{},
+        track_comparison_origins ? std::span<const ComparisonOriginSetId>(current_origins.values)
+                                 : std::span<const ComparisonOriginSetId>{},
+        track_comparison_origins ? options.comparison_origins : nullptr,
+        track_comparison_origins ? options.comparison_capture : nullptr);
+    if (options.comparison_capture != nullptr && options.comparison_capture->record_refused())
+      return failed(PlanError::kAdmission, "comparison decision journal was refused");
+    if (selection.comparison_failure)
+      return std::unexpected(std::move(*selection.comparison_failure));
     if (selection.complete) {
       std::vector<TensorId> map;
       std::vector<NodeId> back;
-      auto compact = CompactRouteReaders(graph, selection.steps, registry, map, back);
+      auto compact = CompactRouteReaders(graph, selection.steps, registry, map, back,
+                                         options.metadata_admission);
       if (!compact)
-        return Failed(PlanError::kPattern,
-                      std::format("materializing routing IDs: {}", compact.error().detail));
+        return failed_diagnostic(ErrorOf(compact.error(), PlanError::kPattern),
+                                 "materializing routing IDs: {}",
+                                 std::string_view(compact.error().detail));
       if (*compact) {
-        adopt(std::move(**compact), map, back);
+        if (options.comparison_capture != nullptr)
+          options.comparison_capture->RollbackDecisionJournal(decision_mark);
+        OwnedRewriteOrigins compact_origins;
+        if (track_comparison_origins) {
+          constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
+          const std::uint64_t count = back.size();
+          if (count > (std::numeric_limits<std::uint64_t>::max() - envelope) /
+                          sizeof(ComparisonOriginSetId))
+            return failed(PlanError::kAdmission, "route lineage capacity overflows");
+          auto loan =
+              ir::AcquireStorageLoan(graph.storage_funder(), count * sizeof(ComparisonOriginSetId) +
+                                                                 (count == 0 ? 0 : envelope));
+          if (!loan) return failed(PlanError::kAdmission, "route lineage payment was refused");
+          std::vector<ComparisonOriginSetId> next;
+          next.reserve(back.size());
+          for (const NodeId node : back) {
+            if (!node.valid() || node.v >= current_origins.values.size())
+              return failed(PlanError::kStaleComparisonSite, "route lost node lineage");
+            next.push_back(current_origins.values[node.v]);
+          }
+          compact_origins = OwnedRewriteOrigins{std::move(*loan), std::move(next)};
+        }
+        if (auto adopted = adopt(std::move(**compact), map, back, std::move(compact_origins));
+            !adopted)
+          return failed(ErrorOf(adopted.error(), PlanError::kPattern), adopted.error().detail);
         continue;
+      }
+      // Selection can be retried after route-reader compaction. Publish
+      // comparison tickets and capture checkpoints only for the final stable
+      // selection, never for a tentative pass that is about to be discarded.
+      if (track_comparison_origins && options.comparison_capture != nullptr &&
+          options.comparison_origins != nullptr) {
+        std::optional<ComparisonCheckpoint> tentative_checkpoint;
+        std::size_t accepted_batch_candidates = 0;
+        for (const Selected& selected : selection.steps) {
+          if (!selected.batch.empty()) {
+            const Pattern* pattern = FindPattern(selected.batch);
+            if (pattern == nullptr || pattern->kind != PatternKind::kBatch)
+              return failed(PlanError::kStaleComparisonSite,
+                            "final selected batch is not a registered pattern");
+            auto captured = options.comparison_capture->CaptureBatch(
+                pattern->name, pattern->version, selected.nodes, current_origins.values, graph,
+                comparison_tensor_map, comparison_node_map, options.metadata_admission, applied,
+                options.comparison_graph_node_to_source);
+            if (!captured) return std::unexpected(std::move(captured.error()));
+            if (*captured) {
+              ++accepted_batch_candidates;
+              if (!tentative_checkpoint) tentative_checkpoint.emplace(std::move(**captured));
+            }
+            auto recorded = options.comparison_capture->RecordDiscovery(
+                ComparisonSiteKind::kBatch, pattern->name, pattern->version, pattern->result,
+                selected.nodes, current_origins.values, graph, comparison_tensor_map,
+                options.metadata_admission);
+            if (!recorded) return std::unexpected(std::move(recorded.error()));
+            continue;
+          }
+          for (const NodeId node_id : selected.nodes) {
+            const auto& node = graph.node(node_id);
+            ComparisonSiteKind kind{};
+            std::string_view pattern_name;
+            std::uint16_t version = 1;
+            if (node.key.op == ir::Op::kFused) {
+              kind = ComparisonSiteKind::kFusedNode;
+              pattern_name = ir::FusedKindName(node.key.fused);
+            } else {
+              const Pattern* composite = nullptr;
+              for (const Pattern& candidate : Patterns())
+                if (candidate.kind == PatternKind::kComposite &&
+                    std::ranges::contains(candidate.composites, node.key)) {
+                  composite = &candidate;
+                  break;
+                }
+              if (composite == nullptr) continue;
+              kind = ComparisonSiteKind::kCompositeNode;
+              pattern_name = composite->name;
+              version = composite->version;
+            }
+            const std::array one{node_id};
+            auto recorded = options.comparison_capture->RecordDiscovery(
+                kind, pattern_name, version, node.key, one, current_origins.values, graph,
+                comparison_tensor_map, options.metadata_admission);
+            if (!recorded) return std::unexpected(std::move(recorded.error()));
+          }
+        }
+        if (options.comparison_capture->record_refused())
+          return failed(PlanError::kAdmission, "comparison discovery ticket was refused");
+        options.comparison_capture->CommitRound(std::move(tentative_checkpoint),
+                                                accepted_batch_candidates);
       }
       break;
     }
+    // An incomplete selection is also tentative: primitive fallback changes
+    // the graph and the selector will run again in the next planning pass.
+    // Keep comparison exclusions from this discarded pass out of the
+    // committed trial journal, while leaving any admission refusal sticky.
+    if (options.comparison_capture != nullptr)
+      options.comparison_capture->RollbackDecisionJournal(decision_mark);
     // The primitive-fallback rule: a node no implementation computes is
     // replaced by its decomposition, where it has one.
+    std::size_t new_decomposed = 0;
     for (std::uint32_t i = 0; i < graph.nodes().size(); ++i) {
       if (!selection.missing[i]) {
         continue;
       }
       const ir::Node& n = graph.nodes()[i];
       if (!ir::HasDecomposition(n.key)) {
-        return Failed(PlanError::kNoImplementation,
+        if (options.metadata_admission != nullptr) {
+          auto owned = PaidDescribeNoImplementation(options.metadata_admission, graph, NodeId{i});
+          if (!owned)
+            return std::unexpected(PlanFailure{.error = PlanError::kAdmission, .detail = {}});
+          return std::unexpected(
+              PlanFailure{.error = PlanError::kNoImplementation, .detail = std::move(*owned)});
+        }
+        return failed(PlanError::kNoImplementation,
                       std::format("no implementation computes {} on this device",
                                   Describe(graph, NodeId{i})));
       }
-      decomposed.push_back(ir::OpKeyName(n.key));
+      ++new_decomposed;
+    }
+    if (options.metadata_admission != nullptr) {
+      auto base = SelectionMetadataBytes(graph, registry.size());
+      auto records_bytes = DecompositionRecordsBytes(decomposed, graph, selection.missing);
+      if (!base || !records_bytes)
+        return failed(PlanError::kAdmission, "decomposition-record inventory overflows");
+      if (auto paid = options.metadata_admission->Require(PlannerMetadataPhase::kSelection, *base);
+          !paid)
+        return std::unexpected(std::move(paid.error()));
+      if (auto paid = options.metadata_admission->Require(
+              PlannerMetadataPhase::kDecompositionRecords, *records_bytes);
+          !paid)
+        return std::unexpected(std::move(paid.error()));
+      if (decomposed.size() + new_decomposed > decomposed.capacity())
+        decomposed.reserve(decomposed.size() + new_decomposed);
+    }
+    for (std::uint32_t i = 0; i < graph.nodes().size(); ++i) {
+      if (!selection.missing[i]) continue;
+      const ir::Node& n = graph.nodes()[i];
+      if (!ir::HasDecomposition(n.key)) continue;
+      if (options.metadata_admission != nullptr) {
+        auto name = ir::FormatDiagnostic(options.metadata_admission, "{}", n.key);
+        if (!name)
+          return std::unexpected(PlanFailure{.error = PlanError::kAdmission, .detail = {}});
+        decomposed.push_back(std::move(*name));
+      } else {
+        decomposed.push_back(ir::OpKeyName(n.key));
+      }
     }
     if (pass + 1 == kMaxPasses) {
-      return Failed(PlanError::kBounds, "decompositions did not reach implemented operations");
+      return failed(PlanError::kBounds, "decompositions did not reach implemented operations");
     }
-    std::vector<TensorId> map;
-    std::vector<NodeId> back;
-    auto expanded = ExpandNodes(graph, selection.missing, map, back);
+    auto expanded = CopyExpand(graph, selection.missing, nullptr, nullptr,
+                               track_comparison_origins
+                                   ? std::span<const ComparisonOriginSetId>(current_origins.values)
+                                   : std::span<const ComparisonOriginSetId>{},
+                               track_comparison_origins ? options.comparison_origins : nullptr,
+                               options.metadata_admission);
     if (!expanded) {
-      return Failed(PlanError::kPattern,
-                    std::format("a decomposition at node {}: {}", expanded.error().node,
-                                expanded.error().detail));
+      return failed_diagnostic(ErrorOf(expanded.error(), PlanError::kPattern),
+                               "a decomposition at node {}: {}", expanded.error().node,
+                               std::string_view(expanded.error().detail));
     }
-    adopt(std::move(*expanded), map, back);
+    if (auto adopted =
+            adopt(std::move(expanded->graph), expanded->input_to_seed, expanded->seed_to_input,
+                  OwnedRewriteOrigins{std::move(expanded->metadata_loan),
+                                      std::move(expanded->seed_origin_sets)});
+        !adopted)
+      return failed(ErrorOf(adopted.error(), PlanError::kPattern), adopted.error().detail);
   }
   for (const auto& scope : scopes) {
     if (!scope.result.valid() ||
         graph.node(graph.producer(scope.result)).key != ir::Primitive(ir::Op::kMatMul) ||
         graph.tensor(scope.result).ne(1) != scope.columns)
-      return Failed(PlanError::kPattern, "an owner product lost its primitive scope");
+      return failed(PlanError::kPattern, "an owner product lost its primitive scope");
   }
   std::vector<Selected> steps = std::move(selection.steps);
   // Lane tags follow the primitive nodes into what stands for them.
+  if (options.metadata_admission != nullptr) {
+    const auto lane_bytes = LaneMetadataBytes(steps, options.lanes, graph.nodes().size());
+    if (!lane_bytes) return failed(PlanError::kAdmission, lane_bytes.error());
+    if (auto paid = options.metadata_admission->Require(PlannerMetadataPhase::kLanes, *lane_bytes);
+        !paid)
+      return std::unexpected(std::move(paid.error()));
+  }
   LaneTags tags;
   if (!options.lanes.empty()) {
     std::uint32_t max_node = 0;
@@ -776,11 +1467,30 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
     }
   }
   std::vector<Region> regions = AssignLanes(steps, tags, registry, options.on_stream);
+  if (options.metadata_admission != nullptr) {
+    std::uint64_t placement_bytes = 0;
+    auto placement_workspace = PlacementMetadataBytes(graph);
+    const std::uint64_t staged_count =
+        options.staged ? options.staged->size() : graph.inputs().size();
+    const std::uint64_t prologue_invariants = regions.empty() ? options.invariant.size() : 0;
+    const auto prologue_workspace = PrologueMetadataBytes(graph, steps.size(), prologue_invariants);
+    if (!placement_workspace || !prologue_workspace ||
+        !AddGeometric(staged_count, sizeof(TensorId), placement_bytes) ||
+        *placement_workspace > std::numeric_limits<std::uint64_t>::max() - placement_bytes ||
+        *prologue_workspace >
+            std::numeric_limits<std::uint64_t>::max() - placement_bytes - *placement_workspace)
+      return failed(PlanError::kAdmission, "comparison placement inventory overflows");
+    placement_bytes += *placement_workspace + *prologue_workspace;
+    if (auto paid =
+            options.metadata_admission->Require(PlannerMetadataPhase::kPlacement, placement_bytes);
+        !paid)
+      return std::unexpected(std::move(paid.error()));
+  }
   std::vector<TensorId> staged;
   if (options.staged) {
     for (const TensorId t : *options.staged) {
       if (!t.valid() || t.v >= tensors.size() || !tensors[t.v].valid()) {
-        return Failed(PlanError::kPlacement, "a staged input the plan does not hold");
+        return failed(PlanError::kPlacement, "a staged input the plan does not hold");
       }
       staged.push_back(tensors[t.v]);
     }
@@ -795,7 +1505,7 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
     for (const TensorId t : options.invariant) {
       if (!t.valid() || t.v >= tensors.size() || !tensors[t.v].valid() ||
           !std::ranges::contains(graph.inputs(), tensors[t.v]))
-        return Failed(PlanError::kPlacement, "an invariant input the plan does not hold");
+        return failed(PlanError::kPlacement, "an invariant input the plan does not hold");
       planned.push_back(tensors[t.v]);
     }
     prologue = PrologueOf(graph, steps, planned, options.within);
@@ -807,7 +1517,7 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
   auto placement = PlaceActivations(graph, steps, regions, staged, options.alignment,
                                     options.written, options.within, prologue.preserved);
   if (!placement) {
-    return Failed(PlanError::kPlacement, placement.error());
+    return failed(PlanError::kPlacement, placement.error());
   }
   auto alignments = view.Alignments(graph);
   if (!alignments.empty()) {
@@ -830,11 +1540,31 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
         const std::uint64_t off = offset_lut[fact.root.v];
         if (off % fact.alignment != 0 || (options.activation_alignment != 0 &&
                                           options.activation_alignment % fact.alignment != 0)) {
-          return Failed(PlanError::kPlacement,
+          return failed(PlanError::kPlacement,
                         "an activation's placement breaks its alignment promise");
         }
       }
     }
+  }
+  if (options.comparison_capture != nullptr && track_comparison_origins) {
+    auto finalized = options.comparison_capture->FinalizeDiscovery(
+        graph, tensors, current_origins.values, options.metadata_admission);
+    if (!finalized) return std::unexpected(std::move(finalized.error()));
+  }
+  if (options.comparison_final_lineage != nullptr) {
+    if (!track_comparison_origins || options.comparison_origins == nullptr ||
+        options.comparison_final_lineage->source_graph_identity == 0 || graph.identity() == 0 ||
+        current_origins.values.size() != graph.nodes().size())
+      return failed(PlanError::kStaleComparisonSite,
+                    "final comparison lineage does not describe this planned graph");
+    for (const ComparisonOriginSetId set : current_origins.values) {
+      const auto count = options.comparison_origins->OriginCount(set);
+      if (!count || *count == 0)
+        return failed(PlanError::kStaleComparisonSite,
+                      "final comparison lineage contains an invalid origin set");
+    }
+    options.comparison_final_lineage->planned_graph_identity = graph.identity();
+    options.comparison_final_lineage->node_origins = std::move(current_origins);
   }
   return StepPlan{
       .primitive_digest = primitive_digest,
@@ -869,6 +1599,16 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
           options.owner_products ? options.owner_products->digest() : base::Sha256Digest{},
       .invariant = std::move(invariant),
       .prologue = std::move(prologue.steps)};
+}
+
+std::expected<StepPlan, PlanFailure> Plan(std::expected<ir::Graph, ir::VerifyError> primitive,
+                                          const execution::Registry& registry,
+                                          const DeviceFacts& device, const Policy& policy,
+                                          const PlanOptions& options) {
+  if (!primitive) {
+    return Failed(ErrorOf(primitive.error(), PlanError::kPattern), primitive.error().detail);
+  }
+  return Plan(std::move(*primitive), registry, device, policy, options);
 }
 
 std::expected<std::uint64_t, std::string> PlanReportInventory::Layout(
@@ -1006,14 +1746,14 @@ std::expected<PlanReportInventory, std::string> PlanReportInventory::Capture(
     const StepPlan& plan, const execution::Registry& registry, std::uint64_t bytes) {
   // Reject a stale measurement before allocating or filling anything.
   auto measured = StorageBytes(plan, registry);
-  if (!measured) return std::unexpected(measured.error());
+  if (!measured) return std::unexpected(std::move(measured.error()));
   if (*measured != bytes) return std::unexpected("the paid plan report layout changed");
   PlanReportInventory report;
   report.storage_.reset(new (std::nothrow) std::byte[static_cast<std::size_t>(bytes)]);
   if (!report.storage_) return std::unexpected("allocating the paid plan report inventory failed");
   report.storage_bytes_ = bytes;
   auto filled = report.Layout(plan, registry, report.storage_.get());
-  if (!filled) return std::unexpected(filled.error());
+  if (!filled) return std::unexpected(std::move(filled.error()));
   return report;
 }
 

@@ -28,7 +28,7 @@ std::expected<void, std::string> WriteRows(std::span<std::byte> out,
 }
 
 // The values of an input the step's shape decides (step_program.h
-// kOutputRows, kStoreCells, kMask), by components/step.h InputValues' rules.
+// kOutputRows, kStoreCells, kMask/kMaskF32), by components/step.h InputValues' rules.
 std::expected<void, std::string> WriteComputed(const kn::InputSlot& in, const pl::StepShape& shape,
                                                std::span<std::byte> out) {
   namespace co = llmp::components;
@@ -75,23 +75,30 @@ std::expected<void, std::string> WriteComputed(const kn::InputSlot& in, const pl
       input.kind = in.outputs != 0 ? co::InputKind::kOutputCells : co::InputKind::kStoreCells;
       width = sizeof(std::int64_t);
       break;
-    case kn::InputKind::kMask: {
+    case kn::InputKind::kMask:
+    case kn::InputKind::kMaskF32: {
+      const std::uint64_t element_bytes = in.kind == kn::InputKind::kMaskF32 ? 4 : 2;
       if (in.segment >= shape.segments.size()) return Error("a mask names no segment");
       const auto& segment = shape.segments[in.segment];
       std::uint64_t output_cells = 0, bytes = 0;
       if (in.mask_rows < segment.rows ||
           __builtin_mul_overflow(in.read, std::uint64_t{in.mask_rows}, &output_cells) ||
-          __builtin_mul_overflow(output_cells, std::uint64_t{sizeof(std::uint16_t)}, &bytes) ||
-          bytes != out.size())
+          __builtin_mul_overflow(output_cells, element_bytes, &bytes) || bytes != out.size())
         return Error("a mask's slot does not hold its cells and rows");
-      constexpr std::uint16_t kHidden = 0xFC00;
-      for (std::size_t i = 0; i < out.size(); i += sizeof(kHidden))
-        std::memcpy(out.data() + i, &kHidden, sizeof(kHidden));
+      constexpr std::uint16_t hidden_half = 0xFC00;
+      constexpr float hidden_float = -std::numeric_limits<float>::infinity();
+      for (std::size_t i = 0; i < out.size(); i += element_bytes) {
+        if (element_bytes == sizeof(float))
+          std::memcpy(out.data() + i, &hidden_float, sizeof(hidden_float));
+        else
+          std::memcpy(out.data() + i, &hidden_half, sizeof(hidden_half));
+      }
       struct Mask {
         const kn::InputSlot& slot;
         const pl::Segment& segment;
         std::span<std::byte> into;
-      } mask{in, segment, out};
+        std::size_t element_bytes;
+      } mask{in, segment, out, static_cast<std::size_t>(element_bytes)};
       co::InputValueSink sink(&mask, [](void* context, std::size_t cell, std::int64_t position) {
         auto& m = *static_cast<Mask*>(context);
         if (cell >= m.slot.read) return false;
@@ -100,9 +107,9 @@ std::expected<void, std::string> WriteComputed(const kn::InputSlot& in, const pl
           const bool seen = position >= 0 && (m.slot.ahead || position <= at) &&
                             (m.slot.window == 0 || at - position < std::int64_t{m.slot.window});
           if (seen) {
-            const std::uint16_t value = 0;
-            std::memcpy(m.into.data() + (std::uint64_t{row} * m.slot.read + cell) * sizeof(value),
-                        &value, sizeof(value));
+            const std::uint32_t value = 0;
+            std::memcpy(m.into.data() + (std::uint64_t{row} * m.slot.read + cell) * m.element_bytes,
+                        &value, m.element_bytes);
           }
         }
         return true;

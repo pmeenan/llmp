@@ -720,8 +720,12 @@ class GgmlBiasedRouteGpu : public ::testing::Test {
   void SetUp() override {
     static_assert(sizeof(ir::Node) <= 160 && sizeof(ir::TensorDesc) <= 160);
     static_assert(sizeof(void*) == 8 && sizeof(std::string) <= 32);
-    static_assert(sizeof(kg::PlanStep) <= 128 && sizeof(kg::LoweredStep) <= 1024);
-    static_assert(sizeof(kg::LoweredLeaf) <= 128 && sizeof(kn::TensorUse) <= 128);
+    // The 16-plan fixture allowance absorbs at most 16 KiB above the prior
+    // LoweredStep cap, within the existing 128 MiB retained-fixture charge.
+    static_assert(sizeof(kg::PlanStep) <= 128 && sizeof(kg::LoweredStep) <= 2048);
+    // The enlarged owned leaf facts add at most 128 KiB for sixteen
+    // 256-leaf plans, covered by the same retained-fixture charge.
+    static_assert(sizeof(kg::LoweredLeaf) <= 160 && sizeof(kn::TensorUse) <= 128);
     constexpr std::uint64_t budget = std::uint64_t{5} << 30;
     constexpr std::uint64_t charge = (std::uint64_t{4} << 30) + (128U << 20);
     ASSERT_LE(ggml_tensor_overhead(), 4096U);
@@ -1921,7 +1925,9 @@ TEST_F(GgmlLowerDsv4Gpu, CompressorMaskedDummyMatchesFallbackAndExistingHelper) 
   std::erase_if(implementations, [](const auto& i) { return i.name == kg::kDsv4CompressName; });
   auto primitive = ex::Registry::Create(std::move(implementations));
   ASSERT_TRUE(primitive);
-  auto* fast = Lower(graph->Clone(), inputs, shape);
+  auto fast_graph = graph->Clone();
+  ASSERT_TRUE(fast_graph) << fast_graph.error().detail;
+  auto* fast = Lower(std::move(*fast_graph), inputs, shape);
   auto* fallback = Lower(std::move(*graph), inputs, shape, &*primitive);
   ASSERT_NE(fast, nullptr);
   ASSERT_NE(fallback, nullptr);
@@ -2056,7 +2062,9 @@ TEST_F(GgmlLowerDsv4Gpu, CompressorReadsPitchedOwnerViewsAcrossBlockBoundaries) 
     auto primitive = ex::Registry::Create(std::move(implementations));
     ASSERT_TRUE(primitive);
     for (const auto* selected : {&*registry, &*primitive}) {
-      auto* step = Lower(graph->Clone(), inputs, shape, selected);
+      auto clone = graph->Clone();
+      ASSERT_TRUE(clone) << clone.error().detail;
+      auto* step = Lower(std::move(*clone), inputs, shape, selected);
       ASSERT_NE(step, nullptr);
       for (std::size_t i = 0; i < roots.size(); ++i) Upload(Leaf(*step, roots[i]), values[i]);
       Upload(Leaf(*step, ids), reads);

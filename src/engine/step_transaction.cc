@@ -895,6 +895,7 @@ std::expected<void, StepRefusal> StepTransaction::Stage(Frame& frame) {
       case kn::InputKind::kOutputRows:
       case kn::InputKind::kStoreCells:
       case kn::InputKind::kMask:
+      case kn::InputKind::kMaskF32:
       case kn::InputKind::kBlockPositions:
       case kn::InputKind::kVisibleCells:
       case kn::InputKind::kHostComputed:
@@ -1399,6 +1400,11 @@ void StepTransaction::Queue(Frame& frame) {
           }
           saves_queued = true;
         }
+        if (auto generated = program.TryUpdateGeneratedInputs(shape); !generated) {
+          failure = generated.error().detail;
+          unknown = generated.error().error == kn::StepError::kUnknown;
+          return unknown ? sc::JobResult::kUnknown : sc::JobResult::kNotStarted;
+        }
         const StepQueued q = program.routed()
                                  ? runner_.QueueRoutedPrefix(native)
                                  : frame.execution.Queue(runs, *copies, {}, program, *outputs,
@@ -1430,6 +1436,13 @@ void StepTransaction::Queue(Frame& frame) {
             }
           }
         if (upcoming != nullptr) {
+          if (auto generated =
+                  upcoming->planned->program->TryUpdateGeneratedInputs(upcoming->key.shape);
+              !generated) {
+            failure = generated.error().detail;
+            unknown = generated.error().error == kn::StepError::kUnknown;
+            return unknown ? sc::JobResult::kUnknown : sc::JobResult::kFailed;
+          }
           auto captured = runner_.programs_.runs().CaptureAhead(
               upcoming->runs[0], upcoming_copies, *upcoming->planned->program, upcoming_outputs,
               runner_.graph_stats_, native);

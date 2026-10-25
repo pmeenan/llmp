@@ -51,9 +51,47 @@ struct FusionComparison {
   std::uint32_t samples = 0;
   std::string provenance;  // checked-in aggregate report and source receipt
 };
+
+enum class RecipeRunMode : std::uint8_t { kFull, kWarm };
+struct RecipeArmIdentity {
+  base::Sha256Digest planned_region{};
+  base::Sha256Digest physical_recipe{};
+  base::Sha256Digest backend_recipe{};
+  base::Sha256Digest backend_build{};
+  base::Sha256Digest backend_selection{};
+  bool operator==(const RecipeArmIdentity&) const = default;
+};
+struct RecipeComparisonKey {
+  std::uint32_t version = 1;
+  std::uint32_t region_canonicalizer = 2;
+  ir::OpKey discovery_operation{};
+  RecipeRunMode mode = RecipeRunMode::kFull;
+  base::Sha256Digest subject{};
+  base::Sha256Digest boundary{};
+  base::Sha256Digest policy{};
+  base::Sha256Digest device{};
+  base::Sha256Digest selection_environment{};
+  base::Sha256Digest preparation_domain{};
+  RecipeArmIdentity incumbent{};
+  RecipeArmIdentity alternative{};
+  bool operator==(const RecipeComparisonKey&) const = default;
+};
+enum class RecipeComparisonKind : std::uint8_t { kLatency, kRejectIncumbentQuality };
+struct RecipeComparison {
+  RecipeComparisonKey key{};
+  std::uint64_t incumbent_ns = 0;
+  std::uint64_t alternative_ns = 0;
+  std::uint32_t samples = 0;
+  base::Sha256Digest protocol{};
+  base::Sha256Digest receipt{};
+  std::string provenance;
+  std::string shape_class;
+  RecipeComparisonKind kind = RecipeComparisonKind::kLatency;
+};
 struct RankData {
   std::vector<DeviceMeasuredRank> records{};
   std::vector<FusionComparison> fusions{};
+  std::vector<RecipeComparison> recipe_comparisons{};
 };
 std::optional<std::uint32_t> DeviceRank(const CapabilityQuery& query,
                                         std::string_view implementation,

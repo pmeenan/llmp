@@ -108,6 +108,12 @@ class LaunchContext {
   // add_gr launches it.
   std::expected<void, KernelFailure> Bias(const BiasOperands& operands);
 
+  // The native input conversion for a source F32 product, on this context's
+  // stream and completion/fault contract, into the call's accounted scratch.
+  std::expected<void, KernelFailure> ConvertInputF32(std::uint64_t source,
+                                                     std::uint64_t destination,
+                                                     std::uint64_t elements);
+
   // Uploads up to 8 64-bit pointers/words to device memory on this context's
   // stream using a small kernel launch, without pageable host-staging stalls.
   std::expected<void, KernelFailure> WritePointerTable(std::uint64_t dst_device_ptr,

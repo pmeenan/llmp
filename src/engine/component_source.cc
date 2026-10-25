@@ -581,20 +581,34 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
   if (!ruled) return std::unexpected(std::move(ruled.error()));
   const planner::Policy step_policy = std::move(*ruled);
   const GraphBuildIO io{step->graph, step->graph.inputs(), step->graph.outputs(), step->weights};
+  planner::PlanOptions plan_options{.row_invariant = shape.row_invariant,
+                                    .capturable = o_.require_capture,
+                                    .staged = std::move(staged),
+                                    .lanes = std::move(lane_tags),
+                                    .on_stream = Backend().on_stream,
+                                    .written = Backend().written,
+                                    .within = Backend().within,
+                                    .shape = &shape,
+                                    .state_spans = state_spans,
+                                    .alignment_staged = std::move(aligned_staged),
+                                    .observed_bound_model = o_.bound_digest,
+                                    .observed_model_spec = semantic_identity_};
+  if (!Backend().registry->ranks().recipe_comparisons.empty()) {
+    auto adopted = BuildCumulativeRecipeProgram(
+        io, *step, shape, o_.stage, o_.bindings.state->context, Backend(), step_policy, addresses,
+        std::move(plan_options), o_.validate_program, o_.backend.owner, resources);
+    if (adopted) {
+      if (compiler) {
+        auto held = std::make_shared<SharedCompilerAllowance::Use>(std::move(*compiler));
+        if (!(**adopted).HoldConstruction(std::move(held)))
+          return std::unexpected("lowered program already has a construction owner");
+      }
+      return std::move(*adopted);
+    }
+    return std::unexpected(std::move(adopted.error()));
+  }
   auto program = BuildComponentProgram(
-      io, Backend(), step_policy, addresses,
-      {.row_invariant = shape.row_invariant,
-       .capturable = o_.require_capture,
-       .staged = std::move(staged),
-       .lanes = std::move(lane_tags),
-       .on_stream = Backend().on_stream,
-       .written = Backend().written,
-       .within = Backend().within,
-       .shape = &shape,
-       .state_spans = state_spans,
-       .alignment_staged = std::move(aligned_staged),
-       .observed_bound_model = o_.bound_digest,
-       .observed_model_spec = semantic_identity_},
+      io, Backend(), step_policy, addresses, std::move(plan_options),
       kernels::TokenLowerInput{*step, shape, o_.bindings.state->context, state_spans},
       o_.validate_program, o_.backend.owner, resources);
   if (program && compiler) {

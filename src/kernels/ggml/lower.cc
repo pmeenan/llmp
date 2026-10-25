@@ -53,7 +53,9 @@
 #include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/set_rows_group.h"
 #include "kernels/ggml/tensors.h"
+#include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
+#include "planner/alternative.h"
 #include "planner/placement.h"
 #include "planner/plan.h"
 #include "planner/select.h"
@@ -484,6 +486,7 @@ class Lowering {
   // without it (the producer reads the whole positions input; a host mask
   // reads nothing on the device).
   bool MaskOnly(TensorId t) const;
+  std::expected<void, KernelFailure> AuthenticateUnstoredInputs() const;
 
   // The fast forms (slice G3b): a fused node llmpalooza's kernels run over
   // GGML tensors (one or several custom nodes, not the primitive nodes its
@@ -612,6 +615,7 @@ class Lowering {
   std::map<std::uint32_t, NodeId> folded_;  // a preparation: the node whose kernel writes it
   std::set<const ggml_tensor*> extra_;      // the lowering's own nodes (a verify's saves)
   std::vector<std::pair<ggml_tensor*, const co::CommitSave*>> save_leaves_;
+  std::uint64_t save_aux_extent_ = 0;  // end of the freshly laid-out save-copy tail
   std::vector<std::pair<ggml_tensor*, const co::StepInput*>> external_;  // a commit's saved rows
   // CUTLASS expert slabs by (stage, layer): one GGML tensor for a layer's
   // gate-and-up and down arrays.
@@ -867,16 +871,40 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
              root.ne(0) == td.ne(0) * td.ne(2) && td.nb[0] == (q8 ? 34 : 2) &&
              td.nb[1] == root.nb[1] && td.nb[2] == head_bytes;
     };
-    if (!positions(n.source(8), segment, false) || pool == nullptr ||
-        pool->key != ir::Fused(FusedKind::kMeanPoolNormRopeStore) ||
-        pool->Params<ir::BlockPoolParams>().ratio != ap.ratio ||
-        p_.tensor(pool->out[0]).segment != segment || p_.root(pool->src[5]) != p_.root(n.src[8]) ||
-        p_.tensor(pool->src[5]).view_offset != p_.tensor(n.src[8]).view_offset ||
-        p_.tensor(pool->src[5]).shape().ne != p_.tensor(n.src[8]).shape().ne ||
+    // Selection consumes the current block state, regardless of how its values
+    // were computed. Its ordering source is either the native pool or the
+    // latest canonical indexed store, never an arbitrary alias/write.
+    const bool native_pool =
+        pool != nullptr && pool->key == ir::Fused(FusedKind::kMeanPoolNormRopeStore) &&
+        pool->Params<ir::BlockPoolParams>().ratio == ap.ratio &&
+        p_.tensor(pool->out[0]).segment == segment && p_.root(pool->src[5]) == p_.root(n.src[8]) &&
+        p_.tensor(pool->src[5]).view_offset == p_.tensor(n.src[8]).view_offset &&
+        p_.tensor(pool->src[5]).shape().ne == p_.tensor(n.src[8]).shape().ne &&
+        p_.tensor(pool->src[3]).ne(0) == 4 * blocks.ne(1);
+    const auto indexed_blocks = [&] {
+      if (pool == nullptr || pool->key != ir::Primitive(Op::kCacheStore) ||
+          pool->src[0] != block_root || p_.tensor(pool->out[0]).segment != segment)
+        return false;
+      const auto state = state_.find(primitive_.at(block_root.v).v);
+      const auto* indices = input(pool->src[2]);
+      const auto& root = p_.tensor(block_root);
+      const auto& rows = p_.tensor(pool->src[1]);
+      return state != state_.end() && !state->second->borrowed &&
+             state->second->ref.segment == segment && root.format.encoding == Encoding::kBF16 &&
+             root.ne(2) == 1 && root.ne(3) == 1 && indices != nullptr &&
+             indices->kind == co::InputKind::kStoreCells && indices->segment == segment &&
+             indices->read == blocks.ne(1) && plain_cells(indices->cells, root.ne(1), ap.ratio) &&
+             pool->src[2] == p_.root(pool->src[2]) &&
+             p_.tensor(pool->src[2]).format.encoding == Encoding::kI64 &&
+             p_.tensor(pool->src[2]).shape().ne == ir::ShapeOf({blocks.ne(1)}).ne &&
+             rows.shape().ne == ir::ShapeOf({root.ne(0), blocks.ne(1)}).ne &&
+             rows.format.encoding == Encoding::kBF16;
+    };
+    if (!positions(n.source(8), segment, false) || (!native_pool && !indexed_blocks()) ||
         blocks.view_offset != 0 || blocks.nb[0] != 2 || blocks.nb[1] != blocks.ne(0) * 2 ||
         blocks.ne(2) != 1 || blocks.ne(3) != 1 || cells != blocks.ne(1) * ap.ratio ||
-        p_.tensor(pool->src[3]).ne(0) != 4 * blocks.ne(1) || !canonical_cache(n.src[1]) ||
-        !canonical_cache(n.src[2]) || keys.format.encoding != values.format.encoding ||
+        !canonical_cache(n.src[1]) || !canonical_cache(n.src[2]) ||
+        keys.format.encoding != values.format.encoding ||
         p_.tensor(p_.root(n.src[1])).ne(1) != p_.tensor(p_.root(n.src[2])).ne(1) ||
         values.shape().ne != keys.shape().ne ||
         !mask(n.src[5], segment, cells, p_.tensor(p_.root(n.src[1])).ne(1), 0, Encoding::kF32) ||
@@ -1024,6 +1052,43 @@ bool Lowering::MaskOnly(TensorId t) const {
   return !readers.empty() && std::ranges::all_of(readers, [&](NodeId r) {
     return p_.node(r).key == ir::Primitive(Op::kMaskBuild);
   });
+}
+
+std::expected<void, KernelFailure> Lowering::AuthenticateUnstoredInputs() const {
+  const auto* boundary = in_.comparison ? in_.comparison->expected_boundary : nullptr;
+  if (!boundary || boundary->unstored_inputs().empty()) return {};
+  if (!in_.token || boundary->source_identity() != g_.identity() ||
+      boundary->source_digest() != g_.Digest())
+    return Refused("typed unstored input lacks the actual token/source owner");
+  for (const auto& declaration : boundary->unstored_inputs()) {
+    const TensorId original = declaration.original_input;
+    if (declaration.reason !=
+            components::ComparisonUnstoredInputReason::kCellPositionsFoldedIntoMasks ||
+        !original.valid() || original.v >= g_.tensor_count() || g_.root(original) != original ||
+        !std::ranges::contains(g_.inputs(), original) ||
+        std::ranges::count(in_.token->step.inputs, original, &co::StepInput::tensor) != 1)
+      return Refused("typed unstored input differs from the source interface");
+    const auto input = std::ranges::find(in_.token->step.inputs, original, &co::StepInput::tensor);
+    if (input == in_.token->step.inputs.end() || input->kind != co::InputKind::kCellPositions ||
+        original.v >= in_.plan.tensors.size())
+      return Refused("typed unstored input is not the declared CellPositions token input");
+    const TensorId planned = in_.plan.tensors[original.v];
+    if (!planned.valid() || planned.v >= p_.tensor_count() ||
+        !std::ranges::contains(p_.inputs(), planned))
+      return Refused("typed unstored input is absent from the actual planned interface");
+    const NodeId producer = p_.producer(planned);
+    if (!producer.valid() || producer.v >= p_.nodes().size() ||
+        p_.node(producer).key != ir::Primitive(Op::kInput) ||
+        primitive_.at(planned.v) != original || made_.at(planned.v) != nullptr ||
+        !MaskOnly(planned))
+      return Refused("typed unstored input was not omitted solely for actual mask readers");
+    if (std::ranges::any_of(input_leaves_,
+                            [&](const auto& leaf) { return leaf.second.tensor == original; }) ||
+        std::ranges::any_of(out_.leaves,
+                            [&](const LoweredLeaf& leaf) { return leaf.primitive == original; }))
+      return Refused("typed unstored input has an actual physical leaf or input slot");
+  }
+  return {};
 }
 
 std::expected<void, KernelFailure> Lowering::Matches(const ir::TensorDesc& want,
@@ -1467,6 +1532,10 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Mask(const ir::Graph& graph
     return Refused("a block mask");
   const ir::TensorDesc& out = graph.tensor(n.out[0]);
   const ir::TensorDesc& rows = graph.tensor(n.src[0]);
+  if (out.format.encoding != Encoding::kF16 && out.format.encoding != Encoding::kF32)
+    return Refused("a mask not in F16 or F32");
+  const bool f32 = out.format.encoding == Encoding::kF32;
+  const ggml_type mask_type = f32 ? GGML_TYPE_F32 : GGML_TYPE_F16;
   // The cells' positions input names the segment and its cells.
   const TensorId cells_tensor = &graph == &p_ ? primitive_.at(n.src[1].v) : n.src[1];
   const auto held = inputs_.find(cells_tensor.v);
@@ -1481,16 +1550,15 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Mask(const ir::Graph& graph
   const bool ahead = p.kind == ir::MaskKind::kAhead;
   const std::uint32_t window = p.kind == ir::MaskKind::kWindow || ahead ? p.window : 0U;
   if (!options_.device_masks || cells.cells.block != 0) {
-    if (out.format.encoding != Encoding::kF16) return Refused("a host mask not in F16");
     if (frozen && !options_.frozen_host_masks) {
       return Refused("a frozen read's host mask without a stager that builds it");
     }
     std::array<std::int64_t, 4> ne{static_cast<std::int64_t>(out.ne(0)),
                                    static_cast<std::int64_t>(out.ne(1)), 1, 1};
-    ggml_tensor* t = ggml_new_tensor(c_, GGML_TYPE_F16, 2, ne.data());
+    ggml_tensor* t = ggml_new_tensor(c_, mask_type, 2, ne.data());
     const InputSlot slot{.tensor = &graph == &p_ ? primitive_.at(n.out[0].v) : n.out[0],
                          .segment = cells.segment,
-                         .kind = InputKind::kMask,
+                         .kind = f32 ? InputKind::kMaskF32 : InputKind::kMask,
                          .cells = {.capacity = cells.cells.capacity,
                                    .ring = cells.cells.ring,
                                    .frozen = frozen,
@@ -1504,6 +1572,15 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Mask(const ir::Graph& graph
     input_leaves_.emplace_back(t, slot);
     out_.leaves.push_back({.tensor = t, .primitive = slot.tensor});
     return t;
+  }
+  // exact_rows constrains the IR request; when false, the request may still
+  // have exactly the query rows. Preserve that declared shape rather than
+  // introducing padding merely because the flag permits it.
+  CausalMaskRows row_layout = CausalMaskRows::kExact;
+  if (out.ne(1) != rows.ne(0)) {
+    if (rows.ne(0) > INT32_MAX - 31 || out.ne(1) != Round(rows.ne(0), 32))
+      return Refused("a device mask requires exact rows or its declared 32-row padding");
+    row_layout = CausalMaskRows::kPad32;
   }
   // The producer reads the whole positions input from the segment's first
   // row (the IR's mask reads a view of it).
@@ -1527,25 +1604,26 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Mask(const ir::Graph& graph
     return CausalRingMask(c_, positions, static_cast<std::int64_t>(out.ne(0)),
                           to_int(rows.view_offset / sizeof(std::int32_t)), to_int(rows.ne(0)),
                           to_int(cells.cells.capacity), to_int(window),
-                          to_int(cells.cells.capacity), CausalMaskRows::kExact, GGML_TYPE_F16,
+                          to_int(cells.cells.capacity), row_layout, mask_type,
                           frozen ? MaskPolicy::kFrozen : MaskPolicy::kCausal);
   }
   ggml_tensor* positions = resolve(rows.view_of);
   if (positions == nullptr) return Refused("a mask's positions were not made");
   if (frozen || ahead) {
     if (frozen && ahead) return Refused("an ahead mask over frozen state");
-    ggml_tensor* mask = CausalRingMask(
-        c_, positions, static_cast<std::int64_t>(out.ne(0)),
-        to_int(rows.view_offset / sizeof(std::int32_t)), to_int(rows.ne(0)),
-        to_int(cells.cells.capacity), to_int(window), to_int(in_.token->context),
-        CausalMaskRows::kPad32, GGML_TYPE_F16, ahead ? MaskPolicy::kBlock : MaskPolicy::kFrozen);
+    ggml_tensor* mask =
+        CausalRingMask(c_, positions, static_cast<std::int64_t>(out.ne(0)),
+                       to_int(rows.view_offset / sizeof(std::int32_t)), to_int(rows.ne(0)),
+                       to_int(cells.cells.capacity), to_int(window), to_int(in_.token->context),
+                       row_layout, mask_type, ahead ? MaskPolicy::kBlock : MaskPolicy::kFrozen);
     if (ahead && !CausalMaskFits(mask))
       return Refused("an ahead mask exceeds the device block mask's geometry");
     return mask;
   }
-  return CausalMask(c_, positions, static_cast<std::int64_t>(out.ne(0)),
-                    to_int(rows.view_offset / sizeof(std::int32_t)), to_int(rows.ne(0)),
-                    to_int(cells.cells.capacity), to_int(window), to_int(in_.token->context));
+  return CausalRingMask(c_, positions, static_cast<std::int64_t>(out.ne(0)),
+                        to_int(rows.view_offset / sizeof(std::int32_t)), to_int(rows.ne(0)),
+                        to_int(cells.cells.capacity), to_int(window), to_int(in_.token->context),
+                        row_layout, mask_type);
 }
 
 std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph, const ir::Node& n,
@@ -1724,10 +1802,12 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
       std::array<std::int64_t, 4> dims{ne(0), ne(1), ne(2), ne(3)};
       const auto type = TypeOf(out.format.encoding);
       if (!type) return Refused("a fill of no GGML type");
-      ggml_tensor* t = ggml_fill(c_, ggml_new_tensor(c_, *type, 4, dims.data()),
-                                 n.Params<ir::FillParams>().value);
-      // As the M3 builders' fills were: no shape leaf.
-      t->src[0] = nullptr;
+      // A fill reads no source. Construct its sole output directly rather
+      // than retaining ggml_fill's unused shape-template descriptor.
+      ggml_tensor* t = ggml_new_tensor(c_, *type, 4, dims.data());
+      t->op = GGML_OP_FILL;
+      const float value = n.Params<ir::FillParams>().value;
+      std::memcpy(t->op_params, &value, sizeof(value));
       return t;
     }
     case Op::kGlu: {
@@ -1756,6 +1836,21 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
     }
     case Op::kRope: {
       const auto p = n.Params<ir::RopeParams>();
+      if (!p.table && p.mode == ir::RopeMode::kInterleavedMulti) {
+        if (p.inverse || p.rotated_dims != UINT32_MAX)
+          return Refused("interleaved multi RoPE requires its forward complete rotation");
+        std::array<int, GGML_MROPE_SECTIONS> sections{};
+        for (std::size_t i = 0; i < sections.size(); ++i) {
+          if (p.sections[i] > INT32_MAX) return Refused("rotation section exceeds native indexing");
+          sections[i] = static_cast<int>(p.sections[i]);
+        }
+        return ggml_rope_set_offset(
+            ggml_rope_multi(c_, s[0], s[1], s[2], static_cast<int>(p.dims), sections.data(),
+                            GGML_ROPE_TYPE_IMROPE, static_cast<int>(p.original_context), p.base,
+                            p.scale, p.llama3 ? -1.0F : p.ext_factor, p.attn_factor, p.beta_fast,
+                            p.beta_slow),
+            static_cast<int>(p.offset));
+      }
       if (p.table || (p.mode != ir::RopeMode::kNeox && p.mode != ir::RopeMode::kNormal)) {
         return Refused("a rotation other than NORMAL or NEOX over positions");
       }
@@ -2343,7 +2438,10 @@ std::expected<void, KernelFailure> Lowering::MakeNode(NodeId id) {
     // The cache's latest store, which a kernel reading the stored cache
     // takes as its source (llmp.qsa.pool, llmp.qsa.attn).
     ggml_tensor* cache = made_.at(p_.root(n.src[0]).v);
-    if (cache != nullptr) stores_[cache] = *t;
+    if (cache != nullptr) {
+      stores_[cache] = *t;
+      pools_.erase(cache);
+    }
   }
   return {};
 }
@@ -2484,6 +2582,19 @@ std::expected<void, KernelFailure> Lowering::Bind() {
     const std::uint64_t address = save_at(s->layer, s->component, s->what, s->segment);
     if (address == 0 && !addresses.measuring()) return Refused("a verify's save has no buffer");
     TensorArena::Bind(t, address != 0 ? address : placeholder(t));
+    const auto saved = std::ranges::find(out_.saves, t, &SavedLeaf::tensor);
+    if (saved == out_.saves.end() || std::ranges::count(out_.saves, t, &SavedLeaf::tensor) != 1)
+      return Refused("a verify's save lost its retained comparison record");
+    saved->owner_range_current = false;
+    if (saved->owner_range && addresses.save_range && address != 0) {
+      const auto current = addresses.save_range(s->layer, s->component, s->what, s->segment);
+      const auto& range = *saved->owner_range;
+      const auto required = static_cast<std::uint64_t>(ggml_nbytes(t));
+      saved->owner_range_current =
+          current && *current == range && range.base == address && range.bytes >= required &&
+          range.bytes != 0 && range.alignment != 0 && std::has_single_bit(range.alignment) &&
+          address % range.alignment == 0 && range.base <= UINT64_MAX - range.bytes;
+    }
   }
   for (const auto& [t, input] : external_) {
     state_tensors_.insert(t);
@@ -2533,6 +2644,44 @@ std::expected<void, KernelFailure> Lowering::Bind() {
     }
     t->data = result->data;
   }
+  // CommitSave may need a contiguous copy of a strided source. The planner
+  // does not own this synthetic GGML descriptor, so place each exact CONT
+  // result in a checked tail after the current activation placement. Bind is
+  // called for provisional and finalized layouts; always rebuild from the
+  // fresh extent instead of accumulating offsets.
+  std::uint64_t save_cursor = placement_.extent;
+  const auto align_save = [](std::uint64_t value) -> std::optional<std::uint64_t> {
+    if (value > UINT64_MAX - 255) return {};
+    return (value + 255) & ~std::uint64_t{255};
+  };
+  for (auto& save : out_.saves) {
+    save.scratch_offset = 0;
+    save.scratch_bytes = 0;
+    if (!save.source.valid() || save.source.v >= made_.size() || !save.packed)
+      return Refused("a saved source lost its actual packed descriptor");
+    const auto* source = made_.at(save.source.v);
+    if (!source) return Refused("a saved source descriptor was not made");
+    if (save.packed == source) continue;
+    if (save.packed->op != GGML_OP_CONT || save.packed->src[0] != source ||
+        save.packed->view_src != nullptr)
+      return Refused("a saved nonpacked source changed its exact CONT copy");
+    const auto offset = align_save(save_cursor);
+    const auto size = static_cast<std::uint64_t>(ggml_nbytes(save.packed));
+    const auto allocation = align_save(size);
+    std::uint64_t end = 0, address = 0;
+    if (!offset || !allocation || *allocation == 0 ||
+        __builtin_add_overflow(*offset, *allocation, &end) ||
+        __builtin_add_overflow(base, *offset, &address) ||
+        __builtin_add_overflow(address, size, &address))
+      return Refused("a saved CONT activation-tail extent overflows");
+    if (!addresses.measuring() && end > addresses.activation_bytes)
+      return Refused("a saved CONT copy exceeds the paid activation region");
+    TensorArena::Bind(save.packed, base + *offset);
+    save.scratch_offset = *offset;
+    save.scratch_bytes = size;
+    save_cursor = end;
+  }
+  save_aux_extent_ = save_cursor;
   BindViews(out_.nodes);
   if (!addresses.measuring()) {
     for (const auto& fact : plan_.root_alignments) {
@@ -3384,6 +3533,63 @@ std::expected<void, KernelFailure> Lowering::EmitSchedule() {
         return Refused("unknown selected auxiliary custom operation");
     }
   };
+  // Host masks are fully prepared input leaves, even when their IR nodes
+  // occur after device work. Authenticate their original typed generators.
+  std::set<TensorId> host_overwritten;
+  for (const auto& node : p_.nodes())
+    ir::ForEachWrite(p_, node, [&](TensorId root) { host_overwritten.insert(root); });
+  const auto host_mask = [&](NodeId id) {
+    const auto& node = p_.node(id);
+    if (!in_.token || node.key != ir::Primitive(Op::kMaskBuild) || node.nout != 1 ||
+        node.nsrc != 2 || !launched_[id.v].empty())
+      return false;
+    const auto original = primitive_.at(node.out[0].v);
+    if (!original.valid() || original.v >= g_.tensor_count() ||
+        g_.node(g_.producer(original)).key != ir::Primitive(Op::kMaskBuild))
+      return false;
+    const auto position_root = p_.root(node.src[0]);
+    const auto cell_root = p_.root(node.src[1]);
+    const auto typed = [&](TensorId root, co::InputKind kind) -> const co::StepInput* {
+      if (p_.node(p_.producer(root)).key != ir::Primitive(Op::kInput) ||
+          host_overwritten.contains(root))
+        return nullptr;
+      const auto source = primitive_.at(root.v);
+      const auto found = inputs_.find(source.v);
+      return found != inputs_.end() && found->second->kind == kind ? found->second : nullptr;
+    };
+    const auto* positions = typed(position_root, co::InputKind::kPositions);
+    const auto* cells = typed(cell_root, co::InputKind::kCellPositions);
+    if (!positions || !cells || positions->segment != ir::kJoinedSegment ||
+        cells->segment >= in_.token->shape.segments.size())
+      return false;
+    const auto segment = cells->segment;
+    std::uint64_t first = 0;
+    for (std::size_t k = 0; k < segment; ++k) first += in_.token->shape.segments[k].rows;
+    const auto& rows = p_.tensor(node.src[0]);
+    const std::uint64_t joined_rows = in_.token->shape.rows();
+    std::uint64_t total_rows = 0, section_bytes = 0, root_bytes = 0, view_end = 0, row_bytes = 0;
+    if (joined_rows == 0 ||
+        __builtin_mul_overflow(joined_rows,
+                               std::uint64_t{std::max<std::uint32_t>(positions->sections, 1)},
+                               &total_rows) ||
+        __builtin_mul_overflow(joined_rows, std::uint64_t{4}, &section_bytes) ||
+        __builtin_mul_overflow(total_rows, std::uint64_t{4}, &root_bytes) ||
+        __builtin_mul_overflow(rows.ne(0), std::uint64_t{4}, &row_bytes) ||
+        __builtin_add_overflow(rows.view_offset, row_bytes, &view_end) || view_end > root_bytes ||
+        row_bytes > section_bytes - rows.view_offset % section_bytes)
+      return false;
+    if (rows.format.encoding != Encoding::kI32 || rows.nb[0] != 4 ||
+        rows.shape().ne != ir::ShapeOf({in_.token->shape.segments[segment].rows}).ne ||
+        rows.view_offset % section_bytes != first * 4 ||
+        p_.tensor(position_root).shape().ne != ir::ShapeOf({total_rows}).ne)
+      return false;
+    return std::ranges::count_if(input_leaves_, [&](const auto& leaf) {
+             return leaf.first == made_.at(node.out[0].v) && leaf.second.tensor == original &&
+                    leaf.second.segment == segment &&
+                    (leaf.second.kind == InputKind::kMask ||
+                     leaf.second.kind == InputKind::kMaskF32);
+           }) == 1;
+  };
   for (std::size_t i = 0; i < plan_.steps.size(); ++i) {
     if (consumed[i]) continue;
     const auto& s = plan_.steps[i];
@@ -3391,10 +3597,8 @@ std::expected<void, KernelFailure> Lowering::EmitSchedule() {
     auto want = wanted[i];
     if (want.empty()) {
       const bool quiet = std::ranges::all_of(s.nodes, [&](NodeId id) { return quiet_[id.v]; });
-      if (!quiet && std::ranges::any_of(gp.steps, [](const auto& prior) {
-            return prior.implementation != kCausalMaskName;
-          }))
-        return Refused("a host mask follows computed work");
+      if (!quiet && !std::ranges::all_of(s.nodes, host_mask))
+        return Refused("unrecognized selected work has no actual launch or typed host mask");
       launches_nothing[i] = true;
       step_gp_first[i] = step_gp_last[i] = gp.steps.size();
       continue;
@@ -3595,8 +3799,15 @@ std::expected<void, KernelFailure> Lowering::EmitSchedule() {
     if (r.first > r.last || r.last >= plan_.steps.size()) {
       return Refused("invalid planner region bounds");
     }
-    const std::size_t gp_first = step_gp_first[r.first];
-    const std::size_t gp_last = step_gp_last[r.last];
+    std::optional<std::size_t> first_launch, last_launch;
+    for (std::size_t k = r.first; k <= r.last; ++k) {
+      if (launches_nothing[k]) continue;
+      if (!first_launch) first_launch = k;
+      last_launch = k;
+    }
+    if (!first_launch) continue;  // Every member was authenticated above.
+    const std::size_t gp_first = step_gp_first[*first_launch];
+    const std::size_t gp_last = step_gp_last[*last_launch];
     if (gp_first > gp_last || gp_last >= gp.steps.size()) {
       return Refused("mapped region bounds out of range of lowered steps");
     }
@@ -3616,6 +3827,141 @@ std::expected<void, KernelFailure> Lowering::EmitSchedule() {
                                  .last = static_cast<std::uint32_t>(physical_prefix + r.last)});
   scheduled_ = true;
   out_.plan = std::move(gp);
+  if (in_.comparison_region) {
+    const auto& capture = *in_.comparison_region;
+    if (!capture.origins || !capture.final_nodes || !capture.seed ||
+        capture.seed->source_identity() != g_.identity() ||
+        capture.final_nodes->source_graph_identity != g_.identity() ||
+        capture.final_nodes->planned_graph_identity != p_.identity() ||
+        capture.final_nodes->node_origins.size() != p_.nodes().size())
+      return Refused("comparison region provenance changed during lowering");
+    LoweredStep::ComparisonOrigins relation;
+    relation.source_identity = g_.identity();
+    relation.planned_identity = p_.identity();
+    std::uint64_t total_origins = 0;
+    for (const auto set : capture.final_nodes->node_origins.values) {
+      const auto count = capture.origins->OriginCount(set);
+      if (!count ||
+          __builtin_add_overflow(total_origins, static_cast<std::uint64_t>(*count),
+                                 &total_origins) ||
+          total_origins > SIZE_MAX)
+        return Refused("comparison region origin inventory changed during lowering");
+    }
+    relation.offsets.reserve(p_.nodes().size() + 1);
+    relation.source_nodes.reserve(static_cast<std::size_t>(total_origins));
+    relation.membership.resize(g_.nodes().size());
+    relation.expansion.reserve(g_.nodes().size());
+    relation.planned_nodes.assign(p_.nodes().begin(), p_.nodes().end());
+    relation.planned_tensors.reserve(p_.tensor_count());
+    for (std::uint32_t i = 0; i < p_.tensor_count(); ++i)
+      relation.planned_tensors.push_back(p_.tensor(TensorId{i}));
+    if (in_.plan.tensors.size() != g_.tensor_count())
+      return Refused("comparison region original-to-planned map has the wrong size");
+    relation.original_to_planned = in_.plan.tensors;
+    relation.input_facts.reserve(g_.inputs().size());
+    for (const TensorId original_input : g_.inputs()) {
+      if (!original_input.valid() || original_input.v >= g_.tensor_count())
+        return Refused("comparison region source input inventory is invalid");
+      ComparisonInputFact fact{.original_tensor = original_input,
+                               .token_input = in_.token.has_value()};
+      if (in_.token) {
+        const auto at =
+            std::ranges::find(in_.token->step.inputs, original_input, &co::StepInput::tensor);
+        if (at != in_.token->step.inputs.end()) {
+          if (std::ranges::count(in_.token->step.inputs, original_input, &co::StepInput::tensor) !=
+              1)
+            return Refused("comparison region token input classification is ambiguous");
+          fact.token_kind = at->kind;
+          fact.token_segment = at->segment;
+          fact.token_component = at->component;
+          fact.token_read = at->read;
+        }
+      }
+      const auto* expected_boundary = in_.comparison ? in_.comparison->expected_boundary : nullptr;
+      if (expected_boundary) {
+        const auto declaration =
+            std::ranges::find(expected_boundary->unstored_inputs(), original_input,
+                              &components::ComparisonBoundaryUnstoredInput::original_input);
+        if (declaration != expected_boundary->unstored_inputs().end()) {
+          if (declaration->reason !=
+                  components::ComparisonUnstoredInputReason::kCellPositionsFoldedIntoMasks ||
+              !in_.token || !fact.token_kind || *fact.token_kind != co::InputKind::kCellPositions ||
+              original_input.v >= relation.original_to_planned.size())
+            return Refused("typed unstored input does not match the actual token contract");
+          const TensorId planned_input = relation.original_to_planned[original_input.v];
+          const NodeId input_producer = planned_input.valid() && planned_input.v < p_.tensor_count()
+                                            ? p_.producer(planned_input)
+                                            : NodeId{};
+          if (!planned_input.valid() || planned_input.v >= p_.tensor_count() ||
+              !std::ranges::contains(p_.inputs(), planned_input) || !input_producer.valid() ||
+              input_producer.v >= p_.nodes().size() ||
+              p_.node(input_producer).key != ir::Primitive(Op::kInput) ||
+              primitive_.at(planned_input.v) != original_input ||
+              made_.at(planned_input.v) != nullptr || !MaskOnly(planned_input) ||
+              std::ranges::any_of(
+                  input_leaves_,
+                  [&](const auto& leaf) { return leaf.second.tensor == original_input; }) ||
+              std::ranges::any_of(out_.leaves, [&](const LoweredLeaf& leaf) {
+                return leaf.primitive == original_input;
+              }))
+            return Refused("typed unstored input was not omitted solely for actual mask readers");
+          fact.unstored_reason = declaration->reason;
+          fact.unstored_verified = true;
+        }
+      }
+      relation.input_facts.push_back(fact);
+    }
+    if (in_.comparison)
+      relation.original_bindings.assign(in_.comparison->bindings.begin(),
+                                        in_.comparison->bindings.end());
+    relation.node_local.resize(p_.nodes().size());
+    relation.tensor_local.resize(p_.tensor_count());
+    relation.physical_local.resize(out_.descriptor_bound);
+    relation.lifetimes.resize(out_.descriptor_bound);
+    const auto value_port_capacity = ComparisonRegionEdgeOccurrenceCapacity(g_.nodes());
+    const auto access_capacity = ComparisonRegionAccessCapacity(p_.nodes());
+    if (!value_port_capacity || !access_capacity || *value_port_capacity > SIZE_MAX ||
+        *access_capacity > SIZE_MAX)
+      return Refused("comparison region value-port inventory overflows");
+    relation.value_ports.reserve(static_cast<std::size_t>(*value_port_capacity));
+    relation.accesses.reserve(static_cast<std::size_t>(*access_capacity));
+    for (const auto& seed_node : capture.seed->nodes()) {
+      const auto source = seed_node.original_node;
+      if (!source.valid() || source.v >= relation.membership.size() ||
+          relation.membership[source.v] != 0)
+        return Refused("comparison region seed has invalid or repeated source membership");
+      relation.membership[source.v] = 1;
+    }
+    relation.offsets.push_back(0);
+    for (const auto set : capture.final_nodes->node_origins.values) {
+      const auto count = capture.origins->OriginCount(set);
+      if (!count || *count > SIZE_MAX - relation.source_nodes.size())
+        return Refused("comparison region contains an invalid final origin set");
+      const auto old_size = relation.source_nodes.size();
+      relation.source_nodes.resize(old_size + *count);
+      std::size_t written = 0;
+      if (!capture.origins->CopyOrigins(
+              set, std::span<ir::NodeId>(relation.source_nodes).subspan(old_size, *count),
+              written) ||
+          written != *count)
+        return Refused("comparison region could not copy a complete final origin set");
+      for (std::size_t i = old_size; i < relation.source_nodes.size(); ++i) {
+        const auto node = relation.source_nodes[i];
+        if (!node.valid() || node.v >= g_.nodes().size())
+          return Refused("comparison region origin is outside its authenticated source graph");
+      }
+      relation.offsets.push_back(static_cast<std::uint64_t>(relation.source_nodes.size()));
+    }
+    out_.comparison_origins.emplace(std::move(relation));
+  } else if (in_.comparison && in_.comparison->scope == ComparisonProofScope::kWholeProgramNative &&
+             !out_.selected.empty()) {
+    LoweredStep::SelectedComparisonGraph facts;
+    facts.planned_nodes.assign(p_.nodes().begin(), p_.nodes().end());
+    facts.planned_tensors.reserve(p_.tensor_count());
+    for (std::uint32_t i = 0; i < p_.tensor_count(); ++i)
+      facts.planned_tensors.push_back(p_.tensor(TensorId{i}));
+    out_.comparison_selected_graph.emplace(std::move(facts));
+  }
   return {};
 }
 
@@ -4042,14 +4388,44 @@ std::expected<void, KernelFailure> Lowering::MakeSpecial(NodeId id, const ir::No
             p_.node(p_.producer(p_.root(n.src[0]))).key == ir::Primitive(Op::kWeight);
         const bool hc = weight && (from.key == ir::Fused(FusedKind::kHcPrep) ||
                                    from.key == ir::Fused(FusedKind::kScaledUnary));
+        ggml_tensor* weights = src(0);
+        ggml_tensor* values = src(1);
+        if (auto checked = Matches(w, weights, "BF16 product weights"); !checked)
+          return std::unexpected(checked.error());
+        if (auto checked = Matches(x, values, "BF16 product input"); !checked)
+          return std::unexpected(checked.error());
+        if (w.ne(0) > INT32_MAX || w.ne(1) > INT32_MAX || w.ne(2) != 1 || w.ne(3) != 1 ||
+            !ggml_is_contiguous(weights) || !ggml_is_contiguous(values))
+          return Refused("a BF16 product requires unbatched packed weights and packed input");
+        std::uint64_t columns = 1;
+        for (std::size_t axis = 1; axis < 4; ++axis)
+          if (__builtin_mul_overflow(columns, x.ne(axis), &columns) || columns > INT32_MAX)
+            return Refused("a BF16 product's flattened columns exceed the native extent");
+        const bool flatten = x.ne(2) != 1 || x.ne(3) != 1;
+        if (flatten) {
+          values = ggml_reshape_2d(c_, values, static_cast<std::int64_t>(x.ne(0)),
+                                   static_cast<std::int64_t>(columns));
+          Node(values, id);
+        }
         ggml_tensor* t =
-            hc ? GemvBf16(c_, src(0), src(1), out_type) : GemmBf16(c_, src(0), src(1), out_type);
+            hc ? GemvBf16(c_, weights, values, out_type) : GemmBf16(c_, weights, values, out_type);
         if (!hc && impl == kGemmBf16LtName) SetGemmBf16Pinned(t);
         if (hc && (plan_.owner_row_invariant ||
                    (selected_hc_ && (selected_hc_->low == id || selected_hc_->high == id))))
           SetGemvBf16Wide(t);
-        made_.at(n.out[0].v) = t;
         Node(t, id);
+        if (flatten) {
+          placed_root_[n.out[0].v] = t;
+          const auto& output = p_.tensor(n.out[0]);
+          t = ggml_reshape_4d(c_, t, static_cast<std::int64_t>(output.ne(0)),
+                              static_cast<std::int64_t>(output.ne(1)),
+                              static_cast<std::int64_t>(output.ne(2)),
+                              static_cast<std::int64_t>(output.ne(3)));
+          Node(t, id);
+        }
+        if (auto checked = Matches(p_.tensor(n.out[0]), t, "BF16 product output"); !checked)
+          return std::unexpected(checked.error());
+        made_.at(n.out[0].v) = t;
         return {};
       }
       if (x.format.encoding == Encoding::kQ8_1 && impl == "llmp.vecq.dense") {
@@ -4080,8 +4456,8 @@ std::expected<void, KernelFailure> Lowering::MakeSpecial(NodeId id, const ir::No
     }
     case Op::kConvert:
       if (impl == "ggml.convert") {
-        if (!ir::IsContiguous(p_.tensor(n.src[0])))
-          return Refused("a cast requires a packed source");
+        if (auto match = Matches(p_.tensor(n.src[0]), src(0), "a cast source"); !match)
+          return match;
         const auto& dims = out.shape().ne;
         const auto cast_type =
             out.format.encoding == Encoding::kF16 ? GGML_TYPE_F16 : GGML_TYPE_F32;
@@ -4089,6 +4465,7 @@ std::expected<void, KernelFailure> Lowering::MakeSpecial(NodeId id, const ir::No
             c_, cast_type, static_cast<std::int64_t>(dims[0]), static_cast<std::int64_t>(dims[1]),
             static_cast<std::int64_t>(dims[2]), static_cast<std::int64_t>(dims[3]));
         ggml_tensor* t = ggml_cpy(c_, src(0), destination);
+        if (auto match = Matches(out, t, "a cast result"); !match) return match;
         placed_root_[n.out[0].v] = destination;
         made_.at(n.out[0].v) = t;
         Node(destination, id);
@@ -4590,6 +4967,31 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       const auto heads = static_cast<std::int64_t>(xd.ne(1));
       const auto stride = static_cast<std::int64_t>(xd.nb.at(1) / sizeof(float));
       if (xd.view_offset != 0) return Refused("a head prep of a view past its root's start");
+      // The source may be packed heads [d, heads, tokens], or a strided
+      // head view over a wider product. QsaPrep consumes 2D token rows:
+      // neither a 3D parent's head count nor its padded row count is t.
+      if (auto matched = Matches(xd, x, "a head prep's logical head view"); !matched)
+        return std::unexpected(matched.error());
+      const auto rows = static_cast<std::int64_t>(xd.ne(2));
+      const std::size_t pitch = x->nb[2];
+      std::size_t head_span = 0, head_bytes = 0, view_bytes = 0;
+      if (x->type != GGML_TYPE_F32 || root->type != GGML_TYPE_F32 || rows <= 0 || heads <= 0 ||
+          d <= 0 || x->view_offs != 0 || x->nb[0] != sizeof(float) ||
+          x->nb[1] % sizeof(float) != 0 || pitch == 0 || pitch % sizeof(float) != 0 ||
+          (rows > 1 && pitch != xd.nb[2]) || !ggml_is_contiguous(root) ||
+          __builtin_mul_overflow(static_cast<std::size_t>(heads - 1), x->nb[1], &head_span) ||
+          __builtin_mul_overflow(static_cast<std::size_t>(d), sizeof(float), &head_bytes) ||
+          __builtin_add_overflow(head_span, head_bytes, &head_span) || head_span > pitch ||
+          __builtin_mul_overflow(static_cast<std::size_t>(rows), pitch, &view_bytes) ||
+          view_bytes > ggml_nbytes(root) ||
+          std::cmp_greater(pitch / sizeof(float), std::numeric_limits<std::int64_t>::max()))
+        return Refused("a head prep needs authenticated token strides within its owning root");
+      const auto row_values = static_cast<std::int64_t>(pitch / sizeof(float));
+      if (root->ne[0] != row_values || root->ne[1] != rows || root->ne[2] != 1 ||
+          root->ne[3] != 1 || root->nb[1] != pitch) {
+        root = ggml_view_2d(c_, root, row_values, rows, pitch, 0);
+        Node(root, id);
+      }
       const float theta = std::pow(p.rope.base, -2.0F / static_cast<float>(p.rope.dims));
       ggml_tensor* t = QsaPrep(c_, root, src(1), src(2), d, heads, stride, p.eps, theta);
       Node(t, id);
@@ -4613,6 +5015,7 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       Inside(t, held, Round(planner::RootBytes(p_.tensor(held)).value_or(0), 256));
       set(0, blocks);
       pools_[blocks] = t;
+      stores_.erase(blocks);
       return {};
     }
     case FusedKind::kBlockSparseAttention: {
@@ -4621,14 +5024,15 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       const auto pool = pools_.find(blocks);
       ggml_tensor* k = StoredInto(made_.at(p_.root(n.src[1]).v));
       ggml_tensor* v = StoredInto(made_.at(p_.root(n.src[2]).v));
-      if (pool == pools_.end() || k == nullptr || v == nullptr) {
-        return Refused("a selection before its block keys' pool or its caches' stores");
+      ggml_tensor* update = pool == pools_.end() ? StoredInto(blocks) : pool->second;
+      if (update == nullptr || k == nullptr || v == nullptr) {
+        return Refused("a selection before its block keys' update or its caches' stores");
       }
       const auto n_blocks = static_cast<std::int64_t>(desc(4).ne(1));
-      // (Over the positions its pool read: the same tensor, as the kernel
-      // checks.)
-      ggml_tensor* top = QsaTopK(c_, src(3), blocks, pool->second->src[3], pool->second, n_blocks,
-                                 p.width, p.ratio);
+      // CheckQsaInputs authenticated the latest write and these owner's
+      // positions. The real update descriptor supplies the ordering edge.
+      ggml_tensor* positions = pool == pools_.end() ? SegmentPositions(n, 8, id) : update->src[3];
+      ggml_tensor* top = QsaTopK(c_, src(3), blocks, positions, update, n_blocks, p.width, p.ratio);
       ggml_tensor* t = QsaAttn(c_, src(0), k, v, top, p.attn.scale);
       Node(top, id);
       Node(t, id);
@@ -4898,6 +5302,7 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
 // caller's address, at its rows (qwen38_graph.cc's Save).
 std::expected<void, KernelFailure> Lowering::MakeSaves() {
   if (!in_.token) return {};
+  out_.saves.reserve(in_.token->step.saves.size());
   for (const co::CommitSave& s : in_.token->step.saves) {
     const TensorId planned = plan_.tensors.at(s.tensor.v);
     const TensorId rows_input = s.rows.valid() ? plan_.tensors.at(s.rows.v) : TensorId{};
@@ -4918,11 +5323,6 @@ std::expected<void, KernelFailure> Lowering::MakeSaves() {
       }
     }
     save_leaves_.emplace_back(buffer, &s);
-    out_.saves.push_back({.tensor = buffer,
-                          .layer = s.layer,
-                          .component = s.component,
-                          .what = s.what,
-                          .segment = s.segment});
     ggml_tensor* packed = IsPacked(src) ? src : ggml_cont(c_, src);
     if (packed != src) {
       out_.nodes.push_back(packed);
@@ -4934,6 +5334,21 @@ std::expected<void, KernelFailure> Lowering::MakeSaves() {
     out_.nodes.push_back(store);
     extra_.insert(store);
     out_.keep.push_back(store);
+    out_.saves.push_back(
+        {.tensor = buffer,
+         .source = planned,
+         .rows = rows_input,
+         .original_source = s.tensor,
+         .original_rows = s.rows,
+         .store = store,
+         .packed = packed,
+         .owner_range = in_.addresses.save_range
+                            ? in_.addresses.save_range(s.layer, s.component, s.what, s.segment)
+                            : std::nullopt,
+         .layer = s.layer,
+         .component = s.component,
+         .what = s.what,
+         .segment = s.segment});
   }
   return {};
 }
@@ -5243,6 +5658,9 @@ std::expected<void, KernelFailure> Lowering::MakeRouting() {
 std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   auto inventory = LowerConstructionOf(in_);
   if (!inventory) return std::unexpected(inventory.error());
+  // Schedule() builds the paid comparison-origin lookup tables against this
+  // descriptor bound, before the finalized arena descriptor table is emitted.
+  out_.descriptor_bound = inventory->descriptors;
   if (!std::ranges::equal(in_.io.inputs, g_.inputs()) ||
       !std::ranges::equal(in_.io.outputs, g_.outputs()))
     return Refused("lowering needs the graph's exact typed ports");
@@ -5251,7 +5669,20 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   if (!in_.token) {
     // First stateless physical domain. No token/state operation can enter a
     // branch that interprets a StepShape, synthesized inputs or state spans.
-    const auto supported = [](const ir::Graph& graph, const ir::Node& n) {
+    const auto planned_implementation = [&](const ir::Graph& graph,
+                                            const ir::Node& node) -> std::string_view {
+      if (&graph != &p_) return {};
+      const auto at = std::ranges::find_if(
+          p_.nodes(), [&](const ir::Node& candidate) { return &candidate == &node; });
+      if (at == p_.nodes().end()) return {};
+      const ir::NodeId id{static_cast<std::uint32_t>(at - p_.nodes().begin())};
+      for (const planner::Selected& selected : plan_.steps) {
+        if (selected.nodes.size() == 1 && selected.nodes.front() == id)
+          return registry_.at(selected.implementation).name;
+      }
+      return {};
+    };
+    const auto supported = [&](const ir::Graph& graph, const ir::Node& n) {
       // Closed explicit-operand forms only: the existing VAE shortcut,
       // learned RMS scaling, the spatial channel norm, the sectioned head
       // norm and rotation, and the image's attention with its packed mask
@@ -5267,6 +5698,41 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
           n.key == ir::Fused(FusedKind::kGatedResidualSplit) ||
           n.key == ir::Fused(FusedKind::kGatedResidualModulateSplit))
         return true;
+      if (n.key == ir::Fused(FusedKind::kHcCombine))
+        return planned_implementation(graph, n) == kHcCombineName;
+      if (n.key == ir::Fused(FusedKind::kGdnGates))
+        return planned_implementation(graph, n) == kGdnGatesName;
+      if (n.key == ir::Fused(FusedKind::kHcNormPost))
+        return planned_implementation(graph, n) == kDsv4HcPostNormF16Name;
+      if (n.key == ir::Primitive(Op::kHcPost)) {
+        if (&graph == &g_) return true;
+        const auto selected = planned_implementation(graph, n);
+        return selected == kHcPostName || selected == kDsv4HcPostNormF16Name;
+      }
+      if (n.key == ir::Fused(FusedKind::kNormGate))
+        return planned_implementation(graph, n) == kGdnNormGateName;
+      if (n.key == ir::Fused(FusedKind::kRmsNormMulRope))
+        return planned_implementation(graph, n) == kGemmaNormRopeName;
+      if (n.key == ir::Fused(FusedKind::kRmsNormMulAdd))
+        return planned_implementation(graph, n) == kGemmaNormAddName;
+      if (n.key == ir::Fused(FusedKind::kMatMulAdd))
+        return planned_implementation(graph, n) == kMulMatAddFused;
+      if (n.key == ir::Fused(FusedKind::kMatMulGlu)) {
+        const auto selected = planned_implementation(graph, n);
+        return selected == kMulMatGluFused || selected == kMulMatGeGluFused ||
+               selected == "ggml.mul_mat_glu.mmvq_fused" ||
+               selected == "ggml.mul_mat_geglu.mmvq_fused";
+      }
+      if (n.key == ir::Fused(FusedKind::kPreparedProducts)) {
+        // Only a real planned selection may introduce this closed product
+        // pair. The selected source still validates its physical operands in
+        // MakeSelected; a fused source graph has no such planning provenance.
+        const auto selected = planned_implementation(graph, n);
+        const auto implementation = registry_.Find(selected);
+        return &graph != &g_ && options_.selected_source && implementation &&
+               registry_.at(*implementation).operation == n.key &&
+               options_.selected_source->Owns(selected) && PackedProductPair(graph, n);
+      }
       if (n.key != ir::Primitive(n.key.op)) return false;
       if (n.key.op == Op::kPrepare) {
         if (n.nsrc != 1 || n.nout != 1 || !n.src[0].valid() || !n.out[0].valid()) return false;
@@ -5310,7 +5776,7 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
     };
     for (const ir::Graph* graph : {&g_, &p_}) {
       const auto bad = std::ranges::find_if_not(
-          graph->nodes(), [&](const ir::Node& n) { return supported(*graph, n); });
+          graph->nodes(), [&](const ir::Node& node) { return supported(*graph, node); });
       if (bad != graph->nodes().end())
         return Refused(std::format("stateless GGML refuses {} in the {} graph",
                                    ir::OpKeyName(bad->key), graph == &g_ ? "source" : "planned"));
@@ -5422,9 +5888,14 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   }
   // Routing creates executable preparations and their tail backing. Finish it
   // before assigning descriptor IDs or validating the complete physical graph.
-  out_.extent = placement_.extent;
+  if (save_aux_extent_ < placement_.extent ||
+      (!in_.addresses.measuring() && save_aux_extent_ > in_.addresses.activation_bytes))
+    return Refused("saved CONT copies exceed the finalized activation placement");
+  out_.extent = save_aux_extent_;
   if (auto routed = MakeRouting(); !routed) return std::unexpected(routed.error());
   if (auto slots = Slots(); !slots) return std::unexpected(slots.error());
+  if (auto unstored = AuthenticateUnstoredInputs(); !unstored)
+    return std::unexpected(unstored.error());
   // Count the actual finalized arena, including leaves and auxiliary views.
   // The source's descriptor inventory prepays this exact typed table; its
   // retained capacity is included in program HostBytes and transfers with it.
@@ -5452,6 +5923,30 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
       record->root = p_.root(TensorId{i});
       record->producer = p_.producer(TensorId{i});
     }
+  }
+  // ggml_cpy returns a view of a separately allocated destination. Both are
+  // owned descriptors for this one planned output; record the actual write
+  // destination as well as the view rather than treating it as an IR-less leaf.
+  for (std::uint32_t i = 0; i < made_.size(); ++i) {
+    const TensorId output{i};
+    const auto producer = p_.producer(output);
+    if (p_.node(producer).key != ir::Primitive(Op::kConvert) ||
+        Selected(producer) != "ggml.convert")
+      continue;
+    const auto placed = placed_root_.find(output.v);
+    auto* copy = made_[i];
+    if (!copy || placed == placed_root_.end() || p_.root(output) != output || !CheckConvert(copy) ||
+        copy->src[1] != placed->second || copy->view_src != copy->src[1] || copy->view_offs != 0 ||
+        copy->type != copy->src[1]->type || !std::ranges::equal(copy->nb, copy->src[1]->nb))
+      return Refused("a conversion destination differs from its owned planned output");
+    auto* destination = descriptor(copy->src[1]);
+    if (!destination || (destination->tensor.valid() && destination->tensor != output) ||
+        (destination->root.valid() && destination->root != output) ||
+        (destination->producer.valid() && destination->producer != producer))
+      return Refused("a conversion destination has conflicting physical identity");
+    destination->tensor = output;
+    destination->root = output;
+    destination->producer = producer;
   }
   for (const auto& leaf : out_.leaves) {
     auto* record = descriptor(leaf.tensor);
@@ -5529,9 +6024,17 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
         return Refused("routed upload lacks complete activation and pinned storage");
     }
   }
-  if (placement_.offsets.size() > p_.tensor_count())
-    return Refused("physical roots exceed the paid tensor inventory");
-  out_.physical_roots.reserve(placement_.offsets.size());
+  std::uint64_t physical_root_count = placement_.offsets.size();
+  for (const auto& save : out_.saves)
+    if (save.scratch_bytes != 0 &&
+        __builtin_add_overflow(physical_root_count, std::uint64_t{1}, &physical_root_count))
+      return Refused("saved CONT physical-root count overflows");
+  std::uint64_t physical_root_bound = p_.tensor_count();
+  if (__builtin_add_overflow(physical_root_bound, static_cast<std::uint64_t>(out_.saves.size()),
+                             &physical_root_bound) ||
+      physical_root_count > physical_root_bound || physical_root_count > SIZE_MAX)
+    return Refused("physical roots exceed the paid tensor and save inventory");
+  out_.physical_roots.reserve(static_cast<std::size_t>(physical_root_count));
   for (const auto& [root, offset] : placement_.offsets) {
     const auto& desc = p_.tensor(root);
     const auto bytes = planner::RootBytes(desc);
@@ -5550,6 +6053,56 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
                                    .nb = desc.nb,
                                    .encoding = desc.format.encoding});
   }
+  for (const auto& save : out_.saves) {
+    if (save.scratch_bytes == 0) continue;
+    const auto* concrete = descriptor(save.packed);
+    std::uint64_t end = 0;
+    if (!concrete || save.packed->type != GGML_TYPE_F32 ||
+        __builtin_add_overflow(save.scratch_offset, save.scratch_bytes, &end) || end > out_.extent)
+      return Refused("a saved CONT copy lacks its paid physical-root range");
+    out_.physical_roots.push_back(
+        {.root = {},
+         .producer = {},
+         .operation = ir::Primitive(Op::kCont),
+         .component = save.component,
+         .backend_tensor = concrete->id,
+         .offset = save.scratch_offset,
+         .bytes = save.scratch_bytes,
+         .ne = {static_cast<std::uint64_t>(save.packed->ne[0]),
+                static_cast<std::uint64_t>(save.packed->ne[1]),
+                static_cast<std::uint64_t>(save.packed->ne[2]),
+                static_cast<std::uint64_t>(save.packed->ne[3])},
+         .nb = {save.packed->nb[0], save.packed->nb[1], save.packed->nb[2], save.packed->nb[3]},
+         .encoding = Encoding::kF32});
+  }
+  if (in_.comparison && in_.comparison->scope == ComparisonProofScope::kWholeProgramNative) {
+    // CheckQsaInputs and Needed ran before materialization. Retain only exact
+    // source Input roots omitted by that existing backend dependency closure;
+    // unmatched bindings by themselves never authorize this exception.
+    out_.comparison_omitted_inputs.reserve(g_.inputs().size());
+    for (const TensorId original : g_.inputs()) {
+      if (!original.valid() || original.v >= in_.plan.tensors.size())
+        return Refused("whole input omission has no original-to-planned mapping");
+      const TensorId planned = in_.plan.tensors[original.v];
+      if (!planned.valid() || planned.v >= p_.tensor_count()) continue;
+      const NodeId producer = p_.producer(planned);
+      if (!producer.valid() || producer.v >= needed_.size() || needed_[producer.v]) continue;
+      if (g_.root(original) != original || p_.root(planned) != planned ||
+          g_.tensor(original).role != ir::Role::kInput ||
+          p_.tensor(planned).role != ir::Role::kInput ||
+          g_.node(g_.producer(original)).key != ir::Primitive(Op::kInput) ||
+          p_.node(producer).key != ir::Primitive(Op::kInput) ||
+          !std::ranges::contains(p_.inputs(), planned) || primitive_.at(planned.v) != original ||
+          made_.at(planned.v) != nullptr ||
+          std::ranges::any_of(input_leaves_,
+                              [&](const auto& leaf) { return leaf.second.tensor == original; }))
+        return Refused("whole input omission differs from its actual source/input identity");
+      out_.comparison_omitted_inputs.push_back({original, planned, producer});
+      if (!CheckComparisonOmittedInput(out_, original))
+        return Refused("whole input omission has a materialized native descriptor or slot");
+    }
+  }
+  out_.whole_checkpoint_only = in_.plan.whole_checkpoint.whole_only();
   out_.measuring = in_.addresses.measuring();
   return std::move(out_);
 }
@@ -5795,6 +6348,27 @@ std::uint64_t WrittenBytes(const ir::Graph& graph, ir::TensorId root) {
   const std::int64_t bytes =
       Q8Bytes(static_cast<std::int64_t>(t.ne(0)), static_cast<std::int64_t>(t.ne(1) * t.ne(2)));
   return bytes > 0 ? static_cast<std::uint64_t>(bytes) : 0;
+}
+
+bool CheckComparisonOmittedInput(const LoweredStep& lowered, ir::TensorId original) {
+  const auto& facts = lowered.comparison_omitted_inputs;
+  const auto fact = std::ranges::find(facts, original, &ComparisonOmittedInput::original);
+  if (!original.valid() || fact == facts.end() || !fact->planned.valid() ||
+      !fact->producer.valid() ||
+      std::ranges::count(facts, original, &ComparisonOmittedInput::original) != 1 ||
+      std::ranges::count(facts, fact->planned, &ComparisonOmittedInput::planned) != 1 ||
+      std::ranges::count(facts, fact->producer, &ComparisonOmittedInput::producer) != 1)
+    return false;
+  return !std::ranges::any_of(
+             lowered.leaves, [&](const LoweredLeaf& leaf) { return leaf.primitive == original; }) &&
+         !std::ranges::contains(lowered.inputs, original, &InputSlot::tensor) &&
+         !std::ranges::any_of(lowered.physical_tensors,
+                              [&](const PhysicalTensor& tensor) {
+                                return tensor.tensor == fact->planned ||
+                                       tensor.root == fact->planned ||
+                                       tensor.producer == fact->producer;
+                              }) &&
+         !std::ranges::contains(lowered.physical_roots, fact->planned, &PhysicalRoot::root);
 }
 
 const PhysicalTensor* PhysicalTensorOf(const LoweredStep& step, const ggml_tensor* tensor) {
@@ -6118,6 +6692,22 @@ std::expected<LowerConstructionInventory, KernelFailure> LowerConstructionOf(
       original.nodes().size() > UINT32_MAX || input.plan.tensors.size() > original.tensor_count() ||
       input.plan.from.size() > planned.nodes().size())
     return Refused("native construction ID width or pointer ABI exceeds its inventory");
+  std::uint64_t region_origins = 0;
+  if (input.comparison_region) {
+    const auto& capture = *input.comparison_region;
+    if (!capture.seed || !capture.origins || !capture.final_nodes ||
+        capture.seed->source_identity() != original.identity() ||
+        capture.final_nodes->source_graph_identity != original.identity() ||
+        capture.final_nodes->planned_graph_identity != planned.identity() ||
+        capture.final_nodes->node_origins.size() != planned.nodes().size())
+      return Refused("comparison region provenance is missing or belongs to another graph");
+    for (const auto set : capture.final_nodes->node_origins.values) {
+      const auto count = capture.origins->OriginCount(set);
+      if (!count || __builtin_add_overflow(region_origins, static_cast<std::uint64_t>(*count),
+                                           &region_origins))
+        return Refused("comparison region origin relation is invalid or too large");
+    }
+  }
   std::uint64_t descriptors = planned.tensor_count();
   const auto add = [&](std::uint64_t n) {
     return !__builtin_add_overflow(descriptors, n, &descriptors);
@@ -6172,16 +6762,179 @@ std::expected<LowerConstructionInventory, KernelFailure> LowerConstructionOf(
   if (descriptors > UINT32_MAX || descriptors > SIZE_MAX || overhead == 0 || overhead > 512 ||
       __builtin_mul_overflow(static_cast<std::size_t>(descriptors), overhead, &arena_bytes))
     return Refused("native arena descriptor count, ABI or byte inventory overflows");
-  std::uint64_t bytes = 0, roots = 0;
+  std::uint64_t bytes = 0, roots = 0, comparison_bytes = 0;
+  std::uint64_t physical_root_bound = planned.tensor_count();
+  if (input.token &&
+      __builtin_add_overflow(physical_root_bound,
+                             static_cast<std::uint64_t>(input.token->step.saves.size()),
+                             &physical_root_bound))
+    return Refused("physical-root inventory overflows");
   if (__builtin_mul_overflow(descriptors,
-                             std::uint64_t{512 + 1024 + 32 + 2 * sizeof(PhysicalTensor)}, &bytes) ||
-      __builtin_mul_overflow(static_cast<std::uint64_t>(planned.tensor_count()),
-                             std::uint64_t{2 * sizeof(PhysicalRoot)}, &roots) ||
+                             std::uint64_t{512 + 1024 + 32 + 2 * sizeof(PhysicalTensor) +
+                                           2 * sizeof(std::optional<ComparisonExpertSlab>) +
+                                           2 * sizeof(std::optional<ComparisonStagedInput>)},
+                             &bytes) ||
+      __builtin_mul_overflow(physical_root_bound, std::uint64_t{2 * sizeof(PhysicalRoot)},
+                             &roots) ||
       __builtin_add_overflow(bytes, roots, &bytes) ||
       __builtin_add_overflow(bytes, std::uint64_t{sizeof(ConstructionPayment) + 2 * 64}, &bytes))
     return Refused("native construction byte inventory overflows");
+  if (input.token) {
+    constexpr std::uint64_t kStringEnvelope = 64;
+    std::uint64_t save_records = 0;
+    if (__builtin_mul_overflow(static_cast<std::uint64_t>(input.token->step.saves.size()),
+                               static_cast<std::uint64_t>(sizeof(SavedLeaf)), &save_records) ||
+        __builtin_add_overflow(bytes, save_records, &bytes))
+      return Refused("saved-leaf host inventory overflows");
+    for (const auto& save : input.token->step.saves) {
+      std::uint64_t name_bytes = static_cast<std::uint64_t>(save.what.size());
+      if (__builtin_add_overflow(name_bytes, std::uint64_t{1}, &name_bytes) ||
+          __builtin_add_overflow(name_bytes, kStringEnvelope, &name_bytes) ||
+          __builtin_add_overflow(bytes, name_bytes, &bytes))
+        return Refused("saved-leaf name inventory overflows");
+    }
+  }
+  if (input.comparison) {
+    const auto ranges = static_cast<std::uint64_t>(input.comparison->bindings.size());
+    const auto boundary_roots = static_cast<std::uint64_t>(input.io.graph.tensor_count());
+    const auto external_record_bytes =
+        static_cast<std::uint64_t>(sizeof(components::ComparisonExternalBinding));
+    constexpr std::uint64_t kCanonicalRootScratch =
+        sizeof(std::pair<const std::uint32_t, std::uint32_t>) + 8 * sizeof(void*);
+    std::uint64_t canonical_scratch = 0;
+    if (__builtin_mul_overflow(ranges, static_cast<std::uint64_t>(sizeof(ComparisonBindingRange)),
+                               &comparison_bytes) ||
+        __builtin_mul_overflow(ranges, external_record_bytes, &canonical_scratch) ||
+        __builtin_add_overflow(comparison_bytes, canonical_scratch, &comparison_bytes) ||
+        __builtin_mul_overflow(boundary_roots, kCanonicalRootScratch, &canonical_scratch) ||
+        __builtin_add_overflow(comparison_bytes, canonical_scratch, &comparison_bytes) ||
+        __builtin_add_overflow(comparison_bytes,
+                               static_cast<std::uint64_t>(sizeof(ComparisonRecipeSeal) + 2 * 64),
+                               &comparison_bytes) ||
+        __builtin_add_overflow(bytes, comparison_bytes, &bytes))
+      return Refused("comparison proof storage inventory overflows");
+  }
+  if (input.comparison && input.comparison->scope == ComparisonProofScope::kWholeProgramNative) {
+    std::uint64_t omitted_bytes = 0;
+    if (__builtin_mul_overflow(static_cast<std::uint64_t>(original.inputs().size()),
+                               std::uint64_t{sizeof(ComparisonOmittedInput)}, &omitted_bytes) ||
+        __builtin_add_overflow(omitted_bytes,
+                               std::uint64_t{2 * sizeof(void*) + alignof(std::max_align_t)},
+                               &omitted_bytes) ||
+        __builtin_add_overflow(comparison_bytes, omitted_bytes, &comparison_bytes) ||
+        __builtin_add_overflow(bytes, omitted_bytes, &bytes))
+      return Refused("whole input omission inventory overflows");
+  }
+  if (input.comparison_region) {
+    constexpr std::uint64_t kVectorEnvelope = 2 * sizeof(void*) + alignof(std::max_align_t);
+    const auto planned_nodes = static_cast<std::uint64_t>(planned.nodes().size());
+    const auto source_nodes = static_cast<std::uint64_t>(original.nodes().size());
+    std::uint64_t offsets = 0, flattened = 0, membership = 0, expansion = 0;
+    std::uint64_t planned_node_facts = 0, planned_tensor_facts = 0, tensor_map = 0;
+    std::uint64_t original_bindings = 0, input_facts = 0;
+    std::uint64_t node_local = 0, tensor_local = 0, physical_local = 0;
+    std::uint64_t value_ports = 0, accesses = 0, lifetimes = 0;
+    const auto value_port_capacity = ComparisonRegionEdgeOccurrenceCapacity(original.nodes());
+    const auto access_capacity = ComparisonRegionAccessCapacity(planned.nodes());
+    std::uint64_t region_bytes = sizeof(LoweredStep::ComparisonOrigins);
+    if (!value_port_capacity || !access_capacity ||
+        __builtin_add_overflow(planned_nodes, std::uint64_t{1}, &offsets) ||
+        __builtin_mul_overflow(offsets, std::uint64_t{sizeof(std::uint64_t)}, &offsets) ||
+        __builtin_mul_overflow(region_origins, std::uint64_t{sizeof(ir::NodeId)}, &flattened) ||
+        __builtin_mul_overflow(source_nodes, std::uint64_t{sizeof(std::uint8_t)}, &membership) ||
+        __builtin_mul_overflow(source_nodes, std::uint64_t{sizeof(ir::NodeId)}, &expansion) ||
+        __builtin_mul_overflow(planned_nodes, std::uint64_t{sizeof(ir::Node)},
+                               &planned_node_facts) ||
+        __builtin_mul_overflow(static_cast<std::uint64_t>(planned.tensor_count()),
+                               std::uint64_t{sizeof(ir::TensorDesc)}, &planned_tensor_facts) ||
+        __builtin_mul_overflow(static_cast<std::uint64_t>(original.tensor_count()),
+                               std::uint64_t{sizeof(ir::TensorId)}, &tensor_map) ||
+        __builtin_mul_overflow(
+            static_cast<std::uint64_t>(input.comparison ? input.comparison->bindings.size() : 0),
+            std::uint64_t{sizeof(ComparisonBindingRange)}, &original_bindings) ||
+        __builtin_mul_overflow(static_cast<std::uint64_t>(original.inputs().size()),
+                               std::uint64_t{sizeof(ComparisonInputFact)}, &input_facts) ||
+        __builtin_mul_overflow(planned_nodes, std::uint64_t{sizeof(std::uint32_t)}, &node_local) ||
+        __builtin_mul_overflow(static_cast<std::uint64_t>(planned.tensor_count()),
+                               std::uint64_t{sizeof(std::uint32_t)}, &tensor_local) ||
+        __builtin_mul_overflow(descriptors, std::uint64_t{sizeof(std::uint32_t)},
+                               &physical_local) ||
+        __builtin_mul_overflow(*value_port_capacity,
+                               std::uint64_t{sizeof(kernels::ComparisonRegionValuePort)},
+                               &value_ports) ||
+        __builtin_mul_overflow(*access_capacity, std::uint64_t{sizeof(ComparisonRegionAccessFact)},
+                               &accesses) ||
+        __builtin_mul_overflow(descriptors, std::uint64_t{sizeof(ComparisonLifetimeFact)},
+                               &lifetimes) ||
+        __builtin_add_overflow(region_bytes, offsets, &region_bytes) ||
+        __builtin_add_overflow(region_bytes, flattened, &region_bytes) ||
+        __builtin_add_overflow(region_bytes, membership, &region_bytes) ||
+        __builtin_add_overflow(region_bytes, expansion, &region_bytes) ||
+        __builtin_add_overflow(region_bytes, planned_node_facts, &region_bytes) ||
+        __builtin_add_overflow(region_bytes, planned_tensor_facts, &region_bytes) ||
+        __builtin_add_overflow(region_bytes, tensor_map, &region_bytes) ||
+        __builtin_add_overflow(region_bytes, original_bindings, &region_bytes) ||
+        __builtin_add_overflow(region_bytes, input_facts, &region_bytes) ||
+        __builtin_add_overflow(region_bytes, node_local, &region_bytes) ||
+        __builtin_add_overflow(region_bytes, tensor_local, &region_bytes) ||
+        __builtin_add_overflow(region_bytes, physical_local, &region_bytes) ||
+        __builtin_add_overflow(region_bytes, value_ports, &region_bytes) ||
+        __builtin_add_overflow(region_bytes, accesses, &region_bytes) ||
+        __builtin_add_overflow(region_bytes, lifetimes, &region_bytes) ||
+        __builtin_add_overflow(region_bytes, std::uint64_t{15 * kVectorEnvelope}, &region_bytes) ||
+        __builtin_add_overflow(comparison_bytes, region_bytes, &comparison_bytes) ||
+        __builtin_add_overflow(bytes, region_bytes, &bytes))
+      return Refused("comparison region provenance storage inventory overflows");
+  }
+  if (input.comparison && input.comparison->scope == ComparisonProofScope::kWholeProgramNative &&
+      !input.comparison_region) {
+    // The selected source is resolved later. Prepay the maximum two typed
+    // vectors; non-selected whole programs simply leave this allowance unused.
+    constexpr std::uint64_t kVectorEnvelope = 2 * sizeof(void*) + alignof(std::max_align_t);
+    std::uint64_t nodes = 0, tensors = 0;
+    std::uint64_t selected_bytes =
+        sizeof(LoweredStep::SelectedComparisonGraph) + 2 * kVectorEnvelope;
+    if (__builtin_mul_overflow(static_cast<std::uint64_t>(planned.nodes().size()),
+                               std::uint64_t{sizeof(ir::Node)}, &nodes) ||
+        __builtin_mul_overflow(static_cast<std::uint64_t>(planned.tensor_count()),
+                               std::uint64_t{sizeof(ir::TensorDesc)}, &tensors) ||
+        __builtin_add_overflow(selected_bytes, nodes, &selected_bytes) ||
+        __builtin_add_overflow(selected_bytes, tensors, &selected_bytes) ||
+        __builtin_add_overflow(comparison_bytes, selected_bytes, &comparison_bytes) ||
+        __builtin_add_overflow(bytes, selected_bytes, &bytes))
+      return Refused("selected whole graph inventory overflows");
+  }
   return LowerConstructionInventory{.descriptors = static_cast<std::size_t>(descriptors),
-                                    .bytes = bytes};
+                                    .bytes = bytes,
+                                    .comparison_bytes = comparison_bytes};
+}
+
+std::optional<std::uint64_t> ComparisonRegionEdgeOccurrenceCapacity(
+    std::span<const ir::Node> source_nodes) noexcept {
+  std::uint64_t occurrences = 0;
+  for (const auto& node : source_nodes) {
+    if (node.nsrc > node.src.size() || node.nout > node.out.size()) return {};
+    const auto count = static_cast<std::uint64_t>(node.nsrc) + node.nout;
+    if (__builtin_add_overflow(occurrences, count, &occurrences)) return {};
+  }
+  return occurrences;
+}
+
+std::optional<std::uint64_t> ComparisonRegionAccessCapacity(
+    std::span<const ir::Node> planned_nodes) noexcept {
+  auto accesses = ComparisonRegionEdgeOccurrenceCapacity(planned_nodes);
+  if (!accesses) return {};
+  std::uint64_t ordinary_mmvq_scratch_pairs = 0;
+  for (const auto& node : planned_nodes) {
+    if (node.key.op != ir::Op::kMatMul) continue;
+    // The actual ordinary MMVQ recipe has a private quantizer write followed
+    // by a private packed-input read, in addition to the IR access edges.
+    if (__builtin_add_overflow(ordinary_mmvq_scratch_pairs, std::uint64_t{2},
+                               &ordinary_mmvq_scratch_pairs))
+      return {};
+  }
+  if (__builtin_add_overflow(*accesses, ordinary_mmvq_scratch_pairs, &*accesses)) return {};
+  return accesses;
 }
 
 std::expected<void, KernelFailure> CheckIrIndexBounds(const ir::Graph& graph) {
@@ -6218,6 +6971,10 @@ std::expected<LoweredStep, KernelFailure> LowerStep(const LowerInput& input,
                                                     const execution::Registry& registry,
                                                     const DeviceChoices& device,
                                                     const LowerOptions& options) {
+  if (input.plan.whole_checkpoint.whole_only() &&
+      (!input.plan.whole_checkpoint.source_matches(input.io.graph.identity()) ||
+       !input.comparison || input.comparison->scope != ComparisonProofScope::kWholeProgramNative))
+    return Refused("checkpoint-only comparison requires native whole-program proof");
   // The original graph preserves primitive stride requirements that a fusion
   // hides; the planned graph also authenticates any generated descriptors.
   if (auto bounds = CheckIrIndexBounds(input.io.graph); !bounds)

@@ -63,6 +63,7 @@
 #define LLMP_KERNELS_GGML_KV_QUANT_H_
 
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <span>
 #include <string_view>
@@ -81,6 +82,58 @@ inline constexpr std::string_view kSetRowsQuantName = "llmp.set_rows.quant";
 inline constexpr std::string_view kSetRowsQuantGroupName = "llmp.set_rows.grouped_quant";
 inline constexpr std::string_view kRopeSetRowsQuantName = "llmp.rope_set_rows.quant";
 inline constexpr std::size_t kSetRowsQuantGroupMax = 16;
+inline constexpr std::uint32_t kQuantStoreThreads = 256;
+
+// Address-free launch facts shared by the CUDA launchers and comparison
+// proof. The CUDA kernels add live tensor addresses separately; these
+// descriptors contain every geometry/format/launch choice that affects the
+// kernel's reads, writes, and dispatch.
+struct QuantStoreMemberRecipe {
+  std::uint64_t values_stride[3]{};
+  std::uint64_t ids_stride[3]{};
+  std::uint64_t destination_stride[3]{};
+  std::uint32_t blocks_per_row = 0;
+  std::uint32_t rows = 0;
+  std::uint32_t planes = 0;
+  std::uint32_t ids_planes = 0;
+  std::uint32_t ids_batches = 0;
+  std::uint32_t total_blocks = 0;
+  ggml_type type = GGML_TYPE_COUNT;
+  std::uint8_t index_bytes = 0;
+};
+
+struct QuantStoreLaunchRecipe {
+  QuantStoreMemberRecipe members[kSetRowsQuantGroupMax]{};
+  std::uint32_t member_count = 0;
+  std::uint32_t grid_x = 0;
+  std::uint32_t grid_y = 0;
+  std::uint32_t block_x = kQuantStoreThreads;
+  std::uint32_t block_y = 1;
+  std::uint32_t block_z = 1;
+  std::uint32_t dynamic_shared_bytes = 0;
+  std::uint64_t pool_bytes = 0;
+};
+
+struct RopeQuantStoreLaunchRecipe {
+  std::uint64_t x_head_stride = 0;           // floats
+  std::uint64_t x_token_stride = 0;          // floats
+  std::uint64_t destination_row_stride = 0;  // bytes
+  std::uint32_t blocks_per_head = 0;
+  std::uint32_t blocks_per_row = 0;
+  std::uint32_t total_blocks = 0;
+  std::uint32_t grid_x = 0;
+  std::uint32_t block_x = kQuantStoreThreads;
+  std::uint32_t dynamic_shared_bytes = 0;
+  std::uint64_t pool_bytes = 0;
+  std::int32_t n_dims = 0;
+  float freq_scale = 0;
+  float ext_factor = 0;
+  float attn_factor = 0;
+  float theta_scale = 0;
+  float correction_dims[2]{};
+  ggml_type type = GGML_TYPE_COUNT;
+  bool has_frequency_factors = false;
+};
 
 // The cache encodings these read and write.
 bool KvQuantType(ggml_type type);
@@ -112,6 +165,8 @@ std::expected<void, KernelFailure> FlashAttnVecQuant(LaunchContext& launch, ggml
 // and every destination offset a whole number of blocks, at most 2^32 - 1
 // values; the destination overlapping no operand.
 std::expected<void, KernelFailure> CheckSetRowsQuant(const ggml_tensor* node);
+std::expected<QuantStoreLaunchRecipe, KernelFailure> DescribeSetRowsQuantLaunch(
+    std::span<const ggml_tensor* const> nodes);
 std::expected<void, KernelFailure> SetRowsQuant(LaunchContext& launch, ggml_tensor* node);
 
 // Two to sixteen such stores, each passing CheckSetRowsQuant, no
@@ -130,6 +185,8 @@ std::expected<void, KernelFailure> SetRowsQuantGroup(LaunchContext& launch,
 // stride whole blocks.
 std::expected<void, KernelFailure> CheckRopeSetRowsQuant(const ggml_tensor* rope,
                                                          const ggml_tensor* set_rows);
+std::expected<RopeQuantStoreLaunchRecipe, KernelFailure> DescribeRopeSetRowsQuantLaunch(
+    const ggml_tensor* rope, const ggml_tensor* set_rows);
 std::expected<void, KernelFailure> RopeSetRowsQuant(LaunchContext& launch, ggml_tensor* rope,
                                                     ggml_tensor* set_rows);
 

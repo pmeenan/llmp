@@ -99,12 +99,14 @@ The entries below record each change; the record of the milestone is
   adding a spatial definition no longer requires compiler kind-name branches
   (M3.5 U8).
 
-- Fusion/decomposition comparisons now bind exact queries, numerical contracts
-  and compiler-owned implementation provenance; stale or absent evidence retains
-  incumbent selection (M3.5 U6, coverage still in progress). The first twelve
-  RMSNormMul observations remain in an unchanged historical archive; twelve fresh
-  GB10 exact-query comparisons are independently audited (eleven fusion wins, one
-  neutral), with native live-registry/planner consumption verified.
+- Backend-owned fusion rankings compare genuine selected recipes with their own
+  complete alternatives under exact source, device, preparation and compiler
+  identities. Production selection retains the cumulatively chosen program and
+  its paid resources through Bind and cache publication. Measured losing recipes
+  use their qualified alternatives; stale, missing or unsupported evidence keeps
+  ordinary execution. Quality rejections remain separate from latency evidence.
+  Historical identities and numerical refusals are preserved
+  ([U6 qualification](docs/experiments/fusion-ranks/U6-FINAL-RESULTS.md)).
 - IR operation traits select typed parameter, inference, decomposition and
   partition handlers, with exhaustive dispatch controls and indexed fusion-rank
   lookup (M3.5 U6).
@@ -142,6 +144,17 @@ The entries below record each change; the record of the milestone is
   immediate working set release via `POST /llmp/v1/memory/release`.
 
 ### Fixed
+
+- Shared attention fallbacks preserve head/token geometry, BF16 batch views,
+  declared mask dtype and row extents. Supported strided scalar conversions use
+  the existing native copy path with checked owner bounds. Mixed F32/F16 addition
+  reads each operand in its original encoding. Authenticated staged host masks
+  and Fill no longer leave phantom GPU work or unfunded tensor descriptors;
+  launch-region boundaries follow actual GPU calls. Numerical refusals retain
+  their original bounds ([qualification](docs/experiments/fusion-ranks/U6-FINAL-RESULTS.md)).
+
+- Native BF16/F16 MoE shared-gate parameters now use the existing small-parameter
+  F32 conversion, matching the component reference in both placements.
 
 - Dense scalar Q8 products on GB10 use the incumbent four/eight-warp reduction
   schedule, including joined one-token rows. The registered Gemma2 screen

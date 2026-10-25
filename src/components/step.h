@@ -589,6 +589,20 @@ std::expected<void, std::string> CheckStateWrites(const ir::Graph& graph,
                                                   std::span<const StepState> state,
                                                   std::span<const ir::TensorId> tensors,
                                                   std::uint16_t stage);
+// Recomputes the read/write facts recorded by StepGraph::MarkAccess from the
+// graph's actual state-root uses. The supplied state is never modified.
+std::expected<void, std::string> CheckStateAccess(const ir::Graph& graph,
+                                                  std::span<const StepState> state,
+                                                  std::span<const ir::TensorId> tensors = {});
+
+// Checks a planned graph against the already validated original declaration.
+// Rewrites may eliminate reads (for example, a complete GDN history overwrite
+// need not read the old history), but may not introduce reads or change writes.
+// Root identity, complete state inventory and write authorization remain separate
+// requirements of the mapped comparison boundary. Never validates source facts.
+std::expected<void, std::string> CheckMappedStateAccess(
+    const ir::Graph& graph, std::span<const StepState> state,
+    std::span<const ir::TensorId> original_to_planned);
 
 // The stage's components' fragments for `shape`, joined and verified. Its
 // segments are in row order; each reads min(capacity, read_cells) cells of

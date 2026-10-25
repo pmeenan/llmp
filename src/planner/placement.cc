@@ -35,37 +35,75 @@ bool Placed(const ir::TensorDesc& t) {
   return !t.is_view() && (t.role == ir::Role::kActivation || t.role == ir::Role::kOutput);
 }
 
+struct Life {
+  ir::TensorId tensor{};
+  std::int64_t first = 0;
+  std::int64_t last = 0;
+  std::uint64_t bytes = 0;
+  std::uint64_t offset = 0;
+  bool placed = false;
+};
+
+struct PlacedSpan {
+  std::uint64_t offset = 0;
+  std::uint64_t end = 0;
+  std::int64_t first = 0;
+  std::int64_t last = 0;
+};
+
+constexpr std::uint64_t kVectorEnvelope = 2 * sizeof(void*) + alignof(std::max_align_t);
+
+bool AddExact(std::uint64_t count, std::uint64_t stride, std::uint64_t& total) {
+  if (count == 0) return true;
+  if (stride == 0 || total > kMax - kVectorEnvelope ||
+      count > (kMax - total - kVectorEnvelope) / stride)
+    return false;
+  total += count * stride + kVectorEnvelope;
+  return true;
+}
+
+bool AddGeometric(std::uint64_t count, std::uint64_t stride, std::uint64_t& total) {
+  if (count == 0) return true;
+  if (stride == 0 || stride > kMax / 3 || total > kMax - 2 * kVectorEnvelope ||
+      count > (kMax - total - 2 * kVectorEnvelope) / (3 * stride))
+    return false;
+  total += count * 3 * stride + 2 * kVectorEnvelope;
+  return true;
+}
+
+bool AddBits(std::uint64_t count, std::uint64_t& total) {
+  constexpr std::uint64_t kWordBits = std::numeric_limits<unsigned long>::digits;
+  if (count > kMax - (kWordBits - 1)) return false;
+  return AddExact((count + kWordBits - 1) / kWordBits, sizeof(unsigned long), total);
+}
+
 }  // namespace
 
 std::expected<std::uint64_t, std::string> RootBytes(const ir::TensorDesc& tensor) {
-  const std::uint64_t unit = ir::UnitBytes(tensor.format);
-  const std::uint64_t per = ir::UnitElements(tensor.format);
-  if (unit == 0 || per == 0) {
-    const auto parts = format::PartsOf(tensor.format);
-    if (!parts) {
-      return Error("a tensor's format has no size");
-    }
-    std::uint64_t bytes = 0;
-    for (const format::PartExtent& p : parts->parts()) {
-      if (p.bytes > kMax - bytes) {
-        return Error("a tensor's size overflows");
-      }
-      bytes += p.bytes;
-    }
-    return bytes;
-  }
+  return ir::StorageBytes(tensor);
+}
+
+std::expected<std::uint64_t, std::string> PlacementMetadataBytes(const ir::Graph& graph) {
+  const std::uint64_t tensors = graph.tensor_count();
+  const std::uint64_t nodes = graph.nodes().size();
   std::uint64_t bytes = 0;
-  if (__builtin_mul_overflow(tensor.ne(0) / per, tensor.nb[0], &bytes)) {
-    return Error("a tensor's size overflows");
-  }
-  for (std::size_t d = 1; d < format::kMaxDims; ++d) {
-    std::uint64_t reach = 0;
-    if (tensor.ne(d) == 0 || __builtin_mul_overflow(tensor.ne(d) - 1, tensor.nb.at(d), &reach) ||
-        reach > kMax - bytes) {
-      return Error("a tensor's size overflows");
-    }
-    bytes += reach;
-  }
+  // PlaceActivations: geometric lives growth; exact index/inside/root_of,
+  // order, placed and result offsets; rounded stepped bitmap; stable_sort's
+  // full index buffer. Alignments() may grow geometrically and the final
+  // alignment audit owns a tensor-indexed offset and bitmap.
+  if (!AddGeometric(tensors, sizeof(Life), bytes) ||
+      !AddExact(tensors, sizeof(std::size_t), bytes) ||
+      !AddExact(tensors, sizeof(ir::TensorId), bytes) ||
+      !AddExact(tensors, sizeof(ir::TensorId), bytes) || !AddBits(nodes, bytes) ||
+      !AddExact(tensors, sizeof(ir::TensorId), bytes) ||
+      !AddExact(tensors, sizeof(std::size_t), bytes) ||
+      !AddExact(tensors, sizeof(std::size_t), bytes) ||
+      !AddExact(tensors, sizeof(PlacedSpan), bytes) ||
+      !AddExact(tensors, sizeof(std::size_t), bytes) ||
+      !AddExact(tensors, sizeof(std::pair<ir::TensorId, std::uint64_t>), bytes) ||
+      !AddGeometric(tensors, sizeof(RootAlignmentFact), bytes) ||
+      !AddExact(tensors, sizeof(std::uint64_t), bytes) || !AddBits(tensors, bytes))
+    return Error("comparison placement metadata inventory overflows");
   return bytes;
 }
 
@@ -88,14 +126,6 @@ std::expected<Placement, std::string> PlaceActivations(
   const auto sources = [&](ir::NodeId id) -> std::span<const ir::TensorId> {
     return physical ? std::span<const ir::TensorId>(physical->reads[id.v])
                     : graph.node(id).sources();
-  };
-  struct Life {
-    ir::TensorId tensor{};
-    std::int64_t first = 0;  // the step computing it; -1 for a staged input
-    std::int64_t last = 0;   // the last step reading it
-    std::uint64_t bytes = 0;
-    std::uint64_t offset = 0;
-    bool placed = false;
   };
   std::vector<Life> lives;
   std::vector<std::size_t> index(graph.tensor_count(), ~std::size_t{0});
@@ -243,12 +273,6 @@ std::expected<Placement, std::string> PlaceActivations(
   std::ranges::stable_sort(
       order, [&](std::size_t a, std::size_t b) { return lives[a].bytes > lives[b].bytes; });
   Placement placement{.alignment = alignment};
-  struct PlacedSpan {
-    std::uint64_t offset = 0;
-    std::uint64_t end = 0;
-    std::int64_t first = 0;
-    std::int64_t last = 0;
-  };
   std::vector<PlacedSpan> placed;
   placed.reserve(lives.size());
   for (const std::size_t i : order) {

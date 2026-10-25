@@ -81,14 +81,18 @@ std::expected<void, KernelFailure> CheckBinary(const ggml_tensor* node, ggml_op 
       !Bound(node->src[1])) {
     return Rejected("not a bound node of the operation");
   }
-  // All F32, or (the attention masks' sums) all F16: two of the type
-  // combinations ggml_cuda_op_bin_bcast dispatches (binbcast.cu:412-431).
+  // Only declared native dispatches: all F32, all F16, and the patched
+  // F32 + F16 -> F32 addition. Each operand keeps its own element width.
   const bool f16 = node->type == GGML_TYPE_F16 && node->src[0]->type == GGML_TYPE_F16 &&
                    node->src[1]->type == GGML_TYPE_F16;
-  if ((!IsF32(node) || !IsF32(node->src[0]) || !IsF32(node->src[1])) && !f16) {
-    return Rejected("this implementation is F32 only, or F16 only");
+  const bool mixed_add = op == GGML_OP_ADD && IsF32(node) && IsF32(node->src[0]) &&
+                         node->src[1]->type == GGML_TYPE_F16;
+  if ((!IsF32(node) || !IsF32(node->src[0]) || !IsF32(node->src[1])) && !f16 && !mixed_add) {
+    return Rejected("this implementation requires equal F32/F16 types or F32 + F16 -> F32");
   }
-  const std::uint64_t element = f16 ? sizeof(ggml_fp16_t) : sizeof(float);
+  const auto element = ggml_type_size(node->type);
+  const auto element0 = ggml_type_size(node->src[0]->type);
+  const auto element1 = ggml_type_size(node->src[1]->type);
   if (AnyEmpty({node, node->src[0], node->src[1]}) ||
       !AllSane({node, node->src[0], node->src[1]})) {
     return Rejected("a binary operation on an empty or unmeasurable tensor");
@@ -117,14 +121,14 @@ std::expected<void, KernelFailure> CheckBinary(const ggml_tensor* node, ggml_op 
       std::cmp_greater(ggml_nelements(node), std::numeric_limits<std::uint32_t>::max() - 127)) {
     return Rejected("operands that do not broadcast or exceed 32-bit extents");
   }
-  if (!Aligned(node, element) || !Aligned(node->src[0], element) ||
-      !Aligned(node->src[1], element)) {
+  if (!Aligned(node, element) || !Aligned(node->src[0], element0) ||
+      !Aligned(node->src[1], element1)) {
     return Rejected("operands at misaligned addresses");
   }
   // The kernel steps through rows one element at a time, whatever the
   // first stride says, and writes the output densely.
-  if (!ggml_is_contiguous(node) || node->src[0]->nb[0] != element ||
-      node->src[1]->nb[0] != element) {
+  if (!ggml_is_contiguous(node) || node->src[0]->nb[0] != element0 ||
+      node->src[1]->nb[0] != element1) {
     return Rejected("a contiguous output over operands with contiguous rows");
   }
   if (!AllCurrent({node, node->src[0], node->src[1]}) ||
@@ -236,6 +240,32 @@ std::expected<void, KernelFailure> CheckMulMatInto(const ggml_tensor* node, cons
 
 std::expected<void, KernelFailure> CheckMulMat(const ggml_tensor* node) {
   return CheckMulMatInto(node, node);
+}
+
+std::expected<void, KernelFailure> CheckMulMatVecFRows(const ggml_tensor* node) {
+  if (auto checked = CheckMulMat(node); !checked) {
+    return checked;
+  }
+  const ggml_tensor* weights = node->src[0];
+  const ggml_tensor* input = node->src[1];
+  if (weights->type != GGML_TYPE_F32 && weights->type != GGML_TYPE_F16 &&
+      weights->type != GGML_TYPE_BF16) {
+    return Rejected("the float vector kernel takes F32, F16 or BF16 weights");
+  }
+  if (input->ne[1] < 1 || input->ne[1] > kFloatVectorMaxColumns) {
+    return Rejected("the float vector kernel takes 1 to 8 columns");
+  }
+  // ggml_cuda_should_use_mmvf's layout conditions (mmvf.cu:792-807), which
+  // its launcher asserts, without its column thresholds.
+  const std::size_t ts = ggml_type_size(weights->type);
+  bool aligned = weights->ne[0] % 2 == 0 && weights->nb[0] == ts;
+  for (std::size_t i = 1; i < GGML_MAX_DIMS; ++i) {
+    aligned = aligned && weights->nb[i] % (2 * ts) == 0;
+  }
+  if (!aligned) {
+    return Rejected("weights the float vector kernel cannot read in pairs");
+  }
+  return {};
 }
 
 std::expected<void, KernelFailure> CheckMulMatCublasOperands(const ggml_tensor* node) {
@@ -1134,15 +1164,38 @@ std::expected<void, KernelFailure> CheckConvert(const ggml_tensor* node) {
   if (AnyEmpty({node, src, dst}) || !AllSane({node, src, dst})) {
     return Rejected("a conversion of an empty or unmeasurable tensor");
   }
-  // Both contiguous and of one element count: the launcher's
-  // cpy_scalar_contiguous, one thread per element
-  // in 64-thread blocks whose count it asserts fits an int (cpy.cu:199-200).
-  if (!ggml_are_same_shape(src, dst) || !Packed(src) || !Packed(dst) || node->data != dst->data ||
-      !ggml_are_same_shape(node, dst) || std::cmp_greater(ggml_nelements(src), kInt32Max)) {
-    return Rejected("a conversion between packed tensors of one shape");
+  // The generic scalar path indexes strided sources with signed int64 offsets;
+  // only the destination must be packed. Bound products before native helpers.
+  std::uint64_t count = 1;
+  for (const auto n : src->ne) {
+    if (static_cast<std::uint64_t>(n) > kInt32Max / count)
+      return Rejected("a conversion element count exceeds the native grid");
+    count *= static_cast<std::uint64_t>(n);
+  }
+  const auto extent = Extent(src);
+  bool whole_elements = true;
+  for (std::size_t d = 0; d < 4; ++d) {
+    if (src->ne[d] > 1 && src->nb[d] % ggml_type_size(src->type) != 0) whole_elements = false;
+  }
+  if (!ggml_are_same_shape(src, dst) || !ggml_is_contiguous(dst) || !whole_elements || !extent ||
+      *extent > static_cast<std::uint64_t>(INT64_MAX) || node->type != dst->type ||
+      node->view_src != dst || node->view_offs != 0 || node->data != dst->data ||
+      !ggml_are_same_shape(node, dst) ||
+      !std::equal(std::begin(node->nb), std::end(node->nb), std::begin(dst->nb))) {
+    return Rejected(
+        "a conversion from signed-addressable scalar strides to its packed destination");
   }
   if (!Aligned(src, ggml_type_size(src->type)) || !Aligned(dst, ggml_type_size(dst->type))) {
     return Rejected("conversion operands at misaligned addresses");
+  }
+  for (const auto* value : {src, dst}) {
+    for (auto* child = value; child->view_src != nullptr; child = child->view_src) {
+      const auto child_extent = Extent(child);
+      const auto parent_extent = Extent(child->view_src);
+      if (!child_extent || !parent_extent || child->view_offs > *parent_extent ||
+          *child_extent > *parent_extent - child->view_offs)
+        return Rejected("a conversion view exceeds its actual owning storage");
+    }
   }
   if (!AllCurrent({node, src, dst}) || Overlap(src, dst)) {
     return Rejected("a stale view, or a destination overlapping its source");

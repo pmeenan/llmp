@@ -28,10 +28,12 @@
 #include "ggml.h"
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/graph_read_index.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/set_rows_group.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
+#include "kernels/ggml/validate_ext.h"
 
 namespace {
 
@@ -89,6 +91,161 @@ class GgmlValidateTest : public ::testing::Test {
   TensorArena arena_ = TensorArena::Create(64).value();
   std::uint64_t next_ = 0;
 };
+
+TEST_F(GgmlValidateTest, QsaSelectionAcceptsOnlyItsActualBf16IndexedUpdate) {
+  namespace kg = llmp::kernels::ggml;
+  auto* blocks = Bound(ggml_new_tensor_2d(context(), GGML_TYPE_BF16, 128, 5));
+  auto* values = Bound(ggml_new_tensor_2d(context(), GGML_TYPE_BF16, 128, 3));
+  auto* ids = Bound(ggml_new_tensor_1d(context(), GGML_TYPE_I64, 3));
+  auto* store = ggml_set_rows(context(), blocks, values, ids);
+  ASSERT_TRUE(kg::CheckSetRowsExt(store));
+  auto* q = Bound(ggml_new_tensor_3d(context(), GGML_TYPE_F32, 128, 4, 1));
+  auto* positions = Bound(ggml_new_tensor_1d(context(), GGML_TYPE_I32, 4));
+  auto* top = Bound(kg::QsaTopK(context(), q, blocks, positions, store, 3, 4, 2));
+  ASSERT_TRUE(kg::CheckQsaTopK(top));
+  const ggml_tensor held = *store;
+  auto* foreign = Bound(ggml_new_tensor_2d(context(), GGML_TYPE_BF16, 128, 5));
+  for (int mutation = 0; mutation < 7; ++mutation) {
+    SCOPED_TRACE(mutation);
+    *store = held;
+    switch (mutation) {
+      case 0:
+        store->src[2] = foreign;
+        break;
+      case 1:
+        store->view_src = foreign;
+        break;
+      case 2:
+        store->view_offs = 2;
+        break;
+      case 3:
+        store->data = foreign->data;
+        break;
+      case 4:
+        store->nb[1] += 2;
+        break;
+      case 5:
+        store->ne[1] -= 1;
+        break;
+      case 6:
+        store->src[0] = blocks;
+        break;
+    }
+    Rejected(kg::CheckQsaTopK(top));
+  }
+  *store = held;
+  // A different index type is legal for the generic copy, but is not the
+  // canonical typed block-store dependency emitted by the token builder.
+  ids->type = GGML_TYPE_I32;
+  Rejected(kg::CheckQsaTopK(top));
+  ids->type = GGML_TYPE_I64;
+  values->type = GGML_TYPE_F16;
+  Rejected(kg::CheckSetRowsExt(store));
+  values->type = GGML_TYPE_BF16;
+  auto* old = values->data;
+  values->data = blocks->data;
+  Rejected(kg::CheckSetRowsExt(store));
+  values->data = old;
+  EXPECT_TRUE(kg::CheckQsaTopK(top));
+}
+
+TEST_F(GgmlValidateTest, ConvertAcceptsScalarSourceStridesAndRejectsUnsafeDomains) {
+  namespace kg = llmp::kernels::ggml;
+  for (const auto source_type : {GGML_TYPE_F16, GGML_TYPE_BF16, GGML_TYPE_F32}) {
+    SCOPED_TRACE(source_type);
+    const auto destination_type = source_type == GGML_TYPE_F32 ? GGML_TYPE_F16 : GGML_TYPE_F32;
+    auto* source = Bound(ggml_new_tensor_4d(context(), source_type, 32, 64, 1, 1));
+    auto* destination = Bound(ggml_new_tensor_4d(context(), destination_type, 32, 64, 1, 1));
+    auto* copy = ggml_cpy(context(), source, destination);
+    ASSERT_TRUE(kg::CheckConvert(copy));
+    // Ordinary component startup produces this legal dense layout: dimension
+    // two has extent one, so its stride is never used by the flat copy kernel.
+    source->nb[2] = source->nb[1];
+    destination->nb[2] = destination->nb[1];
+    copy->nb[2] = destination->nb[2];
+    ASSERT_TRUE(ggml_is_contiguous(source));
+    ASSERT_TRUE(ggml_is_contiguous(destination));
+    EXPECT_TRUE(kg::CheckConvert(copy));
+
+    source->nb[1] += source->nb[0];
+    EXPECT_FALSE(ggml_is_contiguous(source));
+    EXPECT_TRUE(kg::CheckConvert(copy));
+    source->nb[1] += 1;
+    Rejected(kg::CheckConvert(copy));
+    source->nb[1] -= 1;
+    source->nb[1] -= source->nb[0];
+    destination->nb[1] += destination->nb[0];
+    copy->nb[1] = destination->nb[1];
+    EXPECT_FALSE(ggml_is_contiguous(destination));
+    Rejected(kg::CheckConvert(copy));
+    destination->nb[1] -= destination->nb[0];
+    copy->nb[1] = destination->nb[1];
+    ASSERT_TRUE(kg::CheckConvert(copy));
+
+    const auto old_stride = source->nb[1];
+    source->nb[1] = static_cast<std::size_t>(INT64_MAX) / 2;
+    source->nb[1] -= source->nb[1] % ggml_type_size(source_type);
+    Rejected(kg::CheckConvert(copy));
+    source->nb[1] = old_stride;
+    const auto old_count = source->ne[2];
+    source->ne[2] = INT64_MAX;
+    source->nb[2] = 0;
+    Rejected(kg::CheckConvert(copy));
+    source->ne[2] = old_count;
+    source->nb[2] = source->nb[1];
+    copy->view_offs = ggml_type_size(destination_type);
+    Rejected(kg::CheckConvert(copy));
+    copy->view_offs = 0;
+    ASSERT_TRUE(kg::CheckConvert(copy));
+
+    TensorArena::Bind(destination, reinterpret_cast<std::uintptr_t>(source->data));
+    TensorArena::Bind(copy, reinterpret_cast<std::uintptr_t>(destination->data));
+    Rejected(kg::CheckConvert(copy));
+  }
+  auto* parent = Bound(ggml_new_tensor_2d(context(), GGML_TYPE_F16, 32, 65));
+  auto* view = ggml_view_2d(context(), parent, 32, 64, parent->nb[1], 0);
+  auto* destination = Bound(ggml_new_tensor_2d(context(), GGML_TYPE_F32, 32, 64));
+  auto* copy = ggml_cpy(context(), view, destination);
+  ASSERT_TRUE(llmp::kernels::ggml::CheckConvert(copy));
+  view->nb[1] += 2;
+  Rejected(
+      llmp::kernels::ggml::CheckConvert(copy));  // Current pointer, but last row exceeds the owner.
+}
+
+TEST_F(GgmlValidateTest, FloatAddHalfUsesEachOperandWidthAndRejectsWrongAliases) {
+  ggml_tensor* x = F32(32, 3);
+  ggml_tensor* parent = Bound(ggml_new_tensor_2d(context(), GGML_TYPE_F16, 33, 3));
+  ggml_tensor* half = ggml_view_2d(context(), parent, 32, 3, parent->nb[1], 2);
+  ggml_tensor* sum = Bound(ggml_add(context(), x, half));
+  ASSERT_TRUE(CheckBinary(sum, GGML_OP_ADD));  // RHS is 2-byte, not 4-byte aligned.
+  const auto width = half->nb[0];
+  half->nb[0] = 4;
+  Rejected(CheckBinary(sum, GGML_OP_ADD));
+  half->nb[0] = width;
+  half->type = GGML_TYPE_BF16;
+  Rejected(CheckBinary(sum, GGML_OP_ADD));
+  half->type = GGML_TYPE_F16;
+  const auto pointer = sum->data;
+  TensorArena::Bind(sum, reinterpret_cast<std::uintptr_t>(half->data));
+  Rejected(CheckBinary(sum, GGML_OP_ADD));  // Equal address is not F32/F16 in-place identity.
+  sum->data = pointer;
+  auto* product = Bound(ggml_mul(context(), x, half));
+  Rejected(CheckBinary(product, GGML_OP_MUL));  // No new mixed multiply admission.
+}
+
+TEST_F(GgmlValidateTest, QsaPrepUsesLogicalRowsWithinPaddedPhysicalBacking) {
+  auto* parent = F32(256, 24);
+  auto* logical = ggml_view_2d(context(), parent, 256, 17, parent->nb[1], 0);
+  auto* weight = F32(64);
+  auto* positions = Bound(ggml_new_tensor_1d(context(), GGML_TYPE_I32, 4 * 17));
+  auto* prep = Bound(
+      llmp::kernels::ggml::QsaPrep(context(), logical, weight, positions, 64, 2, 128, 1e-6f, 0.9f));
+  ASSERT_TRUE(llmp::kernels::ggml::CheckQsaPrep(prep));
+  EXPECT_EQ(prep->ne[2], 17);
+  EXPECT_EQ(parent->ne[1], 24);
+  positions->ne[0] = 16;
+  Rejected(llmp::kernels::ggml::CheckQsaPrep(prep));
+}
 
 TEST_F(GgmlValidateTest, TheDenseQwen2ShapesPass) {
   ggml_tensor* x = F32(kWidth, 5);

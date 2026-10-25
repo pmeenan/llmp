@@ -40,18 +40,21 @@
 namespace llmp::kernels::ggml {
 
 class CublasHandle;
+class GeneratedStoreInputs;
+class GeneratedCaptureOwner;
 
 // A step launch over a K-C launch context (launch.h): captures are its
 // captured graphs, a fault its context's.
 class GgmlStepLaunch final : public kernels::StepLaunch {
  public:
-  explicit GgmlStepLaunch(std::unique_ptr<LaunchContext> launch,
-                          std::unique_ptr<SelectedLaunch> selected = {},
-                          std::shared_ptr<const kernels::BackendOwner> owner = {},
-                          const GgmlStepLaunch* const* active = nullptr,
-                          const std::uint64_t* current_generation = nullptr,
-                          std::uint64_t generation = 0, SelectedLaunch* borrowed_selected = nullptr,
-                          bool private_eager = false)
+  explicit GgmlStepLaunch(
+      std::unique_ptr<LaunchContext> launch, std::unique_ptr<SelectedLaunch> selected = {},
+      std::shared_ptr<const kernels::BackendOwner> owner = {},
+      const GgmlStepLaunch* const* active = nullptr,
+      const std::uint64_t* current_generation = nullptr, std::uint64_t generation = 0,
+      SelectedLaunch* borrowed_selected = nullptr, bool private_eager = false,
+      providers::DeviceExecution* execution = nullptr, providers::StreamId stream_id = {},
+      GgmlStepLaunch* registry_root = nullptr, SelectedWorkspace selected_workspace = {})
       : launch_(std::move(launch)),
         selected_(std::move(selected)),
         owner_(std::move(owner)),
@@ -59,14 +62,31 @@ class GgmlStepLaunch final : public kernels::StepLaunch {
         current_generation_(current_generation),
         generation_(generation),
         borrowed_selected_(borrowed_selected),
-        private_eager_(private_eager) {}
+        private_eager_(private_eager),
+        execution_(execution),
+        stream_id_(stream_id),
+        registry_root_(registry_root ? registry_root : this),
+        selected_workspace_(selected_workspace) {}
   SelectedLaunch* selected() const { return selected_ ? selected_.get() : borrowed_selected_; }
+  SelectedWorkspace selected_workspace() const { return selected_workspace_; }
   LaunchContext& context() const { return *launch_; }
 
+  std::expected<void, StepFailure> SetCaptureMeasurement(CaptureMeasurement mode) override {
+    if (mode != CaptureMeasurement::kDisabled && mode != CaptureMeasurement::kGpuDuration)
+      return std::unexpected(StepFailure{.detail = "unknown capture measurement"});
+    if (capturing_ || launch_->capturing())
+      return std::unexpected(StepFailure{.detail = "cannot change an active capture"});
+    capture_measurement_ = mode;
+    return {};
+  }
   std::expected<std::unique_ptr<Recorded>, StepFailure> Capture(providers::NativeStream stream,
                                                                 const Body& body) override;
   std::expected<void, StepFailure> Launch(providers::NativeStream stream,
                                           const Recorded& recorded) override;
+  // Duration reads authenticate the same live recording owner as replay.
+  std::expected<void, StepFailure> ValidateRecording(const Recorded& recorded) const;
+  std::expected<void, StepFailure> PollGeneratedInputs() override;
+  std::expected<void, StepFailure> DrainGeneratedInputs() override;
   bool faulted() const override {
     return retired() || launch_->faulted() || (selected() && selected()->faulted());
   }
@@ -80,6 +100,18 @@ class GgmlStepLaunch final : public kernels::StepLaunch {
   std::uint64_t generation_ = 0;
   SelectedLaunch* borrowed_selected_ = nullptr;  // retained by the private origin
   bool private_eager_ = false;
+  providers::DeviceExecution* execution_ = nullptr;
+  providers::StreamId stream_id_{};
+  GgmlStepLaunch* registry_root_ = nullptr;
+  SelectedWorkspace selected_workspace_{};
+  GeneratedStoreInputs* generated_inputs_ = nullptr;
+  GeneratedCaptureOwner* captured_generated_ = nullptr;
+  bool capturing_ = false;
+  CaptureMeasurement capture_measurement_ = CaptureMeasurement::kDisabled;
+  std::expected<void, StepFailure> RegisterGenerated(GeneratedStoreInputs* owner, bool capturing,
+                                                     const kernels::ExecutionResources& resources);
+  std::expected<void, StepFailure> RegisterOnThis(GeneratedStoreInputs* owner);
+  friend class GgmlStepProgram;
 };
 
 struct GgmlBackendOptions {
@@ -139,7 +171,7 @@ class GgmlBackend {
   // The backend outlives what it gives.
   kernels::StepBackend Backend();
   // Lends `cublas` (a handle on the backend's device and stream, which
-  // must outlive the launch) to the launch Launch makes; refused once it is
+  // must live until LaunchReleased) to the launch Launch makes; refused once it is
   // made. Its plans are built the same with or without one (only running a
   // cuBLAS product needs it).
   std::expected<void, std::string> LendCublas(CublasHandle* cublas);
@@ -159,6 +191,7 @@ class GgmlBackend {
       LaunchContext::Workspace pool, SelectedWorkspace persistent);
   // The runner destroyed the launch (its Release): nothing binds to it
   // after, and another may be made.
+  // Returns the descriptor context's library loan too. Re-lend before reuse.
   void LaunchReleased();
 
   // A planned step as a program (Backend().lower).

@@ -131,6 +131,7 @@
 #define LLMP_PLANNER_PATTERN_H_
 
 #include <array>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -140,6 +141,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "base/sha256.h"
@@ -153,6 +155,8 @@
 #include "planner/step_shape.h"
 
 namespace llmp::planner {
+
+class PlannerMetadataAdmission;
 
 // Every candidate lookup made while matching a rewrite or batch has the
 // same qualification contract. This borrowed view cannot silently perform an
@@ -182,12 +186,45 @@ class RewriteSelectionView {
                                       bool state_span = false) const {
     return view_.Candidates(key, sources, outputs, params, state_span, true);
   }
+  bool HasCandidate(ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
+                    std::span<const ir::TensorDesc* const> outputs,
+                    std::span<const std::byte> params = {}, bool state_span = false) const {
+    return view_.HasCandidate(key, sources, outputs, params, state_span, true);
+  }
+  std::optional<std::size_t> NextCandidate(ir::OpKey key,
+                                           std::span<const ir::TensorDesc* const> sources,
+                                           std::span<const ir::TensorDesc* const> outputs,
+                                           std::span<const std::byte> params,
+                                           std::optional<std::size_t> after,
+                                           bool state_span = false) const {
+    return view_.NextCandidate(key, sources, outputs, params, after, state_span, true);
+  }
   std::vector<std::size_t> Candidates(const ir::Graph& graph, const ir::Node& node,
                                       ir::OpKey key) const {
     return view_.Candidates(graph, node, key, true);
   }
   std::vector<std::size_t> Candidates(const ir::Graph& graph, const ir::Node& node) const {
     return Candidates(graph, node, node.key);
+  }
+  std::optional<std::size_t> NextCandidate(const ir::Graph& graph, const ir::Node& node,
+                                           ir::OpKey key, std::optional<std::size_t> after) const {
+    return view_.NextCandidate(graph, node, key, after, true);
+  }
+  bool IsCandidate(const ir::Graph& graph, const ir::Node& node, ir::OpKey key,
+                   std::size_t implementation) const {
+    return view_.IsCandidate(graph, node, key, implementation, true);
+  }
+  std::optional<std::size_t> NextOrdinaryCandidate(const ir::Graph& graph, const ir::Node& node,
+                                                   ir::OpKey key,
+                                                   std::optional<std::size_t> after) const {
+    return view_.NextOrdinaryCandidate(graph, node, key, after);
+  }
+  bool IsOrdinaryCandidate(const ir::Graph& graph, const ir::Node& node, ir::OpKey key,
+                           std::size_t implementation) const {
+    return view_.IsOrdinaryCandidate(graph, node, key, implementation);
+  }
+  bool HasCandidate(const ir::Graph& graph, const ir::Node& node, ir::OpKey key) const {
+    return view_.HasCandidate(graph, node, key, true);
   }
 
  private:
@@ -200,12 +237,19 @@ class MatchContext {
   // `shape`: the step's, where the planner was given it (patterns whose
   // forms follow the step's outputs need it; null: none).
   MatchContext(const ir::Graph& graph, const SelectionView& view, const StepShape* shape = nullptr,
-               StateSpans state_spans = {});
+               StateSpans state_spans = {}, PlannerMetadataAdmission* metadata_admission = nullptr);
 
   const ir::Graph& graph() const { return graph_; }
   const RewriteSelectionView& view() const { return view_; }
   const StepShape* shape() const { return shape_; }
   const StateSpans& state_spans() const { return state_spans_; }
+  PlannerMetadataAdmission* metadata_admission() const { return metadata_admission_; }
+  bool BeginMatchTrial();
+  bool ChargeMatchTrial(std::uint64_t bytes) const;
+  bool ReleaseMatchTrial(std::uint64_t bytes) const;
+  void RefuseMatchTrial() const;
+  bool AcceptMatchTrial();
+  void DropMatchTrial();
   std::uint32_t max_decode_rows() const { return view_.policy().max_decode_rows; }
   const ir::Node& node(ir::NodeId id) const { return graph_.node(id); }
   const ir::TensorDesc& tensor(ir::TensorId id) const { return graph_.tensor(id); }
@@ -229,6 +273,9 @@ class MatchContext {
   RewriteSelectionView view_;
   const StepShape* shape_ = nullptr;
   StateSpans state_spans_{};
+  PlannerMetadataAdmission* metadata_admission_ = nullptr;
+  std::uint64_t retained_match_detail_bytes_ = 0;
+  mutable std::uint64_t trial_match_detail_bytes_ = 0;
   std::vector<std::vector<ir::NodeId>> readers_;  // by tensor
   std::vector<bool> external_;                    // by root tensor
   std::vector<bool> kept_;                        // by tensor: returned or kept itself
@@ -251,6 +298,9 @@ struct Match {
   // The primitive nodes it replaces (a rewrite) or joins (a batch), in
   // node order.
   std::vector<ir::NodeId> nodes{};
+  // Exact RewriteContext::local() capacity required while this match emits.
+  // Comparison planning reserves this before invoking any rewrite callback.
+  std::size_t rewrite_local_slots = 0;
   // A rewrite's result: its sources (the original graph's ids) and
   // parameters; a batch's implementation.
   std::vector<ir::TensorId> sources{};
@@ -269,6 +319,21 @@ struct Match {
 // Rebuilding a graph with matches replaced: the original graph's tensors
 // as the new graph has them, and per match a few tensors of its own (a
 // prepared input).
+struct SharedTensorKey {
+  // QK shares a prepared mask by original mask identity, and a rope table by
+  // the original position identities and the active section parameters.
+  // Fixed storage keeps this key allocation-free in RewriteContext::shared.
+  std::uint8_t kind = 0;
+  ir::TensorId mask{};
+  std::uint32_t base_bits = 0;
+  std::uint8_t sections = 0;
+  std::uint8_t mode = 0;
+  std::uint8_t position_count = 0;
+  std::array<ir::TensorId, ir::kMaxSources - 2> positions{};
+  std::array<std::uint32_t, ir::kMaxSources - 2> dims{};
+  auto operator<=>(const SharedTensorKey&) const = default;
+};
+
 class RewriteContext {
  public:
   RewriteContext(const ir::Graph& original, ir::Builder& builder, std::vector<ir::TensorId>& map,
@@ -287,7 +352,7 @@ class RewriteContext {
   void Reset() { local_.clear(); }
   // Tensors a round's rewrites share, by a key their pattern gives (one
   // prepared mask for every attention of a step that reads it).
-  std::map<std::string, ir::TensorId>& shared() { return shared_; }
+  std::map<SharedTensorKey, ir::TensorId>& shared() { return shared_; }
 
  private:
   const ir::Graph& original_;
@@ -295,7 +360,7 @@ class RewriteContext {
   std::vector<ir::TensorId>& map_;
   const SelectionView* view_ = nullptr;
   std::vector<ir::TensorId> local_{};
-  std::map<std::string, ir::TensorId> shared_{};
+  std::map<SharedTensorKey, ir::TensorId> shared_{};
 };
 
 // kComposite: the selection may take an implementation of its composite
@@ -311,6 +376,11 @@ struct Pattern {
   // A rewrite's result (the fused kind it makes, or the primitive it
   // adds); a batch's capability key.
   ir::OpKey result{};
+  // Additional closed result kinds emitted by this same registered matcher.
+  std::span<const ir::OpKey> additional_results{};
+  bool AcceptsResult(ir::OpKey key) const;
+  // This matcher may map its output to an already-existing declared result.
+  bool existing_result = false;
   std::span<const ir::OpKey> composites{};
   std::string_view parent{};  // an option's: the pattern it shapes, or empty
   std::span<const ir::Op> anchors{};
@@ -396,6 +466,30 @@ struct DroppedRewrite {
   std::string detail{};
 };
 
+// The owner and its vector move as one value. Assignment swaps them so an
+// old loan remains paired with its old allocation until that allocation is
+// destroyed with the temporary.
+struct OwnedRewriteOrigins {
+  OwnedRewriteOrigins() = default;
+  OwnedRewriteOrigins(ir::StorageLoan loan_in, std::vector<std::uint32_t> values_in)
+      : loan(std::move(loan_in)), values(std::move(values_in)) {}
+  OwnedRewriteOrigins(OwnedRewriteOrigins&&) noexcept = default;
+  OwnedRewriteOrigins& operator=(OwnedRewriteOrigins&& other) noexcept {
+    if (this == &other) return *this;
+    using std::swap;
+    swap(loan, other.loan);
+    swap(values, other.values);
+    return *this;
+  }
+  OwnedRewriteOrigins(const OwnedRewriteOrigins&) = delete;
+  OwnedRewriteOrigins& operator=(const OwnedRewriteOrigins&) = delete;
+  operator std::span<const std::uint32_t>() const { return values; }
+  std::size_t size() const { return values.size(); }
+  std::uint32_t operator[](std::size_t index) const { return values[index]; }
+  ir::StorageLoan loan{};
+  std::vector<std::uint32_t> values{};
+};
+
 struct Rewritten {
   ir::Graph graph;
   std::vector<Applied> applied;
@@ -405,6 +499,9 @@ struct Rewritten {
   // The original graph's tensor i in the new graph, or none (an elided
   // intermediate).
   std::vector<ir::TensorId> tensors;
+  // Exact comparison lineage, present only for opt-in captures. Descendants
+  // refer to immutable origin-set IDs in the caller-owned paid DAG.
+  OwnedRewriteOrigins origin_sets{};
   std::vector<MissingNumericalQualification> missing_numerical{};
   std::vector<DroppedRewrite> dropped{};
 };
@@ -414,17 +511,25 @@ struct Rewritten {
 // dropped (Rewritten::dropped) and its round applied again without it, so
 // a bad fusion leaves its nodes to the primitives instead of failing the
 // step; an error no match made fails.
-std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
-                                                        const SelectionView& view,
-                                                        const StepShape* shape = nullptr,
-                                                        StateSpans state_spans = {},
-                                                        std::span<const ir::NodeId> preserve = {});
+std::expected<Rewritten, ir::VerifyError> ApplyPatterns(
+    const ir::Graph& graph, const SelectionView& view, const StepShape* shape = nullptr,
+    StateSpans state_spans = {}, std::span<const ir::NodeId> preserve = {},
+    std::span<const std::uint32_t> origin_sets = {}, class ComparisonOriginDag* origins = nullptr,
+    class ComparisonCaptureSession* comparison_capture = nullptr,
+    std::span<const ir::TensorId> source_to_graph = {},
+    std::span<const ir::NodeId> graph_node_to_source = {},
+    PlannerMetadataAdmission* metadata_admission = nullptr);
 // ApplyPatterns with `table`'s rewrites in place of the built-in table's
 // (a test's own patterns).
 std::expected<Rewritten, ir::VerifyError> ApplyPatternTable(
     std::span<const Pattern> table, const ir::Graph& graph, const SelectionView& view,
     const StepShape* shape = nullptr, StateSpans state_spans = {},
-    std::span<const ir::NodeId> preserve = {});
+    std::span<const ir::NodeId> preserve = {}, std::span<const std::uint32_t> origin_sets = {},
+    class ComparisonOriginDag* origins = nullptr,
+    class ComparisonCaptureSession* comparison_capture = nullptr,
+    std::span<const ir::TensorId> source_to_graph = {},
+    std::span<const ir::NodeId> graph_node_to_source = {},
+    PlannerMetadataAdmission* metadata_admission = nullptr);
 
 // The batch a batch pattern makes at `anchor` of `graph`, where it matches
 // and is enabled.

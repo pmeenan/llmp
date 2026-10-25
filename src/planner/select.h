@@ -34,10 +34,13 @@
 #include "execution/registry.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "ir/verify.h"
 #include "planner/policy.h"
 #include "planner/state_span.h"
 
 namespace llmp::planner {
+
+class PlannerMetadataAdmission;
 
 // What the planner knows of the device a plan runs on, as its provider
 // and tuning record report it.
@@ -132,14 +135,21 @@ struct ActivationAlignment {
 // them about a node that exists or would.
 class SelectionView {
  public:
+  enum class FusionComparisons : std::uint8_t { enabled, disabled };
   SelectionView(const execution::Registry& registry, const DeviceFacts& device,
                 const Policy& policy, bool row_invariant, bool capturable,
                 StateSpans state_spans = {}, RootAlignment root_alignment = {},
-                ActivationAlignment activation = {});
+                ActivationAlignment activation = {},
+                FusionComparisons fusion_comparisons = FusionComparisons::enabled,
+                PlannerMetadataAdmission* metadata_admission = nullptr);
 
   // A rewrite's exact map, before the next round queries this view.
-  void Forward(const ir::Graph& before, const ir::Graph& after,
-               std::span<const ir::TensorId> tensors);
+  // Prepay the actual copied view-owned arrays before a comparison caller
+  // copy-constructs another view. Forward retains a shared, paid callback
+  // chain and never copies opaque callback captures.
+  std::expected<void, ir::VerifyError> PrepayCopy() const;
+  std::expected<void, ir::VerifyError> Forward(const ir::Graph& before, const ir::Graph& after,
+                                               std::span<const ir::TensorId> tensors);
   std::uint64_t Alignment(const ir::Graph& graph, ir::TensorId root) const;
   std::vector<RootAlignmentFact> Alignments(const ir::Graph& graph) const;
 
@@ -154,11 +164,39 @@ class SelectionView {
                                       std::span<const ir::TensorDesc* const> outputs,
                                       std::span<const std::byte> params = {},
                                       bool state_span = false, bool automatic_fusion = false) const;
+  bool HasCandidate(ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
+                    std::span<const ir::TensorDesc* const> outputs,
+                    std::span<const std::byte> params = {}, bool state_span = false,
+                    bool automatic_fusion = false) const;
+  std::optional<std::size_t> NextCandidate(ir::OpKey key,
+                                           std::span<const ir::TensorDesc* const> sources,
+                                           std::span<const ir::TensorDesc* const> outputs,
+                                           std::span<const std::byte> params,
+                                           std::optional<std::size_t> after,
+                                           bool state_span = false,
+                                           bool automatic_fusion = false) const;
   // The same for a node of `graph` (with its parameters), as it is or
   // under another key (a batch's).
   std::vector<std::size_t> Candidates(const ir::Graph& graph, const ir::Node& node) const;
   std::vector<std::size_t> Candidates(const ir::Graph& graph, const ir::Node& node, ir::OpKey key,
                                       bool automatic_fusion = false) const;
+  std::optional<std::size_t> NextCandidate(const ir::Graph& graph, const ir::Node& node,
+                                           ir::OpKey key, std::optional<std::size_t> after,
+                                           bool automatic_fusion = false) const;
+  bool HasCandidate(const ir::Graph& graph, const ir::Node& node, ir::OpKey key,
+                    bool automatic_fusion = false) const;
+  bool IsCandidate(const ir::Graph& graph, const ir::Node& node, ir::OpKey key,
+                   std::size_t implementation, bool automatic_fusion = false) const;
+  // Batch formation asks whether the ordinary implementation set can
+  // compute each member before the batch cardinality is known. Historical
+  // fusion-vs-decomposition preferences must not veto that structural query;
+  // all capability, numerical, explicit/device-rank and ordering rules stay
+  // identical.
+  std::optional<std::size_t> NextOrdinaryCandidate(const ir::Graph& graph, const ir::Node& node,
+                                                   ir::OpKey key,
+                                                   std::optional<std::size_t> after) const;
+  bool IsOrdinaryCandidate(const ir::Graph& graph, const ir::Node& node, ir::OpKey key,
+                           std::size_t implementation) const;
 
   // Final selection runs after all rewrites; only here can performance evidence
   // replace a fusion by its proven terminal chain without cross-boundary refusion.
@@ -169,6 +207,9 @@ class SelectionView {
   // The callback is synchronous and does not retain descriptors or reselect.
   using QueryInspector = std::function<void(const execution::CapabilityQuery&)>;
   void Inspect(const ir::Graph& graph, const ir::Node& node, const QueryInspector& inspect) const;
+  void Inspect(const ir::Graph& graph, const ir::Node& node, ir::OpKey key,
+               const QueryInspector& inspect, bool automatic_fusion = false) const;
+  QueryShape Shape(const ir::Graph& graph, const ir::Node& node, ir::OpKey key) const;
   ir::ProductArithmetic IncumbentArithmetic(const ir::Graph& graph, const ir::Node& node) const;
   // A compound GLU changes two independent product contracts. Its operands
   // are priced/qualified as primitive products, each with its own weight role.
@@ -207,15 +248,20 @@ class SelectionView {
                                                  std::span<const ir::TensorDesc* const> outputs,
                                                  std::span<const std::byte> params,
                                                  std::span<const std::uint64_t> alignments) const;
-  std::vector<std::size_t> CandidatesForNode(const ir::Graph& graph, const ir::Node& node,
-                                             ir::OpKey key, bool automatic_fusion,
-                                             const QueryInspector& inspect = {},
-                                             bool final_selection = false) const;
+  std::vector<std::size_t> CandidatesForNode(
+      const ir::Graph& graph, const ir::Node& node, ir::OpKey key, bool automatic_fusion,
+      const QueryInspector& inspect = {}, bool final_selection = false,
+      std::optional<std::size_t>* next_after = nullptr, std::size_t* check_implementation = nullptr,
+      bool* is_candidate = nullptr, bool ignore_fusion_comparisons = false) const;
   std::vector<std::size_t> ForOperands(
       ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
       std::span<const ir::TensorDesc* const> outputs, std::span<const std::byte> params,
       bool state_span, std::span<const std::uint64_t> alignments, bool automatic_fusion = false,
-      const QueryInspector& inspect = {}, bool final_selection = false) const;
+      const QueryInspector& inspect = {}, bool final_selection = false,
+      bool* has_candidate = nullptr, std::size_t* best_candidate = nullptr,
+      ir::ProductArithmetic* best_arithmetic = nullptr,
+      std::optional<std::size_t>* next_after = nullptr, std::size_t* check_implementation = nullptr,
+      bool* is_candidate = nullptr, bool ignore_fusion_comparisons = false) const;
   const execution::Registry& registry_;
   const DeviceFacts& device_;
   const Policy& policy_;
@@ -224,6 +270,10 @@ class SelectionView {
   StateSpans state_spans_{};
   RootAlignment root_alignment_{};
   ActivationAlignment activation_{};
+  FusionComparisons fusion_comparisons_ = FusionComparisons::enabled;
+  PlannerMetadataAdmission* metadata_admission_ = nullptr;
+  std::uint64_t forwarding_bytes_ = 0;
+  mutable std::uint64_t prepaid_copy_bytes_ = 0;
   std::vector<execution::MeasuredRank> ranks_;
   std::vector<std::string_view> enabled_options_;
 };

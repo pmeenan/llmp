@@ -7,6 +7,7 @@
 
 namespace llmp::kernels::ggml {
 std::vector<execution::FusionComparison> MeasuredFusionComparisons();
+std::vector<execution::RecipeComparison> MeasuredRecipeComparisons();
 
 // The backend owns these measurements; unrelated registries do not inherit them.
 inline execution::RankData MeasuredRanks() {
@@ -42,6 +43,7 @@ inline execution::RankData MeasuredRanks() {
        .params = {.tensor_scale = true}},
   }};
   data.fusions = MeasuredFusionComparisons();
+  data.recipe_comparisons = MeasuredRecipeComparisons();
   return data;
 }
 }  // namespace llmp::kernels::ggml

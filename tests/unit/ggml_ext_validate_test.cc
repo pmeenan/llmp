@@ -616,6 +616,7 @@ TEST_F(GgmlExtValidateTest, ElementwiseOperationsTakePackedF32OfOneShape) {
   Accepted(kg::CheckUnary(ggml_gelu_inplace(c(), x)));
   Refused(kg::CheckUnary(Bound(ggml_gelu_erf(c(), x))));
   Refused(kg::CheckUnary(Bound(ggml_gelu_quick(c(), x))));
+  Refused(kg::CheckUnary(Bound(ggml_sqr(c(), x))));
   Refused(kg::CheckUnary(Bound(ggml_silu(c(), New(GGML_TYPE_F16, 4096, 3)))));
   // A strided view is not packed; nor is the unbound output.
   ggml_tensor* view = ggml_view_2d(c(), x, 2048, 3, x->nb[1], 0);

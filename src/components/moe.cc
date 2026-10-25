@@ -535,7 +535,8 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
         role == kPostNorm) {
       return parameters.Norm(role);
     }
-    if (role == kRouterScale || role == kExpertScale || role == kRouterBias) {
+    if (role == kRouterScale || role == kExpertScale || role == kRouterBias ||
+        role == kSharedGate) {
       return parameters.Get(role);
     }
     return f.Weight(role);
@@ -552,6 +553,10 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
     if (!hashed.valid()) return std::unexpected("a hash router without its side input");
   }
   const ir::TensorId in = d.pre ? norm(x, kNorm) : x;
+  // The router fusion is anchored before the shared expert. Materialize its
+  // immutable gate parameter here so that the replacement never reads a
+  // later Convert, including for source-native F16/BF16 gate rows.
+  const ir::TensorId shared_gate = d.shared_gate ? w(kSharedGate) : ir::TensorId{};
   const moe::Routed routed = moe::EmitRouter(
       b, in, w(kRouter), d.rms_router ? w(kRouterScale) : ir::TensorId{},
       {.experts = static_cast<std::uint32_t>(d.experts),
@@ -584,7 +589,7 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
     if (d.hidden > 0) {
       ir::TensorId shared = moe::EmitGlu(b, in, w(kGate), w(kUp), w(kDown), d.kind, d.shared_limit);
       if (d.shared_gate) {
-        const ir::TensorId logit = b.SumRows(b.Mul(in, w(kSharedGate)));
+        const ir::TensorId logit = b.SumRows(b.Mul(in, shared_gate));
         shared = b.Mul(shared, b.Unary(logit, ir::UnaryFn::kSigmoid));
       }
       out = b.Add(reduced, shared);
@@ -599,7 +604,7 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
            kDensePostNorm);
   ir::TensorId shared = dense;
   if (d.shared_gate) {
-    const ir::TensorId logit = b.SumRows(b.Mul(x, w(kSharedGate)));
+    const ir::TensorId logit = b.SumRows(b.Mul(x, shared_gate));
     shared = b.Mul(shared, b.Unary(logit, ir::UnaryFn::kSigmoid));
   }
   const ir::TensorId sum = b.Add(shared, norm(reduced, kRoutedPostNorm));

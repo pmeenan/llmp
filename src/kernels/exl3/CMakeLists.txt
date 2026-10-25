@@ -28,13 +28,13 @@ target_include_directories(llmp_exl3 PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_exl3 PUBLIC llmp_exl3_headers llmp_execution PRIVATE llmp_warnings)
 
 if(LLMP_CUDA)
-  add_library(llmp_exl3_kernels STATIC implementations.cc launch.cc linear.cc recon_gemm.cc pointer_table.cu)
+  add_library(llmp_exl3_kernels STATIC implementations.cc launch.cc linear.cc recon_gemm.cc pointer_table.cu input_conversion.cu)
   target_include_directories(llmp_exl3_kernels SYSTEM PUBLIC
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   target_link_libraries(llmp_exl3_kernels
                         PUBLIC llmp_exl3 llmp_exl3_cuda llmp_device_memory llmp_cublaslt
                                llmp_execution
-                        PRIVATE llmp_warnings)
+                        PRIVATE llmp_ggml_cuda llmp_ggml_support llmp_warnings)
   # What each implementation's identity records of the build (D-053): the
   # prepared ExLlamaV3 tree the build used, as the source receipt records
   # it (D-057), the SDK, the target, the kernels' device architectures, the
@@ -42,11 +42,15 @@ if(LLMP_CUDA)
   # configure: never an identity without the tree.
   get_property(sources GLOBAL PROPERTY LLMP_SOURCES_ENTRIES)
   set(exl3_tree "")
+  set(conversion_ggml_tree "")
   string(JSON count ERROR_VARIABLE error LENGTH "${sources}")
   if(NOT error AND count GREATER 0)
     math(EXPR last "${count} - 1")
     foreach(i RANGE ${last})
       string(JSON id ERROR_VARIABLE error GET "${sources}" ${i} id)
+      if(NOT error AND id STREQUAL "ggml")
+        string(JSON conversion_ggml_tree ERROR_VARIABLE error GET "${sources}" ${i} source_tree)
+      endif()
       if(NOT error AND id STREQUAL "exllamav3")
         string(JSON exl3_tree ERROR_VARIABLE error GET "${sources}" ${i} source_tree)
       endif()
@@ -56,6 +60,12 @@ if(LLMP_CUDA)
   if(NOT length EQUAL 64 OR NOT exl3_tree MATCHES "^[0-9a-f]+$")
     message(FATAL_ERROR "The source receipt has no ExLlamaV3 tree digest for the registry's identities")
   endif()
+  string(LENGTH "${conversion_ggml_tree}" conversion_tree_length)
+  if(NOT conversion_tree_length EQUAL 64 OR NOT conversion_ggml_tree MATCHES "^[0-9a-f]+$")
+    message(FATAL_ERROR "The EXL3 F32 input converter requires the actual GGML source identity")
+  endif()
+  target_compile_definitions(llmp_exl3_kernels PRIVATE
+    "LLMP_EXL3_CONVERSION_GGML_TREE=\"${conversion_ggml_tree}\"")
   string(REPLACE ";" "+" sanitize "${LLMP_SANITIZE}")
   # The kernels' architectures as their target builds them: sm_121, and in
   # the native profile its discrete GPUs' too (D-082).
@@ -73,7 +83,7 @@ if(LLMP_CUDA)
   # the GGML module does. A file added here without being listed fails the
   # next configure.
   set(module_files CMakeLists.txt implementations.cc implementations.h launch.cc launch.h
-                   launch_contract.h linear.cc linear.h module_digest.cmake pointer_table.cu pointer_table.h
+                   launch_contract.h linear.cc linear.h input_conversion.cu input_conversion.h module_digest.cmake pointer_table.cu pointer_table.h
                    recon_gemm.cc recon_gemm.h reconstruction_tuning.cc reconstruction_tuning.h upstream_gemv.cc upstream_gemv.h validate.cc
                    validate.h packed_tuning.cc packed_tuning.h selected_source.cc selected_source.h)
   file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"

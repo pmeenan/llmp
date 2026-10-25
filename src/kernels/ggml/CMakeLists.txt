@@ -39,6 +39,7 @@ add_custom_command(OUTPUT "${fusion_rank_generated}"
   COMMAND "${LLMP_PYTHON}" "${PROJECT_SOURCE_DIR}/tools/fusion_rank_data.py"
           "${fusion_rank_source}" "${fusion_rank_generated}"
   DEPENDS "${fusion_rank_source}" "${PROJECT_SOURCE_DIR}/tools/fusion_rank_data.py"
+          "${PROJECT_SOURCE_DIR}/src/ir/op_traits.inc"
   VERBATIM)
 add_library(llmp_ggml_rank_data STATIC "${fusion_rank_generated}")
 target_link_libraries(llmp_ggml_rank_data PUBLIC llmp_execution PRIVATE llmp_warnings)
@@ -63,7 +64,7 @@ target_sources(llmp_ggml_tensors PRIVATE fattn_owner.cc)
 target_sources(llmp_ggml_tensors PRIVATE kv_quant.cc)
 # The module's capabilities (capabilities.h) and the lowering of planned IR
 # steps onto GGML graphs (lower.h).
-target_sources(llmp_ggml_tensors PRIVATE capabilities.cc lower.cc)
+target_sources(llmp_ggml_tensors PRIVATE capabilities.cc lower.cc comparison.cc comparison_region.cc comparison_access.cc)
 set_source_files_properties(capabilities.cc PROPERTIES COMPILE_DEFINITIONS
   "LLMP_GGML_CUDA_ARCHITECTURES=\"${architecture_text}\"")
 target_link_libraries(llmp_ggml_tensors PUBLIC llmp_base llmp_ggml_base llmp_execution llmp_ggml_rank_data
@@ -102,7 +103,25 @@ if(LLMP_CUDA)
     file(CREATE_LINK "${resolved}" "${PROJECT_BINARY_DIR}/cublas/${library}" COPY_ON_ERROR)
   endforeach()
 
-  add_library(llmp_ggml_objects OBJECT conv2d_tiled.cu attention_f32.cu ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
+  # GGML's launchers and the standalone EXL3 input converter both use these
+  # llmp-owned CUDA support symbols. Keep their owner below either execution
+  # module, without pulling GGML's EXL3-selected dependency back into EXL3.
+  add_library(llmp_ggml_support STATIC ggml_support.cu)
+  get_target_property(ggml_support_includes llmp_ggml_cuda INTERFACE_INCLUDE_DIRECTORIES)
+  get_target_property(ggml_support_definitions llmp_ggml_cuda INTERFACE_COMPILE_DEFINITIONS)
+  target_include_directories(llmp_ggml_support PRIVATE "${PROJECT_SOURCE_DIR}/src")
+  target_include_directories(llmp_ggml_support SYSTEM PRIVATE
+                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include"
+                             ${ggml_support_includes})
+  target_compile_definitions(llmp_ggml_support PRIVATE ${ggml_support_definitions})
+  # Only GGML's common declarations/base are needed by this owner. Linking its
+  # CUDA launcher archive here would put the support archive before the calls
+  # that reference it in standalone consumers' static link order.
+  target_link_libraries(llmp_ggml_support PRIVATE llmp_ggml_base llmp_base llmp_cublas
+                                                 llmp_cuda_device_memory llmp_warnings)
+  set_target_properties(llmp_ggml_support PROPERTIES CUDA_ARCHITECTURES "${architectures}")
+
+  add_library(llmp_ggml_objects OBJECT conv2d_tiled.cu attention_f32.cu launch.cu ops.cu mul_mat_cublas.cu
                                          fattn.cu ops_ext.cu mul_mat_q.cu mul_mat_q2_d2r.cu dsv4_hca_tokentile.cu mmvq_rows.cu fattn_mma.cu
                                          fattn_mma_common.cu fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
                                          llmp_ops.cu llmp_fused.cu llmp_moe.cu dsv4_fast.cu dsv4_sparse.cu
@@ -136,7 +155,7 @@ if(LLMP_CUDA)
   target_compile_options(llmp_ggml_cutlass PRIVATE --expt-relaxed-constexpr
                                                      --diag-suppress=20012)
   target_link_libraries(llmp_ggml_objects
-                        PUBLIC llmp_ggml_tensors llmp_ggml_cuda llmp_device_memory
+                        PUBLIC llmp_ggml_tensors llmp_ggml_cuda llmp_ggml_support llmp_device_memory
                                llmp_cublas llmp_cublaslt llmp_execution llmp_ds4_d2r llmp_ds4_hca
                         # the NVIDIA driver, for ggml_support.cu's device queries
                         PRIVATE llmp_cuda_device_memory llmp_warnings llmp_ggml_cutlass
@@ -185,7 +204,7 @@ if(LLMP_CUDA)
   # build's configure (CONFIGURE_DEPENDS), so none escapes the identity;
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
-  set(module_files measured_ranks.h float_route.cc float_route.h CMakeLists.txt capabilities.cc capabilities.h recipe_entries.inc lower.cc lower.h step_program.cc
+  set(module_files comparison_access.cc comparison_access.h comparison.cc comparison.h comparison_schema.h comparison_region.cc comparison_region.h measured_ranks.h float_route.cc float_route.h CMakeLists.txt capabilities.cc capabilities.h recipe_entries.inc lower.cc lower.h step_program.cc
                    step_program.h selected_operation.h cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_sparse.cu
                    dsv4_weighted_reduce.h dsv4_weighted_reduce.cc dsv4_weighted_reduce.cu
                    gemma_moe.h gemma_moe.cc gemma_moe.cu
@@ -239,7 +258,7 @@ if(LLMP_CUDA)
     list(TRANSFORM module_files PREPEND "${base}/" OUTPUT_VARIABLE roots)
     target_sources(llmp_ggml_kernels PRIVATE "${binary}/module_digest.cc")
     llmp_compiler_identity(OUTPUT "${binary}/module_digest.cc" CONSTANT_TARGET llmp_ggml_kernels
-      TARGETS llmp_ggml_objects llmp_device_runtime
+      TARGETS llmp_ggml_objects llmp_device_runtime llmp_engine_core
       SELECT_TARGET llmp_engine_core SELECT_SOURCE "${PROJECT_SOURCE_DIR}/src/engine/graph_plan.cc"
       FILES ${roots} "${PROJECT_SOURCE_DIR}/tools/fusion_rank_data.py"
         "${PROJECT_SOURCE_DIR}/src/kernels/exl3/module_digest.cmake"

@@ -202,7 +202,10 @@ bool Accepts(const execution::CapabilityQuery& q, std::span<const std::uint8_t> 
     if (q.params.size() < sizeof(ir::ProductParams)) return false;
     ir::ProductParams params{};
     std::memcpy(&params, q.params.data(), sizeof(params));
-    if (params.accumulate != ir::Accumulate::kDefault || params.hint != ir::ProductHint::kNone)
+    if (params.accumulate != ir::Accumulate::kDefault || params.hint != ir::ProductHint::kNone ||
+        params.arithmetic != ir::ProductArithmetic::kImplementation ||
+        params.reserved != decltype(params.reserved){} ||
+        params.arithmetic_reserved != decltype(params.arithmetic_reserved){})
       return false;
   }
   const execution::OperandFormat* first = nullptr;
@@ -236,7 +239,7 @@ bool Accepts(const execution::CapabilityQuery& q, std::span<const std::uint8_t> 
       }
       return true;
     };
-    if (!packed(*x, 2)) return false;
+    if (!packed(*x, x->encoding == format::Encoding::kF32 ? 4 : 2)) return false;
     if (y && (y->ne != std::array{first->ne[1], x->ne[1], std::uint64_t{1}, std::uint64_t{1}} ||
               !packed(*y, y->encoding == format::Encoding::kF32 ? 4 : 2)))
       return false;

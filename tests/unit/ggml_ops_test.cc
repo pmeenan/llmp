@@ -58,6 +58,7 @@
 #include "ggml.h"
 #include "ir/builder.h"
 #include "kernels/common/device_backend.h"
+#include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops.h"
@@ -1466,6 +1467,36 @@ TEST_F(GgmlOpsTest, TheRegistryDeclaresBindsAndRunsEveryNewImplementation) {
   const std::array<ggml_tensor*, 2> two = {by_kernel, direct};
   EXPECT_EQ(FailedCode(swiglu.Run(*launch, two)), KernelError::kRejected);
   EXPECT_FALSE(launch->faulted());
+}
+
+TEST_F(GgmlOpsTest, UnaryAndRopeStandaloneComparatorsMatchTheirLaunchDomains) {
+  namespace ir = llmp::ir;
+  namespace kg = llmp::kernels::ggml;
+  namespace ex = llmp::execution;
+  const auto* unary = kg::CapabilityOf("ggml.unary");
+  ASSERT_NE(unary, nullptr);
+  EXPECT_TRUE(unary->standalone_comparator);
+  const std::array operands{ex::OperandFormat{.operand = 0,
+                                              .encoding = llmp::format::Encoding::kF32,
+                                              .layout = llmp::format::Layout::kDense}};
+  const auto accepts = [&](ir::UnaryFn fn) {
+    const ir::UnaryParams params{.fn = fn};
+    const ex::CapabilityQuery query{.op = ir::Primitive(ir::Op::kUnary),
+                                    .operands = operands,
+                                    .arch = 121,
+                                    .params = std::as_bytes(std::span(&params, 1))};
+    return unary->accepts(query);
+  };
+  for (const auto fn :
+       {ir::UnaryFn::kAbs, ir::UnaryFn::kSgn, ir::UnaryFn::kNeg, ir::UnaryFn::kSilu,
+        ir::UnaryFn::kGeluTanh, ir::UnaryFn::kTanh, ir::UnaryFn::kRelu, ir::UnaryFn::kSigmoid,
+        ir::UnaryFn::kExp, ir::UnaryFn::kSoftplus, ir::UnaryFn::kSqrt})
+    EXPECT_TRUE(accepts(fn)) << static_cast<int>(fn);
+  EXPECT_FALSE(accepts(ir::UnaryFn::kGeluErf));
+  EXPECT_FALSE(accepts(ir::UnaryFn::kSqr));
+
+  EXPECT_TRUE(kg::CapabilityOf("ggml.rope.neox")->standalone_comparator);
+  EXPECT_TRUE(kg::CapabilityOf("ggml.rope.ext")->standalone_comparator);
 }
 
 // The pinned GGML definition uses the tanh approximation, rather than ERF.

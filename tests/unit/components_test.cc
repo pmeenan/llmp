@@ -86,6 +86,139 @@ TEST(InputValueSinkTest, TypedCapacityAndNarrowingRefuseWithoutWideningOrLosingP
   EXPECT_EQ(stored, (std::array<std::int32_t, 3>{7, -3, 0}));
 }
 
+// Both count-only admission and the actual typed staging sink must reject a
+// changed shape before publishing even the valid prefix of an invalid range.
+void ExpectCellRefusal(const StepInput& input, const planner::StepShape& shape) {
+  InputValueSink count;
+  EXPECT_FALSE(EmitInputValues(input, shape, {}, count));
+  EXPECT_EQ(count.size(), 0U);
+  std::array<std::int64_t, 8> stored;
+  stored.fill(99);
+  const auto before = stored;
+  InputValueSink sink(std::as_writable_bytes(std::span(stored)), sizeof(std::int64_t), true);
+  EXPECT_FALSE(EmitInputValues(input, shape, {}, sink));
+  EXPECT_EQ(sink.size(), 0U);
+  EXPECT_EQ(stored, before);
+}
+
+TEST(InputValueSinkTest, StoreCellsRecheckTheCurrentNonringRangeBeforeStaging) {
+  const StepInput input{.kind = InputKind::kStoreCells, .segment = 0, .cells = {.capacity = 4}};
+  planner::StepShape shape{.segments = {{.rows = 2, .past = 2}}};
+  auto values = InputValues(input, shape, {});
+  ASSERT_TRUE(values) << values.error();
+  EXPECT_EQ(*values, (std::vector<std::int64_t>{2, 3}));
+  shape.segments[0].past = 3;
+  ExpectCellRefusal(input, shape);
+  shape.segments[0] = {.rows = 3, .past = 2};
+  ExpectCellRefusal(input, shape);
+  shape.segments[0] = {.rows = 0, .past = 100};
+  values = InputValues(input, shape, {});
+  ASSERT_TRUE(values) << values.error();
+  EXPECT_TRUE(values->empty());
+  // Widen the position sum before comparing with the real cell capacity.
+  shape.segments[0] = {.rows = 2, .past = UINT32_MAX};
+  ExpectCellRefusal(input, shape);
+}
+
+TEST(InputValueSinkTest, PerRowCellsBoundOffsetsAndAllJoinedSegments) {
+  StepInput input{.kind = InputKind::kStoreCells,
+                  .segment = 0,
+                  .cells = {.capacity = 5, .per_row = true, .first_row = 3}};
+  planner::StepShape shape{.segments = {{.rows = 2, .past = 100}}};
+  auto values = InputValues(input, shape, {});
+  ASSERT_TRUE(values) << values.error();
+  EXPECT_EQ(*values, (std::vector<std::int64_t>{3, 4}));
+  input.cells.first_row = 4;
+  ExpectCellRefusal(input, shape);
+  input.segment = ir::kJoinedSegment;
+  input.cells.first_row = 2;
+  shape.segments.push_back({.rows = 1, .past = 20});
+  values = InputValues(input, shape, {});
+  ASSERT_TRUE(values) << values.error();
+  EXPECT_EQ(*values, (std::vector<std::int64_t>{2, 3, 4}));
+  shape.segments.back().rows = 2;
+  ExpectCellRefusal(input, shape);
+  shape.segments = {{.rows = 0}};
+  input.cells.first_row = 100;
+  values = InputValues(input, shape, {});
+  ASSERT_TRUE(values) << values.error();
+  EXPECT_TRUE(values->empty());
+  // Summing joined rows in 32 bits would wrap and admit an undersized save.
+  input.cells.capacity = std::uint64_t{UINT32_MAX} + 1;
+  input.cells.first_row = 0;
+  shape.segments = {{.rows = UINT32_MAX}, {.rows = UINT32_MAX}};
+  ExpectCellRefusal(input, shape);
+}
+
+TEST(InputValueSinkTest, FixedAndRingStoresRequireCellsButAllowLongWrappedChunks) {
+  StepInput fixed{.kind = InputKind::kStoreCells, .cells = {.capacity = 1, .fixed = true}};
+  auto values = InputValues(fixed, {}, {});
+  ASSERT_TRUE(values) << values.error();
+  EXPECT_EQ(*values, (std::vector<std::int64_t>{0}));
+  fixed.cells.capacity = 0;
+  ExpectCellRefusal(fixed, {});
+  const planner::StepShape shape{.segments = {{.rows = 8, .past = 2}}};
+  StepInput ring{
+      .kind = InputKind::kStoreCells, .segment = 0, .cells = {.capacity = 3, .ring = true}};
+  values = InputValues(ring, shape, {});
+  ASSERT_TRUE(values) << values.error();
+  EXPECT_EQ(*values, (std::vector<std::int64_t>{2, 0, 1, 2, 0, 1, 2, 0}));
+  ring.cells.capacity = 0;
+  ExpectCellRefusal(ring, shape);
+  StepInput joined{.kind = InputKind::kStoreCells, .cells = {.capacity = 0, .per_row = true}};
+  ExpectCellRefusal(joined, shape);
+}
+
+TEST(InputValueSinkTest, OutputCellsBoundOnlySelectedRowsAndRejectInvalidCounts) {
+  StepInput output{.kind = InputKind::kOutputCells, .segment = 0, .cells = {.capacity = 5}};
+  planner::StepShape shape{.segments = {{.rows = 4, .past = 1, .outputs = 2}}};
+  auto values = InputValues(output, shape, {});
+  ASSERT_TRUE(values) << values.error();
+  EXPECT_EQ(*values, (std::vector<std::int64_t>{3, 4}));
+  output.cells.capacity = 4;
+  ExpectCellRefusal(output, shape);
+  output.cells = {.capacity = 5, .per_row = true, .first_row = 3};
+  values = InputValues(output, shape, {});
+  ASSERT_TRUE(values) << values.error();
+  EXPECT_EQ(*values, (std::vector<std::int64_t>{3, 4}));
+  output.cells.first_row = 4;
+  ExpectCellRefusal(output, shape);
+  output.cells = {.capacity = 2, .ring = true};
+  values = InputValues(output, shape, {});
+  ASSERT_TRUE(values) << values.error();
+  EXPECT_EQ(*values, (std::vector<std::int64_t>{1, 0}));
+  shape.segments[0].outputs = 5;
+  ExpectCellRefusal(output, shape);
+  output.cells.capacity = 0;
+  shape.segments[0].outputs = 0;
+  ExpectCellRefusal(output, shape);
+  output.cells = {.capacity = 5};
+  shape.segments[0].past = 100;
+  values = InputValues(output, shape, {});
+  ASSERT_TRUE(values) << values.error();
+  EXPECT_TRUE(values->empty());
+  output.cells = {.capacity = 5, .per_row = true, .first_row = 100};
+  values = InputValues(output, shape, {});
+  ASSERT_TRUE(values) << values.error();
+  EXPECT_TRUE(values->empty());
+  const StepInput rows{.kind = InputKind::kOutputRows};
+  shape.segments.push_back({.rows = 1, .outputs = 2});
+  ExpectCellRefusal(rows, shape);
+}
+
+TEST(InputValueSinkTest, BlockStoreCountsRemainBoundedByActualCells) {
+  StepInput input{.kind = InputKind::kStoreCells,
+                  .segment = 0,
+                  .cells = {.capacity = 3, .block = 4},
+                  .read = 3};
+  const planner::StepShape shape{.segments = {{.rows = 12}}};
+  auto values = InputValues(input, shape, {});
+  ASSERT_TRUE(values) << values.error();
+  EXPECT_EQ(*values, (std::vector<std::int64_t>{0, 1, 2}));
+  input.read = 4;
+  ExpectCellRefusal(input, shape);
+}
+
 TEST(InputValueSinkTest, CanonicalCompressorCountAndFillPreserveIndependentOverlapOrder) {
   const std::array<std::int64_t, 16> expected{16, 16, 16, 16, 8,  9,  10, 11,
                                               8,  9,  10, 11, 12, 13, 14, 15};
@@ -2122,6 +2255,54 @@ TEST(ComponentsTest, MoeFragmentMatchesItsReference) {
   EXPECT_EQ(def.splits[0].units(*in), 8U);
 }
 
+TEST(ComponentsTest, MoeSharedGateWidensOnlyItsSmallNativeParameter) {
+  constexpr std::uint16_t kSharedGate = 18;
+  const std::vector<Step> steps{
+      {.shape = {.segments = {Seg(0, 3, 0, 256, 1), Seg(1, 2, 7, 256, 2)}}},
+      {.shape = {.segments = {Seg(0, 1, 3, 256, 1)}}},
+  };
+  for (const auto encoding : {Encoding::kF32, Encoding::kBF16, Encoding::kF16}) {
+    for (const bool parallel : {false, true}) {
+      SCOPED_TRACE(std::format("encoding {} parallel {}", static_cast<int>(encoding), parallel));
+      auto component = Moe(false, false, true);
+      for (auto& param : component.params)
+        if (param.name == "placement") param.value = N(parallel ? "parallel" : "none");
+      component.params.push_back(P("shared_gate", ParamValue(true)));
+      std::ranges::sort(component.params, {}, &Param::name);
+      auto instance = MakeInstance(component, kFacts, Site::kLayer, 0, 2);
+      ASSERT_TRUE(instance) << instance.error();
+      auto formats = MoeFormats(Encoding::kF32, false);
+      formats[kSharedGate].encoding = encoding;
+      Compare(*instance, formats, {}, steps, 1e-4);
+      auto built = BuildComponent(*instance, steps[0].shape, formats, {});
+      ASSERT_TRUE(built) << built.error();
+      const auto& graph = built->step.graph;
+      const auto leaf = built->weights[kSharedGate];
+      EXPECT_EQ(graph.tensor(leaf).format.encoding, encoding);
+      const auto route = std::ranges::find_if(graph.nodes(), [](const auto& node) {
+        return node.key == ir::Primitive(ir::Op::kRoute);
+      });
+      ASSERT_NE(route, graph.nodes().end());
+      const auto route_id = graph.producer(route->out[0]);
+      EXPECT_LT(graph.producer(leaf).v, route_id.v);
+      std::size_t conversions = 0, consumers = 0;
+      for (const auto& node : graph.nodes()) {
+        if (node.key == ir::Primitive(ir::Op::kConvert) && node.src[0] == leaf) {
+          ++conversions;
+          EXPECT_EQ(graph.tensor(node.out[0]).format.encoding, Encoding::kF32);
+          EXPECT_LT(graph.producer(node.out[0]).v, route_id.v)
+              << "the anchored router must see the already materialized gate parameter";
+        }
+        if (node.key == ir::Primitive(ir::Op::kMul))
+          for (const auto input : node.src)
+            if (input == leaf) ++consumers;
+      }
+      EXPECT_EQ(conversions, encoding == Encoding::kF32 ? 0U : 1U);
+      EXPECT_EQ(consumers, encoding == Encoding::kF32 ? 1U : 0U);
+    }
+  }
+}
+
 TEST(ComponentsTest, ParallelClampedMoeMatchesItsReferenceWithDistinctLimits) {
   auto component = Moe(false, false, true);
   for (auto& param : component.params)
@@ -2704,6 +2885,53 @@ TEST(ComponentsTest, StoresIntoBorrowedOrForeignStateAreRefused) {
     const bool allowed = !borrowed && (!foreign || tap);
     EXPECT_EQ(CheckStateWrites(step, 0).has_value(), allowed)
         << borrowed << " " << foreign << " " << tap;
+  }
+}
+
+// GDN's fused recurrence consumes its previous state and conditionally writes
+// it in place. Its aliased output is a write, not a pure-overwrite input.
+TEST(ComponentsTest, FusedGdnStateAccessAndWriteAuthorization) {
+  for (const bool write : {false, true}) {
+    for (const auto& [borrowed, foreign, tap] :
+         {std::tuple{true, false, false}, std::tuple{false, true, false},
+          std::tuple{false, true, true}, std::tuple{false, false, false}}) {
+      SCOPED_TRACE(
+          std::format("write {} borrowed {} foreign {} tap {}", write, borrowed, foreign, tap));
+      ir::Builder b;
+      const auto f32 = [](std::initializer_list<std::uint64_t> dims) {
+        return ir::Dense(Encoding::kF32, ir::ShapeOf(dims));
+      };
+      const auto q = b.Input(f32({4, 1, 1}));
+      const auto k = b.Input(f32({4, 1, 1}));
+      const auto v = b.Input(f32({4, 2, 1}));
+      const auto gate = b.Input(f32({1, 2, 1}));
+      const auto beta = b.Input(f32({1, 2, 1}));
+      const ir::StateRef ref{.stage = static_cast<std::uint16_t>(foreign ? 1 : 0)};
+      const auto state = b.State(f32({32, 1}), ref);
+      const auto slot = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({1})));
+      const std::array sources{q, k, v, gate, beta, state, slot};
+      const auto made = b.Fused(ir::FusedKind::kGdnStep, std::span(sources).first(write ? 7U : 6U),
+                                ir::GdnStepParams{.write = write});
+      b.Output(made[0]);
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+      StepGraph step{.graph = std::move(*graph),
+                     .inputs = {},
+                     .weights = {},
+                     .state = {{.tensor = state,
+                                .ref = ref,
+                                .borrowed = borrowed,
+                                .tap = tap,
+                                .read = true,
+                                .written = write}}};
+      EXPECT_TRUE(CheckStateAccess(step.graph, step.state));
+      EXPECT_EQ(CheckStateWrites(step, 0).has_value(), !write || (!borrowed && (!foreign || tap)));
+      step.state[0].read = false;
+      EXPECT_FALSE(CheckStateAccess(step.graph, step.state));
+      step.state[0].read = true;
+      step.state[0].written = !write;
+      EXPECT_FALSE(CheckStateAccess(step.graph, step.state));
+    }
   }
 }
 

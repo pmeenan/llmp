@@ -49,8 +49,12 @@
 #include "base/sha256.h"
 #include "format/tensor_format.h"
 #include "ir/op.h"
+#include "ir/storage_admission.h"
+#include "ir/verify.h"
 
 namespace llmp::ir {
+
+class DiagnosticAdmission;
 
 class Builder;
 
@@ -138,6 +142,9 @@ struct TensorDesc {
 std::uint64_t UnitBytes(const format::TensorFormat& format);
 // The values one unit holds along ne[0] (1 for dense encodings).
 std::uint64_t UnitElements(const format::TensorFormat& format);
+// Checked storage envelope for a valid tensor descriptor. Excludes backend
+// readable-tail and write padding; those remain the selected recipe's contract.
+std::expected<std::uint64_t, std::string> StorageBytes(const TensorDesc& tensor);
 // A root's natural strides: units in order, rows packed (all zero where
 // UnitBytes is 0).
 std::array<std::uint64_t, format::kMaxDims> NaturalStrides(const format::TensorFormat& format);
@@ -234,20 +241,27 @@ class Graph {
   base::Sha256Digest Digest() const;
 
   // A copy (graphs are move-only so that a copy is always explicit): a
-  // planner consumes one graph while its lowering reads the other.
-  Graph Clone() const;
+  // planner consumes one graph while its lowering reads the other. A paid
+  // source carries its funder into the clone and refuses before copying.
+  std::expected<Graph, VerifyError> Clone(std::shared_ptr<const StorageFunder> funder = {},
+                                          DiagnosticAdmission* diagnostic = nullptr) const;
 
   // This graph's identity in the process: unique to each built or cloned
   // graph (graphs never change once built), never reused, so a cache of
   // facts about one graph keyed on it never confuses another, even one
   // built where a freed graph was. Zero: a moved-from graph.
   std::uint64_t identity() const { return identity_; }
+  std::shared_ptr<const StorageFunder> storage_funder() const { return storage_loan_.funder(); }
 
  private:
   friend class ir::Builder;
   Graph() = default;
   static std::uint64_t NextIdentity();
+  std::expected<std::uint64_t, VerifyError> DigestScratchBound() const;
+  base::Sha256Digest ComputeDigest() const;
 
+  // Declared first so graph allocations are destroyed before their payment.
+  StorageLoan storage_loan_{};
   std::vector<Node> nodes_;
   std::vector<TensorDesc> tensors_;
   std::vector<NodeId> producers_;  // by tensor
@@ -255,6 +269,7 @@ class Graph {
   std::vector<TensorId> outputs_;
   std::vector<TensorId> keep_;
   std::vector<std::string> names_;
+  base::Sha256Digest digest_{};
   std::uint64_t identity_ = 0;
 };
 

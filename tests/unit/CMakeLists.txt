@@ -625,7 +625,8 @@ llmp_gtest(step_transaction_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit)
 
 add_executable(model_runner_test model_runner_test.cc)
 target_link_libraries(model_runner_test PRIVATE llmp_engine_core llmp_fake_step_source
-                                                llmp_fake_device_backend llmp_platform)
+                                                llmp_fake_device_backend llmp_platform
+                                                llmp_test_artifact_writer llmp_ggml_tensors)
 llmp_gtest(model_runner_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
@@ -922,6 +923,19 @@ if(LLMP_CUDA)
   target_link_libraries(ggml_step_program_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
                                                         llmp_platform)
   llmp_gpu_gtest(ggml_step_program_gpu_test DISCRETE ALL)
+
+  add_executable(ggml_comparison_gpu_test ggml_comparison_gpu_test.cc)
+  target_sources(ggml_comparison_gpu_test PRIVATE ggml_comparison_preparation_gpu_test.cc
+                                                     ggml_comparison_pair_gpu_test.cc)
+  target_include_directories(ggml_comparison_gpu_test SYSTEM PRIVATE
+      "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
+  target_link_libraries(ggml_comparison_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
+                                                      llmp_platform llmp_reference_kernels
+                                                      llmp_fake_step_source
+                                                      llmp_engine_core llmp_paging_kernels
+                                                      llmp_test_artifact_writer)
+  llmp_gpu_gtest(ggml_comparison_gpu_test DISCRETE ALL
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
   # Qwen3.8's routed experts over the CUTLASS layout (kernels/ggml/
   # moe_layout.h): the conversion, routing, CUTLASS's grouped GEMM, the
@@ -1313,6 +1327,19 @@ add_executable(ggml_spatial_test ggml_spatial_test.cc)
 target_link_libraries(ggml_spatial_test PRIVATE llmp_ggml_tensors llmp_engine_core llmp_components
                                                llmp_spec llmp_model)
 llmp_gtest(ggml_spatial_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(comparison_pair_test comparison_pair_test.cc)
+target_link_libraries(comparison_pair_test PRIVATE llmp_engine_core llmp_fake_device_backend)
+llmp_gtest(comparison_pair_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(comparison_boundary_test comparison_boundary_test.cc)
+target_link_libraries(comparison_boundary_test PRIVATE llmp_components llmp_ir)
+llmp_gtest(comparison_boundary_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(ggml_comparison_test ggml_comparison_test.cc)
+target_link_libraries(ggml_comparison_test PRIVATE llmp_ggml_tensors llmp_planner llmp_components
+                                                   llmp_spec llmp_model llmp_artifact llmp_json)
+llmp_gtest(ggml_comparison_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 add_executable(ggml_lower_test ggml_lower_test.cc)
 target_link_libraries(ggml_lower_test PRIVATE llmp_ggml_tensors llmp_planner llmp_components

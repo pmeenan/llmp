@@ -22,10 +22,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "format/encoding.h"
 #include "format/layout.h"
@@ -35,6 +37,16 @@
 #include "ir/verify.h"
 
 namespace llmp::ir {
+
+// Requested backing for a comparison-owned IR builder. Capacities are the
+// post-mutation capacities; the admission owner accounts for old+new storage
+// while a reserve is in flight and retains every accepted loan through teardown.
+struct BuilderStorageRequest {
+  std::size_t node_capacity = 0, tensor_capacity = 0, producer_capacity = 0;
+  std::size_t input_capacity = 0, output_capacity = 0, keep_capacity = 0, name_capacity = 0;
+  std::size_t owned_name_count = 0;
+  std::uint64_t copied_name_bytes = 0;
+};
 
 // A node's outputs.
 struct Outputs {
@@ -62,6 +74,16 @@ class Builder {
   Builder& operator=(const Builder&) = delete;
   ~Builder() = default;
 
+  // Optional synchronous paid-growth gate. Without it, ordinary builder
+  // allocation behavior is unchanged. Refusal is sticky and precedes growth.
+  bool SetStorageFunder(std::shared_ptr<const StorageFunder> funder);
+  void SetDiagnosticAdmission(DiagnosticAdmission* admission) { diagnostic_ = admission; }
+
+  // Admit one scoped helper-allocation envelope. An absent result is the
+  // ordinary unfunded path unless admission failed (check ok()); callers
+  // must declare the returned loan before the scratch it covers.
+  std::optional<StorageLoan> FundScratch(std::uint64_t bytes);
+
   // ---- context and state
   struct Context {
     std::uint16_t component = 0;
@@ -88,6 +110,7 @@ class Builder {
   std::uint8_t segment() const { return segment_; }
   bool ok() const { return !error_.has_value(); }
   const std::optional<VerifyError>& error() const { return error_; }
+  std::optional<VerifyError> TakeError() { return std::exchange(error_, std::nullopt); }
   // A tensor made so far (a valid id of this builder), as a copy: the
   // builder's tensors move whenever it makes another, so it hands out no
   // reference into them (one kept across a later call would dangle).
@@ -231,7 +254,21 @@ class Builder {
 
   // Refuses the graph (a decomposition's or a component's own check); the
   // first error is kept.
-  void Refuse(GraphError error, std::string detail);
+  void Refuse(GraphError error, std::string_view detail);
+  template <std::size_t N>
+  void Refuse(GraphError error, const DiagnosticMessage<N>& message) {
+    RefuseDiagnostic(error, message.format, message.values);
+  }
+  void RefuseAdmission();
+  void RefuseDiagnostic(GraphError error, std::string_view format,
+                        std::span<const DiagnosticValue> values);
+  template <std::size_t N>
+  void RefuseDiagnostic(GraphError error, const DiagnosticMessage<N>& message) {
+    RefuseDiagnostic(error, message.format, message.values);
+  }
+  bool Admit(std::size_t nodes, std::size_t tensors, std::size_t producers, std::size_t inputs,
+             std::size_t outputs, std::size_t keeps, std::size_t names,
+             std::uint64_t copied_name_bytes = 0);
 
   // The graph, verified; the builder is spent.
   std::expected<Graph, VerifyError> Finish() &&;
@@ -245,6 +282,9 @@ class Builder {
 
   Graph graph_;
   std::size_t max_nodes_;
+  std::shared_ptr<const StorageFunder> funder_{};
+  DiagnosticAdmission* diagnostic_ = nullptr;
+  std::uint64_t copied_name_bytes_ = 0;
   std::uint16_t component_ = 0;
   Batch batch_ = Batch::kJoined;
   std::uint8_t segment_ = kJoinedSegment;

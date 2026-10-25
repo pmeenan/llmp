@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
+// Optional checked explicit accesses; ordinary recipe consumers ignore these rows.
+#ifndef LLMP_GGML_ACCESS_RECIPE
+#define LLMP_GGML_ACCESS_RECIPE(NAME, DESCRIBE)
+#define LLMP_GGML_LOCAL_ACCESS_MACRO
+#endif
+
 // Shared concrete recipe inventory: key, numerical contract, ordered node arity,
 // descriptor validator and launcher. CPU metadata discards only callable expressions.
 // No include guard: consumers define both recipe macros before including this file.
@@ -102,7 +108,7 @@ LLMP_GGML_RECIPE(kDsv4HcPostExpertsNormF16Name, llmp::ir::Primitive(llmp::ir::Op
                    return RunDsv4HcPostExpertsNormF16(launch, n[0], n[1], n[2], n[3]);
                  }))
 
-LLMP_GGML_RECIPE(kDsv4HcPostNormF16Name, llmp::ir::Primitive(llmp::ir::Op::kHcPost),
+LLMP_GGML_RECIPE(kDsv4HcPostNormF16Name, llmp::ir::Fused(llmp::ir::FusedKind::kHcNormPost),
                  "HcPostNormF16Kernel: native HC post FMAs into F32 streams, then the native "
                  "flat RMS and RN F16 (or F32) mix-input rows (experimental)",
                  2, ([](ConstNodes n) { return CheckDsv4HcPostNormF16(n[0], n[1]); }),
@@ -216,8 +222,8 @@ LLMP_GGML_RECIPE("ggml.geglu", llmp::ir::Primitive(llmp::ir::Op::kGlu),
                  ([](LaunchContext& launch, Nodes n) { return GeGlu(launch, n[0]); }))
 
 LLMP_GGML_RECIPE("ggml.convert", llmp::ir::Primitive(llmp::ir::Op::kConvert),
-                 "ggml_cuda_cpy between packed tensors: cpy_scalar_contiguous<float, half> or "
-                 "<half, float>; upstream launch configuration",
+                 "ggml_cuda_cpy scalar contiguous or strided source to packed destination: "
+                 "F16/BF16 to F32 or F32 to F16; upstream launch configuration",
                  1, ([](ConstNodes n) { return CheckConvert(n[0]); }),
                  ([](LaunchContext& launch, Nodes n) { return Convert(launch, n[0]); }))
 
@@ -597,7 +603,7 @@ LLMP_GGML_RECIPE("llmp.qrows.get_rows", llmp::ir::Primitive(llmp::ir::Op::kGetRo
                  ([](ConstNodes n) { return CheckQRows(n[0]); }),
                  ([](LaunchContext& launch, Nodes n) { return RunQRows(launch, n[0]); }))
 
-LLMP_GGML_RECIPE("llmp.hc.combine", llmp::ir::Primitive(llmp::ir::Op::kHcPost),
+LLMP_GGML_RECIPE("llmp.hc.combine", llmp::ir::Fused(llmp::ir::FusedKind::kHcCombine),
                  "HcCombineKernel: four columns a thread", 1,
                  ([](ConstNodes n) { return CheckHcCombine(n[0]); }),
                  ([](LaunchContext& launch, Nodes n) { return RunHcCombine(launch, n[0]); }))
@@ -786,7 +792,7 @@ LLMP_GGML_RECIPE("llmp.mul_mat_id.mmvq_rows", llmp::ir::Primitive(llmp::ir::Op::
 LLMP_GGML_RECIPE("llmp.mul_mat.mmvf_rows", llmp::ir::Primitive(llmp::ir::Op::kMatMul),
                  "ggml_cuda_mul_mat_vec_f: mul_mat_vec_f<T, type_acc, columns 1-8, block, false, "
                  "false> whatever upstream would route; upstream launch configuration",
-                 1, ([](ConstNodes n) { return CheckMulMat(n[0]); }),
+                 1, ([](ConstNodes n) { return CheckMulMatVecFRows(n[0]); }),
                  ([](LaunchContext& launch, Nodes n) { return MulMatVecFRows(launch, n[0]); }))
 
 LLMP_GGML_RECIPE("llmp.argmax", llmp::ir::Primitive(llmp::ir::Op::kTopK),
@@ -865,7 +871,7 @@ LLMP_GGML_RECIPE("llmp.gdn.history", llmp::ir::Primitive(llmp::ir::Op::kCont),
                  1, ([](ConstNodes n) { return CheckGdnHistory(n[0]); }),
                  ([](LaunchContext& launch, Nodes n) { return RunGdnHistory(launch, n[0]); }))
 
-LLMP_GGML_RECIPE("llmp.gdn.gates", llmp::ir::Primitive(llmp::ir::Op::kUnary),
+LLMP_GGML_RECIPE("llmp.gdn.gates", llmp::ir::Fused(llmp::ir::FusedKind::kGdnGates),
                  "GdnGatesKernel: paired sigmoid(beta) and softplus(alpha + dt_bias) * ssm_a, "
                  "the original GGML F32 rounding points",
                  1, ([](ConstNodes n) { return CheckGdnGates(n[0]); }),
@@ -1060,3 +1066,31 @@ LLMP_GGML_RECIPE("llmp.select", llmp::ir::Primitive(llmp::ir::Op::kSelect),
                  "broadcast without arithmetic or inspection of unselected payload",
                  1, ([](ConstNodes n) { return CheckSelect(n[0]); }),
                  ([](LaunchContext& launch, Nodes n) { return RunSelect(launch, n[0]); }))
+
+LLMP_GGML_ACCESS_RECIPE("ggml.norm", &LayerNormAccess)
+LLMP_GGML_ACCESS_RECIPE("ggml.scale", &ScaleAccess)
+LLMP_GGML_ACCESS_RECIPE("ggml.unary", &UnaryAccess)
+LLMP_GGML_ACCESS_RECIPE("ggml.repeat", &RepeatAccess)
+LLMP_GGML_ACCESS_RECIPE("ggml.concat", &ConcatAccess)
+LLMP_GGML_ACCESS_RECIPE("ggml.add", &AddAccess)
+LLMP_GGML_ACCESS_RECIPE("ggml.mul", &MulAccess)
+LLMP_GGML_ACCESS_RECIPE("ggml.rms_norm", &RmsAccess)
+LLMP_GGML_ACCESS_RECIPE("ggml.rms_norm_mul.fused", &RmsMulAccess)
+LLMP_GGML_ACCESS_RECIPE("ggml.rms_norm_mul.unfused", &RmsThenMulAccess)
+LLMP_GGML_ACCESS_RECIPE(kRopeExtName, &RopeExtAccess)
+LLMP_GGML_ACCESS_RECIPE("ggml.convert", &GammaConvertAccess)
+LLMP_GGML_ACCESS_RECIPE("ggml.cont", &ContAccess)
+LLMP_GGML_ACCESS_RECIPE(kNormRopeSectionsName, &NormRopeSectionsAccess)
+LLMP_GGML_ACCESS_RECIPE(kSpatialChannelNormName, &SpatialChannelNormAccess)
+LLMP_GGML_ACCESS_RECIPE("ggml.l2_norm", &L2NormAccess)
+LLMP_GGML_ACCESS_RECIPE(kLayerNormModulateSplitName, &ModulateAccess)
+LLMP_GGML_ACCESS_RECIPE(kGatedResidualSplitName, &GatedAccess)
+LLMP_GGML_ACCESS_RECIPE(kGatedResidualModulateSplitName, &JoinedAccess)
+LLMP_GGML_ACCESS_RECIPE(kHcCombineName, &HcCombineAccess)
+LLMP_GGML_ACCESS_RECIPE(kGdnGatesName, &GdnGatesAccess)
+LLMP_GGML_ACCESS_RECIPE(kHcPostName, &HcPostAccess)
+LLMP_GGML_ACCESS_RECIPE(kDsv4HcPostNormF16Name, &HcPostNormAccess)
+#ifdef LLMP_GGML_LOCAL_ACCESS_MACRO
+#undef LLMP_GGML_LOCAL_ACCESS_MACRO
+#undef LLMP_GGML_ACCESS_RECIPE
+#endif

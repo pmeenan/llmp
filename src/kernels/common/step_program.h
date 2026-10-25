@@ -26,10 +26,12 @@
 #define LLMP_KERNELS_COMMON_STEP_PROGRAM_H_
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <expected>
 #include <format>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -38,6 +40,8 @@
 #include <utility>
 #include <vector>
 
+#include "components/comparison_boundary.h"
+#include "execution/step_shape.h"
 #include "format/encoding.h"
 #include "ir/graph.h"
 #include "providers/device_execution.h"
@@ -49,9 +53,20 @@ namespace llmp::execution {
 class BoundPlan;
 }
 
+#include "kernels/common/comparison.h"
+#include "kernels/common/comparison_region.h"
 #include "kernels/common/execution_resources.h"
 
 namespace llmp::kernels {
+
+inline std::uint64_t NextComparisonProgramNonce() {
+  static std::atomic<std::uint64_t> next{1};
+  auto value = next.load(std::memory_order_relaxed);
+  while (value != 0 && value != std::numeric_limits<std::uint64_t>::max()) {
+    if (next.compare_exchange_weak(value, value + 1, std::memory_order_relaxed)) return value;
+  }
+  return 0;
+}
 
 class StepLaunch;
 class RoutedProgram;
@@ -85,7 +100,7 @@ struct StepFailure {
 //                        drafter's tensor); the cells as `cells` names them
 //                        (components/step.h CellKey: a fixed tensor's one
 //                        cell, a chunk row's, a block's);
-//   kMask                F16 [read, mask_rows]: the segment's mask over the
+//   kMask / kMaskF32     F16 / F32 [read, mask_rows]: the segment's mask over the
 //                        first `read` cells of `cells` (ir/op.h kMaskBuild:
 //                        0 where a row's position sees the position the
 //                        cell holds once the step's rows are stored, causal
@@ -124,6 +139,7 @@ enum class InputKind : std::uint8_t {
   kHostComputed,
   kHadamard,
   kVisibleCells,  // I32 owner rows: completed blocks capped by real/scored capacity
+  kMaskF32,       // The same mask recipe as kMask, stored as F32.
 };
 
 // A state tensor's cells as an input indexes them (components/step.h
@@ -211,6 +227,27 @@ struct ExpertPartBinding {
   format::TensorFormat format;
   format::PartRole role = format::PartRole::kData;
 };
+// Owner-declared enclosing allocation for one or more bounded parts.
+struct BackingAllocation {
+  std::uint64_t base = 0;
+  std::uint64_t bytes = 0;
+  bool operator==(const BackingAllocation&) const = default;
+};
+// A real, owner-bounded address range available to a lowering. `alignment`
+// is the guaranteed alignment of `base`; zero means the promise is unknown.
+// The range is descriptive only and does not prove current residency.
+struct BoundedAddress {
+  std::uint64_t base = 0;
+  std::uint64_t bytes = 0;
+  std::uint64_t alignment = 0;
+  // Optional owner-declared enclosing allocation. The bounded part remains
+  // [base, base + bytes); this declares shared backing, not residency.
+  std::optional<BackingAllocation> allocation = {};
+  // Optional immutable content identity supplied by this same range's owner.
+  // It describes the actual part, never residency or execution authority.
+  std::optional<base::Sha256Digest> content_identity = {};
+  bool operator==(const BoundedAddress&) const = default;
+};
 struct Addresses {
   std::function<std::uint64_t(const ir::WeightRef&, format::PartRole)> weight;
   // A row-paged weight's device slot capacity, replacing its on-disk row
@@ -240,6 +277,19 @@ struct Addresses {
   // A single-part weight's actual reserved address, by its complete binding.
   // This promise is available before measurement; zero means unknown.
   std::function<std::uint64_t(const ir::WeightRef&, format::PartRole)> weight_alignment{};
+  // Optional physical bounds for proof consumers. Empty means that the
+  // source cannot authenticate a contiguous range for this semantic object.
+  std::function<std::optional<BoundedAddress>(const ir::WeightRef&, format::PartRole)>
+      weight_range{};
+  // Optional exact opened-artifact and row-slot representation for row-paged
+  // weights. The physical address remains the separately authenticated range.
+  std::function<std::optional<components::ComparisonRowStorage>(const ir::WeightRef&,
+                                                                format::PartRole)>
+      row_storage{};
+  std::function<std::optional<BoundedAddress>(const ir::StateRef&)> state_range{};
+  std::function<std::optional<BoundedAddress>(std::uint32_t layer, std::uint16_t component,
+                                              std::string_view what, std::uint8_t segment)>
+      save_range{};
   bool measuring() const { return activations == 0; }
 };
 
@@ -247,6 +297,8 @@ struct Addresses {
 // the device runtime's recorded work). Destroyed only once no replay of it
 // is queued (D-090: with its plan, before the launch and the memory it
 // names).
+enum class CaptureMeasurement : std::uint8_t { kDisabled, kGpuDuration };
+
 class Recorded {
  public:
   // `owner`: the launch that recorded it, which alone replays it.
@@ -261,6 +313,11 @@ class Recorded {
   virtual std::size_t nodes() const = 0;
   virtual double capture_seconds() const = 0;
   virtual double instantiate_seconds() const = 0;
+  // Instrumented captures only. Refuses an unlaunched or currently pending
+  // replay; call after the enclosing owner establishes completion.
+  virtual std::expected<double, StepFailure> gpu_duration_ns() const {
+    return std::unexpected(StepFailure{.detail = "capture duration is unavailable"});
+  }
   const StepLaunch* owner() const { return owner_; }
 
  private:
@@ -276,6 +333,12 @@ class StepLaunch {
   StepLaunch(StepLaunch&&) = delete;
   StepLaunch& operator=(StepLaunch&&) = delete;
   virtual ~StepLaunch() = default;
+  // Applies only to subsequent captures. Ordinary launches allocate no events.
+  virtual std::expected<void, StepFailure> SetCaptureMeasurement(CaptureMeasurement mode) {
+    if (mode != CaptureMeasurement::kDisabled)
+      return std::unexpected(StepFailure{.detail = "capture measurement is unsupported"});
+    return {};
+  }
   // What `body` queues on `stream` (the launch's own), recorded instead of
   // run and made replayable. Refused (kRejected) with nothing queued when
   // the backend cannot record it; kUnknown if the attempt may have queued
@@ -285,6 +348,15 @@ class StepLaunch {
   // One replay of `recorded` on `stream`.
   virtual std::expected<void, StepFailure> Launch(providers::NativeStream stream,
                                                   const Recorded& recorded) = 0;
+  // Gives a backend-owned generated input a chance to retire/query its actual
+  // existing update/retirement fence before owners or backing are dropped.
+  // This is passive: ordinary immutable-payload launches never create a
+  // fence merely to submit another replay.
+  virtual std::expected<void, StepFailure> PollGeneratedInputs() { return {}; }
+  // Establishes and polls a real tail fence when an update or final drain
+  // must mutate/drop a generated payload. Ordinary launches without generated
+  // inputs have nothing to drain.
+  virtual std::expected<void, StepFailure> DrainGeneratedInputs() { return PollGeneratedInputs(); }
   // A fault the launch context latched (a GGML context's): every request
   // that shares it stops (the cohort's fault).
   virtual bool faulted() const { return retired_; }
@@ -327,9 +399,17 @@ struct PlanCoverage {
   std::uint64_t unmaterialized_roots = 0;
 };
 
+// Live provenance for a lowered plan. These process-local graph identities
+// authenticate which source and planned graph the program actually retained;
+// they are never persistent digests or caller-supplied recipe facts.
+struct ComparisonPlanIdentity {
+  std::uint64_t source_graph_identity = 0;
+  std::uint64_t planned_graph_identity = 0;
+};
+
 class StepProgram {
  public:
-  StepProgram() = default;
+  StepProgram() : comparison_program_nonce_(NextComparisonProgramNonce()) {}
   StepProgram(const StepProgram&) = delete;
   StepProgram& operator=(const StepProgram&) = delete;
   StepProgram(StepProgram&&) = delete;
@@ -344,6 +424,7 @@ class StepProgram {
   bool UsesResources(const ExecutionResources& owner) const {
     return owner.instance_ && resources_.instance_ == owner.instance_;
   }
+  ExecutionResources RetainedResources() const { return resources_; }
   // A compiler's temporary payment follows the returned program until its
   // caller transfers the retained graph/arena to a paid plan or future. The
   // base member dies after derived storage, including failed measurements.
@@ -353,6 +434,14 @@ class StepProgram {
     return true;
   }
   virtual void ConstructionPaid() { construction_.reset(); }
+
+  // Updates backend-owned deterministic inputs for this exact shape. Most
+  // programs have no generated inputs; a backend that owns one validates and
+  // prepares it before any captured or eager execution.
+  virtual std::expected<void, StepFailure> TryUpdateGeneratedInputs(
+      const planner::StepShape& /*shape*/) {
+    return {};
+  }
 
   // What it needs: the activations' extent it was placed in, the backend's
   // ordinary pool scratch (excluding a launch's separately reserved slices),
@@ -366,6 +455,69 @@ class StepProgram {
   virtual std::uint64_t private_pool_bytes() const { return pool_bytes(); }
   virtual std::uint64_t host_bytes() const = 0;
   virtual std::uint64_t launches() const = 0;
+  // A backend proof is optional and owns all fields it returns. Empty means
+  // no comparison was requested or the program has no proof metadata.
+  virtual std::optional<ComparisonRecipeSeal> comparison_recipe() const { return {}; }
+  virtual std::optional<ComparisonPlanIdentity> comparison_plan_identity() const { return {}; }
+  // Synchronously compare this program's actual outside-region calls with a
+  // retained peer. Unsupported implementations fail closed. This grants no
+  // execution or selection authority; the borrowed expansion is program-owned
+  // scratch and expires at the next comparison request.
+  virtual ComparisonRemainderResult CompareComparisonRemainder(
+      const StepProgram& candidate,
+      const components::OwnedComparisonRegionBoundary& common_boundary,
+      ComparisonCertificatePhase phase) const {
+    (void)candidate;
+    (void)common_boundary;
+    (void)phase;
+    return {.status = ComparisonRemainderStatus::kUnproved,
+            .reason = "backend has no authenticated remainder comparison"};
+  }
+  // Transparent owner decorators return their retained implementation for
+  // checked backend-specific peer access. This reference is borrowed only for
+  // the synchronous comparison above.
+  virtual const StepProgram& comparison_program() const { return *this; }
+  // Comparison-only projection over an already lowered and bound program.
+  // Unsupported backends fail closed; ordinary planning/execution is unchanged.
+  virtual ComparisonRegionResult ProjectComparisonRegion(
+      const components::OwnedComparisonRegionBoundary&) const {
+    return {.status = ComparisonRegionStatus::kUnproved,
+            .reason = "backend has no authenticated region projection"};
+  }
+  // Descriptor-only projection for pre-admission selection. The backend must
+  // derive this from the same retained call/provenance and typed-access facts
+  // as bound projection, and must not publish addresses or executable tokens.
+  virtual ComparisonRegionDescriptorResult ProjectComparisonRegionDescriptor(
+      const components::OwnedComparisonRegionBoundary&) const {
+    return {.status = ComparisonRegionStatus::kUnproved,
+            .reason = "backend has no authenticated descriptor region projection"};
+  }
+  // Production applicability certificate over a ready local boundary. Unlike
+  // comparison projection, this returns no ports, addresses or run token.
+  // Bound revalidates the same certificate after ordinary admission/binding.
+  virtual ComparisonRegionDescriptorResult ProjectComparisonRegionCertificate(
+      const components::OwnedComparisonRegionBoundary&, ComparisonCertificatePhase) const {
+    return {.status = ComparisonRegionStatus::kUnproved,
+            .reason = "backend has no authenticated production region certificate"};
+  }
+  // Reauthenticate a previously published capability without changing the
+  // program-owned expansion/port scratch or minting a new serial.
+  virtual bool ValidateComparisonProjection(const ComparisonRegionProjection&) const {
+    return false;
+  }
+  // Run the actual side-effect-free prefix for a closed projection, then the
+  // exact body span separately. Callers restage original input slots before
+  // each replay; the prefix supplies crossing activations from real calls.
+  virtual std::expected<void, StepFailure> RunComparisonPrefix(const ComparisonRegionProjection&,
+                                                               StepLaunch&,
+                                                               providers::NativeStream) const {
+    return std::unexpected(StepFailure{.detail = "backend has no comparison prefix executor"});
+  }
+  virtual std::expected<void, StepFailure> RunComparisonRegion(const ComparisonRegionProjection&,
+                                                               StepLaunch&,
+                                                               providers::NativeStream) const {
+    return std::unexpected(StepFailure{.detail = "backend has no comparison region executor"});
+  }
   // Privacy-safe static plan facts only. No values, addresses or tensor names.
   // Retained report storage is included in host_bytes(); emission is on demand.
   virtual void ReportPlan(const PlanReportSink& /*sink*/) const {}
@@ -453,7 +605,28 @@ class StepProgram {
     return launch.Capture(stream, body);
   }
 
+ protected:
+  std::uint64_t comparison_program_nonce() const { return comparison_program_nonce_; }
+  ComparisonRegionProjection MintComparisonRegionProjection(std::uint64_t generation,
+                                                            std::uint64_t serial, std::size_t first,
+                                                            std::size_t end,
+                                                            ComparisonRegionRecipeSeal seal,
+                                                            bool inputs_preserved = false) const {
+    return ComparisonRegionProjection(comparison_program_nonce_, generation, serial, first, end,
+                                      std::move(seal), inputs_preserved);
+  }
+  std::optional<std::pair<std::size_t, std::size_t>> AuthenticatedComparisonRegionSpan(
+      const ComparisonRegionProjection& projection, std::uint64_t generation,
+      std::uint64_t serial) const {
+    if (comparison_program_nonce_ == 0 || projection.program_nonce_ != comparison_program_nonce_ ||
+        projection.generation_ != generation || projection.serial_ != serial ||
+        projection.first_ > projection.end_)
+      return {};
+    return std::pair(projection.first_, projection.end_);
+  }
+
  private:
+  const std::uint64_t comparison_program_nonce_;
   ExecutionResources resources_;
   std::shared_ptr<void> construction_{};
 };

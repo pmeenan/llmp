@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -21,6 +22,7 @@
 #include "ir/builder.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "planner/alternative.h"
 #include "planner/plan.h"
 #include "planner/policy.h"
 
@@ -39,6 +41,59 @@ struct Fixture {
   TensorId weight{};
   TensorId output{};
 };
+
+class TestFunder final : public ir::StorageFunder {
+ public:
+  bool Charge(std::uint64_t bytes) const override {
+    ++charge_count_;
+    if (charge_count_ == fail_at_) return false;
+    active_ += bytes;
+    peak_ = std::max(peak_, active_);
+    return true;
+  }
+  void Release(std::uint64_t bytes) const override { active_ -= bytes; }
+  void FailAt(std::uint64_t charge) { fail_at_ = charge; }
+  std::uint64_t charge_count() const { return charge_count_; }
+  std::uint64_t active() const { return active_; }
+  std::uint64_t peak() const { return peak_; }
+
+ private:
+  mutable std::uint64_t active_ = 0;
+  mutable std::uint64_t peak_ = 0;
+  mutable std::uint64_t charge_count_ = 0;
+  std::uint64_t fail_at_ = 0;
+};
+
+Fixture MakeManyOwners(std::span<const std::uint32_t> widths) {
+  ir::Builder b;
+  constexpr std::uint64_t w = 8, hidden = 4;
+  std::uint32_t rows = 0;
+  std::vector<components::SegmentRows> segments;
+  for (std::size_t i = 0; i < widths.size(); ++i) {
+    segments.push_back({.slot = static_cast<std::uint8_t>(5 - i),
+                        .first_row = rows,
+                        .rows = widths[i],
+                        .outputs = 1});
+    rows += widths[i];
+  }
+  const auto feature = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({w * hidden, rows})));
+  const auto norm = b.Weight(ir::Dense(Encoding::kF32, ir::ShapeOf({w * hidden})), {.role = 2});
+  auto activation =
+      b.Reshape(b.Mul(b.RmsNorm(feature, 1e-6F), norm), ir::ShapeOf({w, hidden * rows}));
+  const auto weight = b.Weight(ir::Dense(Encoding::kBF16, ir::ShapeOf({w, w})), {.role = 3});
+  const auto product = b.MatMul(weight, activation);
+  const auto output = b.Scale(product, 1.0F);
+  b.Output(output);
+  auto graph = std::move(b).Finish();
+  EXPECT_TRUE(graph) << test_support::Failed(graph, &ir::VerifyError::detail).value_or("");
+  return {.graph = std::move(*graph),
+          .inputs = {{.tensor = feature, .kind = components::InputKind::kFeatures}},
+          .segments = std::move(segments),
+          .product = product,
+          .feature = feature,
+          .weight = weight,
+          .output = output};
+}
 
 enum class Variant { kHidden, kEmbedding, kCrossNorm, kUnknownBroadcast, kWrite, kReordered };
 Fixture Make(std::uint32_t a, std::uint32_t c, Variant variant = Variant::kHidden) {
@@ -96,6 +151,55 @@ Fixture Make(std::uint32_t a, std::uint32_t c, Variant variant = Variant::kHidde
 
 auto Prove(const Fixture& f) {
   return ProveOwnerProducts(f.graph, f.inputs, f.segments, std::array{f.product});
+}
+
+TEST(OwnerProductsTest, MultiOwnerSplitPaysExpandedNodesAndRefundsOnDenial) {
+  for (const auto& widths :
+       {std::vector<std::uint32_t>{1U, 1U}, std::vector<std::uint32_t>{1U, 1U, 1U}}) {
+    SCOPED_TRACE(widths.size());
+    auto fixture = MakeManyOwners(widths);
+    const auto proof = Prove(fixture);
+    ASSERT_TRUE(proof) << test_support::Failed(proof).value_or("");
+
+    auto funded = std::make_shared<TestFunder>();
+    auto source = fixture.graph.Clone(funded);
+    ASSERT_TRUE(source) << test_support::Failed(source, &ir::VerifyError::detail).value_or("");
+    const auto source_bytes = funded->active();
+    {
+      PlannerMetadataAdmission admission(funded);
+      auto rewritten = SplitOwnerProducts(*source, *proof, &admission);
+      ASSERT_TRUE(rewritten)
+          << test_support::Failed(rewritten, &ir::VerifyError::detail).value_or("");
+      const std::size_t emitted = 3 * widths.size() - 1;
+      ASSERT_EQ(rewritten->rewrite.applied.size(), 1U);
+      EXPECT_EQ(rewritten->rewrite.applied[0].made.size(), emitted);
+      EXPECT_EQ(rewritten->rewrite.graph.nodes().size(),
+                fixture.graph.nodes().size() + emitted - 1);
+      EXPECT_EQ(rewritten->rewrite.from.size(), rewritten->rewrite.graph.nodes().size());
+      EXPECT_EQ(rewritten->scopes.size(), widths.size());
+      EXPECT_GT(admission.storage_bytes(), 0U);
+      EXPECT_GT(funded->peak(), source_bytes);
+    }
+    EXPECT_EQ(funded->active(), source_bytes);
+
+    auto refusing = std::make_shared<TestFunder>();
+    auto refusing_source = fixture.graph.Clone(refusing);
+    ASSERT_TRUE(refusing_source)
+        << test_support::Failed(refusing_source, &ir::VerifyError::detail).value_or("");
+    const auto refusing_source_bytes = refusing->active();
+    {
+      PlannerMetadataAdmission admission(refusing);
+      ASSERT_FALSE(admission.refused());
+      const auto refusal_charge = refusing->charge_count() + 1;
+      refusing->FailAt(refusal_charge);
+      const auto denied = SplitOwnerProducts(*refusing_source, *proof, &admission);
+      ASSERT_FALSE(denied);
+      EXPECT_EQ(denied.error().error, ir::GraphError::kAdmission);
+      EXPECT_TRUE(admission.refused());
+      EXPECT_EQ(refusing->charge_count(), refusal_charge);
+    }
+    EXPECT_EQ(refusing->active(), refusing_source_bytes);
+  }
 }
 
 execution::Registry Registry() {
@@ -276,7 +380,7 @@ TEST(OwnerProductsTest, SingletonKeepsThePrimitiveAndItsProtectedScope) {
     const auto proof = Prove(f);
     ASSERT_TRUE(proof) << test_support::Failed(proof).value_or("");
     const auto split = SplitOwnerProducts(f.graph, *proof);
-    ASSERT_TRUE(split) << test_support::Failed(split).value_or("");
+    ASSERT_TRUE(split) << test_support::Failed(split, &ir::VerifyError::detail).value_or("");
     EXPECT_EQ(split->rewrite.graph.Digest(), f.graph.Digest());
     EXPECT_TRUE(split->rewrite.applied.empty());
     ASSERT_EQ(split->scopes.size(), 1U);

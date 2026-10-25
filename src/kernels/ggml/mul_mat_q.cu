@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <expected>
 #include <initializer_list>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -290,7 +291,10 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatVecQ(const LaunchContext& 
   if (*path != QuantMulMatPath::kVector) {
     return Rejected("upstream does not select MMVQ for these operands");
   }
-  if (auto rows = CheckMmvqRowFootprint(node, MmvqRowsPerBlock(launch, node)); !rows) {
+  // Keep production planning on the existing footprint-only path. The
+  // comparison recipe separately queries the full typed dispatch descriptor.
+  const std::int64_t rows_per_block = MmvqRowsPerBlock(launch, node);
+  if (auto rows = CheckMmvqRowFootprint(node, rows_per_block); !rows) {
     return std::unexpected(rows.error());
   }
   const ggml_tensor* input = node->src[1];
@@ -413,6 +417,160 @@ std::expected<void, KernelFailure> MulMatVecQ(LaunchContext& launch, ggml_tensor
     const ggml_tensor* ids = node->op == GGML_OP_MUL_MAT_ID ? node->src[2] : nullptr;
     ggml_cuda_mul_mat_vec_q(context, node->src[0], node->src[1], ids, node);
   });
+}
+
+std::expected<MmvqDispatchDescriptor, KernelFailure> DescribeMmvqDispatch(
+    const LaunchContext& launch, const ggml_tensor* node, bool prepared_q8) {
+  if (node == nullptr) return Rejected("null MMVQ descriptor node");
+  std::optional<ggml_tensor> original_storage;
+  const ggml_tensor* original = node;
+  if (prepared_q8) {
+    auto prepared = MmvqPreparedOriginal(node);
+    if (!prepared) return std::unexpected(prepared.error());
+    original_storage = std::move(*prepared);
+    original = &*original_storage;
+  }
+  if (original->op != GGML_OP_MUL_MAT || original->src[0] == nullptr ||
+      original->src[1] == nullptr || original->src[0]->ne[2] != 1 || original->src[0]->ne[3] != 1 ||
+      original->src[1]->ne[2] != 1 || original->src[1]->ne[3] != 1 || original->ne[2] != 1 ||
+      original->ne[3] != 1) {
+    return Rejected("MMVQ descriptor requires one dense ordinary matrix product");
+  }
+  // The upstream descriptor endpoint asserts its supported block formats.
+  // Keep this wrapper's expected-return contract fail-closed for every other
+  // vector-eligible quantization before crossing that boundary.
+  if (original->src[0]->type != GGML_TYPE_Q4_K && original->src[0]->type != GGML_TYPE_Q6_K)
+    return Rejected("MMVQ descriptor supports only Q4_K and Q6_K weights");
+  const auto selected = SelectMulMatQ(launch, original);
+  if (!selected || *selected != QuantMulMatPath::kVector) {
+    return selected ? Rejected("upstream does not select MMVQ") : std::unexpected(selected.error());
+  }
+  int current_device = -1;
+  if (cudaGetDevice(&current_device) != cudaSuccess || current_device != launch.device())
+    return Rejected("MMVQ descriptor requires the launch's authenticated current CUDA device");
+  if (original->src[1]->ne[0] <= 0 || original->src[1]->ne[0] > INT_MAX - MATRIX_ROW_PADDING)
+    return Rejected("MMVQ descriptor K exceeds its padded dispatch record domain");
+  const std::int64_t padded = GGML_PAD(original->src[1]->ne[0], MATRIX_ROW_PADDING);
+  if (original->src[0]->ne[0] <= 0 || original->src[0]->ne[0] > INT_MAX ||
+      original->src[0]->ne[1] <= 0 || original->src[0]->ne[1] > INT_MAX ||
+      original->src[1]->ne[1] < 1 || original->src[1]->ne[1] > MMVQ_MAX_BATCH_SIZE || padded <= 0 ||
+      padded > INT_MAX)
+    return Rejected("MMVQ descriptor dimensions exceed the selected dispatch record domain");
+  if (prepared_q8) {
+    const auto* q8 = node->src[1];
+    if (q8 == nullptr || LlmpOpOf(q8) != LlmpOp::kQuantizeQ8 || !CheckQuantizeQ8(q8) ||
+        LlmpOpInt(q8, 0) != original->src[1]->ne[0] || LlmpOpInt(q8, 1) != original->src[1]->ne[1])
+      return Rejected("prepared Q8_1 source differs from upstream's padded MMVQ draw");
+  }
+  ggml_cuda_mmvq_dispatch_record upstream{};
+  ggml_cuda_op_mul_mat_vec_q_dispatch(
+      launch.device(), original->src[0], original->src[1], const_cast<ggml_tensor*>(original),
+      nullptr, nullptr, nullptr, nullptr, 0, original->src[0]->ne[1], original->src[1]->ne[1],
+      original->ne[0], padded, nullptr, prepared_q8, false, &upstream);
+  if (upstream.weight_type != original->src[0]->type ||
+      upstream.columns != original->src[1]->ne[1] || upstream.k != original->src[0]->ne[0] ||
+      upstream.padded_k != padded || upstream.row_low != 0 ||
+      upstream.row_high != original->src[0]->ne[1] || upstream.stride_col_dst != original->ne[0] ||
+      upstream.device != launch.device() || upstream.fused || upstream.rows_per_block <= 0 ||
+      upstream.grid_x <= 0 || upstream.grid_y != 1 || upstream.grid_z != 1 ||
+      upstream.dynamic_shared_bytes != 0 || !upstream.ready)
+    return Rejected("upstream MMVQ descriptor is incomplete or outside the dense recipe");
+  if (auto rows = CheckMmvqRowFootprint(original, upstream.rows_per_block); !rows)
+    return std::unexpected(rows.error());
+  return MmvqDispatchDescriptor{.device = upstream.device,
+                                .compute_capability = upstream.compute_capability,
+                                .parameter_table = upstream.parameter_table,
+                                .warp_size = upstream.warp_size,
+                                .weight_type = upstream.weight_type,
+                                .columns = upstream.columns,
+                                .k = upstream.k,
+                                .padded_k = upstream.padded_k,
+                                .row_low = upstream.row_low,
+                                .row_high = upstream.row_high,
+                                .stride_col_dst = upstream.stride_col_dst,
+                                .rows_per_block = upstream.rows_per_block,
+                                .nwarps = upstream.nwarps,
+                                .grid_x = upstream.grid_x,
+                                .grid_y = upstream.grid_y,
+                                .grid_z = upstream.grid_z,
+                                .block_x = upstream.block_x,
+                                .block_y = upstream.block_y,
+                                .block_z = upstream.block_z,
+                                .dynamic_shared_bytes = upstream.dynamic_shared_bytes,
+                                .static_shared_bytes = upstream.static_shared_bytes,
+                                .small_k = upstream.small_k,
+                                .halve_iters = upstream.halve_iters,
+                                .immutable_weights = upstream.immutable_weights,
+                                .pdl_enabled = upstream.pdl_enabled,
+                                .immutable_prefetch = upstream.immutable_prefetch,
+                                .streaming_prefetch = upstream.streaming_prefetch,
+                                .fused = upstream.fused};
+}
+
+std::expected<Q8QuantizeDispatchDescriptor, KernelFailure> DescribeQuantizeQ8(
+    const ggml_tensor* node) {
+  if (node == nullptr) return Rejected("null Q8_1 quantizer descriptor node");
+  const bool prepared = node->op == GGML_OP_CUSTOM && LlmpOpOf(node) == LlmpOp::kQuantizeQ8;
+  if (prepared && node->src[0] == nullptr)
+    return Rejected("Q8_1 descriptor requires its source tensor");
+  const ggml_tensor* x =
+      prepared ? node->src[0] : (node->op == GGML_OP_MUL_MAT ? node->src[1] : nullptr);
+  if (x == nullptr || x->type != GGML_TYPE_F32 || x->ne[2] != 1 || x->ne[3] != 1 || x->ne[0] <= 0 ||
+      x->ne[0] > INT_MAX - MATRIX_ROW_PADDING || x->ne[1] <= 0 || x->ne[1] > 8 ||
+      x->nb[0] != sizeof(float) || x->nb[1] % sizeof(float) != 0 || x->nb[2] % sizeof(float) != 0 ||
+      x->nb[1] > static_cast<std::size_t>(INT64_MAX) ||
+      x->nb[2] > static_cast<std::size_t>(INT64_MAX))
+    return Rejected("Q8_1 descriptor requires its bounded one-to-eight-row strided F32 input");
+  if (prepared) {
+    if (auto checked = CheckQuantizeQ8(node); !checked) return std::unexpected(checked.error());
+    for (int parameter = 2; parameter < 8; ++parameter)
+      if (LlmpOpInt(node, parameter) != 0)
+        return Rejected("Q8_1 descriptor rejects reserved producer parameters");
+  } else if (node->op != GGML_OP_MUL_MAT || node->src[0] == nullptr || node->src[1] == nullptr) {
+    return Rejected("Q8_1 descriptor requires a prepared producer or ordinary matrix product");
+  }
+  const auto f = [](std::size_t bytes) { return static_cast<std::int64_t>(bytes / sizeof(float)); };
+  const std::int64_t padded = GGML_PAD(x->ne[0], MATRIX_ROW_PADDING);
+  const ggml_type source_type = prepared ? GGML_TYPE_Q8_0 : node->src[0]->type;
+  if (!prepared && source_type != GGML_TYPE_Q4_K && source_type != GGML_TYPE_Q6_K)
+    return Rejected("ordinary Q8_1 descriptor requires the Q4_K/Q6_K shared-weight witness");
+  const std::uint64_t expected_bytes =
+      prepared ? static_cast<std::uint64_t>(ggml_nbytes(node))
+               : static_cast<std::uint64_t>(Q8Bytes(x->ne[0], x->ne[1]));
+  ggml_cuda_q8_1_dispatch_record upstream{};
+  ggml_cuda_quantize_q8_1_dispatch(nullptr, nullptr, nullptr, source_type, x->ne[0], f(x->nb[1]),
+                                   f(x->nb[2]), f(x->nb[2]), padded, x->ne[1], x->ne[2], 1, nullptr,
+                                   false, &upstream);
+  if (!upstream.ready || upstream.k != x->ne[0] || upstream.padded_k != padded ||
+      upstream.rows != x->ne[1] || upstream.channels != x->ne[2] || upstream.samples != 1 ||
+      upstream.grid_x <= 0 || upstream.grid_y != x->ne[1] || upstream.grid_z != x->ne[2] ||
+      upstream.block_x <= 0 || upstream.block_y != 1 || upstream.block_z != 1 ||
+      upstream.dynamic_shared_bytes != 0 || upstream.output_bytes != expected_bytes)
+    return Rejected("upstream Q8_1 quantizer descriptor differs from the complete padded producer");
+  return Q8QuantizeDispatchDescriptor{.source_type = upstream.type_src0,
+                                      .k = upstream.k,
+                                      .padded_k = upstream.padded_k,
+                                      .stride_row = upstream.stride_row,
+                                      .stride_channel = upstream.stride_channel,
+                                      .stride_sample = upstream.stride_sample,
+                                      .rows = upstream.rows,
+                                      .channels = upstream.channels,
+                                      .samples = upstream.samples,
+                                      .grid_x = upstream.grid_x,
+                                      .grid_y = upstream.grid_y,
+                                      .grid_z = upstream.grid_z,
+                                      .block_x = upstream.block_x,
+                                      .block_y = upstream.block_y,
+                                      .block_z = upstream.block_z,
+                                      .dynamic_shared_bytes = upstream.dynamic_shared_bytes,
+                                      .output_bytes = upstream.output_bytes};
+}
+
+std::expected<Q8MainPoolDescriptor, KernelFailure> DescribeQ8MainPool(const LaunchContext& launch) {
+  const auto available = launch.scratch_size(0).value();
+  const auto base = launch.scratch_base();
+  return Q8MainPoolDescriptor{
+      .base = base, .bytes = available, .lanes = launch.lanes(), .faulted = launch.faulted()};
 }
 
 std::expected<std::uint64_t, KernelFailure> PlanMmvqPrepared(const LaunchContext& launch,

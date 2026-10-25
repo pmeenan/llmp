@@ -902,3 +902,67 @@ while historical comparisons retain their original source and image.
   Gemma3 explicitly gathers before the final FFN and needs its own contract.
 - **Links:** [RE-048](../rough-edges.md),
   [matched controls](../experiments/gemma26-production/README.md#http-lifecycle-screen).
+
+## Shared Q8 preparation dispatch records
+
+- **Pin:** `d81235049384534c167caea52b85a694f6103d14`; patch 0010 changes
+  `ggml/src/ggml-cuda/mmvq.cu`, `mmvq.cuh`, `quantize.cu`, `quantize.cuh`, and
+  `common.cuh`.
+- **Purpose:** comparison validation needs the exact selected MMVQ and Q8_1
+  preparation effects. The shared describe/execute endpoints fill pointer-free
+  records at the same dispatch calculations ordinary execution uses. The
+  describe path returns before kernel launch; ordinary execution retains its
+  existing launch and arithmetic. MMVQ records include the actual terminal
+  template, device/table, launch geometry, row footprint, shared-memory
+  attributes, and separate immutable-weight and type-specific streaming
+  prefetch conditions. Q8_1 records include the actual padded output extent,
+  strides, and launch geometry.
+- **Provenance:** patch 0010 derives from the locked prepared tree after patches
+  0001–0009. It changes only host dispatch description and the shared entry
+  points, plus widens the existing row-block ceiling numerator before its
+  division so the shared descriptor cannot overflow at large valid row counts;
+  ordinary dispatch geometry and kernel arithmetic are unchanged. No upstream
+  revision or tuning choice changes.
+  The validation-only shared-Q8 witness runs Q4_K/Q6_K siblings at 1, 2, and 8
+  rows against the independent CPU executor. It does not produce timing or
+  ranking evidence.
+
+## BF16 indexed row copies
+
+- **Pin:** `d81235049384534c167caea52b85a694f6103d14`, `ggml/src/ggml.c`
+  and `ggml/src/ggml-cuda/set-rows.cu`; local patch0011.
+- **Gap:** the tensor constructor and CUDA dispatcher refuse BF16 source rows,
+  although the indexed-copy template already supports BF16 destinations. An
+  ordinary decomposition that stores already-rounded BF16 block keys therefore
+  cannot execute its original cache-store operation.
+- **Repair:** admit only BF16-to-BF16 sources through that existing template,
+  with I32 or I64 indices. No widening buffer or new arithmetic. The native
+  validator retains shape, stride, alignment and disjointness checks.
+- **Controls:** `Bf16IndexedStorePreservesBitsAndUntouchedRows` covers both index
+  widths, untouched rows, source preservation and BF16 special-value bits;
+  `QsaSelectionAcceptsOnlyItsActualBf16IndexedUpdate` rejects foreign/stale
+  destination views, wrong geometry, index types and aliases. Native results
+  are recorded with the U6 qualification, not inferred from this source change.
+
+## Typed F32 plus F16 broadcast dispatch
+
+- **Pin:** `d81235049384534c167caea52b85a694f6103d14`,
+  `ggml/src/ggml-cuda/binbcast.cu`; local patch 0012, after patch 0011.
+- **Gap:** the F32-output branch accepts an F16 right operand but casts its
+  storage to `float*`. This reads the wrong element widths and strides. The
+  fused broadcast dispatcher repeats the same cast.
+- **Repair:** distinguish F32/F32/F32 from F32/F16/F32 and instantiate the
+  existing float/half/float templates. Other combinations retain their routes.
+  Llmpalooza admits only the additional F32 + F16 -> F32 addition and checks
+  alignment, element strides, current views and overlap using each operand's
+  actual type width. No conversion buffer or new arithmetic is introduced.
+- **Controls:** `FloatAddHalfReadsTwoByteStridedAndBroadcastOperands` checks
+  contiguous, strided and broadcast halves, including a two-byte-but-not-four-
+  byte-aligned view, exact F32 sums and immutable input bytes.
+  `FloatAddHalfUsesEachOperandWidthAndRejectsWrongAliases` covers type, stride
+  and mixed-width alias refusals. Native execution results remain separate
+  qualification evidence.
+- **Provenance:** the patch derives from the pinned prepared tree
+  `b1c096f614feada4bea2e21423e8c83eb05fde9e97da56ae15c876a0254603a6`.
+  The upstream MIT and llmpalooza Apache-2.0 notices remain recorded in its
+  license sidecar. The archive and upstream pin are unchanged.

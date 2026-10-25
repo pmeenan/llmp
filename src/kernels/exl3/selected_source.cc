@@ -23,6 +23,7 @@
 #include "ir/graph.h"
 #include "kernels/decode/selected_source.h"
 #include "kernels/exl3/implementations.h"
+#include "kernels/exl3/input_conversion.h"
 #include "kernels/exl3/launch.h"
 #include "kernels/exl3/recon_gemm.h"
 #include "kernels/exl3/reconstruction_tuning.h"
@@ -97,6 +98,10 @@ class Bound final : public kg::BoundSelectedCall {
   std::expected<void, Failure> Run(providers::NativeStream stream) const override {
     if (stream.handle != runtime_.stream().handle)
       return Reject("an EXL3 operation cannot launch on a foreign stream");
+    if (convert_elements != 0) {
+      auto converted = runtime_.launch->ConvertInputF32(convert_x, convert_y, convert_elements);
+      if (!converted) return std::unexpected(Convert(converted.error()));
+    }
     std::expected<void, KernelFailure> ran;
     switch (kind_) {
       case Kind::kGemm:
@@ -119,9 +124,11 @@ class Bound final : public kg::BoundSelectedCall {
         ran = kernel_.Run(*runtime_.launch, bias);
         break;
     }
+    if (convert_elements != 0) ran = runtime_.launch->AfterQueued(std::move(ran));
     if (!ran) return std::unexpected(Convert(ran.error()));
     return {};
   }
+  std::uint64_t convert_x = 0, convert_y = 0, convert_elements = 0;
   MultiLinearOperands multi{};
   MultiGemmPlan multi_plan{};
   GemvPlan gemv{};
@@ -145,11 +152,12 @@ class Call final : public kg::SelectedCall {
   std::uint64_t scratch_bytes() const override {
     if (kind == Kind::kBias) return 0;
     const auto input = Align(static_cast<std::uint64_t>(rows) * static_cast<unsigned>(k) * 2U);
+    const auto conversion = convert_input ? input : 0;
     if (kind == Kind::kMulti) return 256 + input * 2;
-    if (kind == Kind::kGemm || kind == Kind::kGemv) return input;
+    if (kind == Kind::kGemm || kind == Kind::kGemv) return conversion + input;
     const auto slice = Align(static_cast<std::uint64_t>(k) *
                              static_cast<unsigned>(std::min(n, kReconstructSliceColumns)) * 2U);
-    return slice + (kind == Kind::kFused ? 0 : input);
+    return conversion + slice + (kind == Kind::kFused ? 0 : input);
   }
   std::uint64_t host_bytes() const override {
     // At most 16 reconstruction slices. Cover both descriptors (2 KiB),
@@ -165,8 +173,8 @@ class Call final : public kg::SelectedCall {
   std::uint64_t launches() const override {
     if (kind == Kind::kMulti) return 3;  // lazy zero, table upload, cooperative product
     if (kind == Kind::kGemm || kind == Kind::kGemv || kind == Kind::kBias)
-      return 2;  // includes lazy lock zeroing
-    return 1U +
+      return 2 + (convert_input ? 1U : 0U);  // includes lazy lock zeroing
+    return 1U + (convert_input ? 1U : 0U) +
            2U * static_cast<unsigned>((n + kReconstructSliceColumns - 1) /
                                       kReconstructSliceColumns) +
            (kind == Kind::kFused ? 0U : 2U);
@@ -185,6 +193,29 @@ class Call final : public kg::SelectedCall {
     auto kernel = Kernel::Bind(*native);
     if (!kernel) return std::unexpected(Convert(kernel.error()));
     auto bound = std::make_unique<Bound>(runtime, *kernel, kind);
+    std::uint64_t product_input = Address(x);
+    if (convert_input) {
+      if (x->type != GGML_TYPE_F32 || x->ne[0] != k || x->ne[1] != rows || x->ne[2] != 1 ||
+          x->ne[3] != 1 || !ggml_is_contiguous(x))
+        return Reject("EXL3 original F32 input descriptor changed before Bind");
+      const auto disjoint = [&](const ggml_tensor* tensor) {
+        if (!tensor || !tensor->data) return false;
+        const auto base = Address(tensor), bytes = ggml_nbytes(tensor);
+        if (base + bytes < base) return false;
+        return base >= scratch.base ? base - scratch.base >= scratch.bytes
+                                    : scratch.base - base >= bytes;
+      };
+      if (!disjoint(x) || !disjoint(y) || !std::ranges::all_of(parts, disjoint))
+        return Reject("EXL3 F32 conversion scratch overlaps an actual operand");
+      const auto elements = static_cast<std::uint64_t>(rows) * static_cast<unsigned>(k);
+      const auto converted_bytes = Align(elements * 2U);
+      bound->convert_x = Address(x);
+      bound->convert_y = scratch.base;
+      bound->convert_elements = elements;
+      product_input = scratch.base;
+      scratch.base += converted_bytes;
+      scratch.bytes -= converted_bytes;
+    }
     if (kind == Kind::kBias) {
       bound->bias = {
           .x = Address(x), .bias = Address(bias), .y = Address(y), .rows = rows, .columns = n};
@@ -229,7 +260,7 @@ class Call final : public kg::SelectedCall {
       if (!checked) return std::unexpected(Convert(checked.error()));
     } else if (kind == Kind::kGemm || kind == Kind::kGemv) {
       bound->linear = {.weights = weights,
-                       .x = Address(x),
+                       .x = product_input,
                        .a_had = scratch.base,
                        .y = Address(y),
                        .output = output,
@@ -258,7 +289,7 @@ class Call final : public kg::SelectedCall {
       const auto input_bytes =
           fused ? 0 : Align(static_cast<std::uint64_t>(rows) * static_cast<unsigned>(k) * 2U);
       bound->recon = {.weights = weights,
-                      .x = Address(x),
+                      .x = product_input,
                       .xh = fused ? 0 : scratch.base,
                       .w = scratch.base + input_bytes,
                       .y = Address(y),
@@ -290,6 +321,7 @@ class Call final : public kg::SelectedCall {
     return bound;
   }
   Kind kind;
+  bool convert_input = false;
   const execution::Implementation* native;
   base::Sha256Digest identity;
   std::array<ggml_tensor*, 4> second_parts{};
@@ -321,6 +353,11 @@ constexpr std::array kDense = {format::Layout::kDense};
 constexpr std::array<execution::OperandRule, 3> kLinearRules = {{
     {.operand = 0, .encodings = kTrellis, .layouts = kTiles},
     {.operand = 1, .encodings = kF16, .layouts = kDense},
+    {.operand = execution::kOutputOperand, .encodings = kOutputs, .layouts = kDense},
+}};
+constexpr std::array<execution::OperandRule, 3> kF32LinearRules = {{
+    {.operand = 0, .encodings = kTrellis, .layouts = kTiles},
+    {.operand = 1, .encodings = kF32, .layouts = kDense},
     {.operand = execution::kOutputOperand, .encodings = kOutputs, .layouts = kDense},
 }};
 constexpr std::array<execution::OperandRule, 5> kPairRules = {{
@@ -494,6 +531,25 @@ class Source final : public kg::SelectedSource {
         }
       }
     }
+    // A source F32 product retains its original operand and performs the
+    // native EXL3 input rounding in its own accounted scratch. The explicit
+    // exl3_products rewrite can share that conversion across products; these
+    // companions remain meaningful complete own alternatives without it.
+    const auto native_count = declarations_.size();
+    canonical_.reserve(native_count * 2);
+    declarations_.reserve(native_count * 2);
+    for (std::size_t i = 0; i < native_count; ++i) {
+      if (!canonical_[i].name.starts_with("exl3.linear.")) continue;
+      auto companion = declarations_[i];
+      companion.name += ".f32_input";
+      companion.variant += std::format(
+          "; original packed F32 input; mandatory RN F16 scratch conversion; converter {}",
+          InputConversionSourceIdentity());
+      companion.capability->operands = kF32LinearRules;
+      companion.capability->capturable = false;
+      canonical_.push_back(canonical_[i]);
+      declarations_.push_back(std::move(companion));
+    }
     base::Sha256 hash;
     hash.Update("llmp-exl3-selected-v1;exact-caches-and-device-capacity;deferred-bind-resources");
     for (const auto& impl : declarations_) {
@@ -547,6 +603,16 @@ class Source final : public kg::SelectedSource {
         }
       }
     }
+    const auto original_count = result.size();
+    for (std::size_t i = 0; i < original_count; ++i) {
+      const auto name = std::string(result[i].implementation) + ".f32_input";
+      const auto companion =
+          std::ranges::find(declarations_, name, &execution::Implementation::name);
+      if (companion == declarations_.end()) continue;
+      auto fact = result[i];
+      fact.implementation = companion->name;
+      result.push_back(fact);
+    }
     return result;
   }
   bool Owns(std::string_view name) const override {
@@ -598,7 +664,9 @@ class Source final : public kg::SelectedSource {
     }
     const auto& w = inputs[0];
     const auto& x = inputs[1];
-    if (node.key != ir::Primitive(ir::Op::kMatMul) || !Dense(x, format::Encoding::kF16) ||
+    const bool convert_input = implementation.name.ends_with(".f32_input");
+    if (node.key != ir::Primitive(ir::Op::kMatMul) ||
+        !Dense(x, convert_input ? format::Encoding::kF32 : format::Encoding::kF16) ||
         (!Dense(out, format::Encoding::kF16) && !Dense(out, format::Encoding::kF32)) ||
         w.desc.format.encoding != format::Encoding::kExl3Trellis ||
         w.desc.format.layout != format::Layout::kExl3Tiles ||
@@ -609,13 +677,17 @@ class Source final : public kg::SelectedSource {
         w.desc.ne(1) > kMaxDimension)
       return Reject("EXL3 product's logical format or physical shape is unsupported");
     const auto pp = node.Params<ir::ProductParams>();
-    if (pp.accumulate != ir::Accumulate::kDefault || pp.hint != ir::ProductHint::kNone)
+    if (pp.accumulate != ir::Accumulate::kDefault || pp.hint != ir::ProductHint::kNone ||
+        pp.arithmetic != ir::ProductArithmetic::kImplementation ||
+        pp.reserved != decltype(pp.reserved){} ||
+        pp.arithmetic_reserved != decltype(pp.arithmetic_reserved){})
       return Reject("EXL3 product requires its native accumulation and no hint");
     const Kind kind = name == "exl3.linear.gemv"          ? Kind::kGemv
                       : name == "exl3.linear.gemm"        ? Kind::kGemm
                       : name == "exl3.linear.reconstruct" ? Kind::kReconstruct
                                                           : Kind::kFused;
     auto call = make(kind);
+    call->convert_input = convert_input;
     call->rows = static_cast<int>(x.desc.ne(1));
     call->k = static_cast<int>(w.desc.ne(0));
     call->n = static_cast<int>(w.desc.ne(1));

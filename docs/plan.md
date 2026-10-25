@@ -736,61 +736,49 @@ D-122).
       throughput-first scheduling item below. Activation and reclamation use
       named phases, and the LLM has one concrete implementation. These seams
       are ready for the separate tool-call and Messages work.
-- [ ] **U6 IR and planner structure:** **U6a complete (2026-10-21):**
-      primitive/fused operation identity, parameter size, arity, write set,
-      layout, partition and decomposition traits share one checked table;
-      source- and fused-graph GGML extent validation lives in the backend.
-      Native focused tests: 270/270 on `spark-b`; the integrated shared check
-      is recorded with the commit. **U6b complete (2026-10-22):** backends
-      supply owned, validated measured-rank data whose digest participates in
-      registry and plan-cache identity; unrelated registries inherit none.
-      The two existing measured rows now belong to the GGML backend.
-      **U6c complete (2026-10-22):** IR address geometry comes from the
-      format layer, preparation names its target layout explicitly, and
-      boundary checks reject backend/device facts in IR and selection code.
-      Native focused checks and CPU portability controls pass.
-      **U6d complete (2026-10-22):** all 49 registered rewrite/batch
-      patterns have named synthetic match and refusal controls; the test
-      inventory rejects unaccounted registrations and checks successful
-      rewriting as well as matching.
-      Complete shape-class fusion/decomposition measurements remain open.
-      **Dispatch, identity and first fresh data adoption integrated:**
-      the trait rows select typed inference, parameter-validation and decomposition
-      handlers, plus explicit semantic partition rules. Typed-dispatch focused checks
-      pass on `spark-b`; the final compiler-owned
-      identity mechanism passes native Clang/NVCC, source-integrity and actual
-      rank-data-only mutation/restoration controls on `spark`. Whole and
-      adversarial reviews are clean; integrated source checks passed.
-      Compiler dependency receipts replace the incomplete comparison source list,
-      and rank lookup is indexed by operation and exact query. The original twelve
-      RMSNormMul measurements remain historical with unchanged IDs. The independently
-      audited [fresh W5 matrix](experiments/fusion-ranks/FRESH-W5-RESULTS.md) has
-      eleven fusion wins and one neutral exact tuple. At that capture, native
-      live-registry/planner checks recognized all twelve rows; an unmeasured
-      width retained the incumbent. The later compiler ownership-catalog build
-      change gives the implementation a new identity, so those measurements
-      remain historical and current dispatch retains the incumbent until fresh
-      matching data exists. The historical rows are not re-pinned. Other fusion
-      families/format domains remain open.
-      The 49-pattern synthetic
-      match/refusal inventory already satisfies U6d; real-backend measured-veto
-      integration coverage expands with the remaining fusion comparisons.
-      One op-trait table (arity, write
-      set, layout class, splittability with no silent "unsplittable"
-      default, decomposition, reference) replacing the dozen-odd per-op edit
-      points and the separate write-set definitions; vendor facts out of the
-      vendor-neutral layers (`ProductArithmetic::kGgmlQ8_1F32` renamed,
-      GGML's int32 extent limits moved from the IR verifier to the GGML
-      backend's validation, `execution/measured_ranks.h`'s device and kernel
-      names turned into rank data keyed by device facts); checked-in rank
-      data per device class comparing each fusion with its own
-      decomposition per shape class (owner, 2026-10-20), so a fusion that
-      loses on a shape class is not selected there; a synthetic match and refusal control for every registered rewrite/batch
-      pattern, enforced by the test inventory. **Exit:** adding an IR op declares its dispatch once in the trait table;
-      new semantic algorithms live in their owning modules and need no duplicate
-      per-op classification lists. Its kernels and tests complete the addition,
-      and the boundary check finds no vendor or kernel
-      names under `ir/` or `execution/`.
+- [x] **U6 IR and planner structure:** complete (2026-10-25), independently reviewed.
+      One checked trait table supplies operation identity, arity, parameter
+      validation, inference, write sets, layout, partition and decomposition
+      dispatch. GGML validates its own extent limits; vendor facts stay outside
+      IR and selection code. All 49 registered rewrite/batch patterns have
+      enforced synthetic match and refusal controls.
+
+      Owned comparisons retain actual accepted sites, original source provenance,
+      complete physical recipes and paid resource lifetimes. Token and ordinary
+      stateless component sources share cumulative production selection, retaining
+      the chosen program through Bind and cache publication. Local Ready,
+      restored-state whole-program and OrdinaryOnly domains remain distinct;
+      changed or unsupported proof facts preserve ordinary execution. Generated
+      indices are bounded against actual destination capacity, and adopted
+      captures receive changed-position updates through the ordinary wrapper.
+      Backend-owned measured data and implementation identities are separate
+      inputs to registry and cache keys.
+
+      The [final qualification](experiments/fusion-ranks/U6-FINAL-RESULTS.md)
+      installs 99 current-build decisions: 97 latency comparisons and two
+      separate quality rejections, with 4,836 ordered observations across both
+      Sparks. Latency results are 52 incumbent wins, 36 neutral cells and nine
+      alternative wins. All 21 installed-data controls pass, including actual
+      rejection of a slower fusion and honest unmeasured fallback. The 12 legacy
+      and 14 historical recipe rows remain unchanged; stale keys are not repinned.
+      The [functional record](experiments/fusion-ranks/READY-MATRIX-RESULTS.md)
+      covers arithmetic, modulation, sectioned RoPE, spatial normalization, HC,
+      GDN, ordinary and quantized stores, source bindings and production adoption,
+      including F16/F32, BF16, Q8, GGUF, NVFP4, MXFP8 and EXL3 branches.
+      Numerical refusals retain their fixed gates and grant no ranking authority.
+      The published-GGUF DeepSeek frozen failure remains historical, with all
+      eleven pre-U6 observations unchanged. U7 capability and scheduling work
+      remains separate.
+
+      Both native artifact builds pass. Final checks pass across both Sparks:
+      4,036 shared tests, six actual affected model cases, ten data-tool tests
+      and the 21 installed controls, with zero skips. Formatting, licensing,
+      headers and portability checks pass; source/data/native identities remain
+      exact. **Exit:** adding an IR op declares its dispatch once in the trait
+      table; new semantic algorithms live in their
+      owning modules and need no duplicate per-op classification lists. Its
+      kernels and tests complete the addition, and the boundary check finds no
+      vendor or kernel names under `ir/` or `execution/`.
 - [ ] **U7 Fast paths by capability** (after the memory-mode re-gate and
       U4/U6; five sub-slices, each moving its fusions' patterns to matching
       against their decompositions, which three of the sixty use today):

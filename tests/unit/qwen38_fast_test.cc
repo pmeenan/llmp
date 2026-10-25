@@ -1566,6 +1566,232 @@ TEST_F(Qwen38FastTest, WideBf16KeepsEachColumnRecipeThroughChangedInputReplay) {
   }
 }
 
+TEST_F(Qwen38FastTest, LoweredConvertReadsStridedCacheViewsWithoutChangingStorage) {
+  using llmp::format::Encoding;
+  constexpr std::size_t kViewWidth = 7, kRows = 3, kHeads = 2;
+  constexpr std::size_t kCacheWidth = 11, kCacheRows = 5, kCacheHeads = 3;
+  constexpr std::size_t kHeadStride = kCacheWidth * kCacheRows;
+  constexpr std::size_t kCacheElements = kHeadStride * kCacheHeads;
+  constexpr std::size_t kOffset = kHeadStride + kCacheWidth + 2;
+  constexpr std::size_t kElements = kViewWidth * kRows * kHeads, kGuard = 64;
+  for (const auto encoding : {Encoding::kF16, Encoding::kBF16, Encoding::kF32}) {
+    for (const bool permuted : {false, true}) {
+      SCOPED_TRACE(static_cast<int>(encoding));
+      SCOPED_TRACE(permuted);
+      const auto output_encoding = encoding == Encoding::kF32 ? Encoding::kF16 : Encoding::kF32;
+      const std::size_t scalar = encoding == Encoding::kF32 ? sizeof(float) : sizeof(std::uint16_t);
+      const std::size_t output_scalar =
+          output_encoding == Encoding::kF32 ? sizeof(float) : sizeof(std::uint16_t);
+      ir::Builder builder;
+      builder.SetOwner(0);
+      const auto cache =
+          builder.Input(ir::Dense(encoding, ir::ShapeOf({kCacheWidth, kCacheRows, kCacheHeads})));
+      const auto view = builder.View(
+          cache, ir::ShapeOf({kViewWidth, kRows, kHeads}),
+          {scalar, kCacheWidth * scalar, kHeadStride * scalar, kCacheElements * scalar},
+          kOffset * scalar);
+      const auto input = permuted ? builder.Permute(view, {1, 0, 2, 3}) : view;
+      const auto output = builder.Convert(input, output_encoding);
+      builder.Output(output);
+      auto graph = std::move(builder).Finish();
+      ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+      const co::GraphBuildIO io{*graph, graph->inputs(), graph->outputs(), {}};
+      const std::vector staged{cache};
+      const pl::DeviceFacts device{.device_class = "sm_121", .arch = 121};
+      auto plan =
+          pl::Plan(graph->Clone(), *registry_, device, {},
+                   {.staged = staged, .written = &kg::WrittenBytes, .within = &kg::WithinRoot});
+      ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+      const llmp::kernels::Addresses addresses{};
+      auto lowered =
+          kg::LowerStep({*plan, io, addresses}, *registry_, kg::DeviceChoicesOf(launch()));
+      ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+      ASSERT_EQ(lowered->plan.steps.size(), 1U);  // Metadata views do not materialize a copy.
+      const auto& step = lowered->plan.steps.front();
+      ASSERT_EQ(step.implementation, "ggml.convert");
+      ASSERT_EQ(step.nodes.size(), 1U);
+      auto* result = step.nodes.front();
+      ASSERT_EQ(result->op, GGML_OP_CPY);
+      ASSERT_NE(result->src[0], nullptr);
+      ASSERT_NE(result->src[1], nullptr);
+      ASSERT_EQ(result->view_src, result->src[1]);
+      ASSERT_FALSE(ggml_is_contiguous(result->src[0]));
+      ASSERT_TRUE(ggml_is_contiguous(result));
+      ASSERT_EQ(result->type, output_encoding == Encoding::kF32 ? GGML_TYPE_F32 : GGML_TYPE_F16);
+      const std::array<std::size_t, 4> dimensions =
+          permuted ? std::array<std::size_t, 4>{kRows, kViewWidth, kHeads, 1}
+                   : std::array<std::size_t, 4>{kViewWidth, kRows, kHeads, 1};
+      for (std::size_t axis = 0; axis < dimensions.size(); ++axis)
+        ASSERT_EQ(result->ne[axis], static_cast<std::int64_t>(dimensions[axis]));
+      ggml_tensor* native_cache = nullptr;
+      for (const auto& leaf : lowered->leaves)
+        if (leaf.primitive == cache) native_cache = leaf.tensor;
+      ASSERT_NE(native_cache, nullptr);
+      const std::array outputs{result};
+      const auto nodes = kg::GraphOrder(outputs);
+      // Replace measuring addresses with owned, disjoint guarded allocations;
+      // retain the actual Lower plan and its unmodified strided descriptors.
+      for (auto* node : nodes)
+        if (node->view_src == nullptr) node->data = nullptr;
+      const auto source_base = Allocate(kGuard + kCacheElements * scalar + kGuard);
+      const auto destination_base = Allocate(kGuard + kElements * output_scalar + kGuard);
+      TensorArena::Bind(native_cache, source_base + kGuard);
+      TensorArena::Bind(result->src[1], destination_base + kGuard);
+      kg::BindViews(nodes);
+      ASSERT_EQ(reinterpret_cast<std::uintptr_t>(result->src[0]->data),
+                source_base + kGuard + kOffset * scalar);
+      auto bound = kg::BoundGraph::Bind(*registry_, lowered->plan);
+      ASSERT_TRUE(bound) << (bound ? "" : bound.error().detail);
+      std::vector<std::byte> first_output;
+      for (std::uint32_t frame = 0; frame < 2; ++frame) {
+        SCOPED_TRACE(frame);
+        std::vector<std::byte> source_bytes(kGuard + kCacheElements * scalar + kGuard,
+                                            std::byte{0x5A});
+        std::vector<float> decoded(kCacheElements);
+        for (std::size_t i = 0; i < kCacheElements; ++i) {
+          const float value = static_cast<float>(static_cast<int>((i * 13) % 181) - 90) * 0.03125F +
+                              static_cast<float>(frame) * 0.125F +
+                              static_cast<float>(i % 5) * 0.0009765625F;
+          auto* bytes = source_bytes.data() + kGuard + i * scalar;
+          if (encoding == Encoding::kF32) {
+            std::memcpy(bytes, &value, sizeof(value));
+            decoded[i] = value;
+          } else {
+            const auto bits =
+                encoding == Encoding::kBF16 ? Bf16Bits(value) : ggml_fp32_to_fp16(value);
+            std::memcpy(bytes, &bits, sizeof(bits));
+            decoded[i] = encoding == Encoding::kBF16 ? FromBf16(bits) : ggml_fp16_to_fp32(bits);
+          }
+        }
+        std::vector<std::byte> destination_bytes(kGuard + kElements * output_scalar + kGuard,
+                                                 std::byte{0x6D});
+        std::fill_n(destination_bytes.begin() + kGuard, kElements * output_scalar, std::byte{0xFF});
+        ASSERT_EQ(cudaMemcpy(reinterpret_cast<void*>(source_base), source_bytes.data(),
+                             source_bytes.size(), cudaMemcpyHostToDevice),
+                  cudaSuccess);
+        ASSERT_EQ(cudaMemcpy(reinterpret_cast<void*>(destination_base), destination_bytes.data(),
+                             destination_bytes.size(), cudaMemcpyHostToDevice),
+                  cudaSuccess);
+        ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+        ASSERT_TRUE(bound->Run(launch()));
+        Finish();
+        std::vector<std::byte> source_after(source_bytes.size()), after(destination_bytes.size());
+        ASSERT_EQ(cudaMemcpy(source_after.data(), reinterpret_cast<const void*>(source_base),
+                             source_after.size(), cudaMemcpyDeviceToHost),
+                  cudaSuccess);
+        ASSERT_EQ(cudaMemcpy(after.data(), reinterpret_cast<const void*>(destination_base),
+                             after.size(), cudaMemcpyDeviceToHost),
+                  cudaSuccess);
+        EXPECT_EQ(source_after,
+                  source_bytes);  // Entire cache, unselected rows/heads, gaps and both guards.
+        EXPECT_TRUE(std::equal(after.begin(), after.begin() + kGuard, destination_bytes.begin()));
+        EXPECT_TRUE(
+            std::equal(after.end() - kGuard, after.end(), destination_bytes.end() - kGuard));
+        for (std::size_t head = 0; head < kHeads; ++head)
+          for (std::size_t row = 0; row < kRows; ++row)
+            for (std::size_t channel = 0; channel < kViewWidth; ++channel) {
+              // Oracle comes from the original cache geometry and decoded
+              // stored bytes, independently of native view/CPY descriptors.
+              const float want =
+                  decoded[kOffset + head * kHeadStride + row * kCacheWidth + channel];
+              const auto index = permuted ? (head * kViewWidth + channel) * kRows + row
+                                          : (head * kRows + row) * kViewWidth + channel;
+              if (output_encoding == Encoding::kF32) {
+                float got = std::numeric_limits<float>::quiet_NaN();
+                std::memcpy(&got, after.data() + kGuard + index * output_scalar, sizeof(got));
+                EXPECT_EQ(got, want);
+              } else {
+                std::uint16_t got = 0;
+                std::memcpy(&got, after.data() + kGuard + index * output_scalar, sizeof(got));
+                EXPECT_EQ(got, ggml_fp32_to_fp16(want));
+              }
+            }
+        std::vector<std::byte> payload(after.begin() + kGuard, after.end() - kGuard);
+        if (frame == 0)
+          first_output = payload;
+        else
+          EXPECT_NE(payload, first_output);
+      }
+    }
+  }
+}
+
+TEST_F(Qwen38FastTest, LoweredBf16ProductsPreserveThreeAndFourDimensionalInputs) {
+  constexpr std::uint32_t k = 32, n = 19, heads = 4, rows = 3;
+  for (const std::uint32_t batches : {1U, 2U}) {
+    ir::Builder b;
+    const auto w = b.Input(ir::Dense(llmp::format::Encoding::kBF16, ir::ShapeOf({k, n})));
+    const auto x =
+        b.Input(ir::Dense(llmp::format::Encoding::kBF16, ir::ShapeOf({k, heads, rows, batches})));
+    const auto output = b.Unary(b.MatMul(w, x), ir::UnaryFn::kRelu);
+    b.Output(output);
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph);
+    co::StepGraph step{.graph = std::move(*graph),
+                       .inputs = {{.tensor = w, .kind = co::InputKind::kFeatures},
+                                  {.tensor = x, .kind = co::InputKind::kFeatures}},
+                       .weights = {},
+                       .state = {}};
+    const std::vector staged{w, x};
+    const pl::DeviceFacts device{
+        .device_class = "sm_121", .arch = 121, .features = llmp::execution::kBf16Mma};
+    auto plan =
+        pl::Plan(step.graph.Clone(), *registry_, device, {},
+                 {.staged = staged, .written = &kg::WrittenBytes, .within = &kg::WithinRoot});
+    ASSERT_TRUE(plan);
+    const pl::StepShape shape{};
+    const llmp::kernels::Addresses addresses{};
+    auto lowered =
+        kg::LowerStep({*plan, step, shape, addresses}, *registry_, kg::DeviceChoicesOf(launch()));
+    ASSERT_TRUE(lowered);
+    ggml_tensor* native_w = nullptr;
+    ggml_tensor* native_x = nullptr;
+    for (const auto& leaf : lowered->leaves) {
+      if (leaf.primitive == w) native_w = leaf.tensor;
+      if (leaf.primitive == x) native_x = leaf.tensor;
+    }
+    ASSERT_NE(native_w, nullptr);
+    ASSERT_NE(native_x, nullptr);
+    ggml_tensor* result = nullptr;
+    for (auto* node : lowered->nodes) {
+      // This native-operation regression owns disjoint output buffers rather
+      // than using the measuring addresses. The actual lowering supplies all
+      // logical shapes, metadata edges and kernel descriptors.
+      if (node->view_src == nullptr && node->op != GGML_OP_NONE) node->data = nullptr;
+      if (node->op == GGML_OP_UNARY && ggml_get_unary_op(node) == GGML_UNARY_OP_RELU) result = node;
+    }
+    ASSERT_NE(result, nullptr);
+    const auto wb = ToBf16(Normal(901, k * n, 0.25F));
+    Leaf(native_w, wb);
+    const std::size_t columns = heads * rows * batches;
+    for (std::uint32_t frame = 0; frame < 2; ++frame) {
+      const auto xb = ToBf16(Normal(902 + frame, k * columns, 0.5F));
+      if (frame == 0)
+        Leaf(native_x, xb);
+      else
+        ASSERT_EQ(cudaMemcpy(native_x->data, xb.data(), xb.size() * sizeof(std::uint16_t),
+                             cudaMemcpyHostToDevice),
+                  cudaSuccess);
+      Run({result});
+      std::vector<double> expected(n * columns);
+      for (std::size_t column = 0; column < columns; ++column) {
+        for (std::size_t channel = 0; channel < n; ++channel) {
+          double dot = 0;
+          for (std::size_t i = 0; i < k; ++i)
+            dot +=
+                static_cast<double>(FromBf16(wb[channel * k + i])) * FromBf16(xb[column * k + i]);
+          expected[column * n + channel] = std::max(dot, 0.0);
+        }
+      }
+      ExpectNear(Download(result), expected, 1e-10, "lowered packed BF16 batches");
+      EXPECT_EQ(Download<std::uint16_t>(native_w), wb);
+      EXPECT_EQ(Download<std::uint16_t>(native_x), xb);
+      for (std::size_t axis = 0; axis < 4; ++axis)
+        EXPECT_EQ(result->ne[axis], (std::array<std::uint32_t, 4>{n, heads, rows, batches})[axis]);
+    }
+  }
+}
+
 TEST_F(Qwen38FastTest, OrdinaryWideFlagRetainsItsLargeKBlasFallback) {
   constexpr std::int64_t k = 32768, n = 17, columns = 2;
   auto* weights = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_BF16, k, n),
@@ -1585,10 +1811,10 @@ TEST_F(Qwen38FastTest, OrdinaryWideFlagRetainsItsLargeKBlasFallback) {
 TEST_F(Qwen38FastTest, QsaPrepNormalizesAndRotates) {
   constexpr std::int64_t d = 256;
   constexpr std::int64_t heads = 24;
-  constexpr std::int64_t t = 13;
+  constexpr std::int64_t t = 13, physical_rows = 24;
   constexpr float base = 10000000.0f;
   const float theta_scale = std::pow(base, -2.0f / 64.0f);
-  const auto q_full = Normal(51, static_cast<std::size_t>(2 * d * heads * t), 3.0f);
+  const auto q_full = Normal(51, static_cast<std::size_t>(2 * d * heads * physical_rows), 3.0f);
   auto norm_h = Normal(52, d, 0.2f);
   for (float& v : norm_h) {
     v += 1.0f;
@@ -1599,7 +1825,9 @@ TEST_F(Qwen38FastTest, QsaPrepNormalizesAndRotates) {
       pos[static_cast<std::size_t>((s * t) + r)] = static_cast<std::int32_t>(1000 + (r * 311));
     }
   }
-  ggml_tensor* x = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 2 * d * heads, t), q_full);
+  ggml_tensor* backing =
+      Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 2 * d * heads, physical_rows), q_full);
+  ggml_tensor* x = ggml_view_2d(c(), backing, 2 * d * heads, t, backing->nb[1], 0);
   ggml_tensor* norm = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, d), norm_h);
   ggml_tensor* positions = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 4 * t), pos);
   ggml_tensor* q = kg::QsaPrep(c(), x, norm, positions, d, heads, 2 * d, kEps, theta_scale);
@@ -1609,6 +1837,9 @@ TEST_F(Qwen38FastTest, QsaPrepNormalizesAndRotates) {
   ggml_tensor* gated = kg::QsaGateQuantize(c(), attn, x, d);
   Run({q, gated});
   EXPECT_EQ(PlannedFor(q), kg::kQsaPrepName);
+  EXPECT_EQ(q->ne[2], t);
+  EXPECT_EQ(backing->ne[1], physical_rows);
+  EXPECT_EQ(Download(backing), q_full);
   EXPECT_EQ(PlannedFor(gated), kg::kQsaGateQuantizeName);
   std::vector<double> want(static_cast<std::size_t>(d * heads * t));
   std::vector<double> want_gated(want.size());

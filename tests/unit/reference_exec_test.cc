@@ -25,6 +25,7 @@
 #include <memory>
 #include <numbers>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <span>
 #include <string>
@@ -49,6 +50,26 @@ namespace {
 using format::Encoding;
 using format::Layout;
 using ir::TensorId;
+
+class TestStorageFunder final : public ir::StorageFunder {
+ public:
+  bool Charge(std::uint64_t bytes) const override {
+    ++calls_;
+    if (refuse_at_ != 0 && calls_ == refuse_at_) return false;
+    outstanding_ += bytes;
+    return true;
+  }
+  void Release(std::uint64_t bytes) const override { outstanding_ -= bytes; }
+  std::size_t calls() const { return calls_; }
+  std::uint64_t outstanding() const { return outstanding_; }
+  void RefuseOn(std::size_t call) { refuse_at_ = call; }
+  void AllowAll() { refuse_at_ = 0; }
+
+ private:
+  std::size_t refuse_at_ = 0;
+  mutable std::size_t calls_ = 0;
+  mutable std::uint64_t outstanding_ = 0;
+};
 
 constexpr double kInf = std::numeric_limits<double>::infinity();
 
@@ -210,6 +231,49 @@ TEST(ReferenceExecValidationTest, NormOutputGateRejectsUnknownSelection) {
   EXPECT_FALSE(std::move(b).Finish());
 }
 
+TEST(ReferenceExecValidationTest, PaidExpansionMapSurvivesExecutorMovesAndRefunds) {
+  const auto make_graph = [](const std::shared_ptr<TestStorageFunder>& funder) {
+    ir::Builder b;
+    EXPECT_TRUE(b.SetStorageFunder(funder));
+    const auto input = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({4})));
+    b.Output(input);
+    auto graph = std::move(b).Finish();
+    EXPECT_TRUE(graph);
+    if (!graph) return std::optional<ir::Graph>{};
+    return std::optional<ir::Graph>(std::move(*graph));
+  };
+
+  auto first_owner = std::make_shared<TestStorageFunder>();
+  auto first_graph = make_graph(first_owner);
+  ASSERT_TRUE(first_graph);
+  const std::uint64_t first_graph_bytes = first_owner->outstanding();
+
+  // Verify takes one scratch loan; the next request is Expand's retained map.
+  first_owner->RefuseOn(first_owner->calls() + 2);
+  auto refused = Executor::Create(*first_graph);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(first_owner->outstanding(), first_graph_bytes);
+  first_owner->AllowAll();
+
+  auto first = Executor::Create(*first_graph);
+  ASSERT_TRUE(first);
+  EXPECT_GT(first_owner->outstanding(), first_graph_bytes);
+
+  auto second_owner = std::make_shared<TestStorageFunder>();
+  auto second_graph = make_graph(second_owner);
+  ASSERT_TRUE(second_graph);
+  const std::uint64_t second_graph_bytes = second_owner->outstanding();
+  auto second = Executor::Create(*second_graph);
+  ASSERT_TRUE(second);
+  EXPECT_GT(second_owner->outstanding(), second_graph_bytes);
+
+  *first = std::move(*second);
+  EXPECT_EQ(first_owner->outstanding(), first_graph_bytes);
+  EXPECT_GT(second_owner->outstanding(), second_graph_bytes);
+  first = std::unexpected(ExecFailure{});
+  EXPECT_EQ(second_owner->outstanding(), second_graph_bytes);
+}
+
 TEST_F(ExecTest, GroupedMatMulHasIndependentCompleteGroupAndTokenFormula) {
   constexpr std::size_t k = 4, n = 3, groups = 2, tokens = 5;
   const auto w = F({k, n, groups});
@@ -255,14 +319,13 @@ TEST_F(ExecTest, VisibleTopKHasExactPrefixTieNanAndPaddingSemantics) {
   Set(scores, values);
   SetInts(counts, visible);
   ASSERT_TRUE(Run());
-  std::vector<TensorId> mapped;
-  auto primitive = ir::Expand(*graph, true, &mapped);
+  auto primitive = ir::ExpandWithMap(*graph, true);
   ASSERT_TRUE(primitive) << primitive.error().detail;
-  for (const auto& node : primitive->nodes()) EXPECT_FALSE(ir::HasDecomposition(node.key));
-  auto split = Executor::Create(*primitive);
+  for (const auto& node : primitive->graph.nodes()) EXPECT_FALSE(ir::HasDecomposition(node.key));
+  auto split = Executor::Create(primitive->graph);
   ASSERT_TRUE(split) << split.error().detail;
-  ASSERT_TRUE(split->BindValues(mapped[scores.v], values));
-  ASSERT_TRUE(split->BindInts(mapped[counts.v], visible));
+  ASSERT_TRUE(split->BindValues(primitive->map.at(scores.v), values));
+  ASSERT_TRUE(split->BindInts(primitive->map.at(counts.v), visible));
   ASSERT_TRUE(split->Run());
   const std::array<std::vector<std::int64_t>, 7> ranked{std::vector<std::int64_t>{},
                                                         {},
@@ -281,7 +344,7 @@ TEST_F(ExecTest, VisibleTopKHasExactPrefixTieNanAndPaddingSemantics) {
       expected.insert(expected.end(), row.begin(), row.end());
     }
     EXPECT_EQ(GetInts(output), expected);
-    EXPECT_EQ(*split->Ints(mapped[output.v]), expected);
+    EXPECT_EQ(*split->Ints(primitive->map.at(output.v)), expected);
   }
 }
 
@@ -307,15 +370,14 @@ TEST_F(ExecTest, SelectedMaskCopiesHalfBitsAndAcceptsArbitraryAliasedIds) {
   SetBytes(raw_root, bytes);
   SetInts(ids_root, id_values);
   ASSERT_TRUE(Run());
-  std::vector<TensorId> mapped;
-  auto primitive = ir::Expand(*graph, true, &mapped);
+  auto primitive = ir::ExpandWithMap(*graph, true);
   ASSERT_TRUE(primitive) << primitive.error().detail;
-  for (const auto& node : primitive->nodes()) EXPECT_FALSE(ir::HasDecomposition(node.key));
-  auto split = Executor::Create(*primitive);
+  for (const auto& node : primitive->graph.nodes()) EXPECT_FALSE(ir::HasDecomposition(node.key));
+  auto split = Executor::Create(primitive->graph);
   ASSERT_TRUE(split) << split.error().detail;
   const PartView raw_part{.role = format::PartRole::kData, .bytes = bytes};
-  ASSERT_TRUE(split->Bind(mapped[raw_root.v], std::span(&raw_part, 1)));
-  ASSERT_TRUE(split->BindInts(mapped[ids_root.v], id_values));
+  ASSERT_TRUE(split->Bind(primitive->map.at(raw_root.v), std::span(&raw_part, 1)));
+  ASSERT_TRUE(split->BindInts(primitive->map.at(ids_root.v), id_values));
   ASSERT_TRUE(split->Run());
   const auto read_from = [](const Executor& e, TensorId id) {
     const auto data = e.Bytes(id);
@@ -330,9 +392,9 @@ TEST_F(ExecTest, SelectedMaskCopiesHalfBitsAndAcceptsArbitraryAliasedIds) {
                                             0,      0xfc00, 0xfc00, 0xfd21, 0x7c00, 0xfc00,
                                             0xfc00, 0xfc00, 0xfc00, 0,      0xfc00, 0xfc00};
   EXPECT_EQ(read_from(*exec, mask), want_mask);
-  EXPECT_EQ(read_from(*split, mapped[mask.v]), want_mask);
+  EXPECT_EQ(read_from(*split, primitive->map.at(mask.v)), want_mask);
   EXPECT_EQ(read_from(*exec, duplicate_mask), want_dup);
-  EXPECT_EQ(read_from(*split, mapped[duplicate_mask.v]), want_dup);
+  EXPECT_EQ(read_from(*split, primitive->map.at(duplicate_mask.v)), want_dup);
 }
 
 TEST_F(ExecTest, PrefixOverwritePreservesEveryBitAcrossStridedAndRepeatedViews) {
@@ -400,15 +462,14 @@ TEST(ReferenceDecompositionTest, RoundedIndexScoreHasIndependentFormulaAndRealHa
   b.Output(score);
   auto graph = std::move(b).Finish();
   ASSERT_TRUE(graph) << graph.error().detail;
-  std::vector<TensorId> mapped;
-  auto primitive = ir::Expand(*graph, true, &mapped);
+  auto primitive = ir::ExpandWithMap(*graph, true);
   ASSERT_TRUE(primitive) << primitive.error().detail;
   std::vector<Encoding> casts;
   int products = 0, reductions = 0, overwrites = 0;
-  for (const auto& node : primitive->nodes()) {
+  for (const auto& node : primitive->graph.nodes()) {
     EXPECT_FALSE(ir::HasDecomposition(node.key));
     if (node.key.op == ir::Op::kConvert)
-      casts.push_back(primitive->tensor(node.out[0]).format.encoding);
+      casts.push_back(primitive->graph.tensor(node.out[0]).format.encoding);
     products += node.key.op == ir::Op::kMatMul;
     reductions += node.key.op == ir::Op::kSumRows;
     overwrites += node.key.op == ir::Op::kPrefixOverwrite;
@@ -418,7 +479,7 @@ TEST(ReferenceDecompositionTest, RoundedIndexScoreHasIndependentFormulaAndRealHa
   EXPECT_EQ(reductions, 1);
   EXPECT_EQ(overwrites, 1);
   auto direct = Executor::Create(*graph);
-  auto split = Executor::Create(*primitive);
+  auto split = Executor::Create(primitive->graph);
   ASSERT_TRUE(direct);
   ASSERT_TRUE(split);
   std::vector<float> query(130 * 64 * 3, 0), keys(130 * 4, 0), weights(66 * 3, 0);
@@ -433,17 +494,17 @@ TEST(ReferenceDecompositionTest, RoundedIndexScoreHasIndependentFormulaAndRealHa
   for (const auto& [id, values] :
        std::array{std::pair{q_root, query}, std::pair{k_root, keys}, std::pair{w_root, weights}}) {
     ASSERT_TRUE(direct->BindValues(id, values));
-    ASSERT_TRUE(split->BindValues(mapped[id.v], values));
+    ASSERT_TRUE(split->BindValues(primitive->map.at(id.v), values));
   }
   const std::vector<std::int64_t> visible{1, INT32_MAX, -1};
   ASSERT_TRUE(direct->BindInts(counts, visible));
-  ASSERT_TRUE(split->BindInts(mapped[counts.v], visible));
+  ASSERT_TRUE(split->BindInts(primitive->map.at(counts.v), visible));
   ASSERT_TRUE(direct->Run());
   ASSERT_TRUE(split->Run());
   const float inf = std::numeric_limits<float>::infinity();
   const std::vector<float> expected{2, -inf, -inf, -inf, 2, 0, inf, 0, -inf, -inf, -inf, -inf};
   EXPECT_EQ(*direct->Values(score), expected);
-  EXPECT_EQ(*split->Values(mapped[score.v]), expected);
+  EXPECT_EQ(*split->Values(primitive->map.at(score.v)), expected);
 }
 
 // ---------------------------------------------------------------- structure
@@ -2241,23 +2302,22 @@ void ExpectExpansionAgrees(const ir::Graph& graph,
                            const std::map<std::uint32_t, std::vector<float>>& values,
                            const std::map<std::uint32_t, std::vector<std::int64_t>>& ints,
                            double tol) {
-  std::vector<TensorId> map;
-  auto expanded = ir::Expand(graph, true, &map);
+  auto expanded = ir::ExpandWithMap(graph, true);
   ASSERT_TRUE(expanded.has_value()) << expanded.error().detail;
-  for (const ir::Node& n : expanded->nodes()) {
+  for (const ir::Node& n : expanded->graph.nodes()) {
     ASSERT_FALSE(ir::HasDecomposition(n.key)) << ir::OpKeyName(n.key);
   }
   auto direct = Executor::Create(graph);
-  auto split = Executor::Create(*expanded);
+  auto split = Executor::Create(expanded->graph);
   ASSERT_TRUE(direct.has_value()) << direct.error().detail;
   ASSERT_TRUE(split.has_value()) << split.error().detail;
   for (const auto& [id, v] : values) {
     ASSERT_TRUE(direct->BindValues(TensorId{id}, v).has_value());
-    ASSERT_TRUE(split->BindValues(map.at(id), v).has_value());
+    ASSERT_TRUE(split->BindValues(expanded->map.at(id), v).has_value());
   }
   for (const auto& [id, v] : ints) {
     ASSERT_TRUE(direct->BindInts(TensorId{id}, v).has_value());
-    ASSERT_TRUE(split->BindInts(map.at(id), v).has_value());
+    ASSERT_TRUE(split->BindInts(expanded->map.at(id), v).has_value());
   }
   const auto r1 = direct->Run();
   ASSERT_TRUE(r1.has_value()) << r1.error().detail;
@@ -2266,11 +2326,11 @@ void ExpectExpansionAgrees(const ir::Graph& graph,
   for (const TensorId o : graph.outputs()) {
     const std::string what = ir::OpKeyName(graph.node(graph.producer(o)).key);
     if (graph.tensor(o).format.encoding == Encoding::kI32) {
-      EXPECT_EQ(*direct->Ints(o), *split->Ints(map.at(o.v))) << what;
+      EXPECT_EQ(*direct->Ints(o), *split->Ints(expanded->map.at(o.v))) << what;
       continue;
     }
     const std::vector<float> a = *direct->Values(o);
-    const std::vector<float> c = *split->Values(map.at(o.v));
+    const std::vector<float> c = *split->Values(expanded->map.at(o.v));
     ExpectNear(c, std::vector<double>(a.begin(), a.end()), tol, what);
   }
 }

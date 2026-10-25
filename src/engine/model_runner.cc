@@ -4,6 +4,7 @@
 #include "engine/model_runner.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <format>
@@ -324,6 +325,20 @@ kn::Addresses ModelRunner::AddressesFor(const pl::StepShape& shape, bool measuri
                  ? config_.weight_address
                  : std::function<std::uint64_t(const ir::WeightRef&, format::PartRole)>(
                        [](const ir::WeightRef&, format::PartRole) { return std::uint64_t{0}; });
+  if (config_.weight_range) {
+    a.weight_range = [range = config_.weight_range, weight = a.weight](
+                         const ir::WeightRef& ref,
+                         format::PartRole role) -> std::optional<kn::BoundedAddress> {
+      auto bounded = range(ref, role);
+      std::uint64_t end = 0;
+      if (!bounded || bounded->base == 0 || bounded->bytes == 0 || bounded->alignment == 0 ||
+          (bounded->alignment & (bounded->alignment - 1)) != 0 ||
+          bounded->base % bounded->alignment != 0 || bounded->base != weight(ref, role) ||
+          __builtin_add_overflow(bounded->base, bounded->bytes, &end))
+        return std::nullopt;
+      return bounded;
+    };
+  }
   if (!row_tables_.empty()) {
     a.weight = [this, ordinary = std::move(a.weight)](const ir::WeightRef& ref,
                                                       format::PartRole role) -> std::uint64_t {
@@ -337,6 +352,34 @@ kn::Addresses ModelRunner::AddressesFor(const pl::StepShape& shape, bool measuri
         if (table->config.weight == ref) return table->capacity;
       }
       return 0;
+    };
+    a.row_storage = [this](
+                        const ir::WeightRef& ref,
+                        format::PartRole role) -> std::optional<components::ComparisonRowStorage> {
+      for (const auto& table : row_tables_)
+        if (table->config.weight == ref && table->config.part == role)
+          return table->comparison_storage;
+      return std::nullopt;
+    };
+    a.weight_range = [this, ordinary = std::move(a.weight_range),
+                      alignment = node_.memory().ReservationAlignment().value()](
+                         const ir::WeightRef& ref,
+                         format::PartRole role) -> std::optional<kn::BoundedAddress> {
+      for (const auto& table : row_tables_) {
+        if (table->config.weight != ref || table->config.part != role) continue;
+        const auto row_bytes = format::RowBytes(table->config.format, role);
+        std::uint64_t bytes = 0, end = 0;
+        if (!row_bytes || table->capacity == 0 ||
+            __builtin_mul_overflow(table->capacity, *row_bytes, &bytes) ||
+            bytes > table->slots.bytes || table->slots.base == 0 || alignment == 0 ||
+            __builtin_add_overflow(table->slots.base, bytes, &end))
+          return std::nullopt;
+        const std::uint64_t guaranteed = std::gcd(alignment, table->slots.base);
+        if (guaranteed == 0) return std::nullopt;
+        return kn::BoundedAddress{
+            .base = table->slots.base, .bytes = bytes, .alignment = guaranteed};
+      }
+      return ordinary ? ordinary(ref, role) : std::nullopt;
     };
   }
   if (config_.routed_metadata || config_.split_expert_parts)
@@ -383,15 +426,26 @@ kn::Addresses ModelRunner::AddressesFor(const pl::StepShape& shape, bool measuri
   // binds the target's state and the drafters' tensors it writes
   // (target_writes); a drafter's binds its own stage's (its view of the
   // target's through it). Any other binds nothing: the build is refused.
-  const auto state_place = [this, stage = shape.stage, owners](
-                               const ir::StateRef& ref) -> std::pair<std::uint64_t, std::uint64_t> {
-    if (ref.segment >= owners.size() || ref.stage >= slots_.stages()) return {};
+  struct StatePlace {
+    std::uint64_t base = 0;
+    std::uint64_t offset = 0;
+    std::uint64_t bytes = 0;
+  };
+  const auto state_place = [this, stage = shape.stage,
+                            owners](const ir::StateRef& ref) -> StatePlace {
+    if (ref.segment >= owners.size() || owners[ref.segment] >= slots_.slots() ||
+        ref.stage >= slots_.stages())
+      return {};
     if (ref.stage != stage && stage != 0) return {};
     const model::StateLayoutDerived& layout = slots_.layout(ref.stage);
     for (const auto& item : layout.items) {
       if (item.layer == ref.layer && item.tensor == ref.tensor) {
         if (ref.stage != stage && !item.contract.target_writes) return {};
-        return {slots_.live(owners[ref.segment], ref.stage).base(0), item.offset};
+        std::uint64_t item_end = 0;
+        if (item.bytes == 0 || __builtin_add_overflow(item.offset, item.bytes, &item_end) ||
+            item_end > layout.bytes)
+          return {};
+        return {slots_.live(owners[ref.segment], ref.stage).base(0), item.offset, item.bytes};
       }
     }
     if (ref.stage != stage) return {};
@@ -399,17 +453,35 @@ kn::Addresses ModelRunner::AddressesFor(const pl::StepShape& shape, bool measuri
     for (const auto& borrowed : layout.borrowed) {
       if (borrowed.layer != ref.layer || borrowed.tensor != ref.tensor) continue;
       const auto* item = model::BorrowedItem(slots_.layout(0), borrowed);
-      return item == nullptr ? std::pair<std::uint64_t, std::uint64_t>{}
-                             : std::pair{slots_.live(owners[ref.segment], 0).base(0), item->offset};
+      std::uint64_t item_end = 0;
+      if (item == nullptr || item->bytes == 0 ||
+          __builtin_add_overflow(item->offset, item->bytes, &item_end) ||
+          item_end > slots_.layout(0).bytes)
+        return {};
+      return StatePlace{slots_.live(owners[ref.segment], 0).base(0), item->offset, item->bytes};
     }
     return {};
   };
   a.state = [state_place](const ir::StateRef& ref) -> std::uint64_t {
-    const auto [base, offset] = state_place(ref);
+    const StatePlace place = state_place(ref);
     std::uint64_t address = 0;
-    return base != 0 && !__builtin_add_overflow(base, offset, &address) ? address : 0;
+    return place.base != 0 && !__builtin_add_overflow(place.base, place.offset, &address) ? address
+                                                                                          : 0;
   };
   const auto alignment = node_.memory().ReservationAlignment().value();
+  a.state_range = [state_place,
+                   alignment](const ir::StateRef& ref) -> std::optional<kn::BoundedAddress> {
+    const StatePlace place = state_place(ref);
+    std::uint64_t address = 0, end = 0;
+    if (place.base == 0 || place.bytes == 0 || alignment == 0 ||
+        __builtin_add_overflow(place.base, place.offset, &address) ||
+        __builtin_add_overflow(address, place.bytes, &end))
+      return std::nullopt;
+    const std::uint64_t guaranteed = std::gcd(alignment, address);
+    return guaranteed == 0 ? std::nullopt
+                           : std::optional(kn::BoundedAddress{
+                                 .base = address, .bytes = place.bytes, .alignment = guaranteed});
+  };
   a.activation_alignment = alignment;
   // Setup reserves ordinary weights and row-table slots before measurement.
   // These are real stable reservation addresses, never lowering placeholders.
@@ -419,25 +491,66 @@ kn::Addresses ModelRunner::AddressesFor(const pl::StepShape& shape, bool measuri
     return address != 0 && alignment != 0 ? std::gcd(alignment, address) : 0;
   };
   a.state_alignment = [state_place, alignment](const ir::StateRef& ref) -> std::uint64_t {
-    const auto [base, offset] = state_place(ref);
-    return base != 0 && alignment != 0 ? std::gcd(alignment, offset) : 0;
+    const StatePlace place = state_place(ref);
+    std::uint64_t address = 0;
+    return place.base != 0 && alignment != 0 &&
+                   !__builtin_add_overflow(place.base, place.offset, &address)
+               ? std::gcd(alignment, address)
+               : 0;
   };
   a.save_rows = std::uint64_t{config_.max_verify_rows} * slots_.slots();
-  a.save = [this, stage = shape.stage, owners = std::move(owners)](
-               std::uint32_t layer, std::uint16_t component, std::string_view what,
-               std::uint8_t segment) -> std::uint64_t {
-    if (stage >= commit_places_.size()) return 0;
-    if (segment != ir::kJoinedSegment && segment >= owners.size()) return 0;
+  const auto save_place = [this, stage = shape.stage, owners](
+                              std::uint32_t layer, std::uint16_t component, std::string_view what,
+                              std::uint8_t segment) -> std::optional<kn::BoundedAddress> {
+    if (stage >= commit_places_.size() || commit_saves_.base == 0 || config_.max_verify_rows == 0 ||
+        (segment != ir::kJoinedSegment && segment >= owners.size()))
+      return std::nullopt;
     const std::uint32_t owner = segment == ir::kJoinedSegment ? 0 : owners[segment];
+    if (owner >= slots_.slots()) return std::nullopt;
     for (const CommitPlace& place : commit_places_[stage]) {
       const CommitBuffer& buffer = place.buffer;
-      if (buffer.layer == layer && buffer.component == component && buffer.what == what) {
-        return commit_saves_.base + place.offset +
-               (std::uint64_t{owner} * config_.max_verify_rows * buffer.row_bytes);
-      }
+      if (buffer.layer != layer || buffer.component != component || buffer.what != what) continue;
+      std::uint64_t owner_stride = 0, offset = 0, address = 0, rows = config_.max_verify_rows;
+      std::uint64_t bytes = 0, end = 0, mapped_end = 0;
+      if (buffer.row_bytes == 0 ||
+          __builtin_mul_overflow(std::uint64_t{config_.max_verify_rows}, buffer.row_bytes,
+                                 &owner_stride) ||
+          __builtin_mul_overflow(std::uint64_t{owner}, owner_stride, &offset) ||
+          __builtin_add_overflow(place.offset, offset, &offset))
+        return std::nullopt;
+      if (segment == ir::kJoinedSegment &&
+          __builtin_mul_overflow(rows, std::uint64_t{slots_.slots()}, &rows))
+        return std::nullopt;
+      if (__builtin_mul_overflow(rows, buffer.row_bytes, &bytes) ||
+          __builtin_add_overflow(commit_saves_.base, offset, &address) ||
+          __builtin_add_overflow(address, bytes, &end) ||
+          __builtin_add_overflow(commit_saves_.base, commit_saves_.bytes, &mapped_end) ||
+          end > mapped_end)
+        return std::nullopt;
+      std::uint64_t total_rows = 0, buffer_bytes = 0, buffer_end = 0;
+      if (__builtin_mul_overflow(std::uint64_t{config_.max_verify_rows},
+                                 std::uint64_t{slots_.slots()}, &total_rows) ||
+          __builtin_mul_overflow(total_rows, buffer.row_bytes, &buffer_bytes) ||
+          __builtin_add_overflow(buffer_bytes, std::uint64_t{255}, &buffer_bytes))
+        return std::nullopt;
+      buffer_bytes = (buffer_bytes / 256) * 256;
+      if (__builtin_add_overflow(place.offset, buffer_bytes, &buffer_end) || offset > buffer_end ||
+          bytes > buffer_end - offset)
+        return std::nullopt;
+      const std::uint64_t reservation_alignment = node_.memory().ReservationAlignment().value();
+      if (reservation_alignment == 0) return std::nullopt;
+      const std::uint64_t guaranteed = std::gcd(reservation_alignment, address);
+      if (guaranteed == 0) return std::nullopt;
+      return kn::BoundedAddress{.base = address, .bytes = bytes, .alignment = guaranteed};
     }
-    return 0;
+    return std::nullopt;
   };
+  a.save = [save_place](std::uint32_t layer, std::uint16_t component, std::string_view what,
+                        std::uint8_t segment) -> std::uint64_t {
+    const auto place = save_place(layer, component, what, segment);
+    return place ? place->base : 0;
+  };
+  a.save_range = save_place;
   if (!measuring) {
     a.activations = node_.activations().base;
     a.activation_bytes = activation_bytes();
@@ -946,6 +1059,26 @@ Status ModelRunner::SetupRowTables() {
       table->capacity =
           std::max(table->capacity, std::uint64_t{shape.rows()} * config.rows_per_token);
     }
+    components::ComparisonRowStorage comparison{.ref = config.weight,
+                                                .part = config.part,
+                                                .logical_format = config.format,
+                                                .content_identity = ArtifactKey(artifact),
+                                                .resource = config.resource,
+                                                .group = resource.group,
+                                                .shard = first.shard,
+                                                .group_bytes = group.stored.value(),
+                                                .resource_offset = resource.offset.value(),
+                                                .resource_bytes = resource.bytes.value(),
+                                                .logical_rows = config.format.shape.ne[1],
+                                                .slot_capacity = table->capacity,
+                                                .row_bytes = row_bytes};
+    std::uint64_t slot_extent = 0;
+    // Typed comparison facts are an optional certificate. A table may still
+    // execute normally when its slot geometry is unsupported by comparison.
+    if (!__builtin_mul_overflow(table->capacity, row_bytes, &slot_extent) &&
+        components::ValidComparisonRowStorage(comparison, config.weight, config.part, config.format,
+                                              slot_extent))
+      table->comparison_storage = std::move(comparison);
     auto ring = providers::OpenStorage(64);
     if (!ring) return Error(std::format("row-table storage: {}", ring.error().message()));
     table->storage = std::move(*ring);
@@ -1080,6 +1213,10 @@ Status ModelRunner::RetireAfterFence() {
   // environment alive and refuse physical teardown until their last drop.
   closing_ = true;
   if (programs_.launch()) programs_.launch()->Retire();
+  if (programs_.launch()) {
+    if (auto generated = programs_.launch()->DrainGeneratedInputs(); !generated)
+      return Error(generated.error().detail);
+  }
   unproven_.ClearAfterFence();
   for (auto& table : row_tables_) {
     if (table && (!table->storage || table->storage->in_flight() == 0)) {
@@ -1097,6 +1234,10 @@ Status ModelRunner::AcknowledgeFence() {
   // go, and the plans that work may have used are dropped with them.
   if (released_ || closing_) return {};
   if (batch_active_) return Error("a private batch still holds the runner after its fence");
+  if (programs_.launch()) {
+    if (auto generated = programs_.launch()->DrainGeneratedInputs(); !generated)
+      return Error(generated.error().detail);
+  }
   unproven_.ClearAfterFence();
   slots_.AcknowledgeFence();
   for (auto& table : row_tables_) {

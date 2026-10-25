@@ -413,6 +413,7 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
         addresses.state_alignment({.stage = 65535}) == 0;
   }
   built_.push_back(std::move(observed));
+  if (options_.on_addresses) options_.on_addresses(shape, addresses);
   if (options_.on_build) options_.on_build(shape, addresses.measuring());
   if (options_.refuse_build && options_.refuse_build(shape)) return Refuse("the fake refuses");
   if (shape.stage >= options_.layouts.size()) return Refuse("no such stage");

@@ -3,7 +3,9 @@
 #ifndef LLMP_EXECUTION_FUSION_RANKS_H_
 #define LLMP_EXECUTION_FUSION_RANKS_H_
 
+#include <expected>
 #include <optional>
+#include <string>
 
 #include "execution/registry.h"
 
@@ -34,6 +36,16 @@ FusionPreference FusionPreferenceFor(const Registry& registry, const CapabilityQ
 // Canonical complete data identity, including evidence and measured source
 // identities. Kept separate from the implementation source identity.
 base::Sha256Digest FusionComparisonsDigest(std::span<const FusionComparison> comparisons);
+
+// Exact local-region recipe identity. The key digest hashes typed fields
+// without allocating; neither helper interprets caller labels as authority.
+base::Sha256Digest RecipeComparisonKeyDigest(const RecipeComparisonKey& key);
+base::Sha256Digest RecipeComparisonsDigest(std::span<const RecipeComparison> comparisons);
+std::expected<void, std::string> ValidateRecipeComparison(const RecipeComparison& comparison);
+enum class RecipePreference : std::uint8_t { kIncumbent, kAlternative, kNeutral };
+RecipePreference ClassifyRecipeLatency(std::uint64_t incumbent_ns, std::uint64_t alternative_ns);
+// Requires a validated registry record; quality rejection has no latency meaning.
+RecipePreference RecipeComparisonPreference(const RecipeComparison& comparison);
 
 }  // namespace llmp::execution
 #endif  // LLMP_EXECUTION_FUSION_RANKS_H_

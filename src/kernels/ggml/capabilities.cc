@@ -511,6 +511,30 @@ const ex::OperandFormat* Operand(const ex::CapabilityQuery& q, std::uint8_t oper
 
 bool Built(const ex::CapabilityQuery& q) { return CompiledFor(q.arch); }
 
+bool AcceptsUnary(const ex::CapabilityQuery& q) {
+  if (!Built(q)) return false;
+  const auto p = ParamsOf<ir::UnaryParams>(q);
+  if (!p) return false;
+  switch (p->fn) {
+    case ir::UnaryFn::kAbs:
+    case ir::UnaryFn::kSgn:
+    case ir::UnaryFn::kNeg:
+    case ir::UnaryFn::kSilu:
+    case ir::UnaryFn::kGeluTanh:
+    case ir::UnaryFn::kTanh:
+    case ir::UnaryFn::kRelu:
+    case ir::UnaryFn::kSigmoid:
+    case ir::UnaryFn::kExp:
+    case ir::UnaryFn::kSoftplus:
+    case ir::UnaryFn::kSqrt:
+      return true;
+    case ir::UnaryFn::kGeluErf:
+    case ir::UnaryFn::kSqr:
+      return false;
+  }
+  return false;
+}
+
 bool OptionEnabled(const ex::CapabilityQuery& q, std::string_view name) {
   if (name == "bf16_vec_rows") {
     return q.policy.options && std::ranges::contains(*q.policy.options, name);
@@ -533,7 +557,36 @@ bool AcceptsRopeNeox(const ex::CapabilityQuery& q) {
 }
 bool AcceptsRopeExt(const ex::CapabilityQuery& q) {
   const auto r = ParamsOf<ir::RopeParams>(q);
-  return Built(q) && r && PlainRope(*r);
+  if (!Built(q) || !r) return false;
+  if (PlainRope(*r)) return true;
+  // The ordinary QSA pool decomposition uses the existing forward IMROPE
+  // launcher. Four dense position planes are required by ggml_rope_multi;
+  // preserve the earlier NORMAL/NEOX domain above unchanged.
+  const auto* x = Operand(q, 0);
+  const auto* positions = Operand(q, 1);
+  const auto* out = Operand(q, ex::kOutputOperand);
+  if (r->table || r->inverse || r->mode != ir::RopeMode::kInterleavedMulti ||
+      r->rotated_dims != UINT32_MAX || !x || !positions || x->encoding != Encoding::kF32 ||
+      x->layout != Layout::kDense || positions->encoding != Encoding::kI32 ||
+      positions->layout != Layout::kDense || x->ne[0] == 0 || x->ne[0] % 2 || r->dims == 0 ||
+      r->dims % 2 || r->offset % 2 || r->offset > x->ne[0] || r->dims > x->ne[0] - r->offset ||
+      x->ne[0] > std::uint64_t{65535} * 512 || r->original_context > INT32_MAX ||
+      positions->ne[0] != x->ne[2] * 4 || positions->ne[1] != 1 || positions->ne[2] != 1 ||
+      positions->ne[3] != 1 ||
+      (out &&
+       (out->encoding != Encoding::kF32 || out->layout != Layout::kDense || out->ne != x->ne)))
+    return false;
+  std::uint64_t rows = 1, sections = 0;
+  for (std::size_t d = 1; d < 4; ++d) {
+    if (x->ne[d] == 0 || x->ne[d] > INT32_MAX || rows > INT32_MAX / x->ne[d]) return false;
+    rows *= x->ne[d];
+  }
+  for (const auto section : r->sections) {
+    if (section > INT32_MAX) return false;
+    sections += section;
+  }
+  return sections != 0 && sections <= INT32_MAX &&
+         (r->sections[0] || r->sections[1] || r->sections[2]);
 }
 
 // CheckGemmaNormRope's (gemma_norm.cc): a full even-width NEOX rotation, its parameters finite and
@@ -667,6 +720,38 @@ bool PackedOf(const ex::OperandFormat* operand, std::uint64_t bytes) {
     bytes *= operand->ne[d];
   }
   return true;
+}
+// The existing two-dimensional BF16 kernel also covers packed activation
+// batches by flattening their columns. Weight batches are not this operation.
+bool AcceptsBf16MatrixProduct(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::ProductParams>(q);
+  const auto* w = Operand(q, 0);
+  const auto* x = Operand(q, 1);
+  const auto* out = Operand(q, kOut);
+  if (!Built(q) || !p || !w || !x || !out || w->encoding != Encoding::kBF16 ||
+      x->encoding != Encoding::kBF16 ||
+      (out->encoding != Encoding::kF32 && out->encoding != Encoding::kBF16) || w->ne[2] != 1 ||
+      w->ne[3] != 1 || w->ne[0] != x->ne[0] ||
+      out->ne != std::array<std::uint64_t, 4>{w->ne[1], x->ne[1], x->ne[2], x->ne[3]} ||
+      (p->accumulate != ir::Accumulate::kDefault && p->accumulate != ir::Accumulate::kF32) ||
+      (p->hint != ir::ProductHint::kNone && p->hint != ir::ProductHint::kHadamard) ||
+      p->reserved[0] || p->reserved[1])
+    return false;
+  constexpr auto max = static_cast<std::uint64_t>(INT32_MAX);
+  std::uint64_t columns = 1;
+  for (std::size_t axis = 1; axis < 4; ++axis)
+    if (__builtin_mul_overflow(columns, x->ne[axis], &columns) || columns > max) return false;
+  if (w->ne[0] > max || w->ne[1] > max) return false;
+  const auto packed = [](const ex::OperandFormat* value) {
+    if (value->layout != Layout::kDense || !value->memory) return false;
+    std::uint64_t bytes = value->encoding == Encoding::kBF16 ? 2 : 4;
+    for (std::size_t axis = 0; axis < 4; ++axis)
+      if (value->ne[axis] == 0 || (value->ne[axis] > 1 && value->memory->nb[axis] != bytes) ||
+          __builtin_mul_overflow(bytes, value->ne[axis], &bytes))
+        return false;
+    return true;
+  };
+  return packed(w) && packed(x) && packed(out);
 }
 // llmp.image.attention_mask_pack's (CheckAttentionMaskPack's bounds).
 bool AcceptsMaskPack(const ex::CapabilityQuery& q) {
@@ -993,21 +1078,49 @@ bool AcceptsGemmaReduce(const ex::CapabilityQuery& q) {
 bool AcceptsAdd(const ex::CapabilityQuery& q) {
   const auto* a = Operand(q, 0);
   const auto* b = Operand(q, 1);
-  return Built(q) && a != nullptr && b != nullptr && a->encoding == b->encoding;
+  const auto* out = Operand(q, ex::kOutputOperand);
+  return Built(q) && a != nullptr && b != nullptr && out != nullptr &&
+         ((a->encoding == b->encoding && out->encoding == a->encoding) ||
+          (a->encoding == Encoding::kF32 && b->encoding == Encoding::kF16 &&
+           out->encoding == Encoding::kF32));
 }
 
 bool AcceptsConvert(const ex::CapabilityQuery& q) {
   const auto* from = Operand(q, 0);
   const auto* to = Operand(q, ex::kOutputOperand);
   if (!Built(q) || from == nullptr || to == nullptr || from->encoding == to->encoding) return false;
-  // The resident BF16 norm scales widen exactly; no new narrowing path.
-  if (from->encoding == Encoding::kBF16 && to->encoding != Encoding::kF32) return false;
-  std::uint64_t count = 1;
-  for (const auto n : from->ne) {
-    if (n == 0 || n > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()) / count)
+  const bool widen = (from->encoding == Encoding::kF16 || from->encoding == Encoding::kBF16) &&
+                     to->encoding == Encoding::kF32;
+  const bool narrow = from->encoding == Encoding::kF32 && to->encoding == Encoding::kF16;
+  if ((!widen && !narrow) || from->ne != to->ne || !from->memory || !to->memory ||
+      from->layout != Layout::kDense || to->layout != Layout::kDense)
+    return false;
+  const std::uint64_t from_size = narrow ? 4 : 2;
+  const std::uint64_t to_size = narrow ? 2 : 4;
+  const auto& source = *from->memory;
+  const auto& destination = *to->memory;
+  if ((source.root_alignment != 0 && source.root_alignment < from_size) ||
+      source.view_offset % from_size != 0 ||
+      (destination.root_alignment != 0 && destination.root_alignment < to_size) ||
+      destination.view_offset % to_size != 0)
+    return false;
+  std::uint64_t count = 1, extent = from_size, packed_stride = to_size;
+  constexpr auto signed_max = static_cast<std::uint64_t>(INT64_MAX);
+  for (std::size_t d = 0; d < 4; ++d) {
+    const auto n = from->ne[d];
+    if (n == 0 || n > static_cast<std::uint64_t>(INT32_MAX) / count || source.nb[d] > signed_max ||
+        destination.nb[d] > signed_max ||
+        (n > 1 && (source.nb[d] % from_size != 0 || destination.nb[d] != packed_stride)))
       return false;
     count *= n;
+    std::uint64_t step = 0;
+    if (__builtin_mul_overflow(n - 1, source.nb[d], &step) ||
+        __builtin_add_overflow(extent, step, &extent) || extent > signed_max ||
+        __builtin_mul_overflow(packed_stride, n, &packed_stride))
+      return false;
   }
+  std::uint64_t end = 0;
+  if (__builtin_add_overflow(source.view_offset, extent, &end)) return false;
   return true;
 }
 
@@ -2417,7 +2530,8 @@ const std::array kEntries = {
           kBuilt},
     Entry{"ggml.sub", Cap(P(Op::kSub), kF32Binary, &AcceptsAny, true), kBuilt},
     Entry{"ggml.div", Cap(P(Op::kDiv), kF32Binary, &AcceptsAny, true), kBuilt},
-    Entry{"ggml.unary", Cap(P(Op::kUnary), kF32In, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.unary", StandaloneComparator(Cap(P(Op::kUnary), kF32In, &AcceptsUnary, true)),
+          kBuilt},
     Entry{"ggml.clamp", Cap(P(Op::kClamp), kF32In, &AcceptsAny, true), kBuilt},
     Entry{"ggml.fill", Cap(P(Op::kFill), {}, &AcceptsAny, true), kBuilt},
     Entry{"ggml.repeat", Cap(P(Op::kRepeat), {}, &AcceptsAny, true), kBuilt},
@@ -2467,11 +2581,12 @@ const std::array kEntries = {
     Entry{kGemmaNormAddName, Cap(F(FusedKind::kRmsNormMulAdd), kNormMulAdd, &AcceptsNormAdd, true),
           "; positive F32 widths within launcher integer bounds, finite nonnegative epsilon"},
     // Rotations and stores.
-    Entry{"ggml.rope.neox", Cap(P(Op::kRope), kRope, &AcceptsRopeNeox, true, {}, 1),
+    Entry{"ggml.rope.neox",
+          StandaloneComparator(Cap(P(Op::kRope), kRope, &AcceptsRopeNeox, true, {}, 1)),
           "; selectable for the build's SASS architectures: NEOX over positions without "
           "frequency factors or an offset; proportional pairs use the owned primitive "
           "and a separate cache store"},
-    Entry{"ggml.rope.ext", Cap(P(Op::kRope), kRope, &AcceptsRopeExt, true),
+    Entry{"ggml.rope.ext", StandaloneComparator(Cap(P(Op::kRope), kRope, &AcceptsRopeExt, true)),
           "; selectable for the build's SASS architectures over positions; proportional pairs "
           "use the owned primitive and a separate cache store"},
     Entry{"ggml.set_rows", Cap(P(Op::kCacheStore), kF16Store, &AcceptsAny, true, {}, 1), kBuilt},
@@ -2657,10 +2772,12 @@ const std::array kEntries = {
           "; selectable on sm_121 past 16 columns, K of whole 128-value rows"},
     Entry{kMxfp8QuantizeName, Cap(P(Op::kPrepare), kMxfp8Prepare, &AcceptsMxfp8Quantize, true),
           "; selectable on sm_121: rows of whole 128 values"},
-    Entry{kGemmBf16Name, Cap(P(Op::kMatMul), kBf16Product, &AcceptsAny, false, {}, 4), kBuilt},
+    Entry{kGemmBf16Name, Cap(P(Op::kMatMul), kBf16Product, &AcceptsBf16MatrixProduct, false, {}, 4),
+          kBuilt},
     // The pinned form below the plain one: a policy that ranks it (the
     // image's) takes it.
-    Entry{kGemmBf16LtName, Cap(P(Op::kMatMul), kBf16Product, &AcceptsAny, false, {}, 3), kBuilt},
+    Entry{kGemmBf16LtName,
+          Cap(P(Op::kMatMul), kBf16Product, &AcceptsBf16MatrixProduct, false, {}, 3), kBuilt},
     Entry{"ggml.convert", Cap(P(Op::kConvert), kFloatConvert, &AcceptsConvert, true),
           "; selectable for the build's SASS architectures: F16/F32 casts within I32 counts"},
     Entry{kBf16Name, Cap(P(Op::kConvert), kToBf16, &AcceptsAny, true), kBuilt},

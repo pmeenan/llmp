@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Descriptor-only controls; no payload allocation and no device work.
+// Selected-source descriptor controls and bounded native binding checks.
+#include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -9,6 +10,7 @@
 #include <chrono>
 #include <cstdint>
 #include <format>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -253,7 +255,8 @@ TEST(Exl3SelectedTest, GemvCapacityCannotBorrowPackedPinsFromAnotherSmCount) {
   const auto source = ex::SelectedSource(ex::FrozenCache::k40O, capacity);
   ASSERT_TRUE(source);
   for (const auto& fact : (*source)->Tuning(121))
-    EXPECT_TRUE(fact.implementation.ends_with(".linear.gemv"));
+    EXPECT_TRUE(fact.implementation.ends_with(".linear.gemv") ||
+                fact.implementation.ends_with(".linear.gemv.f32_input"));
   const auto declarations = (*source)->Implementations();
   const auto gemm = std::ranges::find(declarations, "exl3.pinned.40o.linear.gemm",
                                       &llmp::execution::Implementation::name);
@@ -652,6 +655,115 @@ TEST(Exl3SelectedTest, ProfileIdentityAndGemvFactsAreExplicit) {
   EXPECT_FALSE((*g)->Lower(stale, p.node, p.inputs, p.output));
 }
 
+TEST(Exl3SelectedTest, F32InputCompanionsRetainNativePartsAndAccountForConversion) {
+  namespace execution = llmp::execution;
+  auto source = ex::SelectedSource(ex::FrozenCache::k40G);
+  ASSERT_TRUE(source);
+  const auto declarations = (*source)->Implementations();
+  const auto native = std::ranges::find(declarations, "exl3.pinned.40g.linear.gemm",
+                                        &execution::Implementation::name);
+  const auto companion = std::ranges::find(declarations, "exl3.pinned.40g.linear.gemm.f32_input",
+                                           &execution::Implementation::name);
+  ASSERT_NE(native, declarations.end());
+  ASSERT_NE(companion, declarations.end());
+  ASSERT_TRUE(companion->capability);
+  EXPECT_FALSE(companion->capability->capturable);
+  EXPECT_NE(execution::IdentityOf(*native), execution::IdentityOf(*companion));
+  EXPECT_FALSE(std::ranges::any_of(declarations, [](const auto& item) {
+    return item.name.ends_with("multi_linear.mgemm.f32_input");
+  }));
+  auto arena = kg::TensorArena::Create(16).value();
+  auto product = Make(arena.context(), 1, 896, 896, Encoding::kF32);
+  auto old_call = (*source)->Lower(*native, product.node, product.inputs, product.output);
+  ASSERT_TRUE(old_call) << llmp::test_support::Failed(old_call)->detail;
+  EXPECT_FALSE((*source)->Lower(*companion, product.node, product.inputs, product.output));
+  product.inputs[1].desc.format.encoding = Encoding::kF32;
+  product.inputs[1].desc.nb = ir::NaturalStrides(product.inputs[1].desc.format);
+  product.inputs[1].tensor = ggml_new_tensor_2d(arena.context(), GGML_TYPE_F32, 896, 1);
+  EXPECT_FALSE((*source)->Lower(*native, product.node, product.inputs, product.output));
+  auto call = (*source)->Lower(*companion, product.node, product.inputs, product.output);
+  ASSERT_TRUE(call) << llmp::test_support::Failed(call)->detail;
+  EXPECT_EQ((*call)->scratch_bytes(), (*old_call)->scratch_bytes() + 1792U);
+  EXPECT_EQ((*call)->launches(), (*old_call)->launches() + 1U);
+  const auto tuning = (*source)->Tuning(121);
+  EXPECT_TRUE(std::ranges::any_of(tuning, [&](const auto& item) {
+    return item.implementation == companion->name && item.rows == 1 && item.k == 896 &&
+           item.n == 896 && item.output_encoding == Encoding::kF32;
+  }));
+  auto malformed = product;
+  malformed.inputs[1].desc.nb[0] += 4;
+  EXPECT_FALSE((*source)->Lower(*companion, malformed.node, malformed.inputs, malformed.output));
+  malformed = product;
+  malformed.inputs[0].parts.pop_back();
+  EXPECT_FALSE((*source)->Lower(*companion, malformed.node, malformed.inputs, malformed.output));
+  for (const auto arithmetic :
+       {ir::ProductArithmetic::kBf16F32, ir::ProductArithmetic::kBlock32Q8SumF32}) {
+    auto params = ir::ProductParams{};
+    params.arithmetic = arithmetic;
+    product.node.SetParams(params);
+    EXPECT_FALSE((*source)->Lower(*companion, product.node, product.inputs, product.output));
+  }
+  auto foreign = *companion;
+  foreign.variant += "; stale converter";
+  product.node.SetParams(ir::ProductParams{});
+  EXPECT_FALSE((*source)->Lower(foreign, product.node, product.inputs, product.output));
+}
+
+TEST(Exl3SelectedTest, F32InputBindRejectsInsufficientAndAliasedActualScratch) {
+  auto source = ex::SelectedSource(ex::FrozenCache::k40G);
+  ASSERT_TRUE(source);
+  const auto declarations = (*source)->Implementations();
+  const auto implementation =
+      std::ranges::find(declarations, "exl3.pinned.40g.linear.gemm.f32_input",
+                        &llmp::execution::Implementation::name);
+  ASSERT_NE(implementation, declarations.end());
+  auto arena = kg::TensorArena::Create(16).value();
+  auto product = Make(arena.context(), 1, 896, 896, Encoding::kF32);
+  product.inputs[1].desc.format.encoding = Encoding::kF32;
+  product.inputs[1].desc.nb = ir::NaturalStrides(product.inputs[1].desc.format);
+  product.inputs[1].tensor = ggml_new_tensor_2d(arena.context(), GGML_TYPE_F32, 896, 1);
+  auto call = (*source)->Lower(*implementation, product.node, product.inputs, product.output);
+  ASSERT_TRUE(call) << llmp::test_support::Failed(call)->detail;
+  auto free = [](void* pointer) { EXPECT_EQ(cudaFree(pointer), cudaSuccess); };
+  std::vector<std::unique_ptr<void, decltype(free)>> allocations;
+  const auto allocate = [&](std::uint64_t bytes) {
+    void* pointer = nullptr;
+    EXPECT_EQ(cudaMalloc(&pointer, bytes), cudaSuccess);
+    allocations.emplace_back(pointer, free);
+    return static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(pointer));
+  };
+  const auto needed = (*call)->scratch_bytes();
+  const auto input = allocate(std::max<std::uint64_t>(needed, 896 * sizeof(float)));
+  product.inputs[1].tensor->data = reinterpret_cast<void*>(input);
+  product.output.tensor->data = reinterpret_cast<void*>(allocate(896 * sizeof(float)));
+  for (auto& part : product.inputs[0].parts)
+    part.tensor->data = reinterpret_cast<void*>(allocate(ggml_nbytes(part.tensor)));
+  const auto scratch = allocate(needed);
+  auto execution = llmp::providers::cuda::OpenDeviceExecution(0).value();
+  const auto stream = execution->CreateStream().value();
+  auto launch = (*source)->Launch(
+      0, *execution, stream,
+      {.base = allocate((*source)->persistent_bytes()), .bytes = (*source)->persistent_bytes()});
+  ASSERT_TRUE(launch);
+  auto bound = (*call)->Bind(*implementation, **launch, {.base = scratch, .bytes = needed});
+  ASSERT_TRUE(bound) << llmp::test_support::Failed(bound)->detail;
+  EXPECT_FALSE((*call)->Bind(*implementation, **launch, {.base = scratch, .bytes = needed - 1}));
+  EXPECT_FALSE((*call)->Bind(*implementation, **launch, {.base = input, .bytes = needed}));
+  product.inputs[1].tensor->nb[0] += 4;
+  EXPECT_FALSE((*call)->Bind(*implementation, **launch, {.base = scratch, .bytes = needed}));
+  product.inputs[1].tensor->nb[0] -= 4;
+  // Bind performs no operand work; retire the source's borrowed submission
+  // and live context before releasing its actual buffers and provider stream.
+  const auto native = execution->Submission(stream).value();
+  const auto fence = execution->Record(stream).value();
+  ASSERT_EQ(cudaStreamSynchronize(static_cast<cudaStream_t>(native.handle)), cudaSuccess);
+  EXPECT_EQ(execution->Query(fence).value(), llmp::providers::FenceState::kComplete);
+  EXPECT_TRUE(execution->Release(fence));
+  bound->reset();
+  launch->reset();
+  EXPECT_TRUE(execution->DestroyStream(stream));
+}
+
 TEST(Exl3SelectedTest, BiasCandidatesRequireTheSamePackedGeometryAsLowering) {
   namespace execution = llmp::execution;
   auto source = ex::SelectedSource(ex::FrozenCache::k40G);
@@ -874,12 +986,14 @@ TEST(Exl3SelectedTest, GenericSourceKeepsGemvAndBiasAdd) {
   EXPECT_FALSE(has("exl3.device.linear.reconstruct"));
 
   for (const auto& impl : impls) {
-    if (impl.name == "exl3.device.linear.gemv") {
+    std::string_view native_name = impl.name;
+    if (native_name.ends_with(".f32_input")) native_name.remove_suffix(10);
+    if (native_name == "exl3.device.linear.gemv") {
       EXPECT_EQ(impl.capability->priority, 1);
     } else {
       EXPECT_EQ(impl.capability->priority, 0);
     }
-    if (impl.name == "exl3.device.linear.gemv" || impl.name == "exl3.device.linear.gemm") {
+    if (native_name == "exl3.device.linear.gemv" || native_name == "exl3.device.linear.gemm") {
       EXPECT_FALSE(impl.capability->needs_tuning);
     }
   }

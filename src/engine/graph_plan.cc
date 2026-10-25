@@ -65,6 +65,7 @@ class ReportedProgram final : public kernels::StepProgram {
   }
   std::uint64_t scratch_bytes() const override { return program_->scratch_bytes(); }
   std::uint64_t pool_bytes() const override { return program_->pool_bytes(); }
+  std::uint64_t private_pool_bytes() const override { return program_->private_pool_bytes(); }
   std::uint64_t host_bytes() const override {
     return program_->host_bytes() + sizeof(*this) + inventory_.storage_bytes() +
            kRetainedReportAllocations * kReportAllocationMetadataBytes;
@@ -74,6 +75,48 @@ class ReportedProgram final : public kernels::StepProgram {
   std::span<const kernels::OutputSlot> outputs() const override { return program_->outputs(); }
   std::span<const kernels::TensorUse> tensors() const override { return program_->tensors(); }
   const execution::BoundPlan* bound() const override { return program_->bound(); }
+  std::optional<kernels::ComparisonRecipeSeal> comparison_recipe() const override {
+    return program_->comparison_recipe();
+  }
+  std::optional<kernels::ComparisonPlanIdentity> comparison_plan_identity() const override {
+    return program_->comparison_plan_identity();
+  }
+  kernels::ComparisonRemainderResult CompareComparisonRemainder(
+      const kernels::StepProgram& candidate,
+      const components::OwnedComparisonRegionBoundary& common_boundary,
+      kernels::ComparisonCertificatePhase phase) const override {
+    return program_->CompareComparisonRemainder(candidate, common_boundary, phase);
+  }
+  const kernels::StepProgram& comparison_program() const override {
+    return program_->comparison_program();
+  }
+  kernels::ComparisonRegionResult ProjectComparisonRegion(
+      const components::OwnedComparisonRegionBoundary& boundary) const override {
+    return program_->ProjectComparisonRegion(boundary);
+  }
+  kernels::ComparisonRegionDescriptorResult ProjectComparisonRegionDescriptor(
+      const components::OwnedComparisonRegionBoundary& boundary) const override {
+    return program_->ProjectComparisonRegionDescriptor(boundary);
+  }
+  kernels::ComparisonRegionDescriptorResult ProjectComparisonRegionCertificate(
+      const components::OwnedComparisonRegionBoundary& boundary,
+      kernels::ComparisonCertificatePhase phase) const override {
+    return program_->ProjectComparisonRegionCertificate(boundary, phase);
+  }
+  bool ValidateComparisonProjection(
+      const kernels::ComparisonRegionProjection& projection) const override {
+    return program_->ValidateComparisonProjection(projection);
+  }
+  std::expected<void, kernels::StepFailure> RunComparisonPrefix(
+      const kernels::ComparisonRegionProjection& projection, kernels::StepLaunch& launch,
+      providers::NativeStream stream) const override {
+    return program_->RunComparisonPrefix(projection, launch, stream);
+  }
+  std::expected<void, kernels::StepFailure> RunComparisonRegion(
+      const kernels::ComparisonRegionProjection& projection, kernels::StepLaunch& launch,
+      providers::NativeStream stream) const override {
+    return program_->RunComparisonRegion(projection, launch, stream);
+  }
   bool capturable() const override { return program_->capturable(); }
   std::optional<std::span<const kernels::RoutedWeight>> weight_reads() const override {
     return program_->weight_reads();
@@ -85,6 +128,10 @@ class ReportedProgram final : public kernels::StepProgram {
   }
   std::expected<void, kernels::StepFailure> Position(std::span<const std::uint32_t> past) override {
     return program_->Position(past);
+  }
+  std::expected<void, kernels::StepFailure> TryUpdateGeneratedInputs(
+      const planner::StepShape& shape) override {
+    return program_->TryUpdateGeneratedInputs(shape);
   }
   std::expected<void, kernels::StepFailure> Run(kernels::StepLaunch& launch,
                                                 providers::NativeStream stream) const override {
@@ -136,9 +183,17 @@ class ReportedProgram final : public kernels::StepProgram {
 };
 }  // namespace
 
-std::expected<planner::StepPlan, std::string> PlanComponentGraph(
-    const GraphBuildIO& io, const kernels::StepBackend& backend, const planner::Policy& policy,
+std::expected<planner::PlanOptions, std::string> PrepareComponentPlanOptions(
+    const GraphBuildIO& io, const kernels::StepBackend& backend,
     const kernels::Addresses& addresses, planner::PlanOptions options) {
+  auto prepared = PrepareComponentPlanOptionsInPlace(io, backend, addresses, options);
+  if (!prepared) return std::unexpected(std::move(prepared.error()));
+  return options;
+}
+
+std::expected<void, std::string> PrepareComponentPlanOptionsInPlace(
+    const GraphBuildIO& io, const kernels::StepBackend& backend,
+    const kernels::Addresses& addresses, planner::PlanOptions& options) {
   if (backend.registry == nullptr || !std::ranges::equal(io.inputs, io.graph.inputs()) ||
       !std::ranges::equal(io.outputs, io.graph.outputs()))
     return std::unexpected("a component graph needs its exact typed interface and registry");
@@ -222,7 +277,15 @@ std::expected<planner::StepPlan, std::string> PlanComponentGraph(
   }
   options.root_alignment = std::move(root_alignment);
   options.activation_alignment = addresses.activation_alignment;
-  auto plan = planner::Plan(io.graph.Clone(), *backend.registry, backend.device, policy, options);
+  return {};
+}
+
+std::expected<planner::StepPlan, std::string> PlanComponentGraph(
+    const GraphBuildIO& io, const kernels::StepBackend& backend, const planner::Policy& policy,
+    const kernels::Addresses& addresses, planner::PlanOptions options) {
+  auto prepared = PrepareComponentPlanOptions(io, backend, addresses, std::move(options));
+  if (!prepared) return std::unexpected(std::move(prepared.error()));
+  auto plan = planner::Plan(io.graph.Clone(), *backend.registry, backend.device, policy, *prepared);
   if (!plan)
     return std::unexpected(std::format("planning a step ({}): {}",
                                        planner::PlanErrorName(plan.error().error),
@@ -230,12 +293,131 @@ std::expected<planner::StepPlan, std::string> PlanComponentGraph(
   return std::move(*plan);
 }
 
-std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildComponentProgram(
-    const GraphBuildIO& io, const kernels::StepBackend& backend, const planner::Policy& policy,
-    const kernels::Addresses& addresses, planner::PlanOptions options,
-    std::optional<kernels::TokenLowerInput> token, const kernels::ProgramValidator& validate,
+std::expected<std::unique_ptr<kernels::StepProgram>, std::string> LowerComponentPlan(
+    const kernels::LowerInput& input, const kernels::StepBackend& backend,
+    const planner::Policy& policy, const kernels::ProgramValidator& validate,
     std::shared_ptr<const kernels::BackendOwner> report_owner,
     const kernels::ExecutionResources* resources) {
+  if (backend.registry == nullptr || !backend.lower)
+    return std::unexpected("a component plan needs a backend registry and lowerer");
+  if (resources &&
+      (!*resources || !resources->parent() || &backend != &resources->parent()->backend()))
+    return std::unexpected("private lowering resources differ from the canonical planning backend");
+  if (!std::ranges::equal(input.io.inputs, input.io.graph.inputs()) ||
+      !std::ranges::equal(input.io.outputs, input.io.graph.outputs()))
+    return std::unexpected("a component plan needs its exact typed graph interface");
+  for (const auto& weight : input.io.weights) {
+    if (!weight.tensor.valid() || weight.tensor.v >= input.io.graph.tensor_count())
+      return std::unexpected("a component plan weight names no graph tensor");
+    const auto& desc = input.io.graph.tensor(weight.tensor);
+    const auto* ref = std::get_if<ir::WeightRef>(&desc.binding);
+    if (desc.is_view() ||
+        input.io.graph.node(input.io.graph.producer(weight.tensor)).key.op != ir::Op::kWeight ||
+        ref == nullptr || *ref != weight.ref)
+      return std::unexpected("a component plan weight differs from its graph root binding");
+  }
+  if (input.plan.primitive_digest != input.io.graph.Digest() ||
+      input.plan.graph_digest != input.plan.graph.Digest() ||
+      input.plan.policy_digest != planner::Digest(policy))
+    return std::unexpected("the supplied plan differs from its source, graph, or policy");
+  if (input.token) {
+    if (&input.token->step.graph != &input.io.graph ||
+        input.token->step.inputs.size() != input.io.inputs.size() ||
+        input.token->step.weights.size() != input.io.weights.size())
+      return std::unexpected("token lowering metadata differs from the supplied graph interface");
+    for (const auto tensor : input.io.inputs) {
+      const auto matches =
+          std::ranges::count(input.token->step.inputs, tensor, &components::StepInput::tensor);
+      if (matches != 1)
+        return std::unexpected("token input ports differ from the supplied typed graph interface");
+    }
+    for (const auto& graph_weight : input.io.weights) {
+      const auto graph_id_count = std::ranges::count(input.io.weights, graph_weight.tensor,
+                                                     &components::StepWeight::tensor);
+      const auto token_id_count = std::ranges::count(input.token->step.weights, graph_weight.tensor,
+                                                     &components::StepWeight::tensor);
+      const auto matches = std::ranges::count_if(input.token->step.weights, [&](const auto& item) {
+        return item.tensor == graph_weight.tensor && item.ref == graph_weight.ref &&
+               item.parts == graph_weight.parts;
+      });
+      if (graph_id_count != 1 || token_id_count != 1 || matches != 1)
+        return std::unexpected("token weight ports differ from the supplied typed graph interface");
+    }
+  }
+
+  auto lowered = resources ? resources->Lower(input) : backend.lower(input);
+  if (!lowered) return lowered;
+  if (!*lowered) return std::unexpected("the backend returned no step program");
+  if (validate) {
+    auto valid = validate(input, **lowered);
+    if (!valid) return std::unexpected(valid.error());
+  }
+  const auto& plan = input.plan;
+  auto inventory_bytes = planner::PlanReportInventory::StorageBytes(plan, *backend.registry);
+  if (!inventory_bytes) return std::unexpected(inventory_bytes.error());
+  std::uint64_t payment_bytes = 0;
+  if (__builtin_add_overflow(
+          *inventory_bytes,
+          static_cast<std::uint64_t>(sizeof(ReportedProgram) +
+                                     kRetainedReportAllocations * kReportAllocationMetadataBytes),
+          &payment_bytes))
+    return std::unexpected("the plan report inventory payment overflows");
+  if ((*lowered)->host_bytes() > std::numeric_limits<std::uint64_t>::max() - payment_bytes)
+    return std::unexpected("the retained program and report host bytes overflow");
+  if (!report_owner) report_owner = backend.owner;
+  auto report_funder = report_owner ? nullptr : backend.construction_funder;
+  if (!report_owner && (!report_funder || !report_funder->charge || !report_funder->release))
+    return std::unexpected("the plan report inventory needs a paid construction funder");
+  if (report_owner ? !report_owner->Charge(payment_bytes) : !report_funder->charge(payment_bytes))
+    return std::unexpected("the plan report inventory could not be funded");
+  // Declared before inventory: failure destroys retained bytes before release.
+  ReportPayment payment(std::move(report_owner), std::move(report_funder), payment_bytes);
+  auto inventory = planner::PlanReportInventory::Capture(plan, *backend.registry, *inventory_bytes);
+  if (!inventory) return std::unexpected(inventory.error());
+  kernels::PlanCoverage coverage{
+      .primitive_fallbacks = plan.decomposed.size(),
+      .missing_numerical_qualifications = plan.missing_numerical.size(),
+      .unqualified_numerical_candidates = static_cast<std::uint64_t>(
+          std::ranges::count(plan.applied, true, &planner::Applied::numerical_candidate))};
+  for (const auto& key : plan.decomposed) {
+    for (std::size_t i = 0; i < backend.registry->size(); ++i) {
+      const auto& impl = backend.registry->at(i);
+      if (impl.capability && impl.capability->rung != execution::Rung::kPrimitive &&
+          ir::OpKeyName(impl.capability->op) == key) {
+        ++coverage.available_fast_fallbacks;
+        break;
+      }
+    }
+  }
+  if (input.token && input.token->shape.rows() <= policy.max_decode_rows) {
+    const planner::SelectionView view(*backend.registry, backend.device, policy, false, false);
+    for (const auto& selected : plan.steps) {
+      const auto& impl = backend.registry->at(selected.implementation);
+      if (!impl.capability || impl.capability->expansion == execution::Expansion::kNone) continue;
+      for (const auto node : selected.nodes)
+        view.Inspect(plan.graph, plan.graph.node(node), [&](const execution::CapabilityQuery& q) {
+          coverage.decode_expansion_rules += execution::Expands(*impl.capability, q);
+        });
+    }
+  }
+  auto* wrapper = new (std::nothrow)
+      ReportedProgram(std::move(*lowered), std::move(*inventory), coverage, std::move(payment));
+  if (!wrapper) return std::unexpected("allocating the paid plan report wrapper failed");
+  std::unique_ptr<kernels::StepProgram> result(wrapper);
+  if (resources && !result->HoldResources(*resources))
+    return std::unexpected("the paid report wrapper lost private resource identity");
+  return result;
+}
+
+std::expected<std::unique_ptr<kernels::StepProgram>, std::string>
+detail::BuildOrdinaryComponentProgram(const GraphBuildIO& io, const kernels::StepBackend& backend,
+                                      const planner::Policy& policy,
+                                      const kernels::Addresses& addresses,
+                                      planner::PlanOptions options,
+                                      std::optional<kernels::TokenLowerInput> token,
+                                      const kernels::ProgramValidator& validate,
+                                      std::shared_ptr<const kernels::BackendOwner> report_owner,
+                                      const kernels::ExecutionResources* resources) {
   if (!backend.lower) return std::unexpected("a component graph needs a backend lowerer");
   if (resources &&
       (!*resources || !resources->parent() || &backend != &resources->parent()->backend()))
@@ -270,75 +452,21 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildComponent
   auto plan = PlanComponentGraph(io, backend, policy, addresses, std::move(options));
   if (!plan) return std::unexpected(std::move(plan.error()));
   const kernels::LowerInput input{*plan, io, addresses, token};
-  auto lowered = resources ? resources->Lower(input) : backend.lower(input);
-  if (!lowered) return lowered;
-  if (!*lowered) return std::unexpected("the backend returned no step program");
-  if (validate) {
-    auto valid = validate(input, **lowered);
-    if (!valid) return std::unexpected(valid.error());
-  }
-  auto inventory_bytes = planner::PlanReportInventory::StorageBytes(*plan, *backend.registry);
-  if (!inventory_bytes) return std::unexpected(inventory_bytes.error());
-  std::uint64_t payment_bytes = 0;
-  if (__builtin_add_overflow(
-          *inventory_bytes,
-          static_cast<std::uint64_t>(sizeof(ReportedProgram) +
-                                     kRetainedReportAllocations * kReportAllocationMetadataBytes),
-          &payment_bytes))
-    return std::unexpected("the plan report inventory payment overflows");
-  if ((*lowered)->host_bytes() > std::numeric_limits<std::uint64_t>::max() - payment_bytes)
-    return std::unexpected("the retained program and report host bytes overflow");
-  if (!report_owner) report_owner = backend.owner;
-  auto report_funder = report_owner ? nullptr : backend.construction_funder;
-  if (!report_owner && (!report_funder || !report_funder->charge || !report_funder->release))
-    return std::unexpected("the plan report inventory needs a paid construction funder");
-  if (report_owner ? !report_owner->Charge(payment_bytes) : !report_funder->charge(payment_bytes))
-    return std::unexpected("the plan report inventory could not be funded");
-  // Declared before inventory: failure destroys retained bytes before release.
-  // Native lowering holds its own loan; each category is transferred once.
-  ReportPayment payment(std::move(report_owner), std::move(report_funder), payment_bytes);
-  auto inventory =
-      planner::PlanReportInventory::Capture(*plan, *backend.registry, *inventory_bytes);
-  if (!inventory) return std::unexpected(inventory.error());
-  kernels::PlanCoverage coverage{
-      .primitive_fallbacks = plan->decomposed.size(),
-      .missing_numerical_qualifications = plan->missing_numerical.size(),
-      .unqualified_numerical_candidates = static_cast<std::uint64_t>(
-          std::ranges::count(plan->applied, true, &planner::Applied::numerical_candidate))};
-  for (const auto& key : plan->decomposed) {
-    for (std::size_t i = 0; i < backend.registry->size(); ++i) {
-      const auto& impl = backend.registry->at(i);
-      if (impl.capability && impl.capability->rung != execution::Rung::kPrimitive &&
-          ir::OpKeyName(impl.capability->op) == key) {
-        ++coverage.available_fast_fallbacks;
-        break;
-      }
-    }
-  }
-  if (token && token->shape.rows() <= policy.max_decode_rows) {
-    const planner::SelectionView view(*backend.registry, backend.device, policy, false, false);
-    for (const auto& selected : plan->steps) {
-      const auto& impl = backend.registry->at(selected.implementation);
-      if (!impl.capability || impl.capability->expansion == execution::Expansion::kNone) continue;
-      for (const auto node : selected.nodes)
-        view.Inspect(plan->graph, plan->graph.node(node), [&](const execution::CapabilityQuery& q) {
-          coverage.decode_expansion_rules += execution::Expands(*impl.capability, q);
-        });
-    }
-  }
-  // Allocate the wrapper before moving payment/inventory. A failed allocation
-  // leaves both locals alive so destruction still precedes payment release.
-  auto* wrapper = new (std::nothrow)
-      ReportedProgram(std::move(*lowered), std::move(*inventory), coverage, std::move(payment));
-  if (!wrapper) return std::unexpected("allocating the paid plan report wrapper failed");
-  std::unique_ptr<kernels::StepProgram> result(wrapper);
-  // Successful private lowering minted the inner program's capability. The
-  // reporting decorator carries that SAME producer-minted identity, so routed
-  // preflight authenticates the returned program rather than losing authority
-  // at an otherwise transparent wrapper. Copying the receipt allocates nothing.
-  if (resources && !result->HoldResources(*resources))
-    return std::unexpected("the paid report wrapper lost private resource identity");
-  return result;
+  return LowerComponentPlan(input, backend, policy, validate, std::move(report_owner), resources);
+}
+
+std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildComponentProgram(
+    const GraphBuildIO& io, const kernels::StepBackend& backend, const planner::Policy& policy,
+    const kernels::Addresses& addresses, planner::PlanOptions options,
+    std::optional<kernels::TokenLowerInput> token, const kernels::ProgramValidator& validate,
+    std::shared_ptr<const kernels::BackendOwner> report_owner,
+    const kernels::ExecutionResources* resources) {
+  if (!token && !options.shape && !options.state_spans && backend.registry &&
+      !backend.registry->ranks().recipe_comparisons.empty() && !addresses.measuring())
+    return BuildCumulativeRecipeProgram(io, backend, policy, addresses, std::move(options),
+                                        validate, std::move(report_owner), resources);
+  return detail::BuildOrdinaryComponentProgram(io, backend, policy, addresses, std::move(options),
+                                               token, validate, std::move(report_owner), resources);
 }
 
 }  // namespace llmp::engine

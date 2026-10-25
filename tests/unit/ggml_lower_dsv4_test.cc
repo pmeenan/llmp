@@ -2034,15 +2034,35 @@ TEST(GgmlLowerDsv4Test, ExactPrimitivesLowerRefusesCountsFromAnotherEqualRowOwne
 
 TEST(GgmlLowerDsv4Test, PrimitivePredicatesRejectUnsupportedTypesAndBounds) {
   using llmp::format::Encoding;
-  std::array<ex::OperandFormat, 2> operands{
-      {{.operand = 0, .encoding = Encoding::kF32, .ne = {256, 7, 1, 1}},
-       {.operand = 1, .encoding = Encoding::kF16, .ne = {256, 7, 1, 1}}}};
+  const auto packed = [](std::uint8_t operand, Encoding encoding) {
+    const std::uint64_t bytes = encoding == Encoding::kF32 ? 4 : 2;
+    return ex::OperandFormat{
+        .operand = operand,
+        .encoding = encoding,
+        .rank = 2,
+        .ne = {256, 7, 1, 1},
+        .memory = ex::OperandMemory{.nb = {bytes, 256 * bytes, 1792 * bytes, 1792 * bytes},
+                                    .root_alignment = 16}};
+  };
+  std::array operands{packed(0, Encoding::kF32), packed(1, Encoding::kF16)};
+  std::array add_operands{operands[0], operands[1], packed(ex::kOutputOperand, Encoding::kF32)};
   const auto* add = kg::CapabilityOf("ggml.add");
   ASSERT_NE(add, nullptr);
-  ex::CapabilityQuery q{.op = add->op, .operands = operands, .arch = 121};
-  EXPECT_FALSE(add->accepts(q));
-  operands[0].encoding = Encoding::kF16;
+  ex::CapabilityQuery q{.op = add->op, .operands = add_operands, .arch = 121};
+  EXPECT_TRUE(add->accepts(q));  // Actual float/half/float native dispatch.
+  add_operands[2] = packed(ex::kOutputOperand, Encoding::kF16);
+  EXPECT_FALSE(add->accepts(q));  // Mixed inputs cannot produce F16.
+  add_operands[0] = packed(0, Encoding::kF16);
   EXPECT_TRUE(add->accepts(q));
+  add_operands[1] = packed(1, Encoding::kF32);
+  add_operands[2] = packed(ex::kOutputOperand, Encoding::kF32);
+  EXPECT_FALSE(add->accepts(q));  // The reverse mixed pair has no native dispatch.
+  add_operands[0] = packed(0, Encoding::kF32);
+  add_operands[1] = packed(1, Encoding::kBF16);
+  EXPECT_FALSE(add->accepts(q));
+  q.operands = operands;  // Missing typed output is not an Add query.
+  EXPECT_FALSE(add->accepts(q));
+  // TopK and indexer predicates have their own input/parameter contracts.
   const auto* top = kg::CapabilityOf(kg::kTopKName);
   ASSERT_NE(top, nullptr);
   ir::TopKParams p{.k = 256};

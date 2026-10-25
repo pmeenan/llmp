@@ -60,6 +60,11 @@ struct BackendDeclaration {
   base::Sha256Digest recipe{};
   base::Sha256Digest build{};
   base::Sha256Digest selection{};
+  // Comparison-only execution identity. Unlike selection, this excludes
+  // measurement rows while retaining the same immutable backend facts.
+  // Backends that do not authenticate it leave it empty; callers must not
+  // substitute selection for it.
+  base::Sha256Digest comparison_selection{};
   bool operator==(const BackendDeclaration&) const = default;
 };
 
@@ -301,6 +306,9 @@ struct CapabilityQuery {
   std::string_view device_class{}, device_model{};
   std::uint32_t multiprocessors = 0;
   bool automatic_fusion = false;
+  // Comparison alternatives bypass only checked fusion preference/rank data;
+  // all ordinary measured/device ranks and capability rules still apply.
+  bool fusion_comparisons = true;
   std::span<const std::string> preferred{};
   // Planner proof of this exact node's immediate, terminal, stateless own
   // decomposition: ordered single-node registry indices. Empty: unproved.
@@ -387,9 +395,16 @@ class Registry {
     ir::OpKey operation;
     const FusionComparison* comparison;
   };
+  struct IndexedRecipeComparison {
+    ir::OpKey operation;
+    base::Sha256Digest key_digest{};
+    const RecipeComparison* comparison;
+  };
   bool HasFusionComparisons(ir::OpKey operation) const;
   std::span<const IndexedFusionComparison> FusionComparisons(ir::OpKey operation,
                                                              const base::Sha256Digest& query) const;
+  bool HasRecipeComparisons(ir::OpKey operation) const;
+  const RecipeComparison* FindRecipeComparison(const RecipeComparisonKey& key) const;
   const base::Sha256Digest& RankDigest() const { return rank_digest_; }
 
  private:
@@ -401,6 +416,7 @@ class Registry {
   base::Sha256Digest selection_digest_{};
   RankData ranks_;
   std::vector<IndexedFusionComparison> fusion_index_;
+  std::vector<IndexedRecipeComparison> recipe_comparison_index_;
   std::vector<Implementation> implementations_;
   std::vector<base::Sha256Digest> identities_;  // parallel to implementations_
   std::vector<std::size_t> by_name_;            // indices, sorted by name
@@ -476,6 +492,16 @@ std::expected<BoundPlan, PlanRejection> Resolve(const Registry& registry, const 
 // the same rule used by decode admission, including conditional expansion.
 bool Expands(const Capability& capability, const CapabilityQuery& query);
 std::vector<std::size_t> Candidates(const Registry& registry, const CapabilityQuery& query);
+// The first ranked candidate, without allocating the ranked/result vectors.
+std::optional<std::size_t> BestCandidate(const Registry& registry, const CapabilityQuery& query);
+std::optional<std::size_t> NextCandidate(const Registry& registry, const CapabilityQuery& query,
+                                         std::optional<std::size_t> after);
+bool IsCandidate(const Registry& registry, const CapabilityQuery& query, std::size_t index);
+// Whether any implementation passes the same eligibility filters as
+// Candidates(), without allocating or sorting a ranked result list. A fused
+// query with comparison rows may still allocate while constructing its
+// canonical comparison identity; primitive queries do not take that path.
+bool HasCandidate(const Registry& registry, const CapabilityQuery& query);
 
 }  // namespace llmp::execution
 

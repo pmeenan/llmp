@@ -344,23 +344,24 @@ std::expected<Executor, ExecFailure> Executor::Create(const ir::Graph& graph) {
   }
   Executor e;
   e.source_ = &graph;
-  auto x = ir::Expand(graph, false, &e.map_);
+  auto x = ir::ExpandWithMap(graph, false);
   if (!x) {
     return Fail(
         ExecError::kGraph,
         std::format("decomposing: {}: {}", ir::GraphErrorName(x.error().error), x.error().detail),
         x.error().node);
   }
-  e.expanded_.emplace(std::move(*x));
+  e.map_ = std::move(x->map);
+  e.expanded_.emplace(std::move(x->graph));
   e.roots_.resize(e.expanded_->tensor_count());
   return e;
 }
 
 std::expected<TensorId, ExecFailure> Executor::Mapped(TensorId id) const {
-  if (!id.valid() || id.v >= map_.size() || !map_[id.v].valid()) {
+  if (!id.valid() || id.v >= map_.size() || !map_.at(id.v).valid()) {
     return Fail(ExecError::kBinding, std::format("tensor {} is not the graph's", id.v));
   }
-  return map_[id.v];
+  return map_.at(id.v);
 }
 
 Executor::Root& Executor::RootOf(TensorId id) { return roots_.at(graph().root(id).v); }

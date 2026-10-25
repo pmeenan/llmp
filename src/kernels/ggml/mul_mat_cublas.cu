@@ -485,6 +485,12 @@ void internal::LaunchPlannedMulMatCublas(ggml_backend_cuda_context& context,
   LaunchPlanned(context, plan, node);
 }
 
+bool internal::HasPinnedBf16GemmShape(int m, int n, int k) {
+  for (const auto& pin : kGb10LtPins)
+    if (pin.n_cols == m && pin.m_rows == n && pin.k == k) return true;
+  return false;
+}
+
 bool internal::TryPinnedBf16Gemm(ggml_backend_cuda_context& context, std::uintptr_t ws_base,
                                  std::size_t ws_bytes, int m, int n, int k, const void* weights,
                                  const void* x, void* out, bool bf16_out) {

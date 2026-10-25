@@ -50,6 +50,11 @@ std::expected<std::uint64_t, KernelFailure> PlanLaneScratch(const LaunchContext&
                                                             const GraphPlan& plan);
 std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& launch,
                                                           const GraphPlan& plan, bool lanes);
+// The exact existing planner for one concrete call. Exposed so transient
+// comparison can authenticate per-call scratch without constructing a copied
+// GraphPlan or relying on equal whole-plan peaks.
+std::expected<std::uint64_t, KernelFailure> PlanCallScratchOn(const LaunchContext& launch,
+                                                              const PlanStep& step);
 
 // SCRATCH DIAGNOSTIC ONLY: an installed observer sees the existing bound
 // launches without adding uses or changing placement. Its owning arm and
@@ -100,6 +105,10 @@ class BoundGraph {
                                                            bool);
   std::expected<void, KernelFailure> RunRange(LaunchContext&, std::size_t first,
                                               std::size_t end) const;
+  // Comparison-only contiguous actual-call execution. This is deliberately
+  // distinct from the routed segment entry above and refuses any lane plan.
+  std::expected<void, KernelFailure> RunComparisonRange(LaunchContext&, std::size_t first,
+                                                        std::size_t end) const;
   bool routed_ = false;
   struct Step {
     std::variant<Kernel, RmsNormMulKernel, std::unique_ptr<BoundSelectedCall>> kernel;

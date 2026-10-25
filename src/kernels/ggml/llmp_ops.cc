@@ -11,6 +11,7 @@
 #include <cstring>
 #include <expected>
 #include <initializer_list>
+#include <iterator>
 #include <span>
 #include <utility>
 
@@ -1180,6 +1181,9 @@ std::expected<void, KernelFailure> CheckGatedResidualModulateSplit(const ggml_te
       !Disjoint(modulated, residual->src[2], false) ||
       !Disjoint(modulated, residual->src[3], false))
     return Rejected("one split, the modulation apart from the residual and its operands");
+  if (!Disjoint(residual, modulated->src[1], false) ||
+      !Disjoint(residual, modulated->src[2], false))
+    return Rejected("residual output overlaps live modulation vectors");
   return {};
 }
 
@@ -2411,14 +2415,26 @@ std::expected<void, KernelFailure> CheckQsaTopK(const ggml_tensor* node) {
         "at most 8 tiles of 8,192 blocks, a width within the blocks' cells, at most 65,535 "
         "tokens");
   }
+  const bool native_pool =
+      LlmpOpOf(pool) == LlmpOp::kQsaPool && pool->src[1] == blocks && pool->src[3] == positions;
+  // SET_ROWS is a view of the actual destination. The ordinary store was
+  // scheduled and its typed indices authenticated by Lower; its result is an
+  // ordering dependency, not data read by the TopK kernel.
+  const bool indexed_store =
+      pool != nullptr && pool->op == GGML_OP_SET_ROWS && pool->src[2] == blocks &&
+      pool->view_src == blocks && pool->view_offs == 0 && pool->data == blocks->data &&
+      pool->type == blocks->type &&
+      std::equal(std::begin(pool->ne), std::end(pool->ne), std::begin(blocks->ne)) &&
+      std::equal(std::begin(pool->nb), std::end(pool->nb), std::begin(blocks->nb)) &&
+      CheckSetRowsExt(pool).has_value() && pool->src[0]->ne[1] == n_blocks &&
+      pool->src[0]->type == GGML_TYPE_BF16 && pool->src[1]->type == GGML_TYPE_I64;
   if (!IsF32(q) || !Shaped(q, kQsaIndexDim, kQsaIndexHeads, t) || !Packed(q) || !Aligned(q, 16) ||
       !Bf16Rows(blocks, kQsaIndexDim) || blocks->ne[1] < n_blocks || !Positions(positions, t) ||
-      LlmpOpOf(pool) != LlmpOp::kQsaPool || pool->src[1] != blocks || pool->src[3] != positions ||
-      node->type != GGML_TYPE_I32 || !Shaped(node, QsaTopKRow(width), t, 1) || !Packed(node) ||
-      !Aligned(node, 16)) {
+      (!native_pool && !indexed_store) || node->type != GGML_TYPE_I32 ||
+      !Shaped(node, QsaTopKRow(width), t, 1) || !Packed(node) || !Aligned(node, 16)) {
     return Rejected(
-        "F32 queries [128, 4, t], the BF16 block keys its llmp.qsa.pool node writes and its "
-        "positions, into I32 cells [row, t]");
+        "F32 queries [128, 4, t], BF16 block keys with their actual pool/store update and "
+        "typed positions, into I32 cells [row, t]");
   }
   if (AnyEmpty({node, q, blocks, positions}) || !AllSane({node, q, blocks, positions}) ||
       !AllCurrent({node, q, blocks, positions})) {

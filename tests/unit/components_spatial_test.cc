@@ -26,6 +26,7 @@
 #include "image_family.h"
 #include "ir/builder.h"
 #include "kernels/reference/exec.h"
+#include "planner/alternative.h"
 #include "spec/image_spatial.h"
 
 namespace llmp::components {
@@ -585,6 +586,12 @@ class ReportProbeProgram final : public kernels::StepProgram {
     if (alive_) --*alive_;
   }
   std::uint64_t scratch_bytes() const override { return 16; }
+  std::uint64_t pool_bytes() const override { return 64; }
+  std::uint64_t private_pool_bytes() const override { return 32; }
+  std::optional<kernels::ComparisonRecipeSeal> comparison_recipe() const override {
+    return kernels::ComparisonRecipeSeal{.version = 19,
+                                         .missing = kernels::ComparisonMissing::kOperationSchema};
+  }
   std::uint64_t host_bytes() const override { return 100; }
   std::uint64_t launches() const override { return 2; }
   std::span<const kernels::InputSlot> inputs() const override { return {}; }
@@ -619,8 +626,13 @@ class ReportProbeOwner final : public kernels::BackendOwner {
  public:
   explicit ReportProbeOwner(const execution::Registry& registry) {
     table.registry = &registry;
-    table.lower = [this](const kernels::LowerInput&)
+    table.lower = [this](const kernels::LowerInput& input)
         -> std::expected<std::unique_ptr<kernels::StepProgram>, std::string> {
+      ++lower_calls;
+      lower_graph_identity = input.plan.graph.identity();
+      lower_graph_digest = input.plan.graph_digest;
+      lower_plan_address = reinterpret_cast<std::uintptr_t>(&input.plan);
+      if (!lower_failure.empty()) return std::unexpected(lower_failure);
       return std::make_unique<ReportProbeProgram>(&alive, unstable, &report_calls);
     };
   }
@@ -644,8 +656,28 @@ class ReportProbeOwner final : public kernels::BackendOwner {
   mutable std::uint64_t used = 0, charges = 0, releases = 0;
   int alive = 0;
   unsigned report_calls = 0;
+  unsigned lower_calls = 0;
+  std::uint64_t lower_graph_identity = 0;
+  base::Sha256Digest lower_graph_digest{};
+  std::uintptr_t lower_plan_address = 0;
+  std::string lower_failure;
   bool unstable = false;
 };
+
+class ComparisonStorageFunder final : public ir::StorageFunder {
+ public:
+  bool Charge(std::uint64_t bytes) const override {
+    if (bytes > std::numeric_limits<std::uint64_t>::max() - active_) return false;
+    active_ += bytes;
+    return true;
+  }
+  void Release(std::uint64_t bytes) const override {
+    EXPECT_LE(bytes, active_);
+    active_ -= bytes;
+  }
+  mutable std::uint64_t active_ = 0;
+};
+
 TEST(SpatialComponentsTest, ExactReportFundingTransfersOrReleasesAcrossEveryFailurePath) {
   ir::Builder builder;
   builder.Output(builder.Fill(ir::ShapeOf({4}), 1.0F));
@@ -702,6 +734,251 @@ TEST(SpatialComponentsTest, ExactReportFundingTransfersOrReleasesAcrossEveryFail
   EXPECT_EQ(owner->used, 0U);
   EXPECT_EQ(owner->alive, 0);
   EXPECT_EQ(owner->charges, owner->releases);
+}
+
+TEST(SpatialComponentsTest, LowerComponentPlanUsesTheSuppliedPlanAndReportsItsIdentity) {
+  const ir::WeightRef weight_ref{.component = 1, .role = 1};
+  std::vector<execution::Implementation> implementations;
+  for (const auto op : {ir::Primitive(ir::Op::kRmsNorm), ir::Primitive(ir::Op::kMul),
+                        ir::Fused(ir::FusedKind::kRmsNormMul)}) {
+    const std::string name = op.op == ir::Op::kFused     ? "test.rms_norm_mul"
+                             : op.op == ir::Op::kRmsNorm ? "test.rms_norm"
+                                                         : "test.mul";
+    implementations.push_back({.name = name,
+                               .operation = op,
+                               .source = "test",
+                               .revision = "test",
+                               .build = "host",
+                               .variant = "checked",
+                               .capability = execution::Capability{.op = op}});
+  }
+  auto registry = execution::Registry::Create(std::move(implementations));
+  ASSERT_TRUE(registry);
+  auto owner = std::make_shared<ReportProbeOwner>(*registry);
+  auto storage_funder = std::make_shared<ComparisonStorageFunder>();
+  const planner::Policy policy{};
+  const kernels::Addresses addresses{};
+  std::unique_ptr<kernels::StepProgram> lowered_program;
+  std::string expected_inventory;
+  base::Sha256Digest alternative_digest{};
+  {
+    ir::Builder builder;
+    const auto input_tensor = builder.Input(ir::Dense(format::Encoding::kF32, ir::ShapeOf({4, 1})));
+    const auto weight_tensor =
+        builder.Weight(ir::Dense(format::Encoding::kF32, ir::ShapeOf({4})), weight_ref);
+    const auto output_tensor =
+        builder.Fused(ir::FusedKind::kRmsNormMul, std::array{input_tensor, weight_tensor},
+                      ir::NormParams{.eps = 1e-6F})[0];
+    builder.Output(output_tensor);
+    auto graph_result = std::move(builder).Finish();
+    ASSERT_TRUE(graph_result);
+    auto graph = std::move(*graph_result);
+    const std::array weights{StepWeight{.tensor = weight_tensor,
+                                        .ref = weight_ref,
+                                        .parts = {{"weight", format::PartRole::kData}}}};
+    const components::GraphBuildIO io{graph, graph.inputs(), graph.outputs(), weights};
+    const auto extent = *ir::StorageBytes(graph.tensor(input_tensor));
+    const auto weight_extent = *ir::StorageBytes(graph.tensor(weight_tensor));
+    const std::array external{
+        components::ComparisonExternalBinding{.original_root = input_tensor,
+                                              .allocation_class = 1,
+                                              .allocation_bytes = extent,
+                                              .bytes = extent,
+                                              .alignment = 64},
+        components::ComparisonExternalBinding{.original_root = weight_tensor,
+                                              .part = format::PartRole::kData,
+                                              .allocation_class = 2,
+                                              .allocation_bytes = weight_extent,
+                                              .bytes = weight_extent,
+                                              .alignment = 64}};
+    const components::ComparisonBoundaryView boundary{.io = io, .external = external};
+    planner::ComparisonSiteSelector selector;
+    selector.source_graph_identity = graph.identity();
+    selector.kind = planner::ComparisonSiteKind::kFusedNode;
+    selector.member_origins = {{graph.producer(output_tensor)}};
+    auto inventory =
+        planner::BoundComparison(boundary, selector, storage_funder, *registry, {}, policy);
+    ASSERT_TRUE(inventory) << inventory.error().detail;
+    const auto incumbent_digest = inventory->incumbent.view().graph_digest;
+    auto alternative = planner::MakeAlternative(*inventory);
+    ASSERT_TRUE(alternative) << alternative.error().detail;
+    auto planned =
+        planner::PlanAlternative(*inventory, std::move(*alternative), *registry, {}, policy);
+    ASSERT_TRUE(planned) << planned.error().detail;
+    ASSERT_NE(planned->view().graph_digest, incumbent_digest);
+    EXPECT_TRUE(std::ranges::any_of(planned->view().graph.nodes(), [](const ir::Node& node) {
+      return node.key == ir::Primitive(ir::Op::kRmsNorm) || node.key == ir::Primitive(ir::Op::kMul);
+    }));
+    alternative_digest = planned->view().graph_digest;
+    const auto alternative_graph_identity = planned->view().graph.identity();
+    const auto* const expected_lower_plan = &planned->view();
+    planner::StreamPlanReport(planned->view(), *registry,
+                              [&](std::string_view part) { expected_inventory.append(part); });
+    const kernels::LowerInput input{planned->view(), io, addresses};
+    const auto* const supplied_plan = &planned->view();
+    unsigned validation_calls = 0;
+    const kernels::ProgramValidator validator = [&](const kernels::LowerInput& actual,
+                                                    const kernels::StepProgram&) {
+      ++validation_calls;
+      EXPECT_EQ(&actual.plan, supplied_plan);
+      EXPECT_EQ(actual.plan.graph.identity(), planned->view().graph.identity());
+      EXPECT_EQ(actual.plan.graph_digest, alternative_digest);
+      return std::expected<void, std::string>{};
+    };
+    auto lowered = engine::LowerComponentPlan(input, owner->backend(), policy, validator, owner);
+    ASSERT_TRUE(lowered) << Failed(lowered).value_or("");
+    EXPECT_EQ(owner->lower_calls, 1U);
+    EXPECT_EQ(owner->lower_graph_identity, alternative_graph_identity);
+    EXPECT_EQ(owner->lower_graph_digest, alternative_digest);
+    EXPECT_EQ(owner->lower_plan_address, reinterpret_cast<std::uintptr_t>(expected_lower_plan));
+    EXPECT_EQ(validation_calls, 1U);
+    lowered_program = std::move(*lowered);
+
+    auto stale_plan = engine::PlanComponentGraph(io, owner->backend(), policy, addresses, {});
+    ASSERT_TRUE(stale_plan);
+    stale_plan->policy_digest = {};
+    const kernels::LowerInput stale_input{*stale_plan, io, addresses};
+    auto mismatch = engine::LowerComponentPlan(stale_input, owner->backend(), policy, {}, owner);
+    ASSERT_FALSE(mismatch);
+    EXPECT_EQ(mismatch.error(), "the supplied plan differs from its source, graph, or policy");
+    EXPECT_EQ(owner->lower_calls, 1U);
+
+    const kernels::ExecutionResources unavailable_resources{};
+    auto resource_refusal = engine::LowerComponentPlan(input, owner->backend(), policy, {}, owner,
+                                                       &unavailable_resources);
+    ASSERT_FALSE(resource_refusal);
+    EXPECT_NE(resource_refusal.error().find("private lowering resources"), std::string::npos);
+    EXPECT_EQ(owner->lower_calls, 1U);
+
+    const auto paid_before_failures = owner->used;
+    const kernels::ProgramValidator reject = [](const kernels::LowerInput&,
+                                                const kernels::StepProgram&) {
+      return std::expected<void, std::string>(std::unexpected("rejected actual program"));
+    };
+    auto refused = engine::LowerComponentPlan(input, owner->backend(), policy, reject, owner);
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error(), "rejected actual program");
+    EXPECT_EQ(owner->lower_calls, 2U);
+    EXPECT_EQ(owner->alive, 1);
+    EXPECT_EQ(owner->used, paid_before_failures);
+
+    owner->lower_failure = "private resource lower failed";
+    auto resource_failure = engine::LowerComponentPlan(input, owner->backend(), policy, {}, owner);
+    ASSERT_FALSE(resource_failure);
+    EXPECT_EQ(resource_failure.error(), "private resource lower failed");
+    EXPECT_EQ(owner->lower_calls, 3U);
+    EXPECT_EQ(owner->alive, 1);
+    EXPECT_EQ(owner->used, paid_before_failures);
+    owner->lower_failure.clear();
+  }
+  // The source graph, checkpoint, and planned alternative are gone. The paid
+  // report must still contain the selected alternative's exact plan identity.
+  ASSERT_EQ(owner->alive, 1);
+  EXPECT_GT(owner->used, 0U);
+  std::string actual_report;
+  lowered_program->StreamPlanReport([&](std::string_view part) { actual_report.append(part); });
+  EXPECT_TRUE(actual_report.starts_with(expected_inventory));
+  EXPECT_NE(actual_report.find("test_physical"), std::string::npos);
+  EXPECT_NE(expected_inventory.find("\"graph\":\""), std::string::npos);
+  EXPECT_NE(actual_report.find("test.rms_norm"), std::string::npos);
+  EXPECT_NE(actual_report.find("test.mul"), std::string::npos);
+  EXPECT_NE(alternative_digest, base::Sha256Digest{});
+
+  const auto host_bytes = lowered_program->host_bytes();
+  lowered_program->ConstructionPaid();
+  EXPECT_EQ(owner->used, 0U);
+  EXPECT_EQ(lowered_program->host_bytes(), host_bytes);
+  lowered_program->ConstructionPaid();
+  lowered_program.reset();
+  EXPECT_EQ(owner->alive, 0);
+  EXPECT_EQ(owner->charges, owner->releases);
+  EXPECT_EQ(storage_funder->active_, 0U);
+}
+
+TEST(SpatialComponentsTest, LowerComponentPlanMatchesTokenPortsByUniqueTensorIdentity) {
+  ir::Builder builder;
+  const auto x = builder.Input(ir::Dense(format::Encoding::kF32, ir::ShapeOf({4})), "x");
+  const auto y = builder.Input(ir::Dense(format::Encoding::kF32, ir::ShapeOf({4})), "y");
+  const ir::WeightRef x_ref{.component = 1, .role = 1};
+  const ir::WeightRef y_ref{.component = 2, .role = 1};
+  const auto wx = builder.Weight(ir::Dense(format::Encoding::kF32, ir::ShapeOf({4})), x_ref);
+  const auto wy = builder.Weight(ir::Dense(format::Encoding::kF32, ir::ShapeOf({4})), y_ref);
+  builder.Output(builder.Add(builder.Add(x, wx), builder.Add(y, wy)));
+  auto graph = std::move(builder).Finish();
+  ASSERT_TRUE(graph);
+
+  auto registry = execution::Registry::Create({execution::Implementation{
+      .name = "test.add",
+      .operation = ir::Primitive(ir::Op::kAdd),
+      .source = "test",
+      .revision = "test",
+      .build = "host",
+      .variant = "checked",
+      .capability = execution::Capability{.op = ir::Primitive(ir::Op::kAdd)}}});
+  ASSERT_TRUE(registry);
+  auto owner = std::make_shared<ReportProbeOwner>(*registry);
+  StepGraph step{
+      .graph = std::move(*graph),
+      .inputs = {{.tensor = y}, {.tensor = x}},
+      .weights = {{.tensor = wy, .ref = y_ref, .parts = {{"y", format::PartRole::kData}}},
+                  {.tensor = wx, .ref = x_ref, .parts = {{"x", format::PartRole::kData}}}},
+      .state = {}};
+  const std::array weights{
+      StepWeight{.tensor = wx, .ref = x_ref, .parts = {{"x", format::PartRole::kData}}},
+      StepWeight{.tensor = wy, .ref = y_ref, .parts = {{"y", format::PartRole::kData}}}};
+  const GraphBuildIO io{step.graph, step.graph.inputs(), step.graph.outputs(), weights};
+  const planner::StepShape shape{
+      .stage = 0, .phase = planner::Phase::kDecode, .segments = {{.rows = 1, .read_cells = 1}}};
+  const planner::Policy policy{};
+  const kernels::Addresses addresses{};
+  auto plan =
+      engine::PlanComponentGraph(io, owner->backend(), policy, addresses, {.shape = &shape});
+  ASSERT_TRUE(plan) << Failed(plan).value_or("");
+  const kernels::LowerInput input{*plan, io, addresses,
+                                  kernels::TokenLowerInput{step, shape, 1, {}}};
+
+  auto reordered = engine::LowerComponentPlan(input, owner->backend(), policy, {}, owner);
+  ASSERT_TRUE(reordered) << Failed(reordered).value_or("");
+  EXPECT_EQ(owner->lower_calls, 1U);
+  reordered->reset();
+
+  step.inputs[0].tensor = x;
+  step.inputs[1].tensor = x;
+  auto duplicate_input = engine::LowerComponentPlan(input, owner->backend(), policy, {}, owner);
+  ASSERT_FALSE(duplicate_input);
+  EXPECT_EQ(duplicate_input.error(),
+            "token input ports differ from the supplied typed graph interface");
+  EXPECT_EQ(owner->lower_calls, 1U);
+  step.inputs = {{.tensor = y}, {.tensor = x}};
+
+  const std::array duplicate_io_weights{weights[0], weights[0]};
+  const GraphBuildIO duplicate_io{step.graph, io.inputs, io.outputs, duplicate_io_weights};
+  const kernels::LowerInput duplicate_io_input{*plan, duplicate_io, addresses,
+                                               kernels::TokenLowerInput{step, shape, 1, {}}};
+  auto duplicate_io_weight =
+      engine::LowerComponentPlan(duplicate_io_input, owner->backend(), policy, {}, owner);
+  ASSERT_FALSE(duplicate_io_weight);
+  EXPECT_EQ(duplicate_io_weight.error(),
+            "token weight ports differ from the supplied typed graph interface");
+  EXPECT_EQ(owner->lower_calls, 1U);
+
+  step.weights[0].tensor = wx;
+  auto duplicate_weight = engine::LowerComponentPlan(input, owner->backend(), policy, {}, owner);
+  ASSERT_FALSE(duplicate_weight);
+  EXPECT_EQ(duplicate_weight.error(),
+            "token weight ports differ from the supplied typed graph interface");
+  EXPECT_EQ(owner->lower_calls, 1U);
+  step.weights[0] = {.tensor = wy, .ref = y_ref, .parts = {{"y", format::PartRole::kData}}};
+
+  step.weights[1].ref = {.component = 99, .role = 1};
+  auto mismatched_weight = engine::LowerComponentPlan(input, owner->backend(), policy, {}, owner);
+  ASSERT_FALSE(mismatched_weight);
+  EXPECT_EQ(mismatched_weight.error(),
+            "token weight ports differ from the supplied typed graph interface");
+  EXPECT_EQ(owner->lower_calls, 1U);
+  reordered->reset();
+  EXPECT_EQ(owner->alive, 0);
+  EXPECT_EQ(owner->used, 0U);
 }
 
 TEST(SpatialComponentsTest, UndeclaredReportsRequireAnIndependentRetainedPayer) {
@@ -881,6 +1158,13 @@ TEST(SpatialComponentsTest, CommonCompilerRetainsPaidPrivateSafeLogicalAndPhysic
   EXPECT_EQ(report.find("1234.625"), std::string::npos);
   EXPECT_GT((*program)->host_bytes(), 100U);
   EXPECT_EQ((*program)->scratch_bytes(), 16U);
+  EXPECT_EQ((*program)->pool_bytes(), 64U);
+  EXPECT_EQ((*program)->private_pool_bytes(), 32U);
+  const auto comparison = (*program)->comparison_recipe();
+  ASSERT_TRUE(comparison);
+  EXPECT_EQ(comparison->version, 19U);
+  EXPECT_EQ(comparison->state, kernels::ComparisonProofState::kUnproved);
+  EXPECT_EQ(comparison->missing, kernels::ComparisonMissing::kOperationSchema);
   EXPECT_EQ((*program)->plan_coverage().physical_activation_bytes, 16U);
   std::string again;
   (*program)->ReportPlan([&](std::string_view record) {
@@ -1049,6 +1333,75 @@ TEST(SpatialComponentsTest, RaggedUpsampleAndChannelChangingConvolutionUseShared
     ++bad_weights[0].ref.role;
     EXPECT_FALSE(engine::PlanComponentGraph(bad_io, backend, {}, {}));
   }
+}
+
+TEST(SpatialComponentsTest, FinalizedPhysicalOptionsSurviveSourceAndAddressPreparation) {
+  auto registry = execution::Registry::Create({});
+  ASSERT_TRUE(registry);
+  const kernels::StepBackend backend{.registry = &*registry};
+  const ir::WeightRef weight_ref{.component = 2, .role = 3, .layer = 4};
+  const ir::StateRef state_ref{.tensor = 5, .layer = 4};
+  const auto tensor_format = ir::Dense(format::Encoding::kF32, ir::ShapeOf({4, 1}));
+  std::optional<planner::PlanOptions> prepared;
+  {
+    ir::Builder builder;
+    const auto input = builder.Input(tensor_format);
+    const auto weight = builder.Weight(tensor_format, weight_ref);
+    const auto state = builder.State(tensor_format, state_ref);
+    builder.Output(builder.Add(builder.Mul(input, weight), state));
+    auto source = std::move(builder).Finish();
+    ASSERT_TRUE(source);
+    const std::array weights{StepWeight{
+        .tensor = weight, .ref = weight_ref, .parts = {{"weight", format::PartRole::kData}}}};
+    const engine::GraphBuildIO io{*source, source->inputs(), source->outputs(), weights};
+    kernels::Addresses addresses{
+        .weight = [](const auto&, auto) { return std::uint64_t{0x20000}; },
+        .weight_rows = {},
+        .state = [](const auto&) { return std::uint64_t{0x40000}; },
+        .save = {},
+        .activations = 0x80000,
+        .activation_alignment = 65536,
+        .state_alignment = [](const auto&) { return std::uint64_t{4096}; },
+        .weight_alignment = [](const auto&, auto) { return std::uint64_t{256}; }};
+    auto options = engine::PrepareComponentPlanOptions(
+        io, backend, addresses,
+        {.staged = std::vector{input}, .alignment_staged = std::vector<ir::TensorId>{}});
+    ASSERT_TRUE(options) << Failed(options).value_or("");
+    EXPECT_EQ(options->activation_alignment, 65536U);
+    EXPECT_EQ(options->staged, (std::optional{std::vector{input}}));
+    ASSERT_TRUE(options->alignment_staged);
+    EXPECT_TRUE(options->alignment_staged->empty());
+    prepared.emplace(std::move(*options));
+    ++addresses.activations;
+    EXPECT_FALSE(engine::PrepareComponentPlanOptions(io, backend, addresses));
+    --addresses.activations;
+    addresses.weight = [](const auto&, auto) { return std::uint64_t{0x20004}; };
+    EXPECT_FALSE(engine::PrepareComponentPlanOptions(io, backend, addresses));
+  }
+  // Authorized rewrites can renumber roots. Alignment follows the immutable
+  // semantic binding and exact format, without borrowing the original graph.
+  ir::Builder builder;
+  builder.Input(tensor_format);
+  const auto input = builder.Input(tensor_format);
+  const auto weight = builder.Weight(tensor_format, weight_ref);
+  const auto state = builder.State(tensor_format, state_ref);
+  const auto different_weight = builder.Weight(tensor_format, ir::WeightRef{.role = 99});
+  builder.Output(builder.Add(builder.Mul(input, weight), state));
+  builder.Keep(different_weight);
+  auto rewritten = std::move(builder).Finish();
+  ASSERT_TRUE(rewritten) << Failed(rewritten, &ir::VerifyError::detail).value_or("");
+  ASSERT_TRUE(prepared && prepared->root_alignment);
+  EXPECT_EQ(prepared->root_alignment(*rewritten, weight), 256U);
+  EXPECT_EQ(prepared->root_alignment(*rewritten, state), 4096U);
+  EXPECT_EQ(prepared->root_alignment(*rewritten, different_weight), 0U);
+  EXPECT_EQ(prepared->root_alignment(*rewritten, input), 0U);
+  ir::Builder changed;
+  const auto different_format =
+      changed.State(ir::Dense(format::Encoding::kF32, ir::ShapeOf({8, 1})), state_ref);
+  changed.Output(different_format);
+  auto changed_graph = std::move(changed).Finish();
+  ASSERT_TRUE(changed_graph) << Failed(changed_graph, &ir::VerifyError::detail).value_or("");
+  EXPECT_EQ(prepared->root_alignment(*changed_graph, different_format), 0U);
 }
 
 TEST(SpatialComponentsTest, FundingAndMalformedGeometryRefuseWithoutPublishedGraph) {

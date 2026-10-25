@@ -27,6 +27,8 @@
 #include "components/graph_io.h"
 #include "execution/registry.h"
 #include "ir/graph.h"
+#include "kernels/common/comparison.h"
+#include "kernels/common/comparison_region.h"
 #include "kernels/common/execution_resources.h"
 #include "kernels/common/selected_operation.h"
 #include "kernels/common/step_program.h"
@@ -52,16 +54,27 @@ struct LowerInput {
   components::GraphBuildIO io;
   const Addresses& addresses;
   std::optional<TokenLowerInput> token;
+  const ComparisonRequest* comparison = nullptr;
+  const ComparisonRegionCapture* comparison_region = nullptr;
 
   LowerInput(const planner::StepPlan& p, components::GraphBuildIO graph_io, const Addresses& a,
-             std::optional<TokenLowerInput> tokens = std::nullopt)
-      : plan(p), io(graph_io), addresses(a), token(tokens) {}
+             std::optional<TokenLowerInput> tokens = std::nullopt,
+             const ComparisonRequest* compare = nullptr,
+             const ComparisonRegionCapture* region = nullptr)
+      : plan(p),
+        io(graph_io),
+        addresses(a),
+        token(tokens),
+        comparison(compare),
+        comparison_region(region) {}
   // Preserve the existing token construction contract without a second lowerer.
   LowerInput(const planner::StepPlan& p, const components::StepGraph& step,
              const planner::StepShape& shape, const Addresses& a, std::uint32_t context = 0,
-             planner::StateSpans state_spans = {})
+             planner::StateSpans state_spans = {}, const ComparisonRequest* compare = nullptr,
+             const ComparisonRegionCapture* region = nullptr)
       : LowerInput(p, components::GraphIO(step), a,
-                   TokenLowerInput{step, shape, context, std::move(state_spans)}) {}
+                   TokenLowerInput{step, shape, context, std::move(state_spans)}, compare, region) {
+  }
 };
 
 using LowerFunction =

@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "kernels/exl3/input_conversion.h"
 #include "kernels/exl3/packed_tuning.h"
 #include "kernels/exl3/pointer_table.h"
 #include "kernels/exl3/upstream_gemv.h"
@@ -72,6 +73,13 @@ std::array<void*, sizeof...(T)> Arguments(T&... values) {
 }
 
 }  // namespace
+
+std::expected<void, KernelFailure> LaunchContext::ConvertInputF32(std::uint64_t source,
+                                                                  std::uint64_t destination,
+                                                                  std::uint64_t elements) {
+  return Run(
+      [&](void* stream) { return LaunchInputConversion(stream, source, destination, elements); });
+}
 
 std::expected<std::unique_ptr<LaunchContext>, KernelFailure> LaunchContext::Create(
     int device, providers::DeviceExecution& execution, providers::StreamId stream,

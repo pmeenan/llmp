@@ -889,28 +889,8 @@ std::expected<void, KernelFailure> MulMatVecQRows(LaunchContext& launch, ggml_te
 }
 
 std::expected<void, KernelFailure> MulMatVecFRows(LaunchContext& launch, ggml_tensor* node) {
-  if (auto checked = CheckMulMat(node); !checked) {
-    return checked;
-  }
-  const ggml_tensor* weights = node->src[0];
-  const ggml_tensor* input = node->src[1];
-  if (weights->type != GGML_TYPE_F32 && weights->type != GGML_TYPE_F16 &&
-      weights->type != GGML_TYPE_BF16) {
-    return Rejected("the float vector kernel takes F32, F16 or BF16 weights");
-  }
-  if (input->ne[1] < 1 || input->ne[1] > kRowsMaxColumns) {
-    return Rejected("the float vector kernel takes 1 to 8 columns");
-  }
-  // ggml_cuda_should_use_mmvf's layout conditions (mmvf.cu:792-807), which
-  // its launcher asserts, without its column thresholds.
-  const std::size_t ts = ggml_type_size(weights->type);
-  bool aligned = weights->ne[0] % 2 == 0 && weights->nb[0] == ts;
-  for (std::size_t i = 1; i < GGML_MAX_DIMS; ++i) {
-    aligned = aligned && weights->nb[i] % (2 * ts) == 0;
-  }
-  if (!aligned) {
-    return Rejected("weights the float vector kernel cannot read in pairs");
-  }
+  static_assert(kRowsMaxColumns == kFloatVectorMaxColumns);
+  if (auto checked = CheckMulMatVecFRows(node); !checked) return checked;
   (void)launch;
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
     ggml_cuda_mul_mat_vec_f(context, node->src[0], node->src[1], nullptr, node);

@@ -30,11 +30,14 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "base/json.h"
 #include "base/sha256.h"
+#include "components/comparison_boundary.h"
+#include "execution/fusion_ranks.h"
 #include "execution/registry.h"
 #include "format/encoding.h"
 #include "format/layout.h"
@@ -43,6 +46,7 @@
 #include "ir/decompose.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "planner/alternative.h"
 #include "planner/construction.h"
 #include "planner/fusions.h"
 #include "planner/lanes.h"
@@ -62,6 +66,30 @@ using format::Layout;
 using ir::FusedKind;
 using ir::Op;
 using ir::TensorId;
+
+class ComparisonFunder final : public ir::StorageFunder {
+ public:
+  bool Charge(std::uint64_t bytes) const override {
+    ++charge_count_;
+    if ((refuse_ && bytes != 0) || charge_count_ == fail_at_) return false;
+    active_ += bytes;
+    peak_ = std::max(peak_, active_);
+    return true;
+  }
+  void Release(std::uint64_t bytes) const override { active_ -= bytes; }
+  void Refuse(bool refuse) { refuse_ = refuse; }
+  void FailAt(std::uint64_t one_based_charge) { fail_at_ = one_based_charge; }
+  std::uint64_t charge_count() const { return charge_count_; }
+  std::uint64_t active() const { return active_; }
+  std::uint64_t peak() const { return peak_; }
+
+ private:
+  mutable std::uint64_t active_ = 0;
+  mutable std::uint64_t peak_ = 0;
+  mutable std::uint64_t charge_count_ = 0;
+  bool refuse_ = false;
+  std::uint64_t fail_at_ = 0;
+};
 
 // ------------------------------------------------------------ fixtures
 
@@ -163,11 +191,23 @@ ir::Graph Finish(ir::Builder& b) {
   return std::move(*g);
 }
 
+ir::Graph CloneOf(const ir::Graph& graph) {
+  auto copy = graph.Clone();
+  EXPECT_TRUE(copy.has_value()) << (copy ? "" : copy.error().detail);
+  return std::move(*copy);
+}
+
 StepPlan PlanOf(ir::Graph g, const ex::Registry& registry, const Policy& policy = {},
                 const PlanOptions& options = {}) {
   auto p = Plan(std::move(g), registry, kDevice, policy, options);
   EXPECT_TRUE(p.has_value()) << (p ? "" : p.error().detail);
   return std::move(*p);
+}
+
+StepPlan PlanOf(std::expected<ir::Graph, ir::VerifyError> g, const ex::Registry& registry,
+                const Policy& policy = {}, const PlanOptions& options = {}) {
+  EXPECT_TRUE(g.has_value()) << (g ? "" : g.error().detail);
+  return PlanOf(std::move(*g), registry, policy, options);
 }
 
 // These synthetic numerical controls qualify their own exact graph sites;
@@ -273,6 +313,156 @@ void CheckRegisteredRewrite(std::string_view name, const ir::Graph& graph,
       << (result->dropped.empty() ? "" : result->dropped.front().detail);
   EXPECT_EQ(result->applied.empty(), !matches);
   for (const auto& applied : result->applied) EXPECT_EQ(applied.pattern, name);
+}
+
+std::uint64_t MatchContextMetadataBytes(const ir::Graph& graph) {
+  constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
+  std::uint64_t edges = 0;
+  for (const auto& node : graph.nodes()) edges += node.nsrc;
+  const auto bits = [](std::uint64_t count) {
+    constexpr std::uint64_t word_bits = std::numeric_limits<unsigned long>::digits;
+    return ((count + word_bits - 1) / word_bits) * sizeof(unsigned long);
+  };
+  const std::uint64_t tensors = graph.tensor_count();
+  const std::uint64_t nodes = graph.nodes().size();
+  return tensors * sizeof(std::vector<ir::NodeId>) + (tensors ? envelope : 0) +
+         3 * edges * sizeof(ir::NodeId) + (edges ? 2 * tensors * envelope : 0) + 2 * bits(tensors) +
+         bits(nodes) + (tensors ? 2 * envelope : 0) + (nodes ? envelope : 0);
+}
+
+void CheckFundedMatcher(std::string_view name, const ir::Graph& source,
+                        const ex::Registry& registry, const Policy* policy_override = nullptr,
+                        std::optional<std::size_t> expected_local_slots = std::nullopt,
+                        const StepShape* shape = nullptr) {
+  const Pattern* pattern = FindPattern(name);
+  ASSERT_NE(pattern, nullptr);
+  std::vector<NumericalChange> changes;
+  if (pattern->numerical_change) changes.push_back(*pattern->numerical_change);
+  const auto make_policy = [&](const ir::Graph& graph) {
+    if (policy_override != nullptr) return *policy_override;
+    Policy policy = FixtureNumericalPolicy(graph, {}, changes);
+    policy.enabled.emplace_back(name);
+    Canonicalize(policy);
+    return policy;
+  };
+  auto owner = std::make_shared<ComparisonFunder>();
+  auto graph = source.Clone(owner);
+  ASSERT_TRUE(graph) << graph.error().detail;
+  const auto graph_bytes = owner->active();
+  ir::NodeId accepted_anchor{};
+  {
+    PlannerMetadataAdmission admission(owner);
+    ASSERT_TRUE(admission.Require(PlannerMetadataPhase::kMatch, MatchContextMetadataBytes(*graph)));
+    const Policy policy = make_policy(*graph);
+    const SelectionView view(registry, kDevice, policy, false, false, {}, {}, {},
+                             SelectionView::FusionComparisons::enabled, &admission);
+    MatchContext context(*graph, view, shape, {}, &admission);
+    std::optional<Match> accepted;
+    for (std::uint32_t i = 0; i < graph->nodes().size() && !accepted; ++i) {
+      if (!std::ranges::contains(pattern->anchors, graph->node(ir::NodeId{i}).key.op)) continue;
+      ASSERT_TRUE(context.BeginMatchTrial());
+      auto candidate = pattern->match(context, ir::NodeId{i});
+      if (candidate) {
+        accepted_anchor = ir::NodeId{i};
+        accepted = std::move(candidate);
+      }
+      if (admission.refused()) break;
+      if (!accepted) context.DropMatchTrial();
+    }
+    ASSERT_TRUE(accepted) << name;
+    if (expected_local_slots) EXPECT_EQ(accepted->rewrite_local_slots, *expected_local_slots);
+    ASSERT_TRUE(context.AcceptMatchTrial());
+    accepted.reset();
+    context.DropMatchTrial();
+  }
+  EXPECT_EQ(owner->active(), graph_bytes);
+
+  // Direct matching proves the matcher can construct a funded result, but it
+  // does not exercise ApplyRound's paid locals, callback and graph lowering.
+  // Run the exact same accepted policy through the actual funded rewrite path.
+  if (pattern->kind == PatternKind::kRewrite) {
+    auto rewrite_owner = std::make_shared<ComparisonFunder>();
+    auto rewrite_graph = source.Clone(rewrite_owner);
+    ASSERT_TRUE(rewrite_graph) << rewrite_graph.error().detail;
+    const Policy rewrite_policy = make_policy(*rewrite_graph);
+    PlannerMetadataAdmission admission(rewrite_owner);
+    const SelectionView rewrite_view(registry, kDevice, rewrite_policy, false, false, {}, {}, {},
+                                     SelectionView::FusionComparisons::enabled, &admission);
+    const auto rewritten =
+        ApplyPatternTable(std::span(pattern, 1), *rewrite_graph, rewrite_view, shape, {}, {}, {},
+                          nullptr, nullptr, {}, {}, &admission);
+    ASSERT_TRUE(rewritten) << rewritten.error().detail;
+    EXPECT_NE(std::ranges::find(rewritten->applied, name, &Applied::pattern),
+              rewritten->applied.end())
+        << name;
+  }
+
+  auto refusing_owner = std::make_shared<ComparisonFunder>();
+  auto refusing_graph = source.Clone(refusing_owner);
+  ASSERT_TRUE(refusing_graph) << refusing_graph.error().detail;
+  const auto refusing_graph_bytes = refusing_owner->active();
+  {
+    PlannerMetadataAdmission admission(refusing_owner);
+    ASSERT_TRUE(admission.Require(PlannerMetadataPhase::kMatch,
+                                  MatchContextMetadataBytes(*refusing_graph)));
+    const Policy refusing_policy = make_policy(*refusing_graph);
+    const SelectionView refusing_view(registry, kDevice, refusing_policy, false, false, {}, {}, {},
+                                      SelectionView::FusionComparisons::enabled, &admission);
+    MatchContext context(*refusing_graph, refusing_view, shape, {}, &admission);
+    ASSERT_TRUE(context.BeginMatchTrial());
+    refusing_owner->FailAt(refusing_owner->charge_count() + 1);
+    const auto refused = pattern->match(context, accepted_anchor);
+    EXPECT_FALSE(refused);
+    EXPECT_TRUE(admission.refused());
+  }
+  EXPECT_EQ(refusing_owner->active(), refusing_graph_bytes);
+}
+
+void CheckAllFundedRewriteChargesRefuseTerminally(const Pattern& pattern, const ir::Graph& source,
+                                                  const ex::Registry& registry,
+                                                  const Policy& policy) {
+  const auto apply = [&](const ir::Graph& graph, PlannerMetadataAdmission& admission) {
+    const SelectionView view(registry, kDevice, policy, false, false, {}, {}, {},
+                             SelectionView::FusionComparisons::enabled, &admission);
+    return ApplyPatternTable(std::span(&pattern, 1), graph, view, nullptr, {}, {}, {}, nullptr,
+                             nullptr, {}, {}, &admission);
+  };
+
+  auto baseline_owner = std::make_shared<ComparisonFunder>();
+  auto baseline_graph = source.Clone(baseline_owner);
+  ASSERT_TRUE(baseline_graph) << baseline_graph.error().detail;
+  const std::uint64_t first_charge = baseline_owner->charge_count();
+  PlannerMetadataAdmission baseline_admission(baseline_owner);
+  {
+    const auto baseline = apply(*baseline_graph, baseline_admission);
+    ASSERT_TRUE(baseline) << baseline.error().detail;
+    ASSERT_NE(std::ranges::find(baseline->applied, pattern.name, &Applied::pattern),
+              baseline->applied.end());
+  }
+  const std::uint64_t charges = baseline_owner->charge_count() - first_charge;
+  ASSERT_GT(charges, 0U);
+
+  for (std::uint64_t offset = 1; offset <= charges; ++offset) {
+    SCOPED_TRACE(offset);
+    auto funder = std::make_shared<ComparisonFunder>();
+    auto graph = source.Clone(funder);
+    ASSERT_TRUE(graph) << graph.error().detail;
+    const std::uint64_t graph_bytes = funder->active();
+    const std::uint64_t refusal_charge = funder->charge_count() + offset;
+    funder->FailAt(refusal_charge);
+    {
+      PlannerMetadataAdmission admission(funder);
+      {
+        const auto result = apply(*graph, admission);
+        ASSERT_FALSE(result) << "funded rewrite unexpectedly succeeded when charge " << offset
+                             << " was denied";
+        EXPECT_EQ(result.error().error, ir::GraphError::kAdmission);
+      }
+    }
+    EXPECT_EQ(funder->charge_count(), refusal_charge)
+        << "the planner attempted another charge after refusal";
+    EXPECT_EQ(funder->active(), graph_bytes);
+  }
 }
 
 // x [64, rows] normed, times w.
@@ -1065,6 +1255,10 @@ TEST(PlannerPatternTest, Dsv4HcPreChecksTheFullCarryAndPrimitiveArithmetic) {
     if (mutation != 0) continue;
     Policy on;
     on.enabled = {"sinkhorn_hc_pre"};
+    CheckFundedMatcher("sinkhorn_hc_pre", *g, registry, &on);
+    const Pattern* sinkhorn_pattern = FindPattern("sinkhorn_hc_pre");
+    ASSERT_NE(sinkhorn_pattern, nullptr);
+    CheckAllFundedRewriteChargesRefuseTerminally(*sinkhorn_pattern, *g, registry, on);
     const SelectionView enabled(registry, kDevice, on, false, false);
     auto rewritten = ApplyPatterns(*g, enabled, nullptr);
     ASSERT_TRUE(rewritten) << (rewritten ? "" : rewritten.error().detail);
@@ -1228,6 +1422,12 @@ TEST(PlannerPatternTest, Dsv4CompressorChecksTheEntireCanonicalAssemblyAndReadOr
       const MatchContext c(*g, selection, nullptr);
       EXPECT_EQ(fusions::SoftmaxPoolCompressMatch(c, g->producer(out)).has_value(), mutation == 0);
       if (mutation != 0) continue;
+      if (!overlap) {
+        CheckFundedMatcher("softmax_pool_compress", *g, registry);
+        const Pattern* pattern = FindPattern("softmax_pool_compress");
+        ASSERT_NE(pattern, nullptr);
+        CheckAllFundedRewriteChargesRefuseTerminally(*pattern, *g, registry, {});
+      }
       Policy on;
       on.enabled = {"softmax_pool_compress"};
       const SelectionView enabled(registry, kDevice, on, false, false);
@@ -1284,6 +1484,7 @@ TEST(PlannerPatternTest, HyperConnectionMixChecksItsStreamViewsAndFinalScale) {
     const MatchContext c(g, selection, nullptr);
     EXPECT_EQ(fusions::HcMixMatch(c, g.producer(rms)).has_value(), mutation == 0);
     CheckRegisteredRewrite("hc_mix", g, registry, mutation == 0);
+    if (mutation == 0) CheckFundedMatcher("hc_mix", g, registry);
   }
 }
 
@@ -1312,6 +1513,7 @@ TEST(PlannerPatternTest, HyperConnectionCombineRejectsUnrepresentedScaleParamete
     const MatchContext c(g, selection, nullptr);
     EXPECT_EQ(fusions::HcCombineMatch(c, g.producer(mixed)).has_value(), mutation == 0);
     CheckRegisteredRewrite("hc_combine", g, registry, mutation == 0);
+    if (mutation == 0) CheckFundedMatcher("hc_combine", g, registry);
   }
 }
 
@@ -1349,6 +1551,7 @@ TEST(PlannerPatternTest, HyperConnectionPrepRejectsLowRankScaleBias) {
     const MatchContext c(g, selection, nullptr);
     EXPECT_EQ(fusions::HcPrepMatch(c, g.producer(rms)).has_value(), !bias);
     CheckRegisteredRewrite("hc_prep", g, registry, !bias);
+    if (!bias) CheckFundedMatcher("hc_prep", g, registry);
   }
 }
 
@@ -1398,7 +1601,10 @@ TEST(PlannerPatternTest, GdnConvolutionChecksBothNormalizedSlicesAndHistoryTail)
     const MatchContext c(g, selection, nullptr);
     EXPECT_EQ(fusions::GdnConvMatch(c, g.producer(convolution)).has_value(),
               mutation == 0 || mutation == 6);
-    if (mutation == 0 || mutation == 6) CheckRegisteredRewrite("gdn_conv", g, registry, true);
+    if (mutation == 0 || mutation == 6) {
+      CheckRegisteredRewrite("gdn_conv", g, registry, true);
+      if (mutation == 0) CheckFundedMatcher("gdn_conv", g, registry);
+    }
   }
 }
 
@@ -1468,6 +1674,90 @@ TEST(PlannerPatternTest, GdnHistoryChecksStandaloneCommitTail) {
     auto disabled = ApplyPatterns(g, selection, nullptr);
     ASSERT_TRUE(disabled);
     EXPECT_TRUE(disabled->applied.empty());
+  }
+}
+
+// The real history rewrite removes the old-history read when the saved rows
+// cover every tap. A comparison still owns the unchanged original state range.
+TEST(PlannerPatternTest, GdnCommitMappedStateAllowsOnlyEliminatedReads) {
+  for (const std::uint64_t rows_count : {2U, 3U}) {
+    SCOPED_TRACE(rows_count);
+    auto implementations = Everything();
+    implementations.push_back(Fake("t.gdn_history", Any(ir::Fused(FusedKind::kGdnHistory))));
+    const auto registry = Registry(std::move(implementations));
+    Policy policy;
+    policy.enabled = {"gdn_conv"};
+    ir::Builder b;
+    std::vector<components::StepState> states;
+    for (std::uint8_t owner = 0; owner < 2; ++owner) {
+      b.SetOwner(owner);
+      const ir::StateRef ref{.segment = owner};
+      const auto state = b.State(F32({18, 1}), ref);
+      const auto rows = b.Input(F32({6, rows_count, 1}));
+      const auto history = b.Reshape(state, ir::ShapeOf({3, 6, 1}));
+      const auto input = b.Concat(history, b.Cont(b.Transpose(rows)), 0);
+      const auto stride = (3 + rows_count) * 4;
+      const auto tail = b.View(input, ir::ShapeOf({3, 6, 1}), {4, stride, 6 * stride, 6 * stride},
+                               rows_count * 4);
+      const auto kept = b.Reshape(b.Cont(tail), ir::ShapeOf({18, 1}));
+      const auto ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({1})));
+      b.CacheStore(state, kept, ids);
+      b.Output(rows);
+      states.push_back({.tensor = state, .ref = ref, .read = true, .written = true});
+    }
+    const auto graph = Finish(b);
+    ASSERT_TRUE(components::CheckStateAccess(graph, states));
+    std::vector<components::ComparisonExternalBinding> external;
+    const auto add = [&](TensorId root) {
+      const auto bytes = ir::StorageBytes(graph.tensor(root));
+      ASSERT_TRUE(bytes);
+      external.push_back({.original_root = root,
+                          .allocation_class = static_cast<std::uint32_t>(external.size() + 1),
+                          .allocation_bytes = *bytes,
+                          .bytes = *bytes,
+                          .alignment = 16});
+    };
+    for (const auto input : graph.inputs()) add(input);
+    for (const auto& state : states) add(state.tensor);
+    const components::GraphBuildIO io{graph, graph.inputs(), graph.outputs(), {}};
+    const components::ComparisonBoundaryView view{io, states, 0, external};
+    auto boundary = components::MakeComparisonBoundary(view, std::make_shared<ComparisonFunder>());
+    ASSERT_TRUE(boundary) << (boundary ? "" : boundary.error().detail);
+    auto planned = Plan(graph.Clone(), registry, kDevice, policy);
+    ASSERT_TRUE(planned) << (planned ? "" : planned.error().detail);
+    EXPECT_EQ(std::ranges::count_if(
+                  planned->graph.nodes(),
+                  [](const auto& node) { return node.key == ir::Fused(FusedKind::kGdnHistory); }),
+              2);
+    const auto mapped =
+        components::ValidateMappedComparisonBoundary(*boundary, planned->graph, planned->tensors);
+    EXPECT_TRUE(mapped) << (mapped ? "" : mapped.error().detail);
+    EXPECT_EQ(components::CheckStateAccess(planned->graph, states, planned->tensors).has_value(),
+              rows_count < 3);
+    // Source declarations stay exact, including the read that the rewrite
+    // proved unnecessary; callers cannot relabel the original state contract.
+    auto false_source = states;
+    false_source[0].read = false;
+    EXPECT_FALSE(components::CheckStateAccess(graph, false_source));
+    EXPECT_FALSE(components::MakeComparisonBoundary({io, false_source, 0, external},
+                                                    std::make_shared<ComparisonFunder>()));
+    if (rows_count < 3)
+      EXPECT_FALSE(
+          components::CheckMappedStateAccess(planned->graph, false_source, planned->tensors));
+    auto wrong_writes = states;
+    wrong_writes[0].written = false;
+    EXPECT_FALSE(
+        components::CheckMappedStateAccess(planned->graph, wrong_writes, planned->tensors));
+    auto swapped = planned->tensors;
+    std::swap(swapped[states[0].tensor.v], swapped[states[1].tensor.v]);
+    EXPECT_FALSE(components::ValidateMappedComparisonBoundary(*boundary, planned->graph, swapped));
+    // Even a graph that only removed reads may not silently omit a required
+    // write. Exact root identities alone cannot authorize a missing store.
+    ir::Builder no_writes;
+    std::vector<TensorId> map(graph.tensor_count());
+    for (const auto& state : states) map[state.tensor.v] = no_writes.State(F32({18, 1}), state.ref);
+    const auto unwritten = Finish(no_writes);
+    EXPECT_FALSE(components::CheckMappedStateAccess(unwritten, states, map));
   }
 }
 
@@ -1657,6 +1947,92 @@ TEST(PlannerPatternTest, ARefusedRewriteFallsBackToItsPrimitives) {
   EXPECT_TRUE(plan.dropped_rewrites.empty());
 }
 
+TEST(PlannerPatternTest, RetryMetadataRefusalIsTerminalAndRefunded) {
+  const auto registry = Registry();
+  const Policy policy{};
+  const SelectionView view(registry, kDevice, policy, false, false);
+  ir::Builder b;
+  const TensorId x = b.Input(F32({8}));
+  const TensorId first = b.Scale(x, 3.0F);
+  const TensorId refused = b.Scale(first, 2.0F);
+  b.Output(b.Scale(refused, 5.0F));
+  const ir::Graph g = Finish(b);
+
+  auto funder = std::make_shared<ComparisonFunder>();
+  llmp::planner::PlannerMetadataAdmission admission(funder);
+  funder->FailAt(1);
+  const auto out = ApplyPatternTable(kRefusingTable, g, view, nullptr, {}, {}, {}, nullptr, nullptr,
+                                     {}, {}, &admission);
+  ASSERT_FALSE(out.has_value());
+  EXPECT_EQ(out.error().error, ir::GraphError::kAdmission);
+  EXPECT_EQ(funder->active(), 0U);
+}
+
+TEST(PlannerComparisonTest, DiagnosticAdmissionChargesCumulativeLiveStrings) {
+  auto funder = std::make_shared<ComparisonFunder>();
+  {
+    llmp::planner::PlannerMetadataAdmission admission(funder);
+    ASSERT_FALSE(admission.refused());
+    constexpr std::uint64_t first = 48;
+    constexpr std::uint64_t second = 32;
+    constexpr std::uint64_t third = 16;
+    ASSERT_TRUE(admission.TryChargeDiagnostic(first));
+    ASSERT_TRUE(admission.TryChargeDiagnostic(second));
+    EXPECT_EQ(admission.storage_bytes(), first + second);
+    EXPECT_EQ(funder->active(), first + second);
+    // A high-water-only implementation would have charged only `first`.
+    funder->FailAt(funder->charge_count() + 1);
+    EXPECT_FALSE(admission.TryChargeDiagnostic(third));
+    EXPECT_TRUE(admission.refused());
+    EXPECT_EQ(funder->active(), first + second);
+  }
+  EXPECT_EQ(funder->active(), 0U);
+}
+
+TEST(PlannerComparisonTest, MatchDetailPhaseCanLowerWithoutRefundingHighWater) {
+  auto funder = std::make_shared<ComparisonFunder>();
+  {
+    llmp::planner::PlannerMetadataAdmission admission(funder);
+    ASSERT_TRUE(admission.Require(llmp::planner::PlannerMetadataPhase::kMatchDetail, 64));
+    ASSERT_TRUE(admission.SetMatchDetailLive(16));
+    EXPECT_EQ(admission.storage_bytes(), 64U);
+    ASSERT_TRUE(admission.Require(llmp::planner::PlannerMetadataPhase::kMatchDetail, 16));
+    EXPECT_EQ(admission.storage_bytes(), 64U);
+    funder->FailAt(funder->charge_count() + 1);
+    EXPECT_FALSE(admission.Require(llmp::planner::PlannerMetadataPhase::kMatchDetail, 65));
+    EXPECT_EQ(admission.storage_bytes(), 64U);
+  }
+  EXPECT_EQ(funder->active(), 0U);
+}
+
+TEST(PlannerComparisonTest, BuiltinEmissionAdmissionFailureIsTerminal) {
+  NormGraph fixture;
+  fixture.b.Output(fixture.m);
+  const ir::Graph graph = Finish(fixture.b);
+  auto registry = Registry();
+  const Pattern* pattern = FindPattern("rms_norm_mul");
+  ASSERT_NE(pattern, nullptr);
+  std::vector<NumericalChange> changes;
+  if (pattern->numerical_change) changes.push_back(*pattern->numerical_change);
+  Policy policy = FixtureNumericalPolicy(graph, {}, changes);
+  policy.enabled.push_back("rms_norm_mul");
+  Canonicalize(policy);
+  CheckAllFundedRewriteChargesRefuseTerminally(*pattern, graph, registry, policy);
+  const SelectionView view(registry, kDevice, policy, false, false);
+  auto funder = std::make_shared<ComparisonFunder>();
+  {
+    llmp::planner::PlannerMetadataAdmission admission(funder);
+    // The first charge admits the round inventory; deny the first matcher-owned
+    // trial allocation, before a failed match can be treated as no-match.
+    funder->FailAt(funder->charge_count() + 2);
+    const auto out = ApplyPatternTable(std::span(pattern, 1), graph, view, nullptr, {}, {}, {},
+                                       nullptr, nullptr, {}, {}, &admission);
+    ASSERT_FALSE(out.has_value());
+    EXPECT_EQ(out.error().error, ir::GraphError::kAdmission);
+  }
+  EXPECT_EQ(funder->active(), 0U);
+}
+
 // One write set (ir::ForEachWrittenSource): a cache store writes its cache,
 // a fused node each aliased output's source (a mean-pool store its blocks,
 // source 1, not its rotation's source 3).
@@ -1828,7 +2204,7 @@ TEST(PlannerPatternTest, QuantizedGluAuthenticatesBothProductsAndPreparedCompoun
           policy.numerical = std::move(*qualified);
         }
         if (authority == 4) policy.numerical_candidates = {NumericalChange::kQ8VectorReduction};
-        auto graph = primitive.Clone();
+        auto graph = CloneOf(primitive);
         if (already_fused) {
           // Supply the fused input directly rather than relying on a round-0
           // proof transfer. Grants still describe each original product.
@@ -2763,7 +3139,9 @@ TEST(PlannerPatternTest, NormAndItsWeightFuse) {
   NormGraph t;
   t.b.Output(t.m);
   const ex::Registry r = Registry();
-  const StepPlan p = PlanOf(Finish(t.b), r);
+  auto graph = Finish(t.b);
+  CheckFundedMatcher("rms_norm_mul", graph, r);
+  const StepPlan p = PlanOf(std::move(graph), r);
   EXPECT_EQ(Patterns(p), std::vector<std::string_view>{"rms_norm_mul"});
   EXPECT_EQ(Keys(p.graph), std::vector{ir::Fused(FusedKind::kRmsNormMul)});
   EXPECT_EQ(Names(p, r), std::vector<std::string>{"t.rms_norm_mul"});
@@ -2773,6 +3151,2204 @@ TEST(PlannerPatternTest, NormAndItsWeightFuse) {
   EXPECT_TRUE(p.tensors[t.m.v].valid());
   EXPECT_EQ(p.graph.outputs()[0], p.tensors[t.m.v]);
   EXPECT_EQ(p.graph.tensor(p.tensors[t.m.v]).shape(), ir::ShapeOf({64, 3}));
+}
+
+TEST(ComparisonOriginDagTest, RewriteDescendantsReceiveOnlyMatchedMemberLineage) {
+  NormGraph fixture;
+  fixture.b.Output(fixture.m);
+  auto graph = Finish(fixture.b);
+  auto owner = std::make_shared<ComparisonFunder>();
+  auto funded_graph = graph.Clone(owner);
+  ASSERT_TRUE(funded_graph) << funded_graph.error().detail;
+  graph = std::move(*funded_graph);
+  const auto registry = Registry();
+  const auto source_node_count = static_cast<std::uint32_t>(graph.nodes().size());
+  auto created = ComparisonOriginDag::Create(owner, source_node_count, graph.nodes().size() + 8,
+                                             graph.nodes().size() * 2 + 8);
+  ASSERT_TRUE(created) << created.error().detail;
+  auto dag = std::move(*created);
+  std::vector<ComparisonOriginSetId> initial;
+  initial.reserve(graph.nodes().size());
+  for (std::uint32_t i = 0; i < graph.nodes().size(); ++i) {
+    auto singleton = dag.AddSingleton(ir::NodeId{i});
+    ASSERT_TRUE(singleton) << singleton.error().detail;
+    initial.push_back(*singleton);
+  }
+  SelectionView view(registry, kDevice, Policy{}, false, false);
+  auto rewritten = ApplyPatterns(graph, view, nullptr, {}, {}, initial, &dag);
+  ASSERT_TRUE(rewritten) << rewritten.error().detail;
+  ASSERT_EQ(rewritten->origin_sets.size(), rewritten->graph.nodes().size());
+  const auto fused = std::ranges::find(rewritten->graph.nodes(), ir::Fused(FusedKind::kRmsNormMul),
+                                       &ir::Node::key);
+  ASSERT_NE(fused, rewritten->graph.nodes().end());
+  const auto fused_id = static_cast<std::uint32_t>(fused - rewritten->graph.nodes().begin());
+  const auto lineage = rewritten->origin_sets[fused_id];
+  EXPECT_TRUE(dag.Equals(lineage, {ir::NodeId{2}, ir::NodeId{3}}));
+  EXPECT_FALSE(dag.Contains(lineage, ir::NodeId{0}));
+  EXPECT_FALSE(dag.Contains(lineage, ir::NodeId{1}));
+}
+
+TEST(ComparisonOriginDagTest, PaidCopyExpandCarriesDirectionalMapsAndDescendantLineage) {
+  static_assert(!std::is_move_assignable_v<PlanSeed>);
+  auto owner = std::make_shared<ComparisonFunder>();
+  ir::Builder builder;
+  ASSERT_TRUE(builder.SetStorageFunder(owner));
+  const TensorId x = builder.Input(F32({64, 3}));
+  const TensorId w = builder.Weight(F32({64}), W(0));
+  const TensorId y =
+      builder.Fused(FusedKind::kRmsNormMul, std::array{x, w}, ir::NormParams{.eps = 1e-6F})[0];
+  builder.Output(y);
+  auto source = std::move(builder).Finish();
+  ASSERT_TRUE(source) << source.error().detail;
+  const auto source_nodes = static_cast<std::uint32_t>(source->nodes().size());
+  auto created = ComparisonOriginDag::Create(owner, source_nodes);
+  ASSERT_TRUE(created) << created.error().detail;
+  auto dag = std::move(*created);
+  std::vector<ComparisonOriginSetId> origins;
+  for (std::uint32_t i = 0; i < source_nodes; ++i) {
+    auto singleton = dag.AddSingleton(ir::NodeId{i});
+    ASSERT_TRUE(singleton) << singleton.error().detail;
+    origins.push_back(*singleton);
+  }
+  std::vector<bool> expand(source_nodes, false);
+  expand.back() = true;
+  const auto paid_before = owner->active();
+  {
+    auto expanded = CopyExpand(*source, expand, nullptr, nullptr, origins, &dag);
+    ASSERT_TRUE(expanded) << expanded.error().detail;
+    ASSERT_EQ(expanded->seed_origin_sets.size(), expanded->graph.nodes().size());
+    ASSERT_EQ(expanded->seed_to_input.size(), expanded->graph.nodes().size());
+    EXPECT_EQ(expanded->input_to_seed.size(), source->tensor_count());
+    EXPECT_EQ(expanded->input_to_seed[y.v], expanded->graph.outputs()[0]);
+    ASSERT_EQ(expanded->graph.nodes().size(), 4U);
+    EXPECT_EQ(expanded->seed_to_input[2], ir::NodeId{2});
+    EXPECT_EQ(expanded->seed_to_input[3], ir::NodeId{2});
+    EXPECT_EQ(expanded->seed_origin_sets[2], origins[2]);
+    EXPECT_EQ(expanded->seed_origin_sets[3], origins[2]);
+    EXPECT_GT(owner->active(), paid_before);
+  }
+  EXPECT_EQ(owner->active(), paid_before);
+}
+
+TEST(ComparisonOriginDagTest, NodeMapMayAliasChildrenAcrossGrowth) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  auto created = ComparisonOriginDag::Create(owner, 2, 3, 2);
+  ASSERT_TRUE(created);
+  auto dag = std::move(*created);
+  const std::array members = {ir::NodeId{0}, ir::NodeId{1}};
+  const std::array source_nodes = {ir::NodeId{0}, ir::NodeId{1}};
+  std::array<ComparisonOriginSetId, 2> singleton_ids{};
+  for (std::size_t i = 0; i < singleton_ids.size(); ++i) {
+    auto id = dag.AddSingleton(source_nodes[i]);
+    ASSERT_TRUE(id);
+    singleton_ids[i] = *id;
+  }
+  ASSERT_TRUE(dag.AddUnion(singleton_ids));
+  const auto aliased_node_origins = dag.children();
+  auto joined = dag.AddUnion(members, aliased_node_origins);
+  ASSERT_TRUE(joined) << joined.error().detail;
+  EXPECT_TRUE(dag.Equals(*joined, {ir::NodeId{0}, ir::NodeId{1}}));
+}
+
+TEST(ComparisonOriginDagTest, RejectsMemberBorrowFromEntriesBeforeGrowth) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  auto created = ComparisonOriginDag::Create(owner, 4, 1, 0);
+  ASSERT_TRUE(created);
+  auto dag = std::move(*created);
+  ASSERT_TRUE(dag.AddSingleton(ir::NodeId{0}));
+  const auto paid = owner->active();
+  const std::span<const ir::NodeId> borrowed(&dag.entries()[0].origin, 1);
+  const std::array node_origins{ComparisonOriginSetId{0}};
+  auto refused = dag.AddUnion(borrowed, node_origins);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().error, PlanError::kStaleComparisonSite);
+  EXPECT_EQ(dag.entries().size(), 1U);
+  EXPECT_EQ(owner->active(), paid);
+}
+
+TEST(ComparisonOriginDagTest, RejectsUnionIdBorrowsFromEntryFieldsBeforeGrowth) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  auto created = ComparisonOriginDag::Create(owner, 2, 1, 0);
+  ASSERT_TRUE(created);
+  auto dag = std::move(*created);
+  ASSERT_TRUE(dag.AddSingleton(ir::NodeId{0}));
+  const std::array child{ComparisonOriginSetId{0}};
+  ASSERT_TRUE(dag.AddUnion(child));
+  const auto paid = owner->active();
+
+  // These typed one-element spans borrow fields inside entries(). Reserving
+  // another entry could invalidate either source before the values are read.
+  const auto& entry = dag.entries()[1];
+  const std::span<const ComparisonOriginSetId> borrowed_member(&entry.first_child, 1);
+  auto refused_member = dag.AddUnion(borrowed_member);
+  ASSERT_FALSE(refused_member);
+  EXPECT_EQ(refused_member.error().error, PlanError::kStaleComparisonSite);
+  EXPECT_EQ(dag.entries().size(), 2U);
+  EXPECT_EQ(owner->active(), paid);
+
+  const std::array nodes{ir::NodeId{0}};
+  const std::span<const ComparisonOriginSetId> borrowed_origin(&entry.first_child, 1);
+  auto refused_origin = dag.AddUnion(nodes, borrowed_origin);
+  ASSERT_FALSE(refused_origin);
+  EXPECT_EQ(refused_origin.error().error, PlanError::kStaleComparisonSite);
+  EXPECT_EQ(dag.entries().size(), 2U);
+  EXPECT_EQ(owner->active(), paid);
+}
+
+TEST(ComparisonAlternativeTest, ExpandsOnlyTheRequestedFusedNode) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  ir::Builder builder;
+  const TensorId x = builder.Input(F32({1024, 1}));
+  const TensorId weight = builder.Weight(F32({1024}), W(0));
+  const TensorId result =
+      builder.Fused(FusedKind::kRmsNormMul, std::array{x, weight}, ir::NormParams{.eps = 1e-6F})[0];
+  const TensorId other_x = builder.Input(F32({64, 1}));
+  const TensorId other_weight = builder.Weight(F32({64}), W(1));
+  const TensorId other_norm = builder.RmsNorm(other_x, 1e-6F);
+  const TensorId other_result = builder.Mul(other_norm, other_weight);
+  builder.Output(result);
+  builder.Output(other_result);
+  auto unowned = std::move(builder).Finish();
+  ASSERT_TRUE(unowned) << unowned.error().detail;
+  auto funded = unowned->Clone(owner);
+  ASSERT_TRUE(funded) << funded.error().detail;
+  ir::Graph graph = std::move(*funded);
+
+  const std::array weights{
+      components::StepWeight{
+          .tensor = weight, .ref = W(0), .parts = {{"weight", format::PartRole::kData}}},
+      components::StepWeight{.tensor = other_weight,
+                             .ref = W(1),
+                             .parts = {{"other_weight", format::PartRole::kData}}}};
+  const components::GraphBuildIO io{graph, graph.inputs(), graph.outputs(), weights};
+  const auto extent = *ir::StorageBytes(graph.tensor(x));
+  const auto weight_extent = *ir::StorageBytes(graph.tensor(weight));
+  const auto other_extent = *ir::StorageBytes(graph.tensor(other_x));
+  const auto other_weight_extent = *ir::StorageBytes(graph.tensor(other_weight));
+  const std::array external{
+      components::ComparisonExternalBinding{.original_root = x,
+                                            .allocation_class = 0,
+                                            .allocation_bytes = extent,
+                                            .bytes = extent,
+                                            .alignment = 64},
+      components::ComparisonExternalBinding{.original_root = weight,
+                                            .part = format::PartRole::kData,
+                                            .allocation_class = 1,
+                                            .allocation_bytes = weight_extent,
+                                            .bytes = weight_extent,
+                                            .alignment = 64},
+      components::ComparisonExternalBinding{.original_root = other_x,
+                                            .allocation_class = 2,
+                                            .allocation_bytes = other_extent,
+                                            .bytes = other_extent,
+                                            .alignment = 64},
+      components::ComparisonExternalBinding{.original_root = other_weight,
+                                            .part = format::PartRole::kData,
+                                            .allocation_class = 3,
+                                            .allocation_bytes = other_weight_extent,
+                                            .bytes = other_weight_extent,
+                                            .alignment = 64}};
+  const components::ComparisonBoundaryView boundary{.io = io, .external = external};
+  ComparisonSiteSelector selector;
+  selector.source_graph_identity = graph.identity();
+  selector.kind = ComparisonSiteKind::kFusedNode;
+  selector.member_origins = {{ir::NodeId{2}}};
+  const auto registry = Registry();
+  auto inventory = BoundComparison(boundary, selector, owner, registry, kDevice, {}, {});
+  ASSERT_TRUE(inventory) << inventory.error().detail;
+  ASSERT_EQ(inventory->incumbent.view().primitive_digest,
+            inventory->source_boundary.source_digest());
+  const auto selected = [](const StepPlan& plan, ir::NodeId source, ir::OpKey key) {
+    for (std::uint32_t i = 0; i < plan.graph.nodes().size(); ++i) {
+      if (i >= plan.from.size() || plan.from[i] != source || plan.graph.node({i}).key != key)
+        continue;
+      for (const auto& step : plan.steps)
+        if (std::ranges::contains(step.nodes, ir::NodeId{i})) return true;
+    }
+    return false;
+  };
+  const auto expect_final_lineage = [&](OwnedComparisonPlan& owned) {
+    ASSERT_TRUE(owned.final_origins);
+    EXPECT_EQ(owned.final_node_origins.source_graph_identity, graph.identity());
+    EXPECT_EQ(owned.final_node_origins.planned_graph_identity, owned.view().graph.identity());
+    ASSERT_EQ(owned.final_node_origins.node_origins.values.size(),
+              owned.view().graph.nodes().size());
+    for (const ComparisonOriginSetId set : owned.final_node_origins.node_origins.values) {
+      const auto count = owned.final_origins->OriginCount(set);
+      ASSERT_TRUE(count);
+      EXPECT_GT(*count, 0U);
+    }
+  };
+  expect_final_lineage(inventory->incumbent);
+  EXPECT_TRUE(
+      selected(inventory->incumbent.view(), ir::NodeId{2}, ir::Fused(FusedKind::kRmsNormMul)));
+
+  auto alternative = MakeAlternative(*inventory);
+  ASSERT_TRUE(alternative) << alternative.error().detail;
+  auto planned = PlanAlternative(*inventory, std::move(*alternative), registry, kDevice, {}, {});
+  ASSERT_TRUE(planned) << planned.error().detail;
+  expect_final_lineage(*planned);
+  EXPECT_EQ(planned->view().primitive_digest, inventory->source_boundary.source_digest());
+  EXPECT_FALSE(selected(planned->view(), ir::NodeId{2}, ir::Fused(FusedKind::kRmsNormMul)));
+  EXPECT_EQ(planned->view().tensors.size(), graph.tensor_count());
+  ASSERT_EQ(planned->view().applied.size(), 1U);
+  EXPECT_EQ(planned->view().applied[0].pattern, "rms_norm_mul");
+  EXPECT_EQ(planned->view().applied[0].replaced,
+            (std::vector<ir::NodeId>{ir::NodeId{5}, ir::NodeId{6}}));
+  EXPECT_GT(owner->active(), 0U);
+
+  // Exercise a current-site exclusion using the complete discovered fused
+  // boundary. The discovered one-owner site is replayed as two primitive
+  // members while the alternative planner tests whether the exact fusion can
+  // reform; matching only the fused node's member-local port ordinals is not
+  // sufficient for that expanded region.
+  const std::array fused_filter{ir::Fused(FusedKind::kRmsNormMul)};
+  auto discovered =
+      DiscoverComparisonPlan(boundary, fused_filter, false, owner, registry, kDevice, {}, {});
+  ASSERT_TRUE(discovered) << discovered.error().detail;
+  const auto discovered_ticket = std::ranges::find_if(
+      discovered->discovery.tickets(), [](const ComparisonDiscoveryTicket& ticket) {
+        if (ticket.kind != ComparisonSiteKind::kFusedNode || ticket.member_offsets.size() != 2 ||
+            ticket.member_origins.size() != 1)
+          return false;
+        return ticket.member_origins.front() == ir::NodeId{2};
+      });
+  ASSERT_NE(discovered_ticket, discovered->discovery.tickets().end());
+  ASSERT_EQ(discovered_ticket->owner_segments.size(), 1U);
+  ASSERT_FALSE(discovered_ticket->boundary_ports.empty());
+  ComparisonSiteSelector discovered_selector;
+  discovered_selector.source_graph_identity = discovered->discovery.source_identity();
+  discovered_selector.kind = discovered_ticket->kind;
+  discovered_selector.pattern = std::string(discovered_ticket->pattern);
+  discovered_selector.version = discovered_ticket->version;
+  discovered_selector.member_origins.emplace_back(discovered_ticket->member_origins.begin(),
+                                                  discovered_ticket->member_origins.end());
+  discovered_selector.member_owner_segments = discovered_ticket->owner_segments;
+  discovered_selector.boundary_ports = discovered_ticket->boundary_ports;
+  PlanOptions discovered_options;
+  Policy discovered_policy;
+  ComparisonPlanningEnvironment discovered_environment(boundary, registry, kDevice,
+                                                       discovered_policy, discovered_options);
+  auto discovered_ledger = ComparisonDecisionLedger::Create(discovered_environment, owner);
+  ASSERT_TRUE(discovered_ledger) << discovered_ledger.error().detail;
+  auto discovered_trial = CaptureComparisonTrial(discovered_environment, *discovered_ledger,
+                                                 discovered_selector, owner);
+  ASSERT_TRUE(discovered_trial) << discovered_trial.error().detail;
+  auto discovered_alternative = MakeAlternative(*discovered_trial);
+  ASSERT_TRUE(discovered_alternative) << discovered_alternative.error().detail;
+  auto discovered_plan = PlanAlternative(discovered_environment, *discovered_trial,
+                                         std::move(*discovered_alternative), *discovered_ledger);
+  ASSERT_TRUE(discovered_plan) << discovered_plan.error().detail;
+  EXPECT_FALSE(selected(discovered_plan->view(), ir::NodeId{2}, ir::Fused(FusedKind::kRmsNormMul)));
+
+  auto changed_owner = discovered_selector;
+  changed_owner.member_owner_segments[0] ^= std::uint8_t{1};
+  auto refused_owner =
+      CaptureComparisonTrial(discovered_environment, *discovered_ledger, changed_owner, owner);
+  EXPECT_FALSE(refused_owner);
+  auto changed_port = discovered_selector;
+  ++changed_port.boundary_ports[0].view_offset;
+  auto refused_port =
+      CaptureComparisonTrial(discovered_environment, *discovered_ledger, changed_port, owner);
+  EXPECT_FALSE(refused_port);
+
+  ComparisonSiteSelector rewrite_selector;
+  rewrite_selector.source_graph_identity = graph.identity();
+  rewrite_selector.kind = ComparisonSiteKind::kRewrite;
+  rewrite_selector.pattern = "rms_norm_mul";
+  rewrite_selector.member_origins = {{ir::NodeId{5}}, {ir::NodeId{6}}};
+  auto rewrite_inventory =
+      BoundComparison(boundary, rewrite_selector, owner, registry, kDevice, {}, {});
+  ASSERT_TRUE(rewrite_inventory) << rewrite_inventory.error().detail;
+  ASSERT_EQ(rewrite_inventory->site.accepted_member_origins, rewrite_selector.member_origins);
+  EXPECT_EQ(rewrite_inventory->checkpoint.graph.nodes().size(), graph.nodes().size());
+  auto rewrite_alternative = MakeAlternative(*rewrite_inventory);
+  ASSERT_TRUE(rewrite_alternative) << rewrite_alternative.error().detail;
+  auto rewrite_planned = PlanAlternative(*rewrite_inventory, std::move(*rewrite_alternative),
+                                         registry, kDevice, {}, {});
+  ASSERT_TRUE(rewrite_planned) << rewrite_planned.error().detail;
+  expect_final_lineage(rewrite_inventory->incumbent);
+  expect_final_lineage(*rewrite_planned);
+  EXPECT_TRUE(selected(rewrite_inventory->incumbent.view(), ir::NodeId{2},
+                       ir::Fused(FusedKind::kRmsNormMul)));
+  EXPECT_TRUE(selected(rewrite_planned->view(), ir::NodeId{2}, ir::Fused(FusedKind::kRmsNormMul)));
+  EXPECT_FALSE(std::ranges::any_of(rewrite_planned->view().applied, [](const Applied& applied) {
+    return applied.pattern == "rms_norm_mul" &&
+           applied.replaced == std::vector<ir::NodeId>{ir::NodeId{5}, ir::NodeId{6}};
+  }));
+}
+
+TEST(ComparisonAlternativeTest, LedgerPreservesAnEarlierOriginalFusionDecision) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  ir::Builder builder;
+  const auto make_fused = [&](std::uint16_t role) {
+    const TensorId x = builder.Input(F32({1024, 1}));
+    const TensorId weight = builder.Weight(F32({1024}), W(role));
+    const TensorId result = builder.Fused(FusedKind::kRmsNormMul, std::array{x, weight},
+                                          ir::NormParams{.eps = 1e-6F})[0];
+    builder.Output(result);
+    return std::pair{x, weight};
+  };
+  const auto [x0, w0] = make_fused(0);
+  const auto [x1, w1] = make_fused(1);
+  auto unowned = std::move(builder).Finish();
+  ASSERT_TRUE(unowned) << unowned.error().detail;
+  auto funded = unowned->Clone(owner);
+  ASSERT_TRUE(funded) << funded.error().detail;
+  ir::Graph graph = std::move(*funded);
+  const std::array weights{
+      components::StepWeight{.tensor = w0, .ref = W(0), .parts = {{"w0", format::PartRole::kData}}},
+      components::StepWeight{
+          .tensor = w1, .ref = W(1), .parts = {{"w1", format::PartRole::kData}}}};
+  const components::GraphBuildIO io{graph, graph.inputs(), graph.outputs(), weights};
+  const auto x0_bytes = *ir::StorageBytes(graph.tensor(x0));
+  const auto w0_bytes = *ir::StorageBytes(graph.tensor(w0));
+  const auto x1_bytes = *ir::StorageBytes(graph.tensor(x1));
+  const auto w1_bytes = *ir::StorageBytes(graph.tensor(w1));
+  const std::array external{components::ComparisonExternalBinding{.original_root = x0,
+                                                                  .allocation_class = 0,
+                                                                  .allocation_bytes = x0_bytes,
+                                                                  .bytes = x0_bytes,
+                                                                  .alignment = 64},
+                            components::ComparisonExternalBinding{.original_root = w0,
+                                                                  .part = format::PartRole::kData,
+                                                                  .allocation_class = 1,
+                                                                  .allocation_bytes = w0_bytes,
+                                                                  .bytes = w0_bytes,
+                                                                  .alignment = 64},
+                            components::ComparisonExternalBinding{.original_root = x1,
+                                                                  .allocation_class = 2,
+                                                                  .allocation_bytes = x1_bytes,
+                                                                  .bytes = x1_bytes,
+                                                                  .alignment = 64},
+                            components::ComparisonExternalBinding{.original_root = w1,
+                                                                  .part = format::PartRole::kData,
+                                                                  .allocation_class = 3,
+                                                                  .allocation_bytes = w1_bytes,
+                                                                  .bytes = w1_bytes,
+                                                                  .alignment = 64}};
+  const components::ComparisonBoundaryView boundary{.io = io, .external = external};
+  const auto registry = Registry();
+  const Policy policy{};
+  PlanOptions options;
+  options.on_stream = [](std::string_view) { return true; };
+  ComparisonPlanningEnvironment environment(boundary, registry, kDevice, policy, options);
+  auto created = ComparisonDecisionLedger::Create(environment, owner);
+  ASSERT_TRUE(created) << created.error().detail;
+  auto ledger = std::move(*created);
+  PlanOptions replacement_options = options;
+  replacement_options.on_stream = [](std::string_view) { return false; };
+  ComparisonPlanningEnvironment replacement_environment(boundary, registry, kDevice, policy,
+                                                        replacement_options);
+  auto replaced_environment = ledger.Validate(replacement_environment);
+  ASSERT_FALSE(replaced_environment);
+  EXPECT_EQ(replaced_environment.error().error, PlanError::kStaleComparisonSite);
+  const auto selector = [&](ir::NodeId node) {
+    ComparisonSiteSelector result;
+    result.source_graph_identity = graph.identity();
+    result.kind = ComparisonSiteKind::kFusedNode;
+    result.member_origins = {{node}};
+    return result;
+  };
+  auto first = CaptureComparisonTrial(environment, ledger, selector(ir::NodeId{2}), owner);
+  ASSERT_TRUE(first) << first.error().detail;
+  auto first_alternative = MakeAlternative(*first);
+  ASSERT_TRUE(first_alternative) << first_alternative.error().detail;
+  auto legacy_inventory =
+      BoundComparison(boundary, selector(ir::NodeId{2}), owner, registry, kDevice, {}, {});
+  ASSERT_TRUE(legacy_inventory) << legacy_inventory.error().detail;
+  auto cross_overload_alternative = MakeAlternative(*first);
+  ASSERT_TRUE(cross_overload_alternative) << cross_overload_alternative.error().detail;
+  auto cross_overload = PlanAlternative(*legacy_inventory, std::move(*cross_overload_alternative),
+                                        registry, kDevice, {}, {});
+  ASSERT_FALSE(cross_overload);
+  EXPECT_EQ(cross_overload.error().error, PlanError::kStaleComparisonSite);
+  auto first_plan = PlanAlternative(environment, *first, std::move(*first_alternative), ledger);
+  ASSERT_TRUE(first_plan) << first_plan.error().detail;
+
+  // A candidate planned against generation zero cannot be committed after a
+  // different candidate advances this same ledger.
+  auto pending_trial = CaptureComparisonTrial(environment, ledger, selector(ir::NodeId{5}), owner);
+  ASSERT_TRUE(pending_trial) << pending_trial.error().detail;
+  auto pending_alternative = MakeAlternative(*pending_trial);
+  ASSERT_TRUE(pending_alternative) << pending_alternative.error().detail;
+  auto pending_plan =
+      PlanAlternative(environment, *pending_trial, std::move(*pending_alternative), ledger);
+  ASSERT_TRUE(pending_plan) << pending_plan.error().detail;
+  auto other_created = ComparisonDecisionLedger::Create(environment, owner);
+  ASSERT_TRUE(other_created) << other_created.error().detail;
+  auto other_ledger = std::move(*other_created);
+  auto other_trial =
+      CaptureComparisonTrial(environment, other_ledger, selector(ir::NodeId{5}), owner);
+  ASSERT_TRUE(other_trial) << other_trial.error().detail;
+  auto other_alternative = MakeAlternative(*other_trial);
+  ASSERT_TRUE(other_alternative) << other_alternative.error().detail;
+  auto other_plan =
+      PlanAlternative(environment, *other_trial, std::move(*other_alternative), other_ledger);
+  ASSERT_TRUE(other_plan) << other_plan.error().detail;
+  auto cross_ledger = ledger.CommitAcceptedAlternative(environment, *other_trial, *other_plan);
+  ASSERT_FALSE(cross_ledger);
+  EXPECT_EQ(cross_ledger.error().error, PlanError::kStaleComparisonSite);
+  EXPECT_TRUE(ledger.records().empty());
+
+  const auto paid_before_commit = owner->active();
+  owner->FailAt(owner->charge_count() + 1);
+  auto refused = ledger.CommitAcceptedAlternative(environment, *first, *first_plan);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().error, PlanError::kAdmission);
+  EXPECT_TRUE(ledger.records().empty());
+  EXPECT_EQ(owner->active(), paid_before_commit);
+  owner->FailAt(0);
+  ASSERT_TRUE(ledger.CommitAcceptedAlternative(environment, *first, *first_plan));
+  ASSERT_EQ(ledger.records().size(), 1U);
+  auto stale_commit = ledger.CommitAcceptedAlternative(environment, *pending_trial, *pending_plan);
+  ASSERT_FALSE(stale_commit);
+  EXPECT_EQ(stale_commit.error().error, PlanError::kStaleComparisonSite);
+  EXPECT_EQ(ledger.records().size(), 1U);
+
+  auto second = CaptureComparisonTrial(environment, ledger, selector(ir::NodeId{5}), owner);
+  ASSERT_TRUE(second) << second.error().detail;
+  auto second_alternative = MakeAlternative(*second);
+  ASSERT_TRUE(second_alternative) << second_alternative.error().detail;
+  auto second_plan = PlanAlternative(environment, *second, std::move(*second_alternative), ledger);
+  ASSERT_TRUE(second_plan) << second_plan.error().detail;
+  ASSERT_TRUE(second_plan->alternative_owner);
+  ASSERT_FALSE(second_plan->alternative_owner->prior_decision_exclusions.empty());
+  EXPECT_EQ(second_plan->alternative_owner->prior_decision_exclusions.front().prior_site_identity,
+            first_plan->alternative_owner->site.exact_site_identity);
+  const auto selected = [](const StepPlan& plan, ir::NodeId source, ir::OpKey key) {
+    for (std::uint32_t i = 0; i < plan.graph.nodes().size(); ++i) {
+      if (i >= plan.from.size() || plan.from[i] != source || plan.graph.node({i}).key != key)
+        continue;
+      for (const auto& step : plan.steps)
+        if (std::ranges::contains(step.nodes, ir::NodeId{i})) return true;
+    }
+    return false;
+  };
+  EXPECT_FALSE(selected(second_plan->view(), ir::NodeId{2}, ir::Fused(FusedKind::kRmsNormMul)));
+  EXPECT_FALSE(selected(second_plan->view(), ir::NodeId{5}, ir::Fused(FusedKind::kRmsNormMul)));
+  EXPECT_EQ(second_plan->view().primitive_digest, graph.Digest());
+  EXPECT_EQ(second_plan->view().tensors.size(), graph.tensor_count());
+  ASSERT_TRUE(second_plan->final_origins);
+  ASSERT_EQ(second_plan->final_node_origins.node_origins.values.size(),
+            second_plan->view().graph.nodes().size());
+  EXPECT_EQ(owner->active() > 0, true);
+}
+
+TEST(ComparisonAlternativeTest, LedgerCommitsTwoIndependentRewriteSitesInSourceOrder) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  ir::Builder builder;
+  struct Site {
+    TensorId input{};
+    TensorId weight{};
+    TensorId normalized{};
+    TensorId product{};
+  };
+  const auto make_site = [&](std::uint16_t role) {
+    Site site;
+    site.input = builder.Input(F32({64, 2}));
+    site.weight = builder.Weight(F32({64}), W(role));
+    site.normalized = builder.RmsNorm(site.input, 1e-6f);
+    site.product = builder.Mul(site.normalized, site.weight);
+    builder.Output(site.product);
+    return site;
+  };
+  const Site first = make_site(0);
+  const Site second = make_site(1);
+  auto unowned = std::move(builder).Finish();
+  ASSERT_TRUE(unowned) << unowned.error().detail;
+  auto funded = unowned->Clone(owner);
+  ASSERT_TRUE(funded) << funded.error().detail;
+  ir::Graph graph = std::move(*funded);
+  const std::array weights{
+      components::StepWeight{
+          .tensor = first.weight, .ref = W(0), .parts = {{"first", format::PartRole::kData}}},
+      components::StepWeight{
+          .tensor = second.weight, .ref = W(1), .parts = {{"second", format::PartRole::kData}}}};
+  const components::GraphBuildIO io{graph, graph.inputs(), graph.outputs(), weights};
+  std::vector<components::ComparisonExternalBinding> external;
+  std::uint32_t allocation_class = 0;
+  for (const TensorId input : graph.inputs()) {
+    const auto bytes = *ir::StorageBytes(graph.tensor(input));
+    external.push_back({.original_root = input,
+                        .allocation_class = allocation_class++,
+                        .allocation_bytes = bytes,
+                        .bytes = bytes,
+                        .alignment = 64});
+  }
+  for (const auto& weight : weights) {
+    const auto bytes = *ir::StorageBytes(graph.tensor(weight.tensor));
+    external.push_back({.original_root = weight.tensor,
+                        .part = format::PartRole::kData,
+                        .allocation_class = allocation_class++,
+                        .allocation_bytes = bytes,
+                        .bytes = bytes,
+                        .alignment = 64});
+  }
+  const components::ComparisonBoundaryView boundary{.io = io, .external = external};
+  const auto registry = Registry();
+  const Policy policy{};
+  const PlanOptions options{};
+  ComparisonPlanningEnvironment environment(boundary, registry, kDevice, policy, options);
+  auto made_ledger = ComparisonDecisionLedger::Create(environment, owner);
+  ASSERT_TRUE(made_ledger) << made_ledger.error().detail;
+  auto ledger = std::move(*made_ledger);
+  const auto selector = [&](const Site& site) {
+    ComparisonSiteSelector result;
+    result.source_graph_identity = graph.identity();
+    result.kind = ComparisonSiteKind::kRewrite;
+    result.pattern = "rms_norm_mul";
+    result.member_origins = {{graph.producer(site.normalized)}, {graph.producer(site.product)}};
+    return result;
+  };
+  auto first_trial = CaptureComparisonTrial(environment, ledger, selector(first), owner);
+  ASSERT_TRUE(first_trial) << first_trial.error().detail;
+  auto first_alternative = MakeAlternative(*first_trial);
+  ASSERT_TRUE(first_alternative) << first_alternative.error().detail;
+  auto first_plan =
+      PlanAlternative(environment, *first_trial, std::move(*first_alternative), ledger);
+  ASSERT_TRUE(first_plan) << first_plan.error().detail;
+  ASSERT_TRUE(ledger.CommitAcceptedAlternative(environment, *first_trial, *first_plan));
+
+  auto second_trial = CaptureComparisonTrial(environment, ledger, selector(second), owner);
+  ASSERT_TRUE(second_trial) << second_trial.error().detail;
+  auto second_alternative = MakeAlternative(*second_trial);
+  ASSERT_TRUE(second_alternative) << second_alternative.error().detail;
+  auto second_plan =
+      PlanAlternative(environment, *second_trial, std::move(*second_alternative), ledger);
+  ASSERT_TRUE(second_plan) << second_plan.error().detail;
+  ASSERT_TRUE(second_plan->alternative_owner);
+  ASSERT_EQ(second_plan->alternative_owner->prior_decision_exclusions.size(), 1U);
+  EXPECT_EQ(second_plan->alternative_owner->prior_decision_exclusions.front().prior_site_identity,
+            first_plan->alternative_owner->site.exact_site_identity);
+  EXPECT_TRUE(std::ranges::none_of(second_plan->view().graph.nodes(), [](const ir::Node& node) {
+    return node.key == ir::Fused(FusedKind::kRmsNormMul);
+  }));
+  ASSERT_TRUE(ledger.CommitAcceptedAlternative(environment, *second_trial, *second_plan));
+  ASSERT_EQ(ledger.records().size(), 2U);
+  EXPECT_TRUE(std::ranges::all_of(ledger.records(), [](const ComparisonDecisionRecord& record) {
+    return record.kind == ComparisonSiteKind::kRewrite && record.pattern == "rms_norm_mul" &&
+           record.complete_member_owner_segments.size() == 2 &&
+           !record.complete_boundary_ports.empty();
+  }));
+}
+
+TEST(ComparisonAlternativeTest, DecomposesOnlyTheExactOverlappingRewriteSite) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  ir::Builder builder;
+  struct Region {
+    TensorId input{};
+    TensorId position{};
+    TensorId weight{};
+    TensorId norm{};
+    TensorId product{};
+    TensorId rotated{};
+  };
+  const auto region = [&](std::uint8_t segment, std::uint16_t weight_role) {
+    builder.SetOwner(segment);
+    Region result;
+    result.input = builder.Input(F32({64, 1}));
+    result.position = builder.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({1})));
+    result.weight = builder.Weight(F32({64}), W(weight_role));
+    result.norm = builder.RmsNorm(result.input, 1e-6F);
+    result.product = builder.Mul(result.norm, result.weight);
+    result.rotated =
+        builder.Rope(result.product, result.position, {},
+                     ir::RopeParams{.mode = ir::RopeMode::kNeox, .dims = 64, .base = 10000.0F});
+    builder.Output(result.rotated);
+    builder.SetJoined();
+    return result;
+  };
+  const Region first = region(1, 0);
+  const Region second = region(2, 1);
+  auto unowned = std::move(builder).Finish();
+  ASSERT_TRUE(unowned) << unowned.error().detail;
+  auto funded = unowned->Clone(owner);
+  ASSERT_TRUE(funded) << funded.error().detail;
+  ir::Graph graph = std::move(*funded);
+  const std::array weights{
+      components::StepWeight{.tensor = first.weight,
+                             .ref = W(0),
+                             .parts = {{"first_weight", format::PartRole::kData}}},
+      components::StepWeight{.tensor = second.weight,
+                             .ref = W(1),
+                             .parts = {{"second_weight", format::PartRole::kData}}}};
+  const components::GraphBuildIO io{graph, graph.inputs(), graph.outputs(), weights};
+  std::vector<components::ComparisonExternalBinding> external;
+  std::uint32_t allocation_class = 0;
+  for (const TensorId input : graph.inputs()) {
+    const auto bytes = *ir::StorageBytes(graph.tensor(input));
+    external.push_back({.original_root = input,
+                        .allocation_class = allocation_class++,
+                        .allocation_bytes = bytes,
+                        .bytes = bytes,
+                        .alignment = 64});
+  }
+  for (const auto& weight : weights) {
+    const auto bytes = *ir::StorageBytes(graph.tensor(weight.tensor));
+    external.push_back({.original_root = weight.tensor,
+                        .part = format::PartRole::kData,
+                        .allocation_class = allocation_class++,
+                        .allocation_bytes = bytes,
+                        .bytes = bytes,
+                        .alignment = 64});
+  }
+  const components::ComparisonBoundaryView boundary{.io = io, .external = external};
+  const auto* accepted = FindPattern("interleaved_norm_rope");
+  ASSERT_NE(accepted, nullptr);
+  const ComparisonSiteSelector selector{.source_graph_identity = graph.identity(),
+                                        .kind = ComparisonSiteKind::kRewrite,
+                                        .pattern = std::string(accepted->name),
+                                        .version = accepted->version,
+                                        .member_origins = {{graph.producer(first.norm)},
+                                                           {graph.producer(first.product)},
+                                                           {graph.producer(first.rotated)}},
+                                        .member_owner_segments = {},
+                                        .boundary_ports = {}};
+  auto implementations = Everything();
+  implementations.push_back(
+      Fake("t.rms_norm_mul_rope_sections", Any(ir::Fused(FusedKind::kRmsNormMulRopeSections))));
+  const auto registry = Registry(std::move(implementations));
+  auto inventory = BoundComparison(boundary, selector, owner, registry, kDevice, {}, {});
+  ASSERT_TRUE(inventory) << inventory.error().detail;
+  ASSERT_EQ(inventory->incumbent.view().applied.size(), 2U);
+  EXPECT_TRUE(inventory->site.selector.boundary_ports.empty());
+  ASSERT_EQ(inventory->site.complete_member_owner_segments, (std::vector<std::uint8_t>{1, 1, 1}));
+  ASSERT_EQ(inventory->site.complete_boundary_ports.size(), 4U);
+  EXPECT_EQ(
+      std::ranges::count_if(inventory->incumbent.view().applied,
+                            [&](const auto& applied) { return applied.pattern == accepted->name; }),
+      2);
+
+  const auto active_before_refusal = owner->active();
+  owner->FailAt(owner->charge_count() + 1);
+  auto refused_records = MakeAlternative(*inventory);
+  ASSERT_FALSE(refused_records);
+  EXPECT_EQ(refused_records.error().error, PlanError::kAdmission);
+  EXPECT_EQ(owner->active(), active_before_refusal);
+  owner->FailAt(0);
+
+  auto alternative = MakeAlternative(*inventory);
+  ASSERT_TRUE(alternative) << alternative.error().detail;
+  const auto* competing = FindPattern("rms_norm_mul_rope");
+  ASSERT_NE(competing, nullptr);
+  const auto* sectioned = FindPattern("rms_norm_mul_rope_sections");
+  ASSERT_NE(sectioned, nullptr);
+  const std::array second_member_origins{ComparisonOriginSet{graph.producer(second.norm)},
+                                         ComparisonOriginSet{graph.producer(second.product)},
+                                         ComparisonOriginSet{graph.producer(second.rotated)}};
+  std::array<bool, 3> first_found{}, second_found{};
+  for (std::uint32_t n = 0; n < alternative->graph.nodes().size(); ++n) {
+    for (std::size_t member = 0; member < first_found.size(); ++member) {
+      if (!first_found[member] &&
+          alternative->origins.Equals(alternative->alternative_node_origins[n],
+                                      selector.member_origins[member])) {
+        first_found[member] = true;
+      }
+      if (!second_found[member] &&
+          alternative->origins.Equals(alternative->alternative_node_origins[n],
+                                      second_member_origins[member])) {
+        second_found[member] = true;
+      }
+    }
+  }
+  // The accepted region's exact site is authenticated by all its ports. A
+  // different region or a changed directional boundary map cannot borrow it.
+  EXPECT_TRUE(std::ranges::all_of(first_found, [](bool found) { return found; }));
+  EXPECT_TRUE(std::ranges::all_of(second_found, [](bool found) { return found; }));
+  auto planned = PlanAlternative(*inventory, std::move(*alternative), registry, kDevice, {}, {});
+  ASSERT_TRUE(planned) << planned.error().detail;
+  ASSERT_TRUE(planned->alternative_owner);
+  const auto& excluded = planned->alternative_owner->site.excluded_competing_rewrites;
+  ASSERT_EQ(excluded.size(), 2U);
+  EXPECT_TRUE(std::ranges::any_of(excluded, [&](const auto& record) {
+    return record.pattern == competing->name && record.version == competing->version &&
+           record.site_identity == planned->alternative_owner->site.exact_site_identity;
+  }));
+  EXPECT_TRUE(std::ranges::any_of(excluded, [&](const auto& record) {
+    return record.pattern == sectioned->name && record.version == sectioned->version &&
+           record.site_identity == planned->alternative_owner->site.exact_site_identity;
+  }));
+  const ComparisonOriginSet second_origins{
+      graph.producer(second.norm), graph.producer(second.product), graph.producer(second.rotated)};
+  EXPECT_TRUE(std::ranges::any_of(planned->view().applied, [&](const Applied& applied) {
+    return applied.pattern == accepted->name && applied.replaced == second_origins;
+  }));
+  EXPECT_TRUE(std::ranges::any_of(planned->view().applied, [&](const Applied& applied) {
+    return applied.pattern == "rms_norm_mul" &&
+           applied.replaced ==
+               (std::vector<ir::NodeId>{graph.producer(first.norm), graph.producer(first.product)});
+  }));
+
+  const Policy policy{};
+  const PlanOptions options{};
+  ComparisonPlanningEnvironment environment(boundary, registry, kDevice, policy, options);
+  auto made_ledger = ComparisonDecisionLedger::Create(environment, owner);
+  ASSERT_TRUE(made_ledger) << made_ledger.error().detail;
+  auto ledger = std::move(*made_ledger);
+  auto first_trial = CaptureComparisonTrial(environment, ledger, selector, owner);
+  ASSERT_TRUE(first_trial) << first_trial.error().detail;
+  auto first_alternative = MakeAlternative(*first_trial);
+  ASSERT_TRUE(first_alternative) << first_alternative.error().detail;
+  auto first_plan =
+      PlanAlternative(environment, *first_trial, std::move(*first_alternative), ledger);
+  ASSERT_TRUE(first_plan) << first_plan.error().detail;
+  ASSERT_TRUE(ledger.CommitAcceptedAlternative(environment, *first_trial, *first_plan));
+
+  ComparisonSiteSelector second_selector = selector;
+  second_selector.member_origins = {{graph.producer(second.norm)},
+                                    {graph.producer(second.product)},
+                                    {graph.producer(second.rotated)}};
+  auto second_trial = CaptureComparisonTrial(environment, ledger, second_selector, owner);
+  ASSERT_TRUE(second_trial) << second_trial.error().detail;
+  auto second_alternative = MakeAlternative(*second_trial);
+  ASSERT_TRUE(second_alternative) << second_alternative.error().detail;
+  auto second_plan =
+      PlanAlternative(environment, *second_trial, std::move(*second_alternative), ledger);
+  ASSERT_TRUE(second_plan) << second_plan.error().detail;
+  ASSERT_TRUE(second_plan->alternative_owner);
+  EXPECT_TRUE(std::ranges::any_of(second_plan->alternative_owner->prior_decision_exclusions,
+                                  [&](const auto& record) {
+                                    return record.prior_site_identity ==
+                                           first_plan->alternative_owner->site.exact_site_identity;
+                                  }));
+  EXPECT_TRUE(std::ranges::any_of(second_plan->view().applied, [&](const Applied& applied) {
+    return applied.pattern == "rms_norm_mul" &&
+           applied.replaced ==
+               (std::vector<ir::NodeId>{graph.producer(first.norm), graph.producer(first.product)});
+  })) << "the ledger must exclude the accepted whole region while allowing its proper subregion";
+}
+
+TEST(ComparisonAlternativeTest, FailureRetainsDiagnosticPaymentUntilMovedErrorDies) {
+  ir::Builder builder;
+  const TensorId input = builder.Input(F32({4}));
+  builder.Output(input);
+  const ir::Graph graph = Finish(builder);
+  const components::GraphBuildIO io{
+      .graph = graph, .inputs = graph.inputs(), .outputs = graph.outputs(), .weights = {}};
+  const components::ComparisonBoundaryView boundary{.io = io};
+  ComparisonSiteSelector selector;
+  selector.source_graph_identity = graph.identity() + 1;
+  selector.kind = ComparisonSiteKind::kFusedNode;
+  selector.member_origins = {{ir::NodeId{0}}};
+  auto funder = std::make_shared<ComparisonFunder>();
+  {
+    auto failed = BoundComparison(boundary, selector, funder, Registry(), kDevice, {}, {});
+    ASSERT_FALSE(failed);
+    EXPECT_EQ(failed.error().error, PlanError::kStaleComparisonSite);
+    EXPECT_FALSE(failed.error().detail.empty());
+    EXPECT_GT(funder->active(), 0U);
+    OwnedComparisonFailure moved(std::move(failed.error()));
+    EXPECT_EQ(moved.error, PlanError::kStaleComparisonSite);
+    EXPECT_GT(funder->active(), 0U);
+  }
+  EXPECT_EQ(funder->active(), 0U);
+}
+
+TEST(ComparisonAlternativeTest, TakeCheckpointDiagnosticKeepsItsAdmissionOwner) {
+  using namespace llmp::planner;
+  auto funder = std::make_shared<ComparisonFunder>();
+  ComparisonSiteSelector selector;
+  ComparisonOriginDag origins;
+  {
+    PlannerMetadataAdmission metadata(funder);
+    ComparisonCaptureSession capture(selector, origins, funder);
+    auto missing = capture.TakeCheckpoint(&metadata);
+    ASSERT_FALSE(missing);
+    EXPECT_EQ(missing.error().error, PlanError::kMissingComparisonSite);
+    EXPECT_FALSE(missing.error().detail.empty());
+    EXPECT_GT(funder->active(), 0U);
+    OwnedComparisonFailure owned(std::move(metadata), std::move(missing.error()));
+    EXPECT_EQ(owned.error, PlanError::kMissingComparisonSite);
+    EXPECT_GT(funder->active(), 0U);
+  }
+  EXPECT_EQ(funder->active(), 0U);
+}
+
+TEST(ComparisonAlternativeTest, CapturesOnlyTheAcceptedGroupedStoreBatch) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  ir::Builder builder;
+  // Put an original fused occurrence before the batch so its expansion shifts
+  // the batch's node and tensor IDs in the seed graph.
+  const TensorId fusion_input = builder.Input(F32({16, 2}));
+  const TensorId fusion_weight = builder.Weight(F32({16}), W(9));
+  const TensorId fusion_output =
+      builder.Fused(FusedKind::kRmsNormMul, std::array{fusion_input, fusion_weight},
+                    ir::NormParams{.eps = 1e-6f})[0];
+  const TensorId source = builder.Input(F32({16, 2}));
+  const TensorId ids = builder.Input(ir::Dense(Encoding::kI64, ir::ShapeOf({2})));
+  for (std::uint16_t tensor = 0; tensor < 3; ++tensor) {
+    const TensorId cache = builder.State(ir::Dense(Encoding::kF16, ir::ShapeOf({16, 8})),
+                                         {.stage = 0, .tensor = tensor, .layer = 0, .segment = 0});
+    builder.CacheStore(cache, source, ids);
+  }
+  builder.Output(fusion_output);
+  auto unowned = std::move(builder).Finish();
+  ASSERT_TRUE(unowned) << unowned.error().detail;
+  auto funded = unowned->Clone(owner);
+  ASSERT_TRUE(funded) << funded.error().detail;
+  ir::Graph graph = std::move(*funded);
+  std::vector<components::StepState> state;
+  std::vector<components::ComparisonExternalBinding> external;
+  std::uint32_t allocation_class = 0;
+  for (const auto input : graph.inputs()) {
+    const auto bytes = *ir::StorageBytes(graph.tensor(input));
+    external.push_back({.original_root = input,
+                        .allocation_class = allocation_class++,
+                        .allocation_bytes = bytes,
+                        .bytes = bytes,
+                        .alignment = 64});
+  }
+  for (std::uint32_t t = 0; t < graph.tensor_count(); ++t) {
+    const ir::TensorId tensor{t};
+    if (graph.root(tensor) != tensor || graph.tensor(tensor).role != ir::Role::kState) continue;
+    const auto* ref = std::get_if<ir::StateRef>(&graph.tensor(tensor).binding);
+    ASSERT_NE(ref, nullptr);
+    state.push_back({.tensor = tensor, .ref = *ref, .written = true});
+    const auto bytes = *ir::StorageBytes(graph.tensor(tensor));
+    external.push_back({.original_root = tensor,
+                        .allocation_class = allocation_class++,
+                        .allocation_bytes = bytes,
+                        .bytes = bytes,
+                        .alignment = 64});
+  }
+  const std::array step_weights{components::StepWeight{
+      .tensor = fusion_weight, .ref = W(9), .parts = {{"fusion_weight", format::PartRole::kData}}}};
+  const auto fusion_weight_bytes = *ir::StorageBytes(graph.tensor(fusion_weight));
+  external.push_back({.original_root = fusion_weight,
+                      .part = format::PartRole::kData,
+                      .allocation_class = allocation_class++,
+                      .allocation_bytes = fusion_weight_bytes,
+                      .bytes = fusion_weight_bytes,
+                      .alignment = 64});
+  const components::GraphBuildIO io{graph, graph.inputs(), graph.outputs(), step_weights};
+  const components::ComparisonBoundaryView boundary{
+      .io = io, .state = state, .active_stage = 0, .external = external};
+  ComparisonSiteSelector selector;
+  selector.source_graph_identity = graph.identity();
+  selector.kind = ComparisonSiteKind::kBatch;
+  selector.pattern = "grouped_stores";
+  for (std::uint32_t n = 0; n < graph.nodes().size(); ++n)
+    if (graph.node(ir::NodeId{n}).key.op == ir::Op::kCacheStore)
+      selector.member_origins.push_back({ir::NodeId{n}});
+  ASSERT_EQ(selector.member_origins.size(), 3U);
+  const auto registry = Registry();
+  auto inventory = BoundComparison(boundary, selector, owner, registry, kDevice, {}, {});
+  ASSERT_TRUE(inventory) << inventory.error().detail;
+  ASSERT_TRUE(inventory->incumbent.final_origins);
+  EXPECT_EQ(inventory->incumbent.final_node_origins.source_graph_identity, graph.identity());
+  EXPECT_EQ(inventory->incumbent.final_node_origins.planned_graph_identity,
+            inventory->incumbent.view().graph.identity());
+  EXPECT_TRUE(std::ranges::any_of(inventory->incumbent.view().steps, [](const Selected& step) {
+    return step.batch == "grouped_stores";
+  }));
+  auto refused_alternative = MakeAlternative(*inventory);
+  ASSERT_TRUE(refused_alternative) << refused_alternative.error().detail;
+  const auto active_with_refused_seed = owner->active();
+  owner->FailAt(owner->charge_count() + 1);
+  auto refused_plan =
+      PlanAlternative(*inventory, std::move(*refused_alternative), registry, kDevice, {}, {});
+  ASSERT_FALSE(refused_plan);
+  EXPECT_EQ(refused_plan.error().error, PlanError::kAdmission);
+  EXPECT_LT(owner->active(), active_with_refused_seed);
+  owner->FailAt(0);
+
+  auto alternative = MakeAlternative(*inventory);
+  ASSERT_TRUE(alternative) << alternative.error().detail;
+  auto planned = PlanAlternative(*inventory, std::move(*alternative), registry, kDevice, {}, {});
+  ASSERT_TRUE(planned) << planned.error().detail;
+  ASSERT_TRUE(planned->final_origins);
+  EXPECT_EQ(planned->final_node_origins.source_graph_identity, graph.identity());
+  EXPECT_EQ(planned->final_node_origins.planned_graph_identity, planned->view().graph.identity());
+  ASSERT_EQ(planned->final_node_origins.node_origins.values.size(),
+            planned->view().graph.nodes().size());
+  for (const ComparisonOriginSetId set : planned->final_node_origins.node_origins.values) {
+    const auto count = planned->final_origins->OriginCount(set);
+    ASSERT_TRUE(count);
+    EXPECT_EQ(*count, 1U);
+  }
+  EXPECT_EQ(planned->view().steps.size(), 3U);
+  EXPECT_TRUE(std::ranges::none_of(planned->view().steps, [&](const Selected& step) {
+    return step.batch == "grouped_stores" &&
+           step.nodes == std::vector<ir::NodeId>{selector.member_origins[0][0],
+                                                 selector.member_origins[1][0],
+                                                 selector.member_origins[2][0]};
+  }));
+  EXPECT_TRUE(std::ranges::any_of(
+      planned->view().steps, [](const Selected& step) { return step.batch == "grouped_stores"; }));
+  const auto live_before_move = owner->active();
+  OwnedComparisonPlan moved(std::move(*planned));
+  EXPECT_EQ(owner->active(), live_before_move);
+  EXPECT_TRUE(moved.final_origins);
+  EXPECT_EQ(moved.final_node_origins.planned_graph_identity, moved.view().graph.identity());
+  for (const ComparisonOriginSetId set : moved.final_node_origins.node_origins.values) {
+    const auto count = moved.final_origins->OriginCount(set);
+    ASSERT_TRUE(count);
+    EXPECT_EQ(*count, 1U);
+  }
+
+  const PlanOptions options{};
+  const Policy policy{};
+  ComparisonPlanningEnvironment environment(boundary, registry, kDevice, policy, options);
+  auto ledger_result = ComparisonDecisionLedger::Create(environment, owner);
+  ASSERT_TRUE(ledger_result) << ledger_result.error().detail;
+  auto ledger = std::move(*ledger_result);
+  ComparisonSiteSelector prior_fusion_selector;
+  prior_fusion_selector.source_graph_identity = graph.identity();
+  prior_fusion_selector.kind = ComparisonSiteKind::kFusedNode;
+  prior_fusion_selector.member_origins = {{graph.producer(fusion_output)}};
+  auto prior_fusion_trial =
+      CaptureComparisonTrial(environment, ledger, prior_fusion_selector, owner);
+  ASSERT_TRUE(prior_fusion_trial) << prior_fusion_trial.error().detail;
+  auto prior_fusion_alternative = MakeAlternative(*prior_fusion_trial);
+  ASSERT_TRUE(prior_fusion_alternative) << prior_fusion_alternative.error().detail;
+  auto prior_fusion_plan = PlanAlternative(environment, *prior_fusion_trial,
+                                           std::move(*prior_fusion_alternative), ledger);
+  ASSERT_TRUE(prior_fusion_plan) << prior_fusion_plan.error().detail;
+  ASSERT_TRUE(
+      ledger.CommitAcceptedAlternative(environment, *prior_fusion_trial, *prior_fusion_plan));
+  auto trial = CaptureComparisonTrial(environment, ledger, selector, owner);
+  ASSERT_TRUE(trial) << trial.error().detail;
+  auto trial_alternative = MakeAlternative(*trial);
+  ASSERT_TRUE(trial_alternative) << trial_alternative.error().detail;
+  auto ledger_plan = PlanAlternative(environment, *trial, std::move(*trial_alternative), ledger);
+  ASSERT_TRUE(ledger_plan) << ledger_plan.error().detail;
+  const TensorId first_store_output = graph.node(selector.member_origins.front().front()).out[0];
+  ASSERT_TRUE(first_store_output.valid());
+  ASSERT_LT(first_store_output.v, ledger_plan->view().tensors.size());
+  EXPECT_NE(ledger_plan->view().tensors[first_store_output.v], first_store_output)
+      << "the earlier original fused node must shift this batch through the expanded seed map";
+  ASSERT_TRUE(ledger.CommitAcceptedAlternative(environment, *trial, *ledger_plan));
+  ASSERT_EQ(ledger.records().size(), 2U);
+  EXPECT_EQ(ledger.records().front().kind, ComparisonSiteKind::kFusedNode);
+  EXPECT_EQ(ledger.records().back().kind, ComparisonSiteKind::kBatch);
+  EXPECT_TRUE(std::ranges::none_of(ledger_plan->view().graph.nodes(), [](const ir::Node& node) {
+    return node.key == ir::Fused(FusedKind::kRmsNormMul);
+  }));
+
+  auto dag_result =
+      ComparisonOriginDag::Create(owner, static_cast<std::uint32_t>(graph.nodes().size()));
+  ASSERT_TRUE(dag_result) << dag_result.error().detail;
+  auto dag = std::move(*dag_result);
+  std::vector<ComparisonOriginSetId> node_origins;
+  node_origins.reserve(graph.nodes().size());
+  for (std::uint32_t n = 0; n < graph.nodes().size(); ++n) {
+    auto singleton = dag.AddSingleton(ir::NodeId{n});
+    ASSERT_TRUE(singleton) << singleton.error().detail;
+    node_origins.push_back(*singleton);
+  }
+  std::vector<TensorId> identity_tensors;
+  identity_tensors.reserve(graph.tensor_count());
+  for (std::uint32_t t = 0; t < graph.tensor_count(); ++t) identity_tensors.push_back(TensorId{t});
+  ComparisonCaptureSession journal_probe(selector, dag, owner, false, nullptr, ledger.records());
+  ASSERT_TRUE(journal_probe.PrepareDecisionJournal(owner));
+  const auto mark = journal_probe.DecisionJournalMark();
+  const std::array batch_nodes{selector.member_origins[0][0], selector.member_origins[1][0],
+                               selector.member_origins[2][0]};
+  EXPECT_TRUE(journal_probe.ExcludesBatch("grouped_stores", 1, batch_nodes, node_origins, graph,
+                                          identity_tensors));
+  ASSERT_EQ(journal_probe.decision_exclusions().size(), 1U);
+  journal_probe.RollbackDecisionJournal(mark);
+  EXPECT_TRUE(journal_probe.decision_exclusions().empty());
+  EXPECT_FALSE(journal_probe.record_refused());
+  EXPECT_TRUE(journal_probe.ExcludesBatch("grouped_stores", 1, batch_nodes, node_origins, graph,
+                                          identity_tensors));
+  ASSERT_EQ(journal_probe.decision_exclusions().size(), 1U);
+  EXPECT_EQ(journal_probe.decision_exclusions().front().prior_site_identity,
+            ledger.records().back().site_identity);
+}
+
+TEST(ComparisonAlternativeTest, DiscoveryRetainsOnlyCommittedDefaultNeoxMatches) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  ir::Builder builder;
+  const TensorId x = builder.Input(F32({64, 2, 3}));
+  const TensorId positions = builder.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
+  const TensorId weight = builder.Weight(F32({64}), W(0));
+  const ir::RopeParams rope{.mode = ir::RopeMode::kNeox, .dims = 64, .base = 10000.0f};
+  builder.Output(builder.Rope(builder.Mul(builder.RmsNorm(x, 1e-6f), weight), positions, {}, rope));
+  ir::Graph graph = Finish(builder);
+  const std::array<components::StepWeight, 1> weights{components::StepWeight{
+      .tensor = weight, .ref = W(0), .parts = {{"weight", format::PartRole::kData}}}};
+  const components::GraphBuildIO io{graph, graph.inputs(), graph.outputs(), weights};
+  const components::ComparisonBoundaryView source{.io = io};
+  const std::array filter{ir::Fused(FusedKind::kRmsNormMulRope)};
+  const auto registry = Registry();
+  auto discovered =
+      DiscoverComparisonPlan(source, filter, false, owner, registry, kDevice, Policy{}, {});
+  ASSERT_TRUE(discovered) << discovered.error().detail;
+  EXPECT_TRUE(std::ranges::contains(Patterns(discovered->incumbent.view()),
+                                    std::string_view("interleaved_norm_rope")));
+  EXPECT_TRUE(discovered->discovery.enabled());
+  ASSERT_FALSE(discovered->discovery.tickets().empty());
+  EXPECT_TRUE(std::ranges::any_of(discovered->discovery.tickets(), [](const auto& ticket) {
+    return ticket.kind == ComparisonSiteKind::kRewrite &&
+           ticket.pattern == "interleaved_norm_rope" &&
+           ticket.registered_operation == ir::Fused(FusedKind::kRmsNormMulRope);
+  }));
+  ASSERT_EQ(discovered->discovery.planned_node_origins().size(),
+            discovered->incumbent.view().graph.nodes().size());
+  ASSERT_EQ(discovered->discovery.source_to_planned().size(), graph.tensor_count());
+  for (const auto set : discovered->discovery.planned_node_origins())
+    EXPECT_GT(discovered->discovery.origins().OriginCount(set).value_or(0), 0U);
+
+  auto empty = DiscoverComparisonPlan(source, {}, false, owner, registry, kDevice, Policy{}, {});
+  ASSERT_TRUE(empty) << empty.error().detail;
+  EXPECT_FALSE(empty->discovery.enabled());
+  EXPECT_TRUE(empty->discovery.tickets().empty());
+}
+
+TEST(ComparisonAlternativeTest, DiscoveryKeepsAmbiguousMergedPortsWithoutFailingPlan) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  ir::Builder builder;
+  const TensorId x = builder.Input(F32({64, 3}));
+  const TensorId w = builder.Weight(F32({64}), W(0));
+  const TensorId first = builder.Mul(builder.RmsNorm(x, 1e-6f), w);
+  const TensorId second = builder.Mul(builder.RmsNorm(x, 1e-6f), w);
+  builder.Output(builder.Scale(first, 2.0f));
+  builder.Output(builder.Scale(second, 3.0f));
+  ir::Graph graph = Finish(builder);
+  const std::array<components::StepWeight, 1> weights{components::StepWeight{
+      .tensor = w, .ref = W(0), .parts = {{"weight", format::PartRole::kData}}}};
+  const components::GraphBuildIO io{graph, graph.inputs(), graph.outputs(), weights};
+  const components::ComparisonBoundaryView source{.io = io};
+  const std::array filter{ir::Fused(FusedKind::kRmsNormMul)};
+  const auto registry = Registry();
+  auto discovered =
+      DiscoverComparisonPlan(source, filter, false, owner, registry, kDevice, Policy{}, {});
+  ASSERT_TRUE(discovered) << discovered.error().detail;
+  ASSERT_FALSE(discovered->discovery.tickets().empty());
+  EXPECT_TRUE(std::ranges::any_of(discovered->discovery.tickets(), [](const auto& ticket) {
+    return ticket.kind == ComparisonSiteKind::kFusedNode &&
+           ticket.registered_operation == ir::Fused(FusedKind::kRmsNormMul);
+  }));
+  EXPECT_TRUE(std::ranges::any_of(discovered->discovery.tickets(), [](const auto& ticket) {
+    return !ticket.boundary_representable;
+  }));
+}
+
+struct DiscoveryBatchGraph {
+  ir::Graph graph;
+  std::vector<components::StepState> state;
+  std::vector<components::ComparisonExternalBinding> external;
+  std::vector<ir::NodeId> stores;
+};
+
+std::optional<DiscoveryBatchGraph> MakeDiscoveryBatchGraph(std::size_t count, bool heterogeneous,
+                                                           bool include_route = false) {
+  ir::Builder builder;
+  if (include_route) {
+    const TensorId logits = builder.Input(F32({4, 3}));
+    const auto route =
+        builder.Route(logits, {}, {}, {}, {.normalize = true, .experts = 4, .used = 2});
+    builder.Output(builder.Reshape(route[0], ir::ShapeOf({6})));
+    builder.Output(route[1]);
+  }
+  const TensorId source = builder.Input(F32({16, 2}));
+  const TensorId index = builder.Input(ir::Dense(Encoding::kI64, ir::ShapeOf({2})));
+  TensorId heterogeneous_source{};
+  if (heterogeneous)
+    heterogeneous_source = builder.Input(ir::Dense(Encoding::kF16, ir::ShapeOf({8, 2})));
+  if (!include_route) builder.Output(source);
+
+  std::vector<components::StepState> states;
+  std::vector<TensorId> caches;
+  std::vector<TensorId> stores;
+  states.reserve(count);
+  caches.reserve(count);
+  stores.reserve(count);
+  for (std::size_t i = 0; i < count; ++i) {
+    const bool middle = heterogeneous && i == 1;
+    const auto shape = middle ? ir::ShapeOf({8, 8}) : ir::ShapeOf({16, 8});
+    const auto encoding = middle ? Encoding::kF32 : Encoding::kF16;
+    const ir::StateRef ref{.stage = 0,
+                           .tensor = static_cast<std::uint16_t>(i),
+                           .layer = static_cast<std::uint16_t>(i),
+                           .segment = 0};
+    const TensorId cache = builder.State(ir::Dense(encoding, shape), ref);
+    const TensorId values = middle ? heterogeneous_source : source;
+    caches.push_back(cache);
+    stores.push_back(builder.CacheStore(cache, values, index));
+    states.push_back({.tensor = cache, .ref = ref, .read = false, .written = true});
+  }
+  auto graph = std::move(builder).Finish();
+  EXPECT_TRUE(graph) << (graph ? "" : graph.error().detail);
+  if (!graph) return std::nullopt;
+
+  std::vector<components::ComparisonExternalBinding> external;
+  external.reserve(graph->inputs().size() + caches.size());
+  std::uint32_t allocation_class = 1;
+  const auto add_external = [&](TensorId root) {
+    const auto bytes = ir::StorageBytes(graph->tensor(root));
+    EXPECT_TRUE(bytes);
+    if (!bytes) return;
+    external.push_back({.original_root = root,
+                        .allocation_class = allocation_class++,
+                        .allocation_bytes = *bytes,
+                        .bytes = *bytes,
+                        .alignment = 16});
+  };
+  for (const TensorId input : graph->inputs()) add_external(input);
+  for (const TensorId cache : caches) add_external(cache);
+  std::vector<ir::NodeId> store_nodes;
+  store_nodes.reserve(stores.size());
+  for (const TensorId store : stores) store_nodes.push_back(graph->producer(store));
+  return DiscoveryBatchGraph{std::move(*graph), std::move(states), std::move(external),
+                             std::move(store_nodes)};
+}
+
+TEST(ComparisonAlternativeTest, EffectOnlyRewriteRetainsItsCompleteStateOutput) {
+  ir::Builder builder;
+  const auto x = builder.Input(F32({8, 2, 4}));
+  const auto positions = builder.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({4})));
+  const auto indices = builder.Input(ir::Dense(Encoding::kI64, ir::ShapeOf({4})));
+  const ir::StateRef ref{.stage = 0, .tensor = 0, .layer = 0, .segment = 0};
+  const auto cache = builder.State(ir::Dense(Encoding::kF16, ir::ShapeOf({16, 32})), ref);
+  const auto rotated =
+      builder.Rope(x, positions, {}, {.mode = ir::RopeMode::kNeox, .dims = 8, .base = 10000.0f});
+  const auto stored =
+      builder.CacheStore(cache, builder.Reshape(rotated, ir::ShapeOf({16, 4})), indices);
+  auto graph = Finish(builder);
+  ASSERT_TRUE(graph.outputs().empty());
+  ASSERT_TRUE(graph.keep().empty());
+  const std::array state{
+      components::StepState{.tensor = cache, .ref = ref, .read = false, .written = true}};
+  std::vector<components::ComparisonExternalBinding> external;
+  std::uint32_t allocation = 1;
+  const auto bind = [&](TensorId tensor) {
+    const auto bytes = ir::StorageBytes(graph.tensor(tensor));
+    ASSERT_TRUE(bytes);
+    external.push_back({.original_root = tensor,
+                        .allocation_class = allocation++,
+                        .allocation_bytes = *bytes,
+                        .bytes = *bytes,
+                        .alignment = 16});
+  };
+  for (const auto input : graph.inputs()) bind(input);
+  bind(cache);
+  const components::GraphBuildIO io{graph, graph.inputs(), graph.outputs(), {}};
+  const components::ComparisonBoundaryView source{io, state, 0, external};
+  const auto registry = Registry();
+  auto owner = std::make_shared<ComparisonFunder>();
+  const std::array filter{ir::Fused(FusedKind::kRopeStore)};
+  auto discovered = DiscoverComparisonPlan(source, filter, false, owner, registry, kDevice, {}, {});
+  ASSERT_TRUE(discovered) << discovered.error().detail;
+  const auto ticket = std::ranges::find_if(discovered->discovery.tickets(), [](const auto& value) {
+    return value.kind == ComparisonSiteKind::kRewrite && value.pattern == "rope_store";
+  });
+  ASSERT_NE(ticket, discovered->discovery.tickets().end());
+  ComparisonSiteSelector selector;
+  selector.source_graph_identity = graph.identity();
+  selector.kind = ticket->kind;
+  selector.pattern = ticket->pattern;
+  selector.version = ticket->version;
+  selector.member_owner_segments = ticket->owner_segments;
+  selector.boundary_ports = ticket->boundary_ports;
+  for (std::size_t i = 0; i + 1 < ticket->member_offsets.size(); ++i)
+    selector.member_origins.emplace_back(
+        ticket->member_origins.begin() + ticket->member_offsets[i],
+        ticket->member_origins.begin() + ticket->member_offsets[i + 1]);
+  EXPECT_TRUE(std::ranges::any_of(selector.boundary_ports, [&](const auto& port) {
+    return port.kind == ComparisonSitePortKind::kOutput && port.original_tensor == stored;
+  }));
+  auto inventory = BoundComparison(source, selector, owner, registry, kDevice, {}, {});
+  ASSERT_TRUE(inventory) << inventory.error().detail;
+  auto alternative = MakeAlternative(*inventory);
+  ASSERT_TRUE(alternative) << alternative.error().detail;
+  auto planned = PlanAlternative(*inventory, std::move(*alternative), registry, kDevice, {}, {});
+  ASSERT_TRUE(planned) << planned.error().detail;
+  for (int mutation = 0; mutation < 3; ++mutation) {
+    auto forged = selector;
+    if (mutation == 0) ++forged.source_graph_identity;
+    if (mutation == 1) ++forged.boundary_ports.back().view_offset;
+    if (mutation == 2) forged.boundary_ports.back().ordinal = UINT16_MAX;
+    EXPECT_FALSE(BoundComparison(source, forged, owner, registry, kDevice, {}, {}));
+  }
+}
+
+TEST(ComparisonAlternativeTest, FoldInputAliasAuthenticatesItsExactExistingResult) {
+  const auto* pattern = FindPattern("hc_fold_inputs");
+  ASSERT_NE(pattern, nullptr);
+  ASSERT_TRUE(pattern->existing_result);
+  for (const bool prepared : {false, true}) {
+    ir::Builder b;
+    const auto x = b.Input(F32({512, 2}));
+    const auto gate = b.Input(F32({512, 2}));
+    const auto fold =
+        b.Fused(FusedKind::kHcFold, std::array{x, gate},
+                ir::HcFoldParams{.streams = 2, .prepared = prepared, .rounded = !prepared});
+    const auto read = prepared ? b.Prepare(fold[0], Encoding::kMxfp8, Layout::kScaleAtoms)
+                               : b.Convert(fold[0], Encoding::kBF16);
+    // A same-format foreign result cannot stand in for this accepted port.
+    const auto distinct = b.Scale(fold[0], 2.0F);
+    const auto other = prepared ? b.Prepare(distinct, Encoding::kMxfp8, Layout::kScaleAtoms)
+                                : b.Convert(distinct, Encoding::kBF16);
+    b.Output(read);
+    b.Output(other);
+    auto source = Finish(b);
+    std::vector<components::ComparisonExternalBinding> external;
+    for (const auto t : source.inputs()) {
+      const auto bytes = ir::StorageBytes(source.tensor(t));
+      ASSERT_TRUE(bytes);
+      external.push_back({.original_root = t,
+                          .allocation_class = static_cast<std::uint32_t>(external.size()),
+                          .allocation_bytes = *bytes,
+                          .bytes = *bytes,
+                          .alignment = 64});
+    }
+    const components::GraphBuildIO io{source, source.inputs(), source.outputs(), {}};
+    const components::ComparisonBoundaryView boundary{.io = io, .external = external};
+    auto owner = std::make_shared<ComparisonFunder>();
+    auto implementations = Everything();
+    implementations.push_back(Fake("t.convert", Any(ir::Primitive(Op::kConvert))));
+    implementations.push_back(Fake("t.hc_fold", Any(ir::Fused(FusedKind::kHcFold))));
+    const auto registry = Registry(std::move(implementations));
+    const std::array filter{pattern->result};
+    auto discovery =
+        DiscoverComparisonPlan(boundary, filter, false, owner, registry, kDevice, {}, {});
+    ASSERT_TRUE(discovery) << discovery.error().detail;
+    const auto ticket = std::ranges::find_if(discovery->discovery.tickets(), [](const auto& t) {
+      return t.kind == ComparisonSiteKind::kRewrite && t.pattern == "hc_fold_inputs";
+    });
+    ASSERT_NE(ticket, discovery->discovery.tickets().end());
+    ComparisonSiteSelector selector;
+    selector.source_graph_identity = source.identity();
+    selector.kind = ticket->kind;
+    selector.pattern = ticket->pattern;
+    selector.version = ticket->version;
+    selector.member_owner_segments = ticket->owner_segments;
+    selector.boundary_ports = ticket->boundary_ports;
+    for (std::size_t i = 0; i + 1 < ticket->member_offsets.size(); ++i)
+      selector.member_origins.emplace_back(
+          ticket->member_origins.begin() + ticket->member_offsets[i],
+          ticket->member_origins.begin() + ticket->member_offsets[i + 1]);
+    auto inventory = BoundComparison(boundary, selector, owner, registry, kDevice, {}, {});
+    ASSERT_TRUE(inventory) << inventory.error().detail;
+    const auto applied =
+        std::ranges::find(inventory->incumbent.view().applied, "hc_fold_inputs", &Applied::pattern);
+    ASSERT_NE(applied, inventory->incumbent.view().applied.end());
+    EXPECT_TRUE(applied->made.empty());
+    const auto mapped = inventory->incumbent.view().tensors[read.v];
+    ASSERT_TRUE(mapped.valid());
+    EXPECT_EQ(inventory->incumbent.view()
+                  .graph.node(inventory->incumbent.view().graph.producer(mapped))
+                  .key,
+              ir::Fused(FusedKind::kHcFold));
+    auto alternative = MakeAlternative(*inventory);
+    ASSERT_TRUE(alternative) << alternative.error().detail;
+    auto planned = PlanAlternative(*inventory, std::move(*alternative), registry, kDevice, {}, {});
+    ASSERT_TRUE(planned) << planned.error().detail;
+    for (const auto foreign : {other, fold[1]}) {
+      auto forged = selector;
+      const auto output = std::ranges::find(forged.boundary_ports, ComparisonSitePortKind::kOutput,
+                                            &ComparisonSitePortRef::kind);
+      ASSERT_NE(output, forged.boundary_ports.end());
+      output->original_tensor = foreign;
+      output->original_root = source.root(foreign);
+      output->view_offset = source.tensor(foreign).view_offset;
+      EXPECT_FALSE(BoundComparison(boundary, forged, owner, registry, kDevice, {}, {}));
+    }
+  }
+}
+
+// These are real round-one generated ports: the original MatMul has an
+// F32 source, while mxfp8_inputs creates the Prepare input seen by the later
+// fold/row rewrite. No source tensor can honestly stand for that prepared value.
+TEST(ComparisonAlternativeTest, WholeCheckpointCapturesGeneratedFoldAndRowPorts) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.any_product", Any(ir::Primitive(Op::kMatMul))));
+  implementations.push_back(Fake("t.any_prepare", Any(ir::Primitive(Op::kPrepare))));
+  implementations.push_back(Fake("t.hc_fold", Any(ir::Fused(FusedKind::kHcFold))));
+  implementations.push_back(Fake("t.norm_gate", Any(ir::Fused(FusedKind::kNormGate))));
+  const auto registry = Registry(std::move(implementations));
+  const auto make_graph = [](bool fold, bool early_weight) {
+    ir::Builder b;
+    b.SetComponent(1);
+    const format::TensorFormat encoded{.encoding = Encoding::kMxfp8,
+                                       .layout = Layout::kScaleAtoms,
+                                       .shape = ir::ShapeOf({256, 8})};
+    TensorId weight{};
+    if (early_weight) weight = b.Weight(encoded, W(0));
+    auto x = b.Input(F32({fold ? 512U : 256U, 2}));
+    if (fold) {
+      const auto gate = b.Input(F32({512, 2}));
+      x = b.Fused(FusedKind::kHcFold, std::array{x, gate},
+                  ir::HcFoldParams{.streams = 2, .prepared = true})[0];
+    }
+    if (!early_weight) weight = b.Weight(encoded, W(0));
+    const auto product = b.MatMul(weight, x);
+    if (fold) {
+      b.Output(product);
+    } else {
+      const auto shaped = b.Reshape(product, ir::ShapeOf({4, 2, 2}));
+      const auto rows = b.Input(F32({4, 2, 2}));
+      const auto gamma = b.Weight(F32({4}), W(1));
+      b.Output(b.Fused(FusedKind::kNormGate, std::array{rows, gamma, shaped},
+                       ir::NormGateParams{.eps = 1e-6F})[0]);
+    }
+    const auto prior_input = b.Input(F32({16, 2}));
+    const auto prior_gamma = b.Weight(F32({16}), W(2));
+    b.Output(b.Mul(b.RmsNorm(prior_input, 1e-6F), prior_gamma));
+    return Finish(b);
+  };
+  for (const bool fold : {false, true}) {
+    SCOPED_TRACE(fold);
+    base::Sha256Digest first_match{}, first_subject{};
+    for (const bool early_weight : {false, true}) {
+      SCOPED_TRACE(early_weight);
+      auto graph = make_graph(fold, early_weight);
+      std::vector<components::ComparisonExternalBinding> external;
+      std::vector<components::StepWeight> weights;
+      for (std::uint32_t t = 0; t < graph.tensor_count(); ++t) {
+        const auto id = TensorId{t};
+        const auto& desc = graph.tensor(id);
+        if (graph.root(id) != id ||
+            (desc.role != ir::Role::kInput && desc.role != ir::Role::kWeight))
+          continue;
+        if (desc.role == ir::Role::kWeight) {
+          const auto* ref = std::get_if<ir::WeightRef>(&desc.binding);
+          ASSERT_NE(ref, nullptr);
+          const auto parts = format::PartsOf(desc.format);
+          ASSERT_TRUE(parts);
+          weights.push_back({.tensor = id, .ref = *ref, .parts = {}});
+          for (const auto& part : parts->parts()) {
+            weights.back().parts.emplace_back(
+                std::to_string(ref->role) + "." + std::string(format::PartRoleName(part.role)),
+                part.role);
+            external.push_back({.original_root = id,
+                                .part = part.role,
+                                .allocation_class = static_cast<std::uint32_t>(external.size() + 1),
+                                .allocation_bytes = part.readable,
+                                .bytes = part.readable,
+                                .alignment = 64});
+          }
+          continue;
+        }
+        const auto bytes = ir::StorageBytes(desc);
+        ASSERT_TRUE(bytes);
+        external.push_back({.original_root = id,
+                            .allocation_class = static_cast<std::uint32_t>(external.size() + 1),
+                            .allocation_bytes = *bytes,
+                            .bytes = *bytes,
+                            .alignment = 64});
+      }
+      const components::GraphBuildIO io{graph, graph.inputs(), graph.outputs(), weights};
+      const components::ComparisonBoundaryView source{.io = io, .external = external};
+      const std::array<std::uint16_t, 1> roles{0};
+      auto policy = RoleNumericalPolicy(graph, {}, NumericalChange::kMxfp8ProductInput, roles);
+      if (!fold) {
+        const auto entries = policy.numerical->entries();
+        std::vector<NumericalQualification> both(entries.begin(), entries.end());
+        auto rounded = both.front();
+        rounded.change = NumericalChange::kBf16ProductInputAndResult;
+        both.push_back(rounded);
+        auto bound = NumericalQualifications::Bind(both, rounded.source, rounded.semantic);
+        ASSERT_TRUE(bound);
+        policy.numerical = std::move(*bound);
+      }
+      auto owner = std::make_shared<ComparisonFunder>();
+      auto discovered = DiscoverComparisonPlan(source, {}, true, owner, registry, kDevice, policy);
+      ASSERT_TRUE(discovered) << discovered.error().detail;
+      const std::string_view target = fold ? "hc_fold_inputs" : "bf16_rows";
+      const auto ticket = std::ranges::find_if(discovered->discovery.tickets(), [&](const auto& t) {
+        return t.kind == ComparisonSiteKind::kRewrite && t.pattern == target;
+      });
+      ASSERT_NE(ticket, discovered->discovery.tickets().end());
+      ASSERT_FALSE(ticket->boundary_representable);
+      ComparisonSiteSelector selector;
+      selector.source_graph_identity = graph.identity();
+      selector.kind = ticket->kind;
+      selector.pattern = ticket->pattern;
+      selector.version = ticket->version;
+      selector.member_owner_segments = ticket->owner_segments;
+      selector.boundary_ports = ticket->boundary_ports;
+      selector.checkpoint_match = ticket->checkpoint_match;
+      for (std::size_t i = 0; i + 1 < ticket->member_offsets.size(); ++i)
+        selector.member_origins.emplace_back(
+            ticket->member_origins.begin() + ticket->member_offsets[i],
+            ticket->member_origins.begin() + ticket->member_offsets[i + 1]);
+      EXPECT_FALSE(BoundComparison(source, selector, owner, registry, kDevice, policy));
+      auto inventory = BoundWholeComparison(source, selector, owner, registry, kDevice, policy);
+      ASSERT_TRUE(inventory) << inventory.error().detail;
+      ASSERT_TRUE(inventory->site.whole_checkpoint.whole_only());
+      EXPECT_TRUE(inventory->incumbent.plan.whole_checkpoint.whole_only());
+      EXPECT_TRUE(AuthenticComparisonSite(inventory->site));
+      EXPECT_FALSE(inventory->checkpoint.prior_applied().empty());
+      if (!early_weight) {
+        first_match = ticket->checkpoint_match;
+        first_subject = inventory->site.whole_checkpoint.subject();
+      } else {
+        // Legal leaf renumbering changes live IDs, not canonical semantics.
+        EXPECT_EQ(first_match, ticket->checkpoint_match);
+        EXPECT_EQ(first_subject, inventory->site.whole_checkpoint.subject());
+      }
+      auto alternative = MakeAlternative(*inventory);
+      ASSERT_TRUE(alternative) << alternative.error().detail;
+      auto planned =
+          PlanAlternative(*inventory, std::move(*alternative), registry, kDevice, policy);
+      ASSERT_TRUE(planned) << planned.error().detail;
+      EXPECT_TRUE(planned->plan.whole_checkpoint.whole_only());
+      EXPECT_NE(planned->plan.graph.Digest(), inventory->incumbent.plan.graph.Digest());
+      auto saved = inventory->site.whole_checkpoint;
+      inventory->site.whole_checkpoint = {};
+      EXPECT_FALSE(AuthenticComparisonSite(inventory->site));
+      EXPECT_FALSE(MakeAlternative(*inventory));
+      inventory->site.whole_checkpoint = saved;
+      for (unsigned mutation = 0; mutation < 5; ++mutation) {
+        auto forged = selector;
+        if (mutation == 0) ++forged.source_graph_identity;
+        if (mutation == 1) forged.checkpoint_match[0] ^= 1;
+        if (mutation == 2) forged.member_origins[0][0] = ir::NodeId{0};
+        if (mutation == 3) forged.pattern = fold ? "bf16_rows" : "hc_fold_inputs";
+        if (mutation == 4) ++forged.version;
+        EXPECT_FALSE(BoundWholeComparison(source, forged, owner, registry, kDevice, policy));
+      }
+      owner->Refuse(true);
+      EXPECT_FALSE(BoundWholeComparison(source, selector, owner, registry, kDevice, policy));
+      owner->Refuse(false);
+      const PlanOptions options;
+      ComparisonPlanningEnvironment environment(source, registry, kDevice, policy, options);
+      auto ledger = ComparisonDecisionLedger::Create(environment, owner);
+      ASSERT_TRUE(ledger);
+      auto trial = CaptureWholeComparisonTrial(environment, *ledger, selector, owner);
+      ASSERT_TRUE(trial) << trial.error().detail;
+      auto arm = MakeAlternative(*trial);
+      ASSERT_TRUE(arm);
+      auto completed = PlanAlternative(environment, *trial, std::move(*arm), *ledger);
+      ASSERT_TRUE(completed) << completed.error().detail;
+      EXPECT_TRUE(ledger->ValidateTerminalWholeAlternative(environment, *trial, *completed));
+      EXPECT_FALSE(ledger->CommitAcceptedAlternative(environment, *trial, *completed));
+      ++trial->ledger_generation;
+      EXPECT_FALSE(ledger->ValidateTerminalWholeAlternative(environment, *trial, *completed));
+      --trial->ledger_generation;
+      ++trial->site.complete_boundary_ports[0].view_offset;
+      EXPECT_FALSE(ledger->ValidateTerminalWholeAlternative(environment, *trial, *completed));
+      --trial->site.complete_boundary_ports[0].view_offset;
+      const auto prior_ticket =
+          std::ranges::find_if(discovered->discovery.tickets(), [](const auto& t) {
+            return t.kind == ComparisonSiteKind::kRewrite && t.pattern == "rms_norm_mul";
+          });
+      ASSERT_NE(prior_ticket, discovered->discovery.tickets().end());
+      ASSERT_TRUE(prior_ticket->boundary_representable);
+      ComparisonSiteSelector prior_selector;
+      prior_selector.source_graph_identity = graph.identity();
+      prior_selector.kind = prior_ticket->kind;
+      prior_selector.pattern = prior_ticket->pattern;
+      prior_selector.version = prior_ticket->version;
+      prior_selector.member_owner_segments = prior_ticket->owner_segments;
+      prior_selector.boundary_ports = prior_ticket->boundary_ports;
+      for (std::size_t i = 0; i + 1 < prior_ticket->member_offsets.size(); ++i)
+        prior_selector.member_origins.emplace_back(
+            prior_ticket->member_origins.begin() + prior_ticket->member_offsets[i],
+            prior_ticket->member_origins.begin() + prior_ticket->member_offsets[i + 1]);
+      auto prior_trial = CaptureComparisonTrial(environment, *ledger, prior_selector, owner);
+      ASSERT_TRUE(prior_trial) << prior_trial.error().detail;
+      auto prior_arm = MakeAlternative(*prior_trial);
+      ASSERT_TRUE(prior_arm);
+      auto prior_plan = PlanAlternative(environment, *prior_trial, std::move(*prior_arm), *ledger);
+      ASSERT_TRUE(prior_plan) << prior_plan.error().detail;
+      ASSERT_TRUE(ledger->CommitAcceptedAlternative(environment, *prior_trial, *prior_plan));
+      EXPECT_FALSE(ledger->ValidateTerminalWholeAlternative(environment, *trial, *completed));
+      auto fresh = CaptureWholeComparisonTrial(environment, *ledger, selector, owner);
+      ASSERT_TRUE(fresh) << fresh.error().detail;
+      EXPECT_NE(fresh->site.whole_checkpoint.subject(), trial->site.whole_checkpoint.subject());
+      EXPECT_NE(fresh->site.selector.checkpoint_match, selector.checkpoint_match);
+      bool shifted = false;
+      for (std::uint32_t t = 0; t < graph.tensor_count(); ++t) {
+        const auto current = fresh->checkpoint.source_to_checkpoint()[t];
+        shifted |= current.valid() && current.v != t;
+      }
+      ASSERT_TRUE(shifted);
+      auto fresh_arm = MakeAlternative(*fresh);
+      ASSERT_TRUE(fresh_arm);
+      auto fresh_plan = PlanAlternative(environment, *fresh, std::move(*fresh_arm), *ledger);
+      ASSERT_TRUE(fresh_plan) << fresh_plan.error().detail;
+      EXPECT_TRUE(ledger->ValidateTerminalWholeAlternative(environment, *fresh, *fresh_plan));
+      EXPECT_FALSE(std::ranges::any_of(fresh_plan->plan.applied,
+                                       [](const auto& a) { return a.pattern == "rms_norm_mul"; }));
+      EXPECT_TRUE(std::ranges::any_of(
+          fresh_plan->alternative_owner->prior_decision_exclusions, [&](const auto& exclusion) {
+            return exclusion.prior_site_identity == ledger->records()[0].site_identity &&
+                   exclusion.competing_pattern == "rms_norm_mul";
+          }));
+    }
+  }
+}
+
+TEST(ComparisonAlternativeTest,
+     WholeCheckpointPreservesBoundaryRefusalForConsumedSameOriginHelper) {
+  auto implementations = Everything();
+  for (const auto op : {Op::kMatMul, Op::kCont, Op::kConvert, Op::kAttention})
+    implementations.push_back(Fake(std::string(ir::OpName(op)), Any(ir::Primitive(op))));
+  for (const auto kind : {FusedKind::kRmsNormMulRopeSections, FusedKind::kAttentionMaskPack,
+                          FusedKind::kRopeTable, FusedKind::kQkAttention})
+    implementations.push_back(Fake(std::string(ir::FusedKindName(kind)), Any(ir::Fused(kind))));
+  const auto registry = Registry(std::move(implementations));
+  ir::Builder b;
+  b.SetComponent(1);
+  const auto x = b.Input(F32({8, 17}));
+  const auto positions = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({17})));
+  const auto norm = b.Weight(F32({4}), W(0));
+  const auto mask = b.Input(F32({17, 17}));
+  std::array<TensorId, 3> heads;
+  for (std::uint16_t i = 0; i < heads.size(); ++i) {
+    const auto weight = b.Weight(ir::Dense(Encoding::kBF16, ir::ShapeOf({8, 8})), W(i + 1));
+    auto h = b.Reshape(b.MatMul(weight, x), ir::ShapeOf({4, 2, 17}));
+    if (i != 2)
+      h = b.Rope(b.Mul(b.RmsNorm(h, 1e-6F), norm), positions, {},
+                 {.mode = ir::RopeMode::kNormal, .dims = 4});
+    h = b.Permute(h, {0, 2, 1, 3});
+    heads[i] = i != 2 ? b.Cont(h) : h;
+  }
+  b.Output(b.Attention(heads[0], heads[1], heads[2], mask, {}, {.scale = 0.5F}));
+  auto graph = Finish(b);
+  const auto* qk = FindPattern("qk_attention");
+  ASSERT_NE(qk, nullptr);
+  ASSERT_TRUE(qk->numerical_change);
+  Policy on{.enabled = {"qk_attention", "rms_norm_mul_rope_sections"}};
+  const std::array changes{*qk->numerical_change};
+  const auto policy = FixtureNumericalPolicy(graph, on, changes);
+  std::vector<components::ComparisonExternalBinding> external;
+  std::vector<components::StepWeight> weights;
+  for (std::uint32_t t = 0; t < graph.tensor_count(); ++t) {
+    const auto id = TensorId{t};
+    const auto& desc = graph.tensor(id);
+    if (graph.root(id) != id || (desc.role != ir::Role::kInput && desc.role != ir::Role::kWeight))
+      continue;
+    if (desc.role == ir::Role::kWeight) {
+      const auto* ref = std::get_if<ir::WeightRef>(&desc.binding);
+      ASSERT_NE(ref, nullptr);
+      const auto parts = format::PartsOf(desc.format);
+      ASSERT_TRUE(parts);
+      weights.push_back({.tensor = id, .ref = *ref, .parts = {}});
+      for (const auto& part : parts->parts()) {
+        weights.back().parts.emplace_back(
+            std::to_string(ref->role) + "." + std::string(format::PartRoleName(part.role)),
+            part.role);
+        external.push_back({.original_root = id,
+                            .part = part.role,
+                            .allocation_class = static_cast<std::uint32_t>(external.size() + 1),
+                            .allocation_bytes = part.readable,
+                            .bytes = part.readable,
+                            .alignment = 64});
+      }
+      continue;
+    }
+    const auto bytes = ir::StorageBytes(desc);
+    ASSERT_TRUE(bytes);
+    external.push_back({.original_root = id,
+                        .allocation_class = static_cast<std::uint32_t>(external.size() + 1),
+                        .allocation_bytes = *bytes,
+                        .bytes = *bytes,
+                        .alignment = 64});
+  }
+  const components::GraphBuildIO io{graph, graph.inputs(), graph.outputs(), weights};
+  const components::ComparisonBoundaryView source{.io = io, .external = external};
+  auto owner = std::make_shared<ComparisonFunder>();
+  auto discovered = DiscoverComparisonPlan(source, {}, true, owner, registry, kDevice, policy);
+  ASSERT_TRUE(discovered) << discovered.error().detail;
+  ASSERT_TRUE(std::ranges::any_of(discovered->incumbent.plan.applied,
+                                  [](const auto& a) { return a.pattern == "qk_attention"; }));
+  unsigned consumed = 0;
+  for (const auto& ticket : discovered->discovery.tickets()) {
+    if (ticket.kind != ComparisonSiteKind::kRewrite ||
+        ticket.pattern != "rms_norm_mul_rope_sections")
+      continue;
+    ComparisonSiteSelector selector;
+    selector.source_graph_identity = graph.identity();
+    selector.kind = ticket.kind;
+    selector.pattern = ticket.pattern;
+    selector.version = ticket.version;
+    selector.member_owner_segments = ticket.owner_segments;
+    selector.boundary_ports = ticket.boundary_ports;
+    selector.checkpoint_match = ticket.checkpoint_match;
+    for (std::size_t i = 0; i + 1 < ticket.member_offsets.size(); ++i)
+      selector.member_origins.emplace_back(
+          ticket.member_origins.begin() + ticket.member_offsets[i],
+          ticket.member_origins.begin() + ticket.member_offsets[i + 1]);
+    // QK regenerates a key helper with the merged Q/K lineage. Its presence
+    // cannot authorize the consumed original query/key output as a new choice.
+    bool same_origin_helper = false;
+    for (const auto& step : discovered->incumbent.plan.steps) {
+      for (const auto node : step.nodes) {
+        if (discovered->incumbent.plan.graph.node(node).key !=
+            ir::Fused(FusedKind::kRmsNormMulRopeSections))
+          continue;
+        same_origin_helper |= std::ranges::all_of(ticket.member_origins, [&](const auto original) {
+          return discovered->discovery.origins().Contains(
+              discovered->discovery.planned_node_origins()[node.v], original);
+        });
+      }
+    }
+    EXPECT_TRUE(same_origin_helper);
+    auto refused = BoundWholeComparison(source, selector, owner, registry, kDevice, policy);
+    ASSERT_FALSE(refused);
+    // This small QK source changes its declared output boundary and is
+    // refused before final-site selection. Preserve that stronger refusal;
+    // do not relax the source to force this control through a later guard.
+    EXPECT_EQ(refused.error().error, PlanError::kStaleComparisonSite);
+    EXPECT_EQ(refused.error().detail, "normal planning changed the declared source boundary");
+    ++consumed;
+  }
+  EXPECT_EQ(consumed, 2U);
+}
+
+TEST(ComparisonAlternativeTest, RoutedVecqGluUsesItsClosedRegisteredResultFamily) {
+  const auto* pattern = FindPattern("vecq_glu");
+  ASSERT_NE(pattern, nullptr);
+  EXPECT_TRUE(pattern->AcceptsResult(ir::Fused(FusedKind::kMatMulGlu)));
+  EXPECT_TRUE(pattern->AcceptsResult(ir::Fused(FusedKind::kMatMulIdGlu)));
+  EXPECT_FALSE(pattern->AcceptsResult(ir::Fused(FusedKind::kMoeExperts)));
+  EXPECT_FALSE(pattern->AcceptsResult(ir::Primitive(Op::kMatMulId)));
+  auto implementations = Everything();
+  auto product = Any(ir::Primitive(Op::kMatMulId));
+  product.priority = 100;
+  auto fused = Any(ir::Fused(FusedKind::kMatMulIdGlu));
+  fused.priority = 100;
+  implementations.push_back(Fake("test.changed_product", product));
+  implementations.push_back(Fake("test.changed_glu", fused));
+  const auto registry = Registry(std::move(implementations));
+  ir::Builder b;
+  b.SetComponent(1);
+  const auto x = b.Input(F32({256, 4}));
+  const auto ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2, 4})));
+  auto format = Q8(256, 128);
+  format.shape = ir::ShapeOf({256, 128, 4});
+  const auto gate = b.Weight(format, W(0));
+  const auto up = b.Weight(format, W(1));
+  const auto rows = b.Reshape(x, ir::ShapeOf({256, 1, 4}));
+  b.Output(b.Glu(b.MatMulId(gate, rows, ids), b.MatMulId(up, rows, ids), {}));
+  auto source = Finish(b);
+  const std::array<std::uint16_t, 2> roles{0, 1};
+  const auto policy = RoleNumericalPolicy(source, {}, NumericalChange::kQ8VectorReduction, roles);
+  const std::array weights{
+      components::StepWeight{
+          .tensor = gate, .ref = W(0), .parts = {{"gate", format::PartRole::kData}}},
+      components::StepWeight{
+          .tensor = up, .ref = W(1), .parts = {{"up", format::PartRole::kData}}}};
+  std::vector<components::ComparisonExternalBinding> external;
+  for (const auto t : {x, ids, gate, up}) {
+    const auto storage = ir::StorageBytes(source.tensor(t));
+    ASSERT_TRUE(storage);
+    std::uint64_t bytes = *storage;
+    if (t == gate || t == up) {
+      const auto parts = format::PartsOf(source.tensor(t).format);
+      ASSERT_TRUE(parts);
+      const auto part = parts->Find(format::PartRole::kData);
+      ASSERT_TRUE(part);
+      bytes = part->readable;
+    }
+    external.push_back(
+        {.original_root = t,
+         .part = (t == gate || t == up) ? std::optional(format::PartRole::kData) : std::nullopt,
+         .allocation_class = static_cast<std::uint32_t>(external.size()),
+         .allocation_bytes = bytes,
+         .bytes = bytes,
+         .alignment = 64});
+  }
+  const components::GraphBuildIO io{source, source.inputs(), source.outputs(), weights};
+  const components::ComparisonBoundaryView boundary{.io = io, .external = external};
+  auto owner = std::make_shared<ComparisonFunder>();
+  const std::array filter{pattern->result};
+  auto discovery =
+      DiscoverComparisonPlan(boundary, filter, false, owner, registry, kDevice, policy, {});
+  ASSERT_TRUE(discovery) << discovery.error().detail;
+  const auto ticket = std::ranges::find_if(discovery->discovery.tickets(), [](const auto& t) {
+    return t.kind == ComparisonSiteKind::kRewrite && t.pattern == "vecq_glu";
+  });
+  ASSERT_NE(ticket, discovery->discovery.tickets().end());
+  ComparisonSiteSelector selector;
+  selector.source_graph_identity = source.identity();
+  selector.kind = ticket->kind;
+  selector.pattern = ticket->pattern;
+  selector.version = ticket->version;
+  selector.member_owner_segments = ticket->owner_segments;
+  selector.boundary_ports = ticket->boundary_ports;
+  for (std::size_t i = 0; i + 1 < ticket->member_offsets.size(); ++i)
+    selector.member_origins.emplace_back(
+        ticket->member_origins.begin() + ticket->member_offsets[i],
+        ticket->member_origins.begin() + ticket->member_offsets[i + 1]);
+  auto inventory = BoundComparison(boundary, selector, owner, registry, kDevice, policy, {});
+  ASSERT_TRUE(inventory) << inventory.error().detail;
+  EXPECT_TRUE(std::ranges::any_of(inventory->incumbent.view().graph.nodes(), [](const auto& n) {
+    return n.key == ir::Fused(FusedKind::kMatMulIdGlu);
+  }));
+  auto alternative = MakeAlternative(*inventory);
+  ASSERT_TRUE(alternative) << alternative.error().detail;
+  auto planned =
+      PlanAlternative(*inventory, std::move(*alternative), registry, kDevice, policy, {});
+  ASSERT_TRUE(planned) << planned.error().detail;
+  EXPECT_FALSE(std::ranges::contains(planned->view().applied, "vecq_glu", &Applied::pattern));
+  ++selector.version;
+  EXPECT_FALSE(BoundComparison(boundary, selector, owner, registry, kDevice, policy, {}));
+}
+
+TEST(ComparisonAlternativeTest, LedgerKeepsExactTwoMemberPortsWhenPlanningHeterogeneousThreeBatch) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  ir::Builder builder;
+  const TensorId fusion_input = builder.Input(F32({16, 2}));
+  const TensorId fusion_weight = builder.Weight(F32({16}), W(10));
+  const TensorId fusion_output =
+      builder.Fused(FusedKind::kRmsNormMul, std::array{fusion_input, fusion_weight},
+                    ir::NormParams{.eps = 1e-6f})[0];
+  builder.Output(fusion_output);
+  const TensorId source_two = builder.Input(F32({16, 2}));
+  const TensorId index = builder.Input(ir::Dense(Encoding::kI64, ir::ShapeOf({2})));
+  std::array<TensorId, 2> first_stores{};
+  std::vector<components::StepState> state;
+  std::vector<TensorId> state_tensors;
+  for (std::uint16_t i = 0; i < first_stores.size(); ++i) {
+    const auto ref = ir::StateRef{.stage = 0, .tensor = i, .layer = i, .segment = 0};
+    const TensorId cache = builder.State(ir::Dense(Encoding::kF16, ir::ShapeOf({16, 8})), ref);
+    first_stores[i] = builder.CacheStore(cache, source_two, index);
+    state.push_back({.tensor = cache, .ref = ref, .read = false, .written = true});
+    state_tensors.push_back(cache);
+  }
+  builder.Output(builder.Scale(source_two, 2.0f));  // separates the two ordered batches
+  const TensorId source_three = builder.Input(F32({16, 2}));
+  const TensorId source_middle = builder.Input(ir::Dense(Encoding::kF16, ir::ShapeOf({8, 2})));
+  std::array<TensorId, 3> second_stores{};
+  for (std::uint16_t i = 0; i < second_stores.size(); ++i) {
+    const bool middle = i == 1;
+    const auto ref = ir::StateRef{.stage = 0,
+                                  .tensor = static_cast<std::uint16_t>(2 + i),
+                                  .layer = static_cast<std::uint16_t>(2 + i),
+                                  .segment = 0};
+    const auto cache_shape = middle ? ir::ShapeOf({8, 8}) : ir::ShapeOf({16, 8});
+    const auto cache_format = middle ? Encoding::kF32 : Encoding::kF16;
+    const TensorId cache = builder.State(ir::Dense(cache_format, cache_shape), ref);
+    second_stores[i] = builder.CacheStore(cache, middle ? source_middle : source_three, index);
+    state.push_back({.tensor = cache, .ref = ref, .read = false, .written = true});
+    state_tensors.push_back(cache);
+  }
+  builder.Output(source_three);
+  auto unowned = std::move(builder).Finish();
+  ASSERT_TRUE(unowned) << unowned.error().detail;
+  auto funded = unowned->Clone(owner);
+  ASSERT_TRUE(funded) << funded.error().detail;
+  ir::Graph graph = std::move(*funded);
+  std::array<ir::NodeId, 2> first_nodes{};
+  for (std::size_t i = 0; i < first_stores.size(); ++i)
+    first_nodes[i] = graph.producer(first_stores[i]);
+  std::array<ir::NodeId, 3> second_nodes{};
+  for (std::size_t i = 0; i < second_stores.size(); ++i)
+    second_nodes[i] = graph.producer(second_stores[i]);
+  std::vector<components::ComparisonExternalBinding> external;
+  std::uint32_t allocation_class = 0;
+  for (const TensorId input : graph.inputs()) {
+    const auto bytes = *ir::StorageBytes(graph.tensor(input));
+    external.push_back({.original_root = input,
+                        .allocation_class = allocation_class++,
+                        .allocation_bytes = bytes,
+                        .bytes = bytes,
+                        .alignment = 64});
+  }
+  const std::array step_weights{components::StepWeight{
+      .tensor = fusion_weight, .ref = W(10), .parts = {{"fusion", format::PartRole::kData}}}};
+  const auto weight_bytes = *ir::StorageBytes(graph.tensor(fusion_weight));
+  external.push_back({.original_root = fusion_weight,
+                      .part = format::PartRole::kData,
+                      .allocation_class = allocation_class++,
+                      .allocation_bytes = weight_bytes,
+                      .bytes = weight_bytes,
+                      .alignment = 64});
+  for (const TensorId tensor : state_tensors) {
+    const auto bytes = *ir::StorageBytes(graph.tensor(tensor));
+    external.push_back({.original_root = tensor,
+                        .allocation_class = allocation_class++,
+                        .allocation_bytes = bytes,
+                        .bytes = bytes,
+                        .alignment = 64});
+  }
+  const components::GraphBuildIO io{graph, graph.inputs(), graph.outputs(), step_weights};
+  const components::ComparisonBoundaryView boundary{
+      .io = io, .state = state, .active_stage = 0, .external = external};
+  const auto registry = Registry();
+  const Policy policy{};
+  const PlanOptions options{};
+  ComparisonPlanningEnvironment environment(boundary, registry, kDevice, policy, options);
+  auto made_ledger = ComparisonDecisionLedger::Create(environment, owner);
+  ASSERT_TRUE(made_ledger) << made_ledger.error().detail;
+  auto ledger = std::move(*made_ledger);
+  ComparisonSiteSelector fusion_selector;
+  fusion_selector.source_graph_identity = graph.identity();
+  fusion_selector.kind = ComparisonSiteKind::kFusedNode;
+  fusion_selector.member_origins = {{graph.producer(fusion_output)}};
+  auto fusion_trial = CaptureComparisonTrial(environment, ledger, fusion_selector, owner);
+  ASSERT_TRUE(fusion_trial) << fusion_trial.error().detail;
+  auto fusion_alternative = MakeAlternative(*fusion_trial);
+  ASSERT_TRUE(fusion_alternative) << fusion_alternative.error().detail;
+  auto fusion_plan =
+      PlanAlternative(environment, *fusion_trial, std::move(*fusion_alternative), ledger);
+  ASSERT_TRUE(fusion_plan) << fusion_plan.error().detail;
+  ASSERT_TRUE(fusion_plan->alternative_owner);
+  ASSERT_TRUE(ledger.CommitAcceptedAlternative(environment, *fusion_trial, *fusion_plan));
+  const auto selector = [&](std::span<const ir::NodeId> nodes) {
+    ComparisonSiteSelector result;
+    result.source_graph_identity = graph.identity();
+    result.kind = ComparisonSiteKind::kBatch;
+    result.pattern = "grouped_stores";
+    for (const auto node : nodes) result.member_origins.push_back({node});
+    return result;
+  };
+  auto first_trial = CaptureComparisonTrial(environment, ledger, selector(first_nodes), owner);
+  ASSERT_TRUE(first_trial) << first_trial.error().detail;
+  ASSERT_EQ(first_trial->site.selector.member_origins.size(), 2U);
+  auto first_alternative = MakeAlternative(*first_trial);
+  ASSERT_TRUE(first_alternative) << first_alternative.error().detail;
+  auto first_plan =
+      PlanAlternative(environment, *first_trial, std::move(*first_alternative), ledger);
+  ASSERT_TRUE(first_plan) << first_plan.error().detail;
+  ASSERT_TRUE(first_plan->alternative_owner);
+  EXPECT_TRUE(std::ranges::any_of(first_plan->alternative_owner->prior_decision_exclusions,
+                                  [&](const auto& record) {
+                                    return record.prior_site_identity ==
+                                           fusion_plan->alternative_owner->site.exact_site_identity;
+                                  }));
+  ASSERT_TRUE(ledger.CommitAcceptedAlternative(environment, *first_trial, *first_plan));
+
+  auto second_trial = CaptureComparisonTrial(environment, ledger, selector(second_nodes), owner);
+  ASSERT_TRUE(second_trial) << second_trial.error().detail;
+  ASSERT_EQ(second_trial->site.selector.member_origins.size(), 3U);
+  ASSERT_EQ(second_trial->site.complete_member_owner_segments.size(), 3U);
+  ASSERT_FALSE(second_trial->site.complete_boundary_ports.empty());
+  auto second_alternative = MakeAlternative(*second_trial);
+  ASSERT_TRUE(second_alternative) << second_alternative.error().detail;
+  auto second_plan =
+      PlanAlternative(environment, *second_trial, std::move(*second_alternative), ledger);
+  ASSERT_TRUE(second_plan) << second_plan.error().detail;
+  ASSERT_TRUE(second_plan->alternative_owner);
+  EXPECT_TRUE(std::ranges::any_of(second_plan->alternative_owner->prior_decision_exclusions,
+                                  [&](const auto& record) {
+                                    return record.prior_site_identity ==
+                                           fusion_plan->alternative_owner->site.exact_site_identity;
+                                  }));
+  EXPECT_TRUE(std::ranges::any_of(second_plan->alternative_owner->prior_decision_exclusions,
+                                  [&](const auto& record) {
+                                    return record.prior_site_identity ==
+                                           first_plan->alternative_owner->site.exact_site_identity;
+                                  }));
+  const TensorId first_store_output = graph.node(first_nodes.front()).out[0];
+  ASSERT_LT(first_store_output.v, second_plan->view().tensors.size());
+  EXPECT_NE(second_plan->view().tensors[first_store_output.v], first_store_output)
+      << "the committed earlier fusion must shift the later batch through original-to-seed maps";
+  ASSERT_TRUE(ledger.CommitAcceptedAlternative(environment, *second_trial, *second_plan));
+  ASSERT_EQ(ledger.records().size(), 3U);
+  EXPECT_EQ(ledger.records()[0].kind, ComparisonSiteKind::kFusedNode);
+  EXPECT_EQ(ledger.records()[1].member_origins.size(), 2U);
+  EXPECT_EQ(ledger.records()[2].member_origins.size(), 3U);
+  EXPECT_NE(ledger.records()[1].site_identity, ledger.records()[2].site_identity);
+}
+
+TEST(ComparisonAlternativeTest, DiscoveryTicketsAuthenticateBatchCardinalityAndHeterogeneity) {
+  const auto registry = Registry();
+  const std::array filter{ir::Fused(FusedKind::kGroupedStores)};
+  const auto logical_subject =
+      [&](DiscoveryBatchGraph& fixture) -> std::optional<base::Sha256Digest> {
+    const components::GraphBuildIO io{
+        fixture.graph, fixture.graph.inputs(), fixture.graph.outputs(), {}};
+    const components::ComparisonBoundaryView source{io, fixture.state, 0, fixture.external};
+    auto funder = std::make_shared<ComparisonFunder>();
+    auto discovered =
+        DiscoverComparisonPlan(source, filter, false, funder, registry, kDevice, Policy{}, {});
+    EXPECT_TRUE(discovered) << (discovered ? "" : discovered.error().detail);
+    if (!discovered) return std::nullopt;
+    const auto tickets = discovered->discovery.tickets();
+    EXPECT_EQ(tickets.size(), 1U);
+    if (tickets.size() != 1) return std::nullopt;
+    const auto& ticket = tickets.front();
+    EXPECT_EQ(ticket.kind, ComparisonSiteKind::kBatch);
+    EXPECT_EQ(ticket.pattern, "grouped_stores");
+    EXPECT_EQ(ticket.registered_operation, ir::Fused(FusedKind::kGroupedStores));
+    EXPECT_TRUE(ticket.boundary_representable);
+    EXPECT_NE(ticket.occurrence_identity, base::Sha256Digest{});
+    EXPECT_EQ(ticket.member_offsets.size(), fixture.stores.size() + 1);
+    if (ticket.member_offsets.size() != fixture.stores.size() + 1) return std::nullopt;
+    for (std::uint32_t i = 0; i <= fixture.stores.size(); ++i)
+      EXPECT_EQ(ticket.member_offsets[i], i);
+    EXPECT_EQ(ticket.member_origins.size(), fixture.stores.size());
+    if (ticket.member_origins.size() != fixture.stores.size()) return std::nullopt;
+    for (std::size_t i = 0; i < fixture.stores.size(); ++i)
+      EXPECT_EQ(ticket.member_origins[i], fixture.stores[i]);
+    EXPECT_GE(ticket.boundary_ports.size(), fixture.stores.size() * 3U);
+    auto region = components::MakeComparisonRegionBoundary(
+        {source, ticket.member_offsets, ticket.member_origins}, funder);
+    EXPECT_TRUE(region) << (region ? "" : region.error().detail);
+    if (!region) return std::nullopt;
+    EXPECT_EQ(region->source_identity(), fixture.graph.identity());
+    EXPECT_EQ(region->nodes().size(), fixture.stores.size());
+    EXPECT_EQ(region->state().size(), fixture.state.size());
+    EXPECT_TRUE(std::ranges::all_of(region->state(), [](const auto& state) {
+      return !state.facts.read && state.facts.written;
+    }));
+    return region->digest().logical;
+  };
+
+  auto two = MakeDiscoveryBatchGraph(2, false);
+  auto three = MakeDiscoveryBatchGraph(3, false);
+  auto heterogeneous = MakeDiscoveryBatchGraph(3, true);
+  ASSERT_TRUE(two);
+  ASSERT_TRUE(three);
+  ASSERT_TRUE(heterogeneous);
+  const auto two_subject = logical_subject(*two);
+  const auto three_subject = logical_subject(*three);
+  const auto heterogeneous_subject = logical_subject(*heterogeneous);
+  ASSERT_TRUE(two_subject);
+  ASSERT_TRUE(three_subject);
+  ASSERT_TRUE(heterogeneous_subject);
+  EXPECT_NE(*two_subject, *three_subject);
+  EXPECT_NE(*three_subject, *heterogeneous_subject);
+}
+
+TEST(ComparisonAlternativeTest, DiscoveryCommitsBatchOnlyAfterRouteCompactionStabilizes) {
+  const std::array filter{ir::Fused(FusedKind::kGroupedStores)};
+  for (const bool pitched : {false, true}) {
+    SCOPED_TRACE(pitched);
+    auto implementations = Everything();
+    implementations.push_back(
+        Fake("ggml.gemma.route.fused",
+             ex::Capability{.op = ir::Primitive(Op::kRoute), .pitched_output = pitched},
+             ir::Primitive(Op::kRoute)));
+    implementations.push_back(
+        Fake("t.cont", Any(ir::Primitive(Op::kCont)), ir::Primitive(Op::kCont)));
+    const auto registry = Registry(std::move(implementations));
+    auto fixture = MakeDiscoveryBatchGraph(2, false, true);
+    ASSERT_TRUE(fixture);
+    const components::GraphBuildIO io{
+        fixture->graph, fixture->graph.inputs(), fixture->graph.outputs(), {}};
+    const components::ComparisonBoundaryView source{io, fixture->state, 0, fixture->external};
+    auto funder = std::make_shared<ComparisonFunder>();
+    auto discovered =
+        DiscoverComparisonPlan(source, filter, false, funder, registry, kDevice, Policy{}, {});
+    ASSERT_TRUE(discovered) << discovered.error().detail;
+    EXPECT_EQ(std::ranges::count(Names(discovered->incumbent.view(), registry), "t.cont"),
+              pitched ? 1 : 0);
+    ASSERT_EQ(discovered->discovery.tickets().size(), 1U);
+    const auto& ticket = discovered->discovery.tickets().front();
+    ASSERT_EQ(ticket.kind, ComparisonSiteKind::kBatch);
+    ASSERT_EQ(ticket.pattern, "grouped_stores");
+    ASSERT_TRUE(ticket.boundary_representable);
+    ASSERT_EQ(ticket.member_origins.size(), fixture->stores.size());
+    for (std::size_t i = 0; i < fixture->stores.size(); ++i)
+      EXPECT_EQ(ticket.member_origins[i], fixture->stores[i]);
+    EXPECT_EQ(discovered->discovery.source_to_planned().size(), fixture->graph.tensor_count());
+    EXPECT_EQ(discovered->discovery.planned_node_origins().size(),
+              discovered->incumbent.view().graph.nodes().size());
+  }
+}
+
+TEST(ComparisonAlternativeTest, DiscardedRouteSelectionRollsBackPriorDecisionJournal) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  auto fixture = MakeDiscoveryBatchGraph(3, false, true);
+  ASSERT_TRUE(fixture);
+  const components::GraphBuildIO io{
+      fixture->graph, fixture->graph.inputs(), fixture->graph.outputs(), {}};
+  const components::ComparisonBoundaryView boundary{
+      .io = io, .state = fixture->state, .active_stage = 0, .external = fixture->external};
+  auto implementations = Everything();
+  implementations.push_back(
+      Fake("ggml.gemma.route.fused",
+           ex::Capability{.op = ir::Primitive(Op::kRoute), .pitched_output = true},
+           ir::Primitive(Op::kRoute)));
+  implementations.push_back(
+      Fake("t.cont", Any(ir::Primitive(Op::kCont)), ir::Primitive(Op::kCont)));
+  const auto registry = Registry(std::move(implementations));
+  const Policy policy{};
+  const PlanOptions options{};
+  ComparisonPlanningEnvironment environment(boundary, registry, kDevice, policy, options);
+  auto made_ledger = ComparisonDecisionLedger::Create(environment, owner);
+  ASSERT_TRUE(made_ledger) << made_ledger.error().detail;
+  auto ledger = std::move(*made_ledger);
+  ComparisonSiteSelector selector;
+  selector.source_graph_identity = fixture->graph.identity();
+  selector.kind = ComparisonSiteKind::kBatch;
+  selector.pattern = "grouped_stores";
+  for (const ir::NodeId node : fixture->stores) selector.member_origins.push_back({node});
+
+  auto trial = CaptureComparisonTrial(environment, ledger, selector, owner);
+  ASSERT_TRUE(trial) << trial.error().detail;
+  auto alternative = MakeAlternative(*trial);
+  ASSERT_TRUE(alternative) << alternative.error().detail;
+  auto planned_alternative = PlanAlternative(environment, *trial, std::move(*alternative), ledger);
+  ASSERT_TRUE(planned_alternative) << planned_alternative.error().detail;
+  ASSERT_TRUE(ledger.CommitAcceptedAlternative(environment, *trial, *planned_alternative));
+  ASSERT_EQ(ledger.records().size(), 1U);
+
+  auto created_origins =
+      ComparisonOriginDag::Create(owner, static_cast<std::uint32_t>(fixture->graph.nodes().size()));
+  ASSERT_TRUE(created_origins) << created_origins.error().detail;
+  auto origins = std::move(*created_origins);
+  std::vector<ComparisonOriginSetId> node_origins;
+  node_origins.reserve(fixture->graph.nodes().size());
+  for (std::uint32_t i = 0; i < fixture->graph.nodes().size(); ++i) {
+    auto singleton = origins.AddSingleton(ir::NodeId{i});
+    ASSERT_TRUE(singleton) << singleton.error().detail;
+    node_origins.push_back(*singleton);
+  }
+  ComparisonCaptureSession capture(selector, origins, owner, false, nullptr, ledger.records());
+  ASSERT_TRUE(capture.PrepareDecisionJournal(owner));
+  PlannerMetadataAdmission metadata(owner);
+  bool observed_compacted_graph = false;
+  bool journal_was_rolled_back = false;
+  PlanOptions replay_options;
+  replay_options.comparison_capture = &capture;
+  replay_options.comparison_origins = &origins;
+  replay_options.comparison_node_origins = node_origins;
+  replay_options.metadata_admission = &metadata;
+  replay_options.root_alignment = [&](const ir::Graph& graph, ir::TensorId) {
+    const bool compacted = graph.identity() != fixture->graph.identity() &&
+                           std::ranges::any_of(graph.nodes(), [](const ir::Node& node) {
+                             return node.key == ir::Primitive(Op::kCont);
+                           });
+    if (compacted && !observed_compacted_graph) {
+      observed_compacted_graph = true;
+      journal_was_rolled_back = capture.decision_exclusions().empty();
+    }
+    return std::uint64_t{0};
+  };
+  PlanOptions unowned_options;
+  unowned_options.comparison_capture = &capture;
+  unowned_options.comparison_origins = &origins;
+  unowned_options.comparison_node_origins = node_origins;
+  auto unowned_copy = fixture->graph.Clone(owner);
+  ASSERT_TRUE(unowned_copy) << unowned_copy.error().detail;
+  auto unowned_plan = Plan(std::move(*unowned_copy), registry, kDevice, policy, unowned_options);
+  ASSERT_FALSE(unowned_plan);
+  EXPECT_EQ(unowned_plan.error().error, PlanError::kAdmission);
+
+  auto graph_copy = fixture->graph.Clone(owner);
+  ASSERT_TRUE(graph_copy) << graph_copy.error().detail;
+  auto replay = Plan(std::move(*graph_copy), registry, kDevice, policy, replay_options);
+  ASSERT_TRUE(replay) << replay.error().detail;
+  EXPECT_TRUE(observed_compacted_graph)
+      << "the route-reader compaction retry did not reach the journal observer";
+  EXPECT_TRUE(journal_was_rolled_back)
+      << "a discarded pre-compaction selection leaked its prior-decision journal entry";
+  ASSERT_EQ(capture.decision_exclusions().size(), 1U);
+  EXPECT_EQ(capture.decision_exclusions().front().prior_site_identity,
+            ledger.records().front().site_identity);
+}
+
+TEST(ComparisonOriginDagTest, RepeatedNodeUnionPreservesBothOriginalMemberships) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  ir::Builder builder;
+  ASSERT_TRUE(builder.SetStorageFunder(owner));
+  const TensorId x = builder.Input(F32({64, 3}));
+  const TensorId first = builder.Scale(x, 2.0F);
+  const TensorId second = builder.Scale(x, 2.0F);
+  builder.Output(first);
+  builder.Output(second);
+  auto source = std::move(builder).Finish();
+  ASSERT_TRUE(source) << source.error().detail;
+  auto created =
+      ComparisonOriginDag::Create(owner, static_cast<std::uint32_t>(source->nodes().size()));
+  ASSERT_TRUE(created);
+  auto dag = std::move(*created);
+  std::vector<ComparisonOriginSetId> origins;
+  for (std::uint32_t i = 0; i < source->nodes().size(); ++i) {
+    auto singleton = dag.AddSingleton(ir::NodeId{i});
+    ASSERT_TRUE(singleton);
+    origins.push_back(*singleton);
+  }
+  std::vector<ir::NodeId> repeats(source->nodes().size());
+  repeats[2] = ir::NodeId{1};
+  auto copied = CopyExpand(*source, std::vector<bool>(source->nodes().size(), false), nullptr,
+                           &repeats, origins, &dag);
+  ASSERT_TRUE(copied) << copied.error().detail;
+  ASSERT_EQ(copied->graph.nodes().size(), 2U);
+  ASSERT_EQ(copied->seed_origin_sets.size(), 2U);
+  EXPECT_TRUE(dag.Equals(copied->seed_origin_sets[1], {ir::NodeId{1}, ir::NodeId{2}}));
+  EXPECT_EQ(copied->graph.outputs()[0], copied->graph.outputs()[1]);
+}
+
+TEST(ComparisonOriginDagTest, RepeatChainsUnionIntoTheSurvivingNode) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  ir::Builder builder;
+  ASSERT_TRUE(builder.SetStorageFunder(owner));
+  const TensorId x = builder.Input(F32({64, 3}));
+  const TensorId first = builder.Scale(x, 2.0F);
+  const TensorId second = builder.Scale(x, 2.0F);
+  const TensorId third = builder.Scale(x, 2.0F);
+  builder.Output(first);
+  builder.Output(second);
+  builder.Output(third);
+  auto source = std::move(builder).Finish();
+  ASSERT_TRUE(source) << source.error().detail;
+  auto created =
+      ComparisonOriginDag::Create(owner, static_cast<std::uint32_t>(source->nodes().size()));
+  ASSERT_TRUE(created);
+  auto dag = std::move(*created);
+  std::vector<ComparisonOriginSetId> origins;
+  for (std::uint32_t i = 0; i < source->nodes().size(); ++i) {
+    auto singleton = dag.AddSingleton(ir::NodeId{i});
+    ASSERT_TRUE(singleton);
+    origins.push_back(*singleton);
+  }
+  std::vector<ir::NodeId> repeats(source->nodes().size());
+  repeats[2] = ir::NodeId{1};
+  repeats[3] = ir::NodeId{2};
+  auto copied = CopyExpand(*source, std::vector<bool>(source->nodes().size(), false), nullptr,
+                           &repeats, origins, &dag);
+  ASSERT_TRUE(copied) << copied.error().detail;
+  ASSERT_EQ(copied->seed_origin_sets.size(), 2U);
+  EXPECT_TRUE(
+      dag.Equals(copied->seed_origin_sets[1], {ir::NodeId{1}, ir::NodeId{2}, ir::NodeId{3}}));
+  EXPECT_EQ(copied->graph.outputs()[0], copied->graph.outputs()[1]);
+  EXPECT_EQ(copied->graph.outputs()[1], copied->graph.outputs()[2]);
+}
+
+TEST(ComparisonOriginDagTest, CopyExpandRejectsMalformedControlSpans) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  ir::Builder builder;
+  ASSERT_TRUE(builder.SetStorageFunder(owner));
+  const auto x = builder.Input(F32({64, 3}));
+  builder.Output(x);
+  auto source = std::move(builder).Finish();
+  ASSERT_TRUE(source);
+  EXPECT_FALSE(CopyExpand(*source, std::vector<bool>{}));
+  std::vector<bool> expand(source->nodes().size(), false);
+  std::vector<ir::NodeId> repeats(source->nodes().size());
+  repeats[0] = ir::NodeId{0};
+  EXPECT_FALSE(CopyExpand(*source, expand, nullptr, &repeats));
+  const auto before = owner->active();
+  owner->Refuse(true);
+  auto refused = CopyExpand(*source, expand);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().error, ir::GraphError::kAdmission);
+  EXPECT_EQ(owner->active(), before);
+}
+
+TEST(ComparisonOriginDagTest, CopyExpandRejectsRepeatTargetThatWasDropped) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  ir::Builder builder;
+  ASSERT_TRUE(builder.SetStorageFunder(owner));
+  const TensorId x = builder.Input(F32({64, 3}));
+  const TensorId first = builder.Scale(x, 2.0F);
+  const TensorId second = builder.Scale(x, 2.0F);
+  builder.Output(second);
+  auto source = std::move(builder).Finish();
+  ASSERT_TRUE(source) << source.error().detail;
+  auto created =
+      ComparisonOriginDag::Create(owner, static_cast<std::uint32_t>(source->nodes().size()));
+  ASSERT_TRUE(created);
+  auto dag = std::move(*created);
+  std::vector<ComparisonOriginSetId> origins;
+  for (std::uint32_t i = 0; i < source->nodes().size(); ++i) {
+    auto singleton = dag.AddSingleton(ir::NodeId{i});
+    ASSERT_TRUE(singleton);
+    origins.push_back(*singleton);
+  }
+  std::vector<bool> expand(source->nodes().size(), false);
+  std::vector<bool> drop(source->nodes().size(), false);
+  drop[1] = true;
+  std::vector<ir::NodeId> repeats(source->nodes().size());
+  repeats[2] = ir::NodeId{1};
+  const auto paid_before = owner->active();
+  auto refused = CopyExpand(*source, expand, &drop, &repeats, origins, &dag);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().error, ir::GraphError::kAdmission);
+  EXPECT_EQ(owner->active(), paid_before);
+  EXPECT_EQ(source->tensor_count(), 3U);
+  (void)first;
 }
 
 TEST(PlannerPatternTest, NothingFusesAnIntermediateReadElsewhere) {
@@ -2992,7 +5568,9 @@ TEST(PlannerPatternTest, RotatedSectionsTakeTheWeightWideningAndPositionCopies) 
     return Finish(b);
   };
   {
-    const StepPlan p = PlanOf(graph({}), fused, on);
+    const auto source = graph({});
+    CheckFundedMatcher("rms_norm_mul_rope_sections", source, fused, &on);
+    const StepPlan p = PlanOf(CloneOf(source), fused, on);
     EXPECT_EQ(Patterns(p), std::vector<std::string_view>{"rms_norm_mul_rope_sections"});
     ASSERT_EQ(p.applied.size(), 1U);
     EXPECT_EQ(p.applied[0].replaced.size(), 9U);  // norm, mul, widening, 3 copies, 3 rotations
@@ -3102,6 +5680,69 @@ TEST(PlannerPatternTest, Bf16GluRecordsTheMlpInBf16) {
   };
   const StepPlan p = NumericalPlanOf(graph({}), r, on, {NumericalChange::kBf16SwiGluIntermediates});
   EXPECT_EQ(Patterns(p), std::vector<std::string_view>{"bf16_glu"});
+  const Pattern* bf16_pattern = FindPattern("bf16_glu");
+  ASSERT_NE(bf16_pattern, nullptr);
+  {
+    auto owner = std::make_shared<ComparisonFunder>();
+    auto funded = graph({}).Clone(owner);
+    ASSERT_TRUE(funded) << funded.error().detail;
+    const std::array funded_change{NumericalChange::kBf16SwiGluIntermediates};
+    const Policy qualified = FixtureNumericalPolicy(*funded, on, funded_change);
+    const SelectionView funded_view(r, kDevice, qualified, false, false);
+    {
+      PlannerMetadataAdmission admission(owner);
+      const auto accepted =
+          ApplyPatternTable(std::span(bf16_pattern, 1), *funded, funded_view, nullptr, {}, {}, {},
+                            nullptr, nullptr, {}, {}, &admission);
+      ASSERT_TRUE(accepted) << accepted.error().detail;
+      ASSERT_EQ(accepted->applied.size(), 1U);
+      EXPECT_EQ(accepted->applied.front().pattern, "bf16_glu");
+    }
+  }
+  auto owner = std::make_shared<ComparisonFunder>();
+  {
+    auto funded = graph({}).Clone(owner);
+    ASSERT_TRUE(funded) << funded.error().detail;
+    const std::array funded_change{NumericalChange::kBf16SwiGluIntermediates};
+    const Policy qualified = FixtureNumericalPolicy(*funded, on, funded_change);
+    const SelectionView funded_view(r, kDevice, qualified, false, false);
+    {
+      PlannerMetadataAdmission admission(owner);
+      std::uint64_t edges = 0;
+      for (const auto& node : funded->nodes()) edges += node.nsrc;
+      constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
+      const auto bit_bytes = [](std::uint64_t count) {
+        constexpr std::uint64_t bits = std::numeric_limits<unsigned long>::digits;
+        return ((count + bits - 1) / bits) * sizeof(unsigned long);
+      };
+      const std::uint64_t tensors = funded->tensor_count();
+      const std::uint64_t nodes = funded->nodes().size();
+      const std::uint64_t match_context_bytes =
+          tensors * sizeof(std::vector<ir::NodeId>) + (tensors ? envelope : 0) +
+          3 * edges * sizeof(ir::NodeId) + (edges ? 2 * tensors * envelope : 0) +
+          2 * bit_bytes(tensors) + bit_bytes(nodes) + (tensors ? 2 * envelope : 0) +
+          (nodes ? envelope : 0);
+      ASSERT_TRUE(admission.Require(PlannerMetadataPhase::kMatch, match_context_bytes));
+      MatchContext context(*funded, funded_view, nullptr, {}, &admission);
+      ASSERT_TRUE(context.BeginMatchTrial());
+      ir::NodeId anchor{};
+      for (std::uint32_t i = 0; i < funded->nodes().size(); ++i) {
+        if (funded->node(ir::NodeId{i}).key == ir::Primitive(Op::kGlu)) anchor = ir::NodeId{i};
+      }
+      ASSERT_TRUE(anchor.valid());
+      // The complete MatchContext inventory is already paid. Deny the
+      // matcher's first prospective node-vector allocation; with no matcher
+      // admission hook this same query would return an accepted Match.
+      const auto refusal_charge = owner->charge_count() + 1;
+      owner->FailAt(refusal_charge);
+      const auto refused = bf16_pattern->match(context, anchor);
+      EXPECT_FALSE(refused);
+      EXPECT_TRUE(admission.refused());
+      EXPECT_EQ(owner->charge_count(), refusal_charge);
+    }
+    EXPECT_GT(owner->active(), 0U);  // the funded source graph still owns its storage
+  }
+  EXPECT_EQ(owner->active(), 0U);
   std::size_t converts = 0, bf16_products = 0;
   for (const ir::Node& n : p.graph.nodes()) {
     converts += n.key == ir::Primitive(Op::kConvert);
@@ -3205,6 +5846,8 @@ TEST(PlannerPatternTest, SplitModulationAndGatedResidualFuseTheirConditioning) {
     if (v.norm_scaled) b.Output(b.Scale(m, 2.0F));
     return Finish(b);
   };
+  CheckFundedMatcher("split_modulate", graph({}), r);
+  CheckFundedMatcher("split_gated_residual", graph({}), r);
   const auto split_of = [](const StepPlan& p, FusedKind kind) -> std::optional<std::uint32_t> {
     for (const ir::Node& n : p.graph.nodes())
       if (n.key == ir::Fused(kind)) return n.Params<ir::SplitModulateParams>().split;
@@ -3293,6 +5936,15 @@ TEST(PlannerPatternTest, SplitResidualJoinsTheModulationOfItsSum) {
   const auto count = [](const StepPlan& p, FusedKind kind) {
     return std::ranges::count(p.graph.nodes(), ir::Fused(kind), &ir::Node::key);
   };
+  {
+    Policy first_round = on;
+    first_round.disabled.push_back("split_gated_residual_modulate");
+    Canonicalize(first_round);
+    const SelectionView view(r, kDevice, first_round, false, false);
+    auto phase = ApplyPatterns(graph(false), view);
+    ASSERT_TRUE(phase) << phase.error().detail;
+    CheckFundedMatcher("split_gated_residual_modulate", phase->graph, r);
+  }
   const StepPlan p = PlanOf(graph(false), r, on);
   EXPECT_EQ(Patterns(p), (std::vector<std::string_view>{"split_gated_residual", "split_modulate",
                                                         "split_gated_residual_modulate"}));
@@ -3309,6 +5961,297 @@ TEST(PlannerPatternTest, SplitResidualJoinsTheModulationOfItsSum) {
   const StepPlan between = PlanOf(graph(true), r, on);
   EXPECT_EQ(count(between, FusedKind::kGatedResidualModulateSplit), 0);
   EXPECT_EQ(count(between, FusedKind::kGatedResidualSplit), 1);
+}
+
+TEST(ComparisonAlternativeTest, CapturesNestedRoundOneRewriteWithExactMultiOriginMembers) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  ir::Builder builder;
+  ASSERT_TRUE(builder.SetStorageFunder(owner));
+  const TensorId dead = builder.Scale(builder.Input(F32({7})), 5.0F);
+  const TensorId x = builder.Scale(builder.Input(F32({64, 32})), 2.0F);
+  const TensorId y = builder.Scale(builder.Input(F32({64, 32})), 3.0F);
+  const TensorId side =
+      builder.Concat(builder.Repeat(builder.Input(F32({64})), ir::ShapeOf({64, 12})),
+                     builder.Repeat(builder.Input(F32({64})), ir::ShapeOf({64, 20})), 1);
+  // The joined gate is consumed by owner 0's residual arithmetic.
+  const TensorId gate = builder.Unary(side, ir::UnaryFn::kTanh);
+  builder.SetOwner(0);
+  const TensorId sum = builder.Add(x, builder.Mul(y, gate));
+  builder.Output(builder.Mul(builder.LayerNorm(sum, 1e-6F), builder.Scale(side, 1.0F, 1.0F)));
+  builder.Output(builder.Scale(sum, 4.0F));
+  // A separate round-0 fusion survives the later round-1 checkpoint. It
+  // needs its original Applied preimage even though the continuation merely
+  // copies it; the dead prefix above ensures node IDs are not interchangeable.
+  const auto rms = builder.RmsNorm(x, 1e-6F);
+  const auto normalized = builder.Mul(rms, builder.Input(F32({64})));
+  builder.Output(normalized);
+  auto source_result = std::move(builder).Finish();
+  ASSERT_TRUE(source_result) << source_result.error().detail;
+  ir::Graph source = std::move(*source_result);
+
+  std::vector<ex::Implementation> implementations = Everything();
+  const auto primitive = [](Op op) { return Any(ir::Primitive(op)); };
+  for (const Op op : {Op::kLayerNorm, Op::kRepeat, Op::kConcat, Op::kUnary, Op::kConvert})
+    implementations.push_back(
+        Fake(std::format("t.{}", ir::OpKeyName(ir::Primitive(op))), primitive(op)));
+  implementations.push_back(
+      Fake("t.modulate_split", Any(ir::Fused(FusedKind::kLayerNormModulateSplit))));
+  implementations.push_back(Fake("t.gated_split", Any(ir::Fused(FusedKind::kGatedResidualSplit))));
+  implementations.push_back(
+      Fake("t.gated_modulate_split", Any(ir::Fused(FusedKind::kGatedResidualModulateSplit))));
+  const auto registry = Registry(std::move(implementations));
+  Policy full{.enabled = {"rms_norm_mul", "split_gated_residual", "split_gated_residual_modulate",
+                          "split_modulate"}};
+  Canonicalize(full);
+
+  auto origins_result =
+      ComparisonOriginDag::Create(owner, static_cast<std::uint32_t>(source.nodes().size()));
+  ASSERT_TRUE(origins_result) << origins_result.error().detail;
+  auto origins = std::move(*origins_result);
+  std::vector<ComparisonOriginSetId> initial;
+  initial.reserve(source.nodes().size());
+  for (std::uint32_t n = 0; n < source.nodes().size(); ++n) {
+    auto singleton = origins.AddSingleton(ir::NodeId{n});
+    ASSERT_TRUE(singleton) << singleton.error().detail;
+    initial.push_back(*singleton);
+  }
+
+  std::vector<bool> expand(source.nodes().size(), false);
+  std::vector<bool> drop(source.nodes().size(), false);
+  drop[source.producer(dead).v] = true;
+  auto seed_result = CopyExpand(source, expand, &drop, nullptr, initial, &origins);
+  ASSERT_TRUE(seed_result) << seed_result.error().detail;
+  auto seed = std::move(*seed_result);
+  ASSERT_NE(seed.input_to_seed[source.outputs()[0].v], source.outputs()[0]);
+
+  Policy round_zero = full;
+  round_zero.disabled.push_back("split_gated_residual_modulate");
+  Canonicalize(round_zero);
+  SelectionView first_view(registry, kDevice, round_zero, false, false);
+  auto first =
+      ApplyPatterns(seed.graph, first_view, nullptr, {}, {}, seed.seed_origin_sets, &origins);
+  ASSERT_TRUE(first) << first.error().detail;
+
+  const auto source_members = [&](ir::OpKey key) {
+    ComparisonOriginSet members;
+    const auto node = std::ranges::find(first->graph.nodes(), key, &ir::Node::key);
+    EXPECT_NE(node, first->graph.nodes().end());
+    if (node == first->graph.nodes().end()) return members;
+    const auto index = static_cast<std::uint32_t>(node - first->graph.nodes().begin());
+    EXPECT_LT(first->origin_sets[index], origins.entries().size());
+    for (std::uint32_t original = 0; original < source.nodes().size(); ++original)
+      if (origins.Contains(first->origin_sets[index], ir::NodeId{original}))
+        members.push_back(ir::NodeId{original});
+    return members;
+  };
+  ComparisonSiteSelector selector;
+  selector.source_graph_identity = source.identity();
+  selector.kind = ComparisonSiteKind::kRewrite;
+  selector.pattern = "split_gated_residual_modulate";
+  selector.version = FindPattern(selector.pattern)->version;
+  selector.member_origins = {source_members(ir::Fused(FusedKind::kGatedResidualSplit)),
+                             source_members(ir::Fused(FusedKind::kLayerNormModulateSplit))};
+  ASSERT_EQ(selector.member_origins.size(), 2U);
+  bool saw_joined_origin = false;
+  bool saw_owner_origin = false;
+  for (const auto& members : selector.member_origins)
+    for (const auto member : members) {
+      const auto& node = source.node(member);
+      ASSERT_NE(node.nout, 0U);
+      const auto segment = source.tensor(node.out[0]).segment;
+      saw_joined_origin |= segment == ir::kJoinedSegment;
+      saw_owner_origin |= segment == 0;
+    }
+  ASSERT_TRUE(saw_joined_origin);
+  ASSERT_TRUE(saw_owner_origin);
+  EXPECT_GT(selector.member_origins[0].size(), 1U);
+  EXPECT_GT(selector.member_origins[1].size(), 1U);
+
+  SelectionView full_view(registry, kDevice, full, false, false);
+  ComparisonCaptureSession capture(selector, origins, owner, false);
+  auto complete = ApplyPatterns(seed.graph, full_view, nullptr, {}, {}, seed.seed_origin_sets,
+                                &origins, &capture, seed.input_to_seed, seed.seed_to_input);
+  ASSERT_TRUE(complete) << complete.error().detail;
+  auto checkpoint = capture.TakeCheckpoint();
+  ASSERT_TRUE(checkpoint) << checkpoint.error().detail;
+  ASSERT_EQ(checkpoint->graph.nodes().size(), checkpoint->checkpoint_node_origins().size());
+  ASSERT_EQ(checkpoint->source_to_checkpoint().size(), source.tensor_count());
+  ASSERT_EQ(checkpoint->checkpoint_node_to_source().size(), checkpoint->graph.nodes().size());
+  for (std::uint32_t original_tensor = 0; original_tensor < source.tensor_count();
+       ++original_tensor) {
+    const TensorId seed_tensor = seed.input_to_seed[original_tensor];
+    const TensorId expected = seed_tensor.valid() ? first->tensors[seed_tensor.v] : TensorId{};
+    EXPECT_EQ(checkpoint->source_to_checkpoint()[original_tensor], expected);
+  }
+  for (std::uint32_t checkpoint_node = 0; checkpoint_node < checkpoint->graph.nodes().size();
+       ++checkpoint_node) {
+    const ir::NodeId seed_node = first->from[checkpoint_node];
+    const ir::NodeId expected = seed_node.valid() ? seed.seed_to_input[seed_node.v] : ir::NodeId{};
+    EXPECT_EQ(checkpoint->checkpoint_node_to_source()[checkpoint_node], expected);
+  }
+  bool saw_first_member = false;
+  bool saw_second_member = false;
+  for (std::uint32_t n = 0; n < checkpoint->graph.nodes().size(); ++n) {
+    if (checkpoint->origins.Equals(checkpoint->checkpoint_node_origins()[n],
+                                   selector.member_origins[0]))
+      saw_first_member = true;
+    if (checkpoint->origins.Equals(checkpoint->checkpoint_node_origins()[n],
+                                   selector.member_origins[1]))
+      saw_second_member = true;
+  }
+  EXPECT_TRUE(saw_first_member);
+  EXPECT_TRUE(saw_second_member);
+  EXPECT_EQ(complete->applied.back().pattern, selector.pattern);
+  const auto captured_rms =
+      std::ranges::find(checkpoint->prior_applied(), "rms_norm_mul", &Applied::pattern);
+  ASSERT_NE(captured_rms, checkpoint->prior_applied().end());
+  EXPECT_TRUE(std::ranges::contains(captured_rms->replaced, source.producer(rms)));
+  EXPECT_TRUE(std::ranges::contains(captured_rms->replaced, source.producer(normalized)));
+  ASSERT_EQ(captured_rms->made.size(), 1U);
+  EXPECT_EQ(checkpoint->graph.node(captured_rms->made.front()).key,
+            ir::Fused(FusedKind::kRmsNormMul));
+
+  // Recopy the genuine checkpoint transaction through the public capture
+  // seam. Its last charge pays the nested history; refusal must refund every
+  // earlier graph/map/DAG allocation, without committing a partial capture.
+  std::vector<ir::NodeId> current_members;
+  for (const auto& group : selector.member_origins) {
+    for (std::uint32_t n = 0; n < checkpoint->graph.nodes().size(); ++n) {
+      if (checkpoint->origins.Equals(checkpoint->checkpoint_node_origins()[n], group)) {
+        current_members.push_back(ir::NodeId{n});
+        break;
+      }
+    }
+  }
+  ASSERT_EQ(current_members.size(), selector.member_origins.size());
+  const auto copy_history = [&](const std::shared_ptr<ComparisonFunder>& funder,
+                                std::span<const Applied> history) {
+    ComparisonCaptureSession session(selector, checkpoint->origins, funder, false);
+    return session.CaptureRewrite(selector.pattern, selector.version, current_members,
+                                  checkpoint->checkpoint_node_origins(), checkpoint->graph,
+                                  checkpoint->source_to_checkpoint(),
+                                  checkpoint->checkpoint_node_to_source(), nullptr, history);
+  };
+  auto history_owner = std::make_shared<ComparisonFunder>();
+  std::uint64_t history_charge = 0;
+  {
+    auto copied = copy_history(history_owner, checkpoint->prior_applied());
+    ASSERT_TRUE(copied);
+    ASSERT_TRUE(copied->has_value());
+    EXPECT_EQ((**copied).prior_applied().size(), checkpoint->prior_applied().size());
+    history_charge = history_owner->charge_count();
+    ASSERT_GT(history_charge, 1U);
+  }
+  EXPECT_EQ(history_owner->active(), 0U);
+  auto history_refusal = std::make_shared<ComparisonFunder>();
+  history_refusal->FailAt(history_charge);
+  {
+    auto refused = copy_history(history_refusal, checkpoint->prior_applied());
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().error, PlanError::kAdmission);
+  }
+  EXPECT_EQ(history_refusal->charge_count(), history_charge);
+  EXPECT_EQ(history_refusal->active(), 0U);
+
+  std::vector<components::ComparisonExternalBinding> external;
+  std::uint32_t allocation_class = 0;
+  for (const TensorId input : source.inputs()) {
+    const auto bytes = *ir::StorageBytes(source.tensor(input));
+    external.push_back({.original_root = input,
+                        .allocation_class = allocation_class++,
+                        .allocation_bytes = bytes,
+                        .bytes = bytes,
+                        .alignment = 64});
+  }
+  const components::GraphBuildIO io{source, source.inputs(), source.outputs(), {}};
+  const components::ComparisonBoundaryView boundary{.io = io, .external = external};
+  // Discovery reports the current fused members' ports, whose ordinals need
+  // not exist on any individual primitive in their original lineage.
+  const std::array filter{ir::Fused(FusedKind::kGatedResidualModulateSplit)};
+  auto discovered =
+      DiscoverComparisonPlan(boundary, filter, false, owner, registry, kDevice, full, {});
+  ASSERT_TRUE(discovered) << discovered.error().detail;
+  const auto ticket = std::ranges::find_if(discovered->discovery.tickets(), [](const auto& t) {
+    return t.kind == ComparisonSiteKind::kRewrite && t.pattern == "split_gated_residual_modulate";
+  });
+  ASSERT_NE(ticket, discovered->discovery.tickets().end());
+  ASSERT_EQ(ticket->member_offsets.size(), 3U);
+  for (std::size_t member = 0; member < selector.member_origins.size(); ++member)
+    EXPECT_TRUE(std::ranges::equal(
+        selector.member_origins[member],
+        std::span(ticket->member_origins)
+            .subspan(ticket->member_offsets[member],
+                     ticket->member_offsets[member + 1] - ticket->member_offsets[member])));
+  ASSERT_EQ(ticket->owner_segments, (std::vector<std::uint8_t>{0, 0}));
+  selector.member_owner_segments = ticket->owner_segments;
+  selector.boundary_ports = ticket->boundary_ports;
+  ASSERT_FALSE(selector.boundary_ports.empty());
+  EXPECT_TRUE(std::ranges::any_of(selector.boundary_ports, [](const auto& port) {
+    return port.member == 0 && port.kind == ComparisonSitePortKind::kInput && port.ordinal >= 2;
+  }));
+  for (int mutation = 0; mutation < 6; ++mutation) {
+    auto forged = selector;
+    auto& port = forged.boundary_ports.front();
+    if (mutation == 0) {
+      port.original_tensor = y;
+      port.original_root = source.root(y);
+      port.view_offset = source.tensor(y).view_offset;
+    }
+    if (mutation == 1) port.original_root = source.root(dead);
+    if (mutation == 2) port.ordinal = std::numeric_limits<std::uint16_t>::max();
+    if (mutation == 3) ++port.view_offset;
+    if (mutation == 4) forged.member_owner_segments[0] = 1;
+    if (mutation == 5) ++forged.source_graph_identity;
+    auto refused = BoundComparison(boundary, forged, owner, registry, kDevice, full, {});
+    EXPECT_FALSE(refused) << mutation;
+  }
+
+  auto site_refusal = std::make_shared<ComparisonFunder>();
+  site_refusal->FailAt(3);  // retained + scratch boundary charges, then the site copy.
+  auto refused_inventory =
+      BoundComparison(boundary, selector, site_refusal, registry, kDevice, full, {});
+  ASSERT_FALSE(refused_inventory);
+  EXPECT_EQ(refused_inventory.error().error, PlanError::kAdmission);
+  EXPECT_EQ(site_refusal->charge_count(), 3U);
+  EXPECT_EQ(site_refusal->active(), 0U);
+
+  auto inventory = BoundComparison(boundary, selector, owner, registry, kDevice, full, {});
+  ASSERT_TRUE(inventory) << inventory.error().detail;
+  {
+    auto stale = MakeAlternative(*inventory);
+    ASSERT_TRUE(stale);
+    auto replaced_graph = stale->graph.Clone(owner);
+    ASSERT_TRUE(replaced_graph);
+    stale->graph = std::move(*replaced_graph);
+    auto refused = PlanAlternative(*inventory, std::move(*stale), registry, kDevice, full, {});
+    ASSERT_FALSE(refused);  // Even an equal graph is not the retained seed owner.
+    EXPECT_EQ(refused.error().error, PlanError::kStaleComparisonSite);
+  }
+  auto alternative = MakeAlternative(*inventory);
+  ASSERT_TRUE(alternative) << alternative.error().detail;
+  auto planned = PlanAlternative(*inventory, std::move(*alternative), registry, kDevice, full, {});
+  ASSERT_TRUE(planned) << planned.error().detail;
+  EXPECT_FALSE(std::ranges::any_of(planned->view().applied, [&](const Applied& applied) {
+    return applied.pattern == selector.pattern;
+  }));
+  const auto retained_and_selected = [&](FusedKind kind) {
+    for (const auto& step : planned->view().steps)
+      for (const auto node : step.nodes)
+        if (planned->view().graph.node(node).key.fused == kind) return true;
+    return false;
+  };
+  EXPECT_TRUE(retained_and_selected(FusedKind::kGatedResidualSplit));
+  EXPECT_TRUE(retained_and_selected(FusedKind::kLayerNormModulateSplit));
+  EXPECT_TRUE(retained_and_selected(FusedKind::kRmsNormMul));
+  const auto carried_rms =
+      std::ranges::find(planned->view().applied, "rms_norm_mul", &Applied::pattern);
+  ASSERT_NE(carried_rms, planned->view().applied.end());
+  EXPECT_EQ(carried_rms->replaced, captured_rms->replaced);
+  ASSERT_EQ(carried_rms->made.size(), 1U);
+  EXPECT_EQ(planned->view().graph.node(carried_rms->made.front()).key,
+            ir::Fused(FusedKind::kRmsNormMul));
+  EXPECT_EQ(planned->view().graph.producer(planned->view().tensors[normalized.v]),
+            carried_rms->made.front());
 }
 
 // The modulation of a range of the sum's rows (the image's output norm over
@@ -3413,6 +6356,15 @@ TEST(PlannerPatternTest, Bf16BranchRecordsTheResidualsBranchInBf16) {
         return p.graph.tensor(n.src[1]).format.encoding;
     return Encoding::kF16;  // none
   };
+  {
+    Policy first_round = on;
+    first_round.disabled.push_back("bf16_branch");
+    Canonicalize(first_round);
+    const SelectionView view(r, kDevice, first_round, false, false);
+    auto phase = ApplyPatterns(graph(false), view);
+    ASSERT_TRUE(phase) << phase.error().detail;
+    CheckFundedMatcher("bf16_branch", phase->graph, r);
+  }
   const StepPlan p =
       NumericalPlanOf(graph(false), r, on, {NumericalChange::kBf16ProductInputAndResult});
   EXPECT_EQ(Patterns(p), (std::vector<std::string_view>{"split_gated_residual", "bf16_branch"}));
@@ -3561,9 +6513,12 @@ TEST(PlannerPatternTest, TheLongerChainComesFirst) {
     return Finish(b);
   };
   const ex::Registry r = Registry();
-  EXPECT_EQ(Patterns(PlanOf(graph(64), r, Disabling({"interleaved_norm_rope"}))),
+  const Policy no_interleaved = Disabling({"interleaved_norm_rope"});
+  auto narrow_graph = graph(64);
+  CheckFundedMatcher("rms_norm_mul_rope", narrow_graph, r, &no_interleaved);
+  EXPECT_EQ(Patterns(PlanOf(std::move(narrow_graph), r, no_interleaved)),
             std::vector<std::string_view>{"rms_norm_mul_rope"});
-  EXPECT_EQ(Keys(PlanOf(graph(64), r, Disabling({"interleaved_norm_rope"})).graph),
+  EXPECT_EQ(Keys(PlanOf(graph(64), r, no_interleaved).graph),
             std::vector{ir::Fused(FusedKind::kRmsNormMulRope)});
   // Disabled, or at a width its implementation does not take: the norm and
   // its weight still fuse, the rotation stays.
@@ -3584,7 +6539,10 @@ TEST(PlannerPatternTest, NormThenResidualAdd) {
     return Finish(t.b);
   };
   const ex::Registry r = Registry();
-  EXPECT_EQ(Patterns(PlanOf(graph(false), r)), std::vector<std::string_view>{"rms_norm_mul_add"});
+  auto exact = graph(false);
+  CheckFundedMatcher("rms_norm_mul_add", exact, r);
+  EXPECT_EQ(Patterns(PlanOf(std::move(exact), r)),
+            std::vector<std::string_view>{"rms_norm_mul_add"});
   // A residual broadcast over the rows is not the fused kind's.
   EXPECT_EQ(Patterns(PlanOf(graph(true), r)), std::vector<std::string_view>{"rms_norm_mul"});
 }
@@ -3611,7 +6569,9 @@ TEST(PlannerPatternTest, GateAndUpProductsJoinTheirGlu) {
     Canonicalize(policy);
     return PlanOf(std::move(graph), r, policy);
   };
-  const StepPlan p = isolated(GluGraph(1, false, false, false));
+  auto exact = GluGraph(1, false, false, false);
+  CheckFundedMatcher("mul_mat_glu", exact, r);
+  const StepPlan p = isolated(std::move(exact));
   EXPECT_EQ(Patterns(p), std::vector<std::string_view>{"mul_mat_glu"});
   EXPECT_EQ(Names(p, r), std::vector<std::string>{"t.mul_mat_glu"});
   const ir::Node& fused = p.graph.nodes().back();
@@ -3630,13 +6590,15 @@ TEST(PlannerPatternTest, GateAndUpProductsJoinTheirGlu) {
 
 // x [8, 2, rows] rotated, its rows stored at idx; `owners` stores of
 // row slices.
-ir::Graph RopeStoreGraph(int owners) {
+ir::Graph RopeStoreGraph(int owners, int links = 1) {
   ir::Builder b;
   const std::uint64_t rows = 4;
   const TensorId x = b.Input(F32({8, 2, rows}));
   const TensorId pos = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({rows})));
   const ir::RopeParams rope{.mode = ir::RopeMode::kNeox, .dims = 8, .base = 10000.0f};
-  const TensorId r = b.Reshape(b.Rope(x, pos, {}, rope), ir::ShapeOf({16, rows}));
+  TensorId r = b.Rope(x, pos, {}, rope);
+  if (links != 0) r = b.Reshape(r, ir::ShapeOf({16, rows}));
+  if (links == 2) r = b.View(r, ir::ShapeOf({16, rows}), b.tensor(r).nb, 0);
   const std::uint64_t each = rows / static_cast<std::uint64_t>(owners);
   for (int o = 0; o < owners; ++o) {
     const TensorId cache =
@@ -3654,11 +6616,16 @@ ir::Graph RopeStoreGraph(int owners) {
 
 TEST(PlannerPatternTest, ARotationStoredWhole) {
   const ex::Registry r = Registry();
-  const StepPlan one = PlanOf(RopeStoreGraph(1), r);
+  auto exact = RopeStoreGraph(1);
+  CheckFundedMatcher("rope_store", exact, r);
+  const StepPlan one = PlanOf(std::move(exact), r);
   EXPECT_EQ(Patterns(one), std::vector<std::string_view>{"rope_store"});
   EXPECT_EQ(Keys(one.graph), std::vector{ir::Fused(FusedKind::kRopeStore)});
   // The store's result is a view of its cache, as the fused one's is.
   EXPECT_TRUE(one.graph.tensor(one.graph.outputs()[0]).is_view());
+  auto two_links = RopeStoreGraph(1, 2);
+  CheckFundedMatcher("rope_store", two_links, r);
+  EXPECT_EQ(Patterns(PlanOf(std::move(two_links), r)), std::vector<std::string_view>{"rope_store"});
   // Two owners' slices: the rotation has two readers.
   const StepPlan two = PlanOf(RopeStoreGraph(2), r, Disabling({"grouped_stores"}));
   EXPECT_TRUE(Patterns(two).empty());
@@ -3683,6 +6650,28 @@ TEST(PlannerPatternTest, ProductsOfOneInputShareItsPreparation) {
     Canonicalize(policy);
     return PlanOf(std::move(graph), r, policy);
   };
+  const ir::Graph shared = SharedGraph(3, 2);
+  CheckFundedMatcher("prepared_inputs", shared, r, nullptr, 1);
+  {
+    auto funder = std::make_shared<ComparisonFunder>();
+    auto funded_graph = shared.Clone(funder);
+    ASSERT_TRUE(funded_graph);
+    Policy comparison_policy;
+    comparison_policy.enabled = {"prepared_inputs"};
+    comparison_policy.disabled = {"vecq_inputs"};
+    Canonicalize(comparison_policy);
+    llmp::planner::PlannerMetadataAdmission admission(funder);
+    const SelectionView comparison_view(r, kDevice, comparison_policy, false, false, {}, {}, {},
+                                        SelectionView::FusionComparisons::enabled, &admission);
+    const Pattern* pattern = FindPattern("prepared_inputs");
+    ASSERT_NE(pattern, nullptr);
+    const auto rewritten =
+        ApplyPatternTable(std::span(pattern, 1), *funded_graph, comparison_view, nullptr, {}, {},
+                          {}, nullptr, nullptr, {}, {}, &admission);
+    ASSERT_TRUE(rewritten) << rewritten.error().detail;
+    ASSERT_EQ(rewritten->applied.size(), 1U);
+    EXPECT_EQ(rewritten->applied.front().pattern, "prepared_inputs");
+  }
   const StepPlan p = isolated(SharedGraph(3, 2));
   EXPECT_EQ(Patterns(p), std::vector<std::string_view>{"prepared_inputs"});
   EXPECT_EQ(Names(p, r),
@@ -3769,6 +6758,7 @@ TEST(PlannerBatchTest, ConsecutiveStoresRunAsOne) {
     return Finish(b);
   };
   const ex::Registry r = Registry();
+  CheckFundedMatcher("grouped_stores", graph(3, false), r);
   const StepPlan three = PlanOf(graph(3, false), r);
   EXPECT_EQ(StepSizes(three), std::vector<std::size_t>{3});
   EXPECT_EQ(three.steps[0].batch, "grouped_stores");
@@ -3798,6 +6788,126 @@ TEST(PlannerBatchTest, ConsecutiveStoresRunAsOne) {
   b.CacheStore(first, src, idx);
   b.CacheStore(second, b.View(first, ir::ShapeOf({16, 2}), b.tensor(first).nb, 0), idx);
   EXPECT_EQ(StepSizes(PlanOf(Finish(b), r)), (std::vector<std::size_t>{1, 1}));
+}
+
+TEST(PlannerBatchTest, GroupFormationIgnoresOnlyTheFusionComparisonVeto) {
+  ir::Builder builder;
+  const TensorId src = builder.Input(F32({16, 2}));
+  const TensorId idx = builder.Input(ir::Dense(Encoding::kI64, ir::ShapeOf({2})));
+  std::array<TensorId, 2> caches{};
+  for (std::uint16_t tensor = 0; tensor < caches.size(); ++tensor) {
+    caches[tensor] = builder.State(ir::Dense(Encoding::kF16, ir::ShapeOf({16, 8})),
+                                   {.stage = 0, .tensor = tensor, .layer = 0, .segment = 0});
+    builder.CacheStore(caches[tensor], src, idx);
+  }
+  ir::Graph graph = Finish(builder);
+  const ir::OpKey grouped_key = ir::Fused(FusedKind::kGroupedStores);
+  const auto base_registry = Registry();
+  const DeviceFacts fusion_device{.device_class = "test",
+                                  .arch = 121,
+                                  .device_model = "synthetic selection device",
+                                  .multiprocessors = 1};
+  const Policy default_policy;
+  const SelectionView base_view(base_registry, fusion_device, default_policy, false, false);
+  const auto store =
+      std::ranges::find(graph.nodes(), ir::Primitive(Op::kCacheStore), &ir::Node::key);
+  ASSERT_NE(store, graph.nodes().end());
+  const auto ordinary = base_view.NextOrdinaryCandidate(graph, *store, grouped_key, std::nullopt);
+  ASSERT_TRUE(ordinary);
+  EXPECT_EQ(base_registry.at(*ordinary).name, "t.set_rows.grouped");
+
+  auto measurement_required = Everything();
+  for (auto& implementation : measurement_required)
+    if (implementation.name == "t.set_rows.grouped")
+      implementation.capability->fusion_needs_measurement = true;
+  const auto gated_registry = Registry(std::move(measurement_required));
+  const Policy gated_policy;
+  const SelectionView gated_view(gated_registry, fusion_device, gated_policy, false, false);
+  EXPECT_FALSE(gated_view.NextOrdinaryCandidate(graph, *store, grouped_key, std::nullopt));
+
+  // Generic representable fusion rows are still ignored only on this
+  // comparison-bypass query; automatic-fusion qualification remains active.
+  ir::Builder norm_builder;
+  const TensorId x = norm_builder.Input(F32({64, 3}));
+  const TensorId w = norm_builder.Weight(F32({64}), W(0));
+  const TensorId fused =
+      norm_builder.Fused(FusedKind::kRmsNormMul, std::array{x, w}, ir::NormParams{.eps = 1e-6f})[0];
+  norm_builder.Output(fused);
+  ir::Graph norm_graph = Finish(norm_builder);
+  const auto norm_key = ir::Fused(FusedKind::kRmsNormMul);
+  const auto norm_node = norm_graph.producer(fused);
+  auto norm_implementations = Everything();
+  for (auto& implementation : norm_implementations) {
+    if (implementation.name == "t.rms_norm_mul") implementation.operation = norm_key;
+    if ((implementation.name == "t.rms_norm" || implementation.name == "t.mul") &&
+        implementation.capability)
+      implementation.capability->standalone_comparator = true;
+  }
+  const auto norm_registry = Registry(norm_implementations);
+  const Policy norm_policy;
+  const SelectionView norm_view(norm_registry, fusion_device, norm_policy, false, false);
+  const auto norm_index = norm_registry.Find("t.rms_norm_mul");
+  const auto rms_index = norm_registry.Find("t.rms_norm");
+  const auto mul_index = norm_registry.Find("t.mul");
+  ASSERT_TRUE(norm_index);
+  ASSERT_TRUE(rms_index);
+  ASSERT_TRUE(mul_index);
+  std::optional<base::Sha256Digest> norm_query;
+  norm_view.Inspect(
+      norm_graph, norm_graph.node(norm_node), norm_key,
+      [&](const ex::CapabilityQuery& query) { norm_query = ex::FusionQueryKey(query); }, true);
+  ASSERT_TRUE(norm_query);
+  ex::FusionComparison comparison{
+      .shape_class = "synthetic norm control",
+      .query = *norm_query,
+      .selection_environment = norm_registry.SelectionDigest(),
+      .fusion = {.name = "t.rms_norm_mul", .identity = norm_registry.identity(*norm_index)},
+      .decomposition = {{.name = "t.rms_norm", .identity = norm_registry.identity(*rms_index)},
+                        {.name = "t.mul", .identity = norm_registry.identity(*mul_index)}},
+      .fused_ns = 200,
+      .decomposition_ns = 100,
+      .samples = 9,
+      .provenance = "synthetic unit test"};
+  const auto empty_digest = [](const auto& digest) {
+    return std::ranges::all_of(digest, [](std::uint8_t value) { return value == 0; });
+  };
+  EXPECT_FALSE(empty_digest(comparison.query));
+  EXPECT_FALSE(empty_digest(comparison.selection_environment));
+  EXPECT_FALSE(empty_digest(comparison.fusion.identity));
+  EXPECT_TRUE(ir::HasDecomposition(norm_key));
+  EXPECT_EQ(norm_registry.at(*norm_index).operation.op, ir::Op::kFused);
+  const auto ranked =
+      ex::Registry::Create(std::move(norm_implementations), {.fusions = {comparison}});
+  ASSERT_TRUE(ranked) << ranked.error().detail;
+  const Policy unmeasured_norm_policy;
+  const SelectionView enabled_view(*ranked, fusion_device, unmeasured_norm_policy, false, false);
+  std::optional<ex::FusionPreference> preference;
+  enabled_view.Inspect(
+      norm_graph, norm_graph.node(norm_node), norm_key,
+      [&](const ex::CapabilityQuery& query) {
+        EXPECT_TRUE(query.fusion_comparisons);
+        EXPECT_FALSE(query.terminal_decomposition.empty());
+        const auto actual_key = ex::FusionQueryKey(query);
+        ASSERT_TRUE(actual_key);
+        EXPECT_EQ(*actual_key, comparison.query);
+        EXPECT_TRUE(ranked->HasFusionComparisons(norm_key));
+        EXPECT_EQ(ranked->FusionComparisons(norm_key, *actual_key).size(), 1U);
+        preference = ex::FusionPreferenceFor(*ranked, query, "t.rms_norm_mul");
+      },
+      true);
+  ASSERT_TRUE(preference);
+  EXPECT_EQ(*preference, ex::FusionPreference::kDecomposition);
+  EXPECT_TRUE(
+      enabled_view.FinalCandidates(norm_graph, norm_graph.node(norm_node), norm_key, true).empty());
+  const auto comparison_bypass = enabled_view.NextOrdinaryCandidate(
+      norm_graph, norm_graph.node(norm_node), norm_key, std::nullopt);
+  ASSERT_TRUE(comparison_bypass);
+  EXPECT_EQ((*ranked).at(*comparison_bypass).name, "t.rms_norm_mul");
+
+  const StepPlan selected = PlanOf(std::move(graph), base_registry);
+  ASSERT_EQ(selected.steps.size(), 1U);
+  EXPECT_EQ(selected.steps[0].batch, "grouped_stores");
+  EXPECT_EQ(selected.steps[0].nodes.size(), 2U);
 }
 
 // ------------------------------------------------------------ selection
@@ -4405,7 +7515,9 @@ TEST(PlannerSelectionTest, RootAlignmentFactsOwnAnExactRootIdentitySeal) {
   EXPECT_EQ(aligned(*original, {1}), 4);
   EXPECT_EQ(aligned(*reversed, {0}), 0);
   EXPECT_EQ(aligned(*reversed, {1}), 0);
-  auto clone = original->Clone();
+  auto clone_result = original->Clone();
+  ASSERT_TRUE(clone_result);
+  auto clone = std::move(*clone_result);
   EXPECT_EQ(aligned(clone, {0}), 256);
   clone = std::move(*reversed);  // same Graph address, different root meanings
   EXPECT_EQ(aligned(clone, {0}), 0);
@@ -4447,7 +7559,9 @@ TEST(PlannerSelectionTest, RootAlignmentCacheKeysOnGraphIdentity) {
   ASSERT_TRUE(first);
   const std::uint64_t identity = first->identity();
   EXPECT_NE(identity, 0U);
-  auto clone = first->Clone();
+  auto clone_result = first->Clone();
+  ASSERT_TRUE(clone_result);
+  auto clone = std::move(*clone_result);
   EXPECT_NE(clone.identity(), 0U);
   EXPECT_NE(clone.identity(), identity);
   ir::Graph moved = std::move(*first);
@@ -4457,7 +7571,9 @@ TEST(PlannerSelectionTest, RootAlignmentCacheKeysOnGraphIdentity) {
       GraphRootAlignments(moved, std::array{RootAlignmentFact{.root = {0}, .alignment = 256}});
   ASSERT_TRUE(aligned);
   for (int attempt = 0; attempt < 8; ++attempt) {
-    std::optional<ir::Graph> held = clone.Clone();
+    auto held_clone = clone.Clone();
+    ASSERT_TRUE(held_clone);
+    std::optional<ir::Graph> held(std::move(*held_clone));
     EXPECT_EQ(aligned(*held, {0}), 256U);
     const ir::Node* storage = held->nodes().data();
     held.reset();
@@ -4468,6 +7584,8 @@ TEST(PlannerSelectionTest, RootAlignmentCacheKeysOnGraphIdentity) {
     EXPECT_EQ(aligned(*other, {0}), 0U);
   }
   EXPECT_EQ(aligned(moved, {0}), 256U);
+  EXPECT_EQ(aligned(*first, {0}), 0U);
+  EXPECT_FALSE(GraphRootAlignments(*first, std::array{RootAlignmentFact{{0}, 256}}));
 }
 
 TEST(PlannerSelectionTest, RootAlignmentQueriesDoNotLendFactsToHypotheticalDescriptors) {
@@ -4521,11 +7639,10 @@ TEST(PlannerSelectionTest, RootAlignmentFactsFailClosedAcrossPatternAndExpansion
   const auto rewritten_x = rewritten->tensors.at(x.v);
   const auto rewritten_facts =
       GraphRootAlignments(rewritten->graph, std::array{RootAlignmentFact{rewritten_x, 256}});
-  std::vector<TensorId> map;
-  auto expanded = ir::Expand(rewritten->graph, true, &map);
+  auto expanded = ir::ExpandWithMap(rewritten->graph, true);
   ASSERT_TRUE(expanded);
-  EXPECT_EQ(rewritten_facts(*expanded, map.at(rewritten_x.v)), 0U);
-  EXPECT_EQ(facts(graph.Clone(), x), 256U);
+  EXPECT_EQ(rewritten_facts(expanded->graph, expanded->map.at(rewritten_x.v)), 0U);
+  EXPECT_EQ(facts(CloneOf(graph), x), 256U);
 }
 
 TEST(PlannerSelectionTest, RootFactsForwardOnlyThroughAuthenticatedLeafMaps) {
@@ -4554,16 +7671,16 @@ TEST(PlannerSelectionTest, RootFactsForwardOnlyThroughAuthenticatedLeafMaps) {
   EXPECT_EQ(moved(changed, {1}), 256U);
   // The carried facts are sealed to `changed`'s identity, which a move keeps
   // and a clone does not (a planner pass's graph is never hashed for them).
-  ir::Graph kept = changed.Clone();
+  ir::Graph kept = CloneOf(changed);
   const auto kept_facts = ForwardRootAlignments(original, kept, map, facts);
   ir::Graph moved_on = std::move(kept);
   EXPECT_EQ(kept_facts(moved_on, {0}), 4U);
-  EXPECT_EQ(kept_facts(moved_on.Clone(), {0}), 0U);
+  EXPECT_EQ(kept_facts(CloneOf(moved_on), {0}), 0U);
   EXPECT_EQ(moved(changed, {2}), 0U);  // computed root cannot inherit old placement
   // An unchanged graph (an equal clone: another identity, the same digest
   // and roots) keeps its computed root's fact; a changed one does not.
   const std::array identity_map{TensorId{0}, TensorId{1}, TensorId{2}};
-  const ir::Graph same = original.Clone();
+  const ir::Graph same = CloneOf(original);
   const auto unchanged = ForwardRootAlignments(original, same, identity_map, facts);
   ASSERT_TRUE(unchanged);
   EXPECT_EQ(unchanged(same, {2}), 256U);
@@ -4605,16 +7722,15 @@ TEST(PlannerSelectionTest, ActivationFactsFollowMappedStagingAndExcludeContained
   auto rewritten = ApplyPatterns(graph, view);
   ASSERT_TRUE(rewritten);
   ASSERT_EQ(rewritten->applied.size(), 1U);
-  view.Forward(graph, rewritten->graph, rewritten->tensors);
+  ASSERT_TRUE(view.Forward(graph, rewritten->graph, rewritten->tensors));
   EXPECT_EQ(view.Alignment(rewritten->graph, rewritten->tensors[x.v]), 256U);
   EXPECT_EQ(view.Alignment(rewritten->graph, rewritten->tensors[not_staged.v]), 0U);
-  std::vector<TensorId> map;
-  auto expanded = ir::Expand(rewritten->graph, true, &map);
+  auto expanded = ir::ExpandWithMap(rewritten->graph, true);
   ASSERT_TRUE(expanded);
-  view.Forward(rewritten->graph, *expanded, map);
-  EXPECT_EQ(view.Alignment(*expanded, map[rewritten->tensors[x.v].v]), 256U);
-  for (const auto id : expanded->outputs())
-    EXPECT_EQ(view.Alignment(*expanded, expanded->root(id)), 256U);
+  ASSERT_TRUE(view.Forward(rewritten->graph, expanded->graph, expanded->map.values()));
+  EXPECT_EQ(view.Alignment(expanded->graph, expanded->map.at(rewritten->tensors[x.v].v)), 256U);
+  for (const auto id : expanded->graph.outputs())
+    EXPECT_EQ(view.Alignment(expanded->graph, expanded->graph.root(id)), 256U);
   SelectionView contained(registry, kDevice, policy, false, false, {}, {},
                           {.base = 65536,
                            .offset = 256,
@@ -4743,6 +7859,7 @@ TEST(PlannerPatternCoverageTest, FoldReadersReuseOnlyTheMatchingEncoding) {
       b.Output(read);
       auto graph = Finish(b);
       CheckRegisteredRewrite("hc_fold_inputs", graph, Registry(), available);
+      if (available) CheckFundedMatcher("hc_fold_inputs", graph, Registry());
     }
   }
 }
@@ -4768,6 +7885,7 @@ TEST(PlannerPatternCoverageTest, Bf16RowsRequireOnlyPermittedConsumers) {
     if (mutation == 2) b.Output(b.Add(product, b.Input(F32({8, 2}))));
     auto graph = Finish(b);
     CheckRegisteredRewrite("bf16_rows", graph, registry, mutation == 0);
+    if (mutation == 0) CheckFundedMatcher("bf16_rows", graph, registry);
   }
 }
 
@@ -4789,6 +7907,7 @@ TEST(PlannerPatternCoverageTest, Exl3ProductsRequireContiguousInputAndAvailableC
     b.Output(b.MatMul(w, x));
     auto graph = Finish(b);
     CheckRegisteredRewrite("exl3_products", graph, registry, mutation == 0);
+    if (mutation == 0) CheckFundedMatcher("exl3_products", graph, registry);
   }
 }
 
@@ -4808,6 +7927,7 @@ TEST(PlannerPatternCoverageTest, FloatProductAddPreservesExplicitArithmeticAndSh
     if (mutation == 3) b.Output(product);
     auto graph = Finish(b);
     CheckRegisteredRewrite("float_mul_mat_add", graph, registry, mutation == 0);
+    if (mutation == 0) CheckFundedMatcher("float_mul_mat_add", graph, registry);
   }
 }
 
@@ -4829,6 +7949,7 @@ TEST(PlannerPatternCoverageTest, GdnNormGatePreservesGateFunctionAndNormReaders)
     if (mutation == 2) b.Output(norm);
     auto graph = Finish(b);
     CheckRegisteredRewrite("gdn_norm_gate", graph, registry, mutation <= 1);
+    if (mutation == 0) CheckFundedMatcher("gdn_norm_gate", graph, registry);
   }
 }
 
@@ -4850,6 +7971,7 @@ TEST(PlannerPatternCoverageTest, GdnStepCannotDiscardAnObservedNextState) {
     if (observed_state) b.Output(step[1]);
     auto graph = Finish(b);
     CheckRegisteredRewrite("gdn_step", graph, registry, !observed_state);
+    if (!observed_state) CheckFundedMatcher("gdn_step", graph, registry);
   }
 }
 
@@ -4874,6 +7996,8 @@ TEST(PlannerPatternCoverageTest, GdnGatesRequireVerifyAndSoftplus) {
     StepShape shape;
     shape.phase = mutation == 1 ? Phase::kDecode : Phase::kVerify;
     CheckRegisteredRewrite("gdn_gates", graph, registry, mutation == 0, &shape);
+    if (mutation == 0)
+      CheckFundedMatcher("gdn_gates", graph, registry, nullptr, std::nullopt, &shape);
   }
 }
 
@@ -4913,6 +8037,7 @@ TEST(PlannerPatternCoverageTest, Mxfp8InputsRequireEncodedWeightsAndPreparation)
     b.Output(b.MatMul(w, x));
     auto graph = Finish(b);
     CheckRegisteredRewrite("mxfp8_inputs", graph, registry, mutation == 0);
+    if (mutation == 0) CheckFundedMatcher("mxfp8_inputs", graph, registry);
   }
 }
 
@@ -4934,6 +8059,7 @@ TEST(PlannerPatternCoverageTest, MoeRouterPreservesGateComponentAndReaders) {
     b.Output(route[1]);
     auto graph = Finish(b);
     CheckRegisteredRewrite("moe_router", graph, registry, mutation == 0);
+    if (mutation == 0) CheckFundedMatcher("moe_router", graph, registry);
   }
 }
 
@@ -4950,6 +8076,7 @@ TEST(PlannerPatternCoverageTest, MoeCombinePreservesReductionReadersAndAddOrder)
     if (mutation == 2) b.Output(reduce);
     auto graph = Finish(b);
     CheckRegisteredRewrite("moe_combine", graph, registry, mutation == 0);
+    if (mutation == 0) CheckFundedMatcher("moe_combine", graph, registry);
   }
 }
 
@@ -4997,6 +8124,7 @@ TEST(PlannerPatternCoverageTest, MoeGluAndExpertsRequireTheirOwnRoutingScales) {
       }
       auto graph = Finish(b);
       CheckRegisteredRewrite(name, graph, registry, mutation == 0);
+      if (mutation == 0) CheckFundedMatcher(name, graph, registry);
     }
   }
 }
@@ -5009,6 +8137,8 @@ TEST(PlannerPatternCoverageTest, QkAttentionKeepsMaskSemanticsAndProductReaders)
                           FusedKind::kRopeTable, FusedKind::kQkAttention})
     implementations.push_back(Fake(std::string(ir::FusedKindName(kind)), Any(ir::Fused(kind))));
   const auto registry = Registry(std::move(implementations));
+  const Pattern* qk_pattern = FindPattern("qk_attention");
+  ASSERT_NE(qk_pattern, nullptr);
   for (unsigned mutation = 0; mutation != 3; ++mutation) {
     ir::Builder b;
     b.SetComponent(1);
@@ -5033,6 +8163,88 @@ TEST(PlannerPatternCoverageTest, QkAttentionKeepsMaskSemanticsAndProductReaders)
                          {.scale = 0.5F, .softcap = mutation == 1 ? 2.0F : 0.0F}));
     auto graph = Finish(b);
     CheckRegisteredRewrite("qk_attention", graph, registry, mutation == 0);
+    if (mutation == 0) {
+      auto owner = std::make_shared<ComparisonFunder>();
+      auto funded = graph.Clone(owner);
+      ASSERT_TRUE(funded) << funded.error().detail;
+      const auto funded_graph_bytes = owner->active();
+      std::vector<NumericalChange> changes;
+      if (qk_pattern->numerical_change) changes.push_back(*qk_pattern->numerical_change);
+      Policy policy = FixtureNumericalPolicy(*funded, {}, changes);
+      policy.enabled = {"qk_attention"};
+      Canonicalize(policy);
+      const auto match_context_bytes = [](const ir::Graph& source) {
+        constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
+        std::uint64_t edges = 0;
+        for (const auto& node : source.nodes()) edges += node.nsrc;
+        const auto bit_bytes = [](std::uint64_t count) {
+          constexpr std::uint64_t bits = std::numeric_limits<unsigned long>::digits;
+          return ((count + bits - 1) / bits) * sizeof(unsigned long);
+        };
+        const std::uint64_t tensors = source.tensor_count();
+        const std::uint64_t nodes = source.nodes().size();
+        return tensors * sizeof(std::vector<ir::NodeId>) + (tensors ? envelope : 0) +
+               3 * edges * sizeof(ir::NodeId) + (edges ? 2 * tensors * envelope : 0) +
+               2 * bit_bytes(tensors) + bit_bytes(nodes) + (tensors ? 2 * envelope : 0) +
+               (nodes ? envelope : 0);
+      };
+      {
+        PlannerMetadataAdmission admission(owner);
+        ASSERT_TRUE(admission.Require(PlannerMetadataPhase::kMatch, match_context_bytes(*funded)));
+        const SelectionView view(registry, kDevice, policy, false, false, {}, {}, {},
+                                 SelectionView::FusionComparisons::enabled, &admission);
+        MatchContext context(*funded, view, nullptr, {}, &admission);
+        ASSERT_TRUE(context.BeginMatchTrial());
+        const auto anchor =
+            std::ranges::find(funded->nodes(), ir::Primitive(Op::kAttention), &ir::Node::key);
+        ASSERT_NE(anchor, funded->nodes().end());
+        const auto index = static_cast<std::uint32_t>(anchor - funded->nodes().begin());
+        auto matched = qk_pattern->match(context, ir::NodeId{index});
+        ASSERT_TRUE(matched);
+        EXPECT_EQ(matched->rewrite_local_slots, 4U);
+        matched.reset();
+        context.DropMatchTrial();
+      }
+      {
+        PlannerMetadataAdmission admission(owner);
+        const SelectionView view(registry, kDevice, policy, false, false, {}, {}, {},
+                                 SelectionView::FusionComparisons::enabled, &admission);
+        const auto rewritten = ApplyPatternTable(std::span(qk_pattern, 1), *funded, view, nullptr,
+                                                 {}, {}, {}, nullptr, nullptr, {}, {}, &admission);
+        ASSERT_TRUE(rewritten) << rewritten.error().detail;
+        ASSERT_EQ(rewritten->applied.size(), 1U);
+        EXPECT_EQ(rewritten->applied.front().pattern, "qk_attention");
+      }
+      EXPECT_GT(owner->peak(), 0U);
+      EXPECT_EQ(owner->active(), funded_graph_bytes);
+      CheckAllFundedRewriteChargesRefuseTerminally(*qk_pattern, graph, registry, policy);
+
+      auto refusing_owner = std::make_shared<ComparisonFunder>();
+      auto refusing_graph = graph.Clone(refusing_owner);
+      ASSERT_TRUE(refusing_graph) << refusing_graph.error().detail;
+      const auto refusing_graph_bytes = refusing_owner->active();
+      {
+        PlannerMetadataAdmission admission(refusing_owner);
+        ASSERT_TRUE(
+            admission.Require(PlannerMetadataPhase::kMatch, match_context_bytes(*refusing_graph)));
+        const SelectionView refusing_view(registry, kDevice, policy, false, false, {}, {}, {},
+                                          SelectionView::FusionComparisons::enabled, &admission);
+        MatchContext context(*refusing_graph, refusing_view, nullptr, {}, &admission);
+        ASSERT_TRUE(context.BeginMatchTrial());
+        const auto anchor = std::ranges::find(refusing_graph->nodes(),
+                                              ir::Primitive(Op::kAttention), &ir::Node::key);
+        ASSERT_NE(anchor, refusing_graph->nodes().end());
+        const auto index = static_cast<std::uint32_t>(anchor - refusing_graph->nodes().begin());
+        const auto refusal_charge = refusing_owner->charge_count() + 1;
+        refusing_owner->FailAt(refusal_charge);
+        const auto refused = qk_pattern->match(context, ir::NodeId{index});
+        EXPECT_FALSE(refused);
+        EXPECT_TRUE(admission.refused());
+        EXPECT_EQ(refusing_owner->charge_count(), refusal_charge);
+      }
+      EXPECT_GT(refusing_owner->active(), 0U);
+      EXPECT_EQ(refusing_owner->active(), refusing_graph_bytes);
+    }
   }
 }
 
@@ -5053,6 +8265,7 @@ TEST(PlannerPatternCoverageTest, PairedAndFloatingGluPreserveSharedInputAndVisib
       if (mutation == 2) b.Output(gate);
       auto graph = Finish(b);
       CheckRegisteredRewrite(name, graph, registry, mutation == 0);
+      if (mutation == 0 && name == "paired_glu_products") CheckFundedMatcher(name, graph, registry);
     }
   }
 }
@@ -5091,6 +8304,7 @@ TEST(PlannerPatternCoverageTest, OwnerAttentionRequiresCompatibleOwnersAndPrivat
     b.Output(b.Concat(outputs[0], outputs[1], 1));
     auto graph = Finish(b);
     CheckRegisteredRewrite("owner_attention", graph, registry, mutation == 0);
+    if (mutation == 0) CheckFundedMatcher("owner_attention", graph, registry);
   }
 }
 
@@ -5106,6 +8320,7 @@ TEST(PlannerPatternCoverageTest, InterleavedNormRopeCannotElideAnObservedNorm) {
     if (observed) b.Output(norm);
     auto graph = Finish(b);
     CheckRegisteredRewrite("interleaved_norm_rope", graph, registry, !observed);
+    if (!observed) CheckFundedMatcher("interleaved_norm_rope", graph, registry);
   }
 }
 
@@ -5125,6 +8340,12 @@ TEST(PlannerPatternCoverageTest, InverseGroupedProductCannotEraseObservableRotat
     if (observed) b.Output(rotated);
     auto graph = Finish(b);
     CheckRegisteredRewrite("inverse_rope_grouped_mul_mat", graph, registry, !observed);
+    if (!observed) {
+      CheckFundedMatcher("inverse_rope_grouped_mul_mat", graph, registry);
+      const Pattern* pattern = FindPattern("inverse_rope_grouped_mul_mat");
+      ASSERT_NE(pattern, nullptr);
+      CheckAllFundedRewriteChargesRefuseTerminally(*pattern, graph, registry, {});
+    }
   }
 }
 
@@ -5279,6 +8500,86 @@ TEST(PlannerPatternCoverageTest, EveryRegisteredMatcherHasPositiveAndRefusalCont
   std::ranges::sort(covered);
   std::ranges::sort(registered);
   EXPECT_EQ(covered, registered);
+}
+
+TEST(ComparisonOriginDagTest, CarriesExactNestedMembershipAndFunding) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  {
+    auto created = ComparisonOriginDag::Create(owner, 16, 2, 2);
+    ASSERT_TRUE(created) << created.error().detail;
+    auto dag = std::move(*created);
+    const auto a = dag.AddSingleton(ir::NodeId{1});
+    const auto b = dag.AddSingleton(ir::NodeId{4});
+    ASSERT_TRUE(a);
+    ASSERT_TRUE(b);
+    const std::array first_members{*a, *b};
+    auto first_union = dag.AddUnion(first_members);
+    ASSERT_TRUE(first_union) << first_union.error().detail;
+    const auto self_edges = dag.children();
+    auto aliased_union = dag.AddUnion(self_edges);
+    ASSERT_TRUE(aliased_union) << aliased_union.error().detail;
+    EXPECT_TRUE(dag.Contains(*aliased_union, ir::NodeId{1}));
+    EXPECT_TRUE(dag.Contains(*aliased_union, ir::NodeId{4}));
+    const auto c = dag.AddSingleton(ir::NodeId{8});
+    ASSERT_TRUE(c);
+    const std::array nested_members{*first_union, *c};
+    auto nested = dag.AddUnion(nested_members);
+    ASSERT_TRUE(nested) << nested.error().detail;
+    EXPECT_TRUE(dag.Contains(*nested, ir::NodeId{1}));
+    EXPECT_TRUE(dag.Contains(*nested, ir::NodeId{4}));
+    EXPECT_TRUE(dag.Contains(*nested, ir::NodeId{8}));
+    EXPECT_FALSE(dag.Contains(*nested, ir::NodeId{7}));
+    EXPECT_TRUE(dag.Equals(*nested, {ir::NodeId{1}, ir::NodeId{4}, ir::NodeId{8}}));
+    EXPECT_FALSE(dag.Equals(*nested, {ir::NodeId{1}, ir::NodeId{4}}));
+    EXPECT_GT(owner->peak(), owner->active());
+    EXPECT_GT(owner->active(), 0U);
+  }
+  EXPECT_EQ(owner->active(), 0U);
+}
+
+TEST(ComparisonOriginDagTest, GrowthRefusalLeavesThePaidDagUnchanged) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  {
+    auto created = ComparisonOriginDag::Create(owner, 8, 1, 0);
+    ASSERT_TRUE(created) << created.error().detail;
+    auto dag = std::move(*created);
+    ASSERT_TRUE(dag.AddSingleton(ir::NodeId{2}));
+    const auto paid = owner->active();
+    auto outside_domain = dag.AddSingleton(ir::NodeId{8});
+    ASSERT_FALSE(outside_domain);
+    EXPECT_EQ(outside_domain.error().error, PlanError::kStaleComparisonSite);
+    EXPECT_EQ(dag.entries().size(), 1U);
+    owner->Refuse(true);
+    auto refused = dag.AddSingleton(ir::NodeId{3});
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().error, PlanError::kAdmission);
+    EXPECT_EQ(dag.entries().size(), 1U);
+    EXPECT_TRUE(dag.Contains(0, ir::NodeId{2}));
+    EXPECT_FALSE(dag.Contains(0, ir::NodeId{3}));
+    EXPECT_EQ(owner->active(), paid);
+  }
+  EXPECT_EQ(owner->active(), 0U);
+}
+
+TEST(ComparisonOriginDagTest, DeepRepeatedUnionsStayBoundedForMissingMembership) {
+  auto owner = std::make_shared<ComparisonFunder>();
+  auto created = ComparisonOriginDag::Create(owner, 2);
+  ASSERT_TRUE(created) << created.error().detail;
+  auto dag = std::move(*created);
+  auto singleton = dag.AddSingleton(ir::NodeId{1});
+  ASSERT_TRUE(singleton);
+  ComparisonOriginSetId current = *singleton;
+  for (std::size_t i = 0; i < 2000; ++i) {
+    const std::array repeated{current, current};
+    auto next = dag.AddUnion(repeated);
+    ASSERT_TRUE(next) << next.error().detail;
+    current = *next;
+  }
+  EXPECT_TRUE(dag.Contains(current, ir::NodeId{1}));
+  EXPECT_FALSE(dag.Contains(current, ir::NodeId{0}));
+  EXPECT_TRUE(dag.Equals(current, {ir::NodeId{1}}));
+  EXPECT_FALSE(dag.Equals(current, {ir::NodeId{0}}));
+  EXPECT_EQ(owner->active(), dag.storage_bytes());
 }
 
 }  // namespace

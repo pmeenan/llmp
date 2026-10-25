@@ -137,6 +137,9 @@ struct FakeSourceOptions {
   // Called at the start of every Build (on the driver; a lookahead's in
   // the job's meanwhile).
   std::function<void(const planner::StepShape&, bool measuring)> on_build;
+  // Synchronous observation of the exact runner-created address facts passed
+  // to Build; the fake retains no callbacks or borrowed owner references.
+  std::function<void(const planner::StepShape&, const kernels::Addresses&)> on_addresses;
   // Runs inside the queued fake numeric operation, after its writes. Tests
   // may invalidate a later consumer before the real retirement preflight.
   std::function<void(planner::Phase)> after_execute;

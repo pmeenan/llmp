@@ -1024,8 +1024,10 @@ TEST(GgmlLowerTest, RoutedPreparedTailShapesPreserveBroadcastAndPerSlot) {
       std::vector<co::StepInput> inputs;
       for (const auto id : graph->inputs())
         inputs.push_back({.tensor = id, .kind = co::InputKind::kFeatures});
+      auto step_graph = graph->Clone();
+      ASSERT_TRUE(step_graph) << step_graph.error().detail;
       const co::StepGraph step{
-          .graph = graph->Clone(), .inputs = std::move(inputs), .weights = {}, .state = {}};
+          .graph = std::move(*step_graph), .inputs = std::move(inputs), .weights = {}, .state = {}};
       const pl::StepShape shape{
           .segments = {
               {.rows = static_cast<std::uint32_t>(tokens), .outputs = 0, .want_head = false}}};
@@ -1078,8 +1080,10 @@ TEST(GgmlLowerTest, PreparedGluPreservesExactFormulaAndRefusesUnsupportedKinds) 
       std::vector<co::StepInput> inputs;
       for (const auto id : graph->inputs())
         inputs.push_back({.tensor = id, .kind = co::InputKind::kFeatures});
+      auto step_graph = graph->Clone();
+      ASSERT_TRUE(step_graph) << step_graph.error().detail;
       const co::StepGraph step{
-          .graph = graph->Clone(), .inputs = std::move(inputs), .weights = {}, .state = {}};
+          .graph = std::move(*step_graph), .inputs = std::move(inputs), .weights = {}, .state = {}};
       const pl::StepShape shape{
           .segments = {
               {.rows = static_cast<std::uint32_t>(tokens), .outputs = 0, .want_head = false}}};
@@ -3186,7 +3190,9 @@ TEST(GgmlLowerConstruction, ReductionUsesActualWidthAndChecksOverflow) {
   for (const auto [index, width] : {std::pair{0U, 2U}, std::pair{1U, 10U}}) {
     auto original = graph(width);
     ASSERT_TRUE(original);
-    pl::StepPlan plan{.graph = original->Clone(),
+    auto clone = original->Clone();
+    ASSERT_TRUE(clone) << clone.error().detail;
+    pl::StepPlan plan{.graph = std::move(*clone),
                       .steps = {},
                       .regions = {},
                       .placement = {},
@@ -3220,7 +3226,9 @@ TEST(GgmlLowerConstruction, ActualReplacedOutputsAndCommitSavesAreCounted) {
   auto graph = std::move(b).Finish();
   ASSERT_TRUE(graph);
   co::StepGraph step{.graph = std::move(*graph), .inputs = {}, .weights = {}, .state = {}};
-  pl::StepPlan plan{.graph = step.graph.Clone(),
+  auto cloned = step.graph.Clone();
+  ASSERT_TRUE(cloned);
+  pl::StepPlan plan{.graph = std::move(*cloned),
                     .steps = {},
                     .regions = {},
                     .placement = {},
@@ -3352,6 +3360,113 @@ TEST(GgmlLowerTest, FusedAttentionCannotHideOriginalInt32StrideRequirements) {
   ASSERT_FALSE(lowered);
   EXPECT_EQ(lowered.error().error, kg::KernelError::kRejected);
   EXPECT_NE(lowered.error().detail.find("stride 2 exceeds int32 indexing"), std::string::npos);
+}
+
+TEST(GgmlLowerTest, ForwardInterleavedRopeCapabilityRequiresActualSectionsAndPositionPlanes) {
+  using llmp::format::Encoding;
+  using llmp::format::Layout;
+  const auto* capability = kg::CapabilityOf("ggml.rope.ext");
+  ASSERT_NE(capability, nullptr);
+  std::array operands{
+      ex::OperandFormat{
+          .operand = 0, .encoding = Encoding::kF32, .layout = Layout::kDense, .ne = {128, 1, 5, 1}},
+      ex::OperandFormat{
+          .operand = 1, .encoding = Encoding::kI32, .layout = Layout::kDense, .ne = {20, 1, 1, 1}},
+      ex::OperandFormat{.operand = ex::kOutputOperand,
+                        .encoding = Encoding::kF32,
+                        .layout = Layout::kDense,
+                        .ne = {128, 1, 5, 1}}};
+  const ir::RopeParams valid{.mode = ir::RopeMode::kInterleavedMulti,
+                             .dims = 64,
+                             .original_context = 262144,
+                             .base = 1.0e7F,
+                             .sections = {11, 11, 10, 0}};
+  const auto accepts = [&](ir::RopeParams params) {
+    const auto bytes = ir::ToBytes(params);
+    const ex::CapabilityQuery query{.op = ir::Primitive(ir::Op::kRope),
+                                    .operands = operands,
+                                    .rows = 5,
+                                    .arch = kGb10,
+                                    .params = bytes};
+    return capability->accepts(query);
+  };
+  EXPECT_TRUE(accepts(valid));
+  operands[1].ne[0] = 5;
+  EXPECT_FALSE(accepts(valid));
+  operands[1].ne[0] = 20;
+  auto params = valid;
+  params.sections = {0, 0, 0, 32};
+  EXPECT_FALSE(accepts(params));
+  params = valid;
+  params.sections[0] = UINT32_MAX;
+  EXPECT_FALSE(accepts(params));
+  params = valid;
+  params.inverse = true;
+  EXPECT_FALSE(accepts(params));
+  params = valid;
+  params.offset = 3;
+  EXPECT_FALSE(accepts(params));
+  params = valid;
+  params.dims = 130;
+  EXPECT_FALSE(accepts(params));
+  params = valid;
+  params.rotated_dims = 32;
+  EXPECT_FALSE(accepts(params));
+  params = valid;
+  params.mode = ir::RopeMode::kVision;
+  EXPECT_FALSE(accepts(params));
+  params.mode = ir::RopeMode::kMulti;
+  EXPECT_FALSE(accepts(params));
+  operands[2].ne[0] = 64;
+  EXPECT_FALSE(accepts(valid));
+  operands[2].ne[0] = 128;
+  operands[0].encoding = Encoding::kBF16;
+  EXPECT_FALSE(accepts(valid));
+  operands[0].encoding = Encoding::kF32;
+  // Earlier ordinary NORMAL/NEOX routes retain their existing domain.
+  operands[1].ne[0] = 5;
+  params = valid;
+  params.sections = {};
+  params.mode = ir::RopeMode::kNormal;
+  EXPECT_TRUE(accepts(params));
+  params.mode = ir::RopeMode::kNeox;
+  EXPECT_TRUE(accepts(params));
+}
+
+TEST(GgmlLowerTest, ForwardInterleavedRopeLowersToExistingNativeMultiConstructor) {
+  const auto registry = PlanningRegistry();
+  ir::Builder builder;
+  builder.SetOwner(0);
+  const auto x = builder.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({128, 1, 5})));
+  const auto positions = builder.Input(ir::Dense(llmp::format::Encoding::kI32, ir::ShapeOf({20})));
+  const ir::RopeParams params{.mode = ir::RopeMode::kInterleavedMulti,
+                              .dims = 64,
+                              .original_context = 262144,
+                              .base = 1.0e7F,
+                              .sections = {11, 11, 10, 0}};
+  const auto value = builder.Rope(x, positions, {}, params);
+  builder.Output(value);
+  auto graph = std::move(builder).Finish();
+  ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+  auto plan = pl::Plan(graph->Clone(), registry, Gb10(), {});
+  ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+  ASSERT_EQ(plan->steps.size(), 1U);
+  EXPECT_EQ(registry.at(plan->steps[0].implementation).name, "ggml.rope.ext");
+  const co::GraphBuildIO io{*graph, graph->inputs(), graph->outputs(), {}};
+  const kn::Addresses addresses{};
+  auto lowered = kg::LowerStep({*plan, io, addresses}, registry, Device());
+  ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+  const auto actual = std::ranges::find_if(lowered->physical_tensors, [&](const auto& tensor) {
+    return tensor.tensor == plan->tensors.at(value.v) && tensor.descriptor->op == GGML_OP_ROPE;
+  });
+  ASSERT_NE(actual, lowered->physical_tensors.end());
+  const auto* native = actual->descriptor;
+  EXPECT_EQ(native->op_params[2], GGML_ROPE_TYPE_IMROPE);
+  EXPECT_EQ(native->op_params[1], 64);
+  EXPECT_EQ(native->src[1]->ne[0], 4 * native->src[0]->ne[2]);
+  for (std::size_t i = 0; i < params.sections.size(); ++i)
+    EXPECT_EQ(native->op_params[11 + i], static_cast<std::int32_t>(params.sections[i]));
+  EXPECT_EQ(native->op_params[15], 0);
 }
 
 }  // namespace

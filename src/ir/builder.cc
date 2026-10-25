@@ -3,12 +3,14 @@
 
 #include "ir/builder.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <expected>
 #include <format>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -26,7 +28,22 @@
 namespace llmp::ir {
 namespace {
 
+template <class T>
+std::size_t GrowthCapacity(const std::vector<T>& values, std::size_t required) {
+  if (required <= values.capacity()) return values.capacity();
+  const std::size_t doubled = values.capacity() > std::numeric_limits<std::size_t>::max() / 2
+                                  ? std::numeric_limits<std::size_t>::max()
+                                  : values.capacity() * 2;
+  return std::max(required, std::max<std::size_t>(4, doubled));
+}
+
 bool IsLeafOp(Op op) { return op == Op::kInput || op == Op::kWeight || op == Op::kState; }
+
+bool AddBytes(std::uint64_t& total, std::uint64_t count, std::uint64_t size) {
+  if (size != 0 && count > (std::numeric_limits<std::uint64_t>::max() - total) / size) return false;
+  total += count * size;
+  return true;
+}
 
 template <typename P>
 ParamBytes B(const P& p) {
@@ -37,12 +54,130 @@ ParamBytes B(const P& p) {
 
 Builder::Builder(std::size_t max_nodes) : max_nodes_(std::min(max_nodes, Graph::kMaxNodes)) {}
 
-void Builder::Refuse(GraphError error, std::string detail) {
+void Builder::Refuse(GraphError error, std::string_view detail) {
   if (!error_) {
+    if (diagnostic_ != nullptr) {
+      RefuseDiagnostic(error, "{}", std::array{DiagnosticArg(detail)});
+      return;
+    }
     error_ = VerifyError{.error = error,
                          .node = static_cast<std::uint32_t>(graph_.nodes_.size()),
-                         .detail = std::move(detail)};
+                         .detail = std::string(detail)};
   }
+}
+
+void Builder::RefuseAdmission() {
+  if (!error_) {
+    error_ = VerifyError{.error = GraphError::kAdmission,
+                         .node = static_cast<std::uint32_t>(graph_.nodes_.size()),
+                         .detail = {}};
+  }
+}
+
+void Builder::RefuseDiagnostic(GraphError error, std::string_view format,
+                               std::span<const DiagnosticValue> values) {
+  if (error_) return;
+  auto detail = MakeDiagnostic(diagnostic_, format, values);
+  if (!detail) {
+    if (diagnostic_ != nullptr) {
+      RefuseAdmission();
+    } else {
+      Refuse(GraphError::kAdmission,
+             "comparison builder storage funder must be installed on an empty builder");
+    }
+    return;
+  }
+  error_ = VerifyError{.error = error,
+                       .node = static_cast<std::uint32_t>(graph_.nodes_.size()),
+                       .detail = std::move(*detail)};
+}
+
+bool Builder::SetStorageFunder(std::shared_ptr<const StorageFunder> funder) {
+  if (!ok() || !funder || funder_ || graph_.nodes_.size() != 0 || graph_.tensors_.size() != 0 ||
+      !graph_.inputs_.empty() || !graph_.outputs_.empty() || !graph_.keep_.empty() ||
+      !graph_.names_.empty() || graph_.nodes_.capacity() != 0 || graph_.tensors_.capacity() != 0 ||
+      graph_.producers_.capacity() != 0 || graph_.inputs_.capacity() != 0 ||
+      graph_.outputs_.capacity() != 0 || graph_.keep_.capacity() != 0 ||
+      graph_.names_.capacity() != 0) {
+    if (diagnostic_ != nullptr) {
+      RefuseAdmission();
+    } else {
+      Refuse(GraphError::kAdmission,
+             "comparison builder storage funder must be installed on an empty builder");
+    }
+    return false;
+  }
+  funder_ = std::move(funder);
+  graph_.storage_loan_ = StorageLoan(funder_, 0);
+  return true;
+}
+
+std::optional<StorageLoan> Builder::FundScratch(std::uint64_t bytes) {
+  if (!ok() || !funder_) return std::nullopt;
+  auto loan = AcquireStorageLoan(funder_, bytes);
+  if (!loan) RefuseAdmission();
+  return loan;
+}
+
+bool Builder::Admit(std::size_t nodes, std::size_t tensors, std::size_t producers,
+                    std::size_t inputs, std::size_t outputs, std::size_t keeps, std::size_t names,
+                    std::uint64_t copied_name_bytes) {
+  if (!ok()) return false;
+  if (!funder_) return true;
+  BuilderStorageRequest request{.node_capacity = GrowthCapacity(graph_.nodes_, nodes),
+                                .tensor_capacity = GrowthCapacity(graph_.tensors_, tensors),
+                                .producer_capacity = GrowthCapacity(graph_.producers_, producers),
+                                .input_capacity = GrowthCapacity(graph_.inputs_, inputs),
+                                .output_capacity = GrowthCapacity(graph_.outputs_, outputs),
+                                .keep_capacity = GrowthCapacity(graph_.keep_, keeps),
+                                .name_capacity = GrowthCapacity(graph_.names_, names),
+                                .owned_name_count = names,
+                                .copied_name_bytes = copied_name_bytes};
+  const bool unchanged = request.node_capacity == graph_.nodes_.capacity() &&
+                         request.tensor_capacity == graph_.tensors_.capacity() &&
+                         request.producer_capacity == graph_.producers_.capacity() &&
+                         request.input_capacity == graph_.inputs_.capacity() &&
+                         request.output_capacity == graph_.outputs_.capacity() &&
+                         request.keep_capacity == graph_.keep_.capacity() &&
+                         request.name_capacity == graph_.names_.capacity() &&
+                         request.copied_name_bytes == copied_name_bytes_;
+  if (unchanged) return true;
+  std::uint64_t bytes = 0;
+  constexpr std::uint64_t kVectorAllocationOverhead = 2 * sizeof(void*) + alignof(std::max_align_t);
+  if (!AddBytes(bytes, request.node_capacity, sizeof(Node)) ||
+      !AddBytes(bytes, request.tensor_capacity, sizeof(TensorDesc)) ||
+      !AddBytes(bytes, request.producer_capacity, sizeof(NodeId)) ||
+      !AddBytes(bytes, request.input_capacity, sizeof(TensorId)) ||
+      !AddBytes(bytes, request.output_capacity, sizeof(TensorId)) ||
+      !AddBytes(bytes, request.keep_capacity, sizeof(TensorId)) ||
+      !AddBytes(bytes, request.name_capacity, sizeof(std::string)) ||
+      !AddBytes(bytes, request.node_capacity != 0, kVectorAllocationOverhead) ||
+      !AddBytes(bytes, request.tensor_capacity != 0, kVectorAllocationOverhead) ||
+      !AddBytes(bytes, request.producer_capacity != 0, kVectorAllocationOverhead) ||
+      !AddBytes(bytes, request.input_capacity != 0, kVectorAllocationOverhead) ||
+      !AddBytes(bytes, request.output_capacity != 0, kVectorAllocationOverhead) ||
+      !AddBytes(bytes, request.keep_capacity != 0, kVectorAllocationOverhead) ||
+      !AddBytes(bytes, request.name_capacity != 0, kVectorAllocationOverhead) ||
+      !AddBytes(bytes, request.copied_name_bytes, 1) ||
+      !AddBytes(bytes, request.owned_name_count, kVectorAllocationOverhead)) {
+    RefuseAdmission();
+    return false;
+  }
+  auto loan = AcquireStorageLoan(funder_, bytes);
+  if (!loan) {
+    RefuseAdmission();
+    return false;
+  }
+  graph_.nodes_.reserve(request.node_capacity);
+  graph_.tensors_.reserve(request.tensor_capacity);
+  graph_.producers_.reserve(request.producer_capacity);
+  graph_.inputs_.reserve(request.input_capacity);
+  graph_.outputs_.reserve(request.output_capacity);
+  graph_.keep_.reserve(request.keep_capacity);
+  graph_.names_.reserve(request.name_capacity);
+  graph_.storage_loan_ = std::move(*loan);
+  copied_name_bytes_ = copied_name_bytes;
+  return true;
 }
 
 Outputs Builder::Emit(OpKey key, const ParamBytes& params, std::span<const TensorId> sources,
@@ -52,22 +187,23 @@ Outputs Builder::Emit(OpKey key, const ParamBytes& params, std::span<const Tenso
   }
   if (graph_.nodes_.size() >= max_nodes_ ||
       graph_.tensors_.size() + kMaxOutputs > Graph::kMaxTensors) {
-    Refuse(GraphError::kBounds,
-           std::format("past {} nodes or {} tensors", max_nodes_, Graph::kMaxTensors));
+    RefuseDiagnostic(GraphError::kBounds,
+                     DiagFormat("past {} nodes or {} tensors", max_nodes_, Graph::kMaxTensors));
     return {};
   }
   if (sources.size() > kMaxSources) {
-    Refuse(GraphError::kArity, std::format("{} sources, past {}", sources.size(), kMaxSources));
+    RefuseDiagnostic(GraphError::kArity,
+                     DiagFormat("{} sources, past {}", sources.size(), kMaxSources));
     return {};
   }
   for (const TensorId s : sources) {
     if (s.valid() && !Known(s)) {
-      Refuse(GraphError::kCycle,
-             std::format("{}'s source {} was not made here", OpKeyName(key), s.v));
+      RefuseDiagnostic(GraphError::kCycle,
+                       DiagFormat("{}'s source {} was not made here", key, s.v));
       return {};
     }
   }
-  auto inferred = Infer(key, params, sources, graph_.tensors_, requested);
+  auto inferred = Infer(key, params, sources, graph_.tensors_, requested, funder_, diagnostic_);
   if (!inferred) {
     VerifyError e = std::move(inferred.error());
     e.node = static_cast<std::uint32_t>(graph_.nodes_.size());
@@ -85,6 +221,21 @@ Outputs Builder::Emit(OpKey key, const ParamBytes& params, std::span<const Tenso
   node.batch = batch_;
   const NodeId id{static_cast<std::uint32_t>(graph_.nodes_.size())};
   Outputs outs;
+  const std::size_t input_add = key.op == Op::kInput ? 1 : 0;
+  std::uint64_t copied = copied_name_bytes_;
+  if (!name.empty()) {
+    if (name.size() == std::numeric_limits<std::uint64_t>::max() ||
+        name.size() + 1 > std::numeric_limits<std::uint64_t>::max() - copied) {
+      RefuseAdmission();
+      return {};
+    }
+    copied += name.size() + 1;  // includes each owned string's trailing NUL
+  }
+  if (!Admit(graph_.nodes_.size() + 1, graph_.tensors_.size() + inferred->nout,
+             graph_.producers_.size() + inferred->nout, graph_.inputs_.size() + input_add,
+             graph_.outputs_.size(), graph_.keep_.size(),
+             graph_.names_.size() + static_cast<std::size_t>(!name.empty()), copied))
+    return {};
   for (std::size_t i = 0; i < inferred->nout; ++i) {
     TensorDesc t = inferred->out.at(i);
     const TensorDesc* r = i < requested.size() ? &requested[i] : nullptr;
@@ -93,16 +244,16 @@ Outputs Builder::Emit(OpKey key, const ParamBytes& params, std::span<const Tenso
       t.format.encoding = r->format.encoding;
       t.format.layout = r->format.layout;
       if (!format::Validate(t.format)) {
-        Refuse(GraphError::kFormat,
-               std::format("{}'s output {} is not valid as prepared rows", OpKeyName(key), i));
+        RefuseDiagnostic(GraphError::kFormat,
+                         DiagFormat("{}'s output {} is not valid as prepared rows", key, i));
         return {};
       }
       t.nb = NaturalStrides(t.format);
     } else if (r != nullptr && inferred->float_result.at(i) &&
                r->format.encoding != t.format.encoding) {
       if (!ResultEncoding(r->format.encoding) || r->format.layout != format::Layout::kDense) {
-        Refuse(GraphError::kFormat,
-               std::format("{}'s output {} is recorded as F32, F16 or BF16", OpKeyName(key), i));
+        RefuseDiagnostic(GraphError::kFormat,
+                         DiagFormat("{}'s output {} is recorded as F32, F16 or BF16", key, i));
         return {};
       }
       t.format.encoding = r->format.encoding;
@@ -531,6 +682,10 @@ void Builder::Output(TensorId id) {
     Refuse(GraphError::kArity, "an unknown output");
     return;
   }
+  if (!Admit(graph_.nodes_.size(), graph_.tensors_.size(), graph_.producers_.size(),
+             graph_.inputs_.size(), graph_.outputs_.size() + 1, graph_.keep_.size(),
+             graph_.names_.size(), copied_name_bytes_))
+    return;
   TensorDesc& t = graph_.tensors_.at(id.v);
   if (t.role == Role::kActivation) {
     t.role = Role::kOutput;
@@ -546,17 +701,30 @@ void Builder::Keep(TensorId id) {
     Refuse(GraphError::kArity, "an unknown kept tensor");
     return;
   }
+  if (!Admit(graph_.nodes_.size(), graph_.tensors_.size(), graph_.producers_.size(),
+             graph_.inputs_.size(), graph_.outputs_.size(), graph_.keep_.size() + 1,
+             graph_.names_.size(), copied_name_bytes_))
+    return;
   graph_.keep_.push_back(id);
 }
 
 std::expected<Graph, VerifyError> Builder::Finish() && {
   if (error_) {
-    return std::unexpected(*error_);
+    return std::unexpected(std::move(*error_));
   }
   Graph g = std::move(graph_);
-  if (auto v = Verify(g); !v) {
-    return std::unexpected(v.error());
+  if (auto v = Verify(g, funder_, diagnostic_); !v) {
+    return std::unexpected(std::move(v.error()));
   }
+  StorageLoan digest_loan;
+  if (funder_) {
+    auto bound = g.DigestScratchBound();
+    if (!bound) return std::unexpected(VerifyError{.error = GraphError::kAdmission, .detail = {}});
+    auto loan = AcquireStorageLoan(funder_, *bound);
+    if (!loan) return std::unexpected(VerifyError{.error = GraphError::kAdmission, .detail = {}});
+    digest_loan = std::move(*loan);
+  }
+  g.digest_ = g.ComputeDigest();
   g.identity_ = Graph::NextIdentity();
   return g;
 }

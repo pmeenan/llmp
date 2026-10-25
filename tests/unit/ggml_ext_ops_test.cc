@@ -312,6 +312,34 @@ RefChunk ReferenceChunk(std::uint32_t window, std::uint32_t global_cells, std::u
   return out;
 }
 
+TEST_F(GgmlExtOpsTest, FloatAddHalfReadsTwoByteStridedAndBroadcastOperands) {
+  constexpr std::int64_t width = 32, rows = 3;
+  std::vector<float> values(static_cast<std::size_t>(width * rows));
+  for (std::size_t i = 0; i < values.size(); ++i) values[i] = static_cast<float>(i) * 0.03125f;
+  auto* x = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, width, rows), values);
+  for (const auto& [half_rows, stride] : std::array<std::pair<std::int64_t, std::int64_t>, 3>{
+           {{1, width + 1}, {rows, width + 1}, {rows, width}}}) {
+    std::vector<ggml_fp16_t> halves(static_cast<std::size_t>((width + 1) * half_rows));
+    for (std::size_t i = 0; i < halves.size(); ++i)
+      halves[i] = ggml_fp32_to_fp16(static_cast<float>(static_cast<int>(i % 31) - 15) * 0.125f);
+    auto* parent = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F16, width + 1, half_rows), halves);
+    auto* half =
+        ggml_view_2d(c(), parent, width, half_rows, static_cast<std::size_t>(stride) * 2, 2);
+    auto* sum = Place(ggml_add(c(), x, half));
+    ASSERT_TRUE(llmp::kernels::ggml::CheckBinary(sum, GGML_OP_ADD));
+    Launched(llmp::kernels::ggml::Add(launch(), sum), "F32 plus strided/broadcast F16");
+    const auto got = Download(sum);
+    for (std::int64_t row = 0; row < rows; ++row)
+      for (std::int64_t col = 0; col < width; ++col) {
+        const auto at = static_cast<std::size_t>(row * width + col);
+        const auto source = static_cast<std::size_t>((row % half_rows) * stride + col + 1);
+        EXPECT_FLOAT_EQ(got[at], values[at] + ggml_fp16_to_fp32(halves[source]));
+      }
+    EXPECT_EQ(Download<ggml_fp16_t>(parent), halves);
+  }
+  EXPECT_EQ(Download(x), values);
+}
+
 TEST_F(GgmlExtOpsTest, SelectCopiesPayloadBitsAndCapturedPredicatesWithoutArithmetic) {
   for (const auto type : {GGML_TYPE_F16, GGML_TYPE_BF16, GGML_TYPE_F32, GGML_TYPE_I64}) {
     const auto unit = ggml_type_size(type);
@@ -2565,6 +2593,44 @@ TEST_F(GgmlExtOpsTest, GetRowsDequantizesAndSetRowsWritesExactly) {
     for (std::size_t i = 0; i < 64; ++i) {
       ASSERT_EQ(got_rows[(static_cast<std::size_t>(slots[r]) * 64) + i], values[(r * 64) + i]);
     }
+  }
+}
+
+TEST_F(GgmlExtOpsTest, Bf16IndexedStorePreservesBitsAndUntouchedRows) {
+  constexpr std::size_t width = 64;
+  constexpr std::size_t rows = 5;
+  const std::vector<std::int32_t> cells32 = {4, 0, 2};
+  const std::vector<std::int64_t> cells64(cells32.begin(), cells32.end());
+  // Include signed zero, subnormals, infinities and NaN payloads. This is a
+  // same-type copy, so the complete BF16 representation must survive.
+  constexpr std::array<std::uint16_t, 12> bits = {0x0000, 0x8000, 0x0001, 0x8001, 0x007f, 0x0080,
+                                                  0x3f80, 0xbf80, 0x7f80, 0xff80, 0x7fc1, 0x7fa5};
+  std::vector<std::uint16_t> values(width * cells32.size());
+  for (std::size_t i = 0; i < values.size(); ++i) values[i] = bits[i % bits.size()];
+  const std::vector<std::uint16_t> initial(width * rows, 0x4020);
+  for (const bool wide_indices : {false, true}) {
+    SCOPED_TRACE(wide_indices);
+    auto* destination = Place(ggml_new_tensor_2d(c(), GGML_TYPE_BF16, width, rows), initial);
+    auto* source = Place(
+        ggml_new_tensor_2d(c(), GGML_TYPE_BF16, width, static_cast<std::int64_t>(cells32.size())),
+        values);
+    auto* indices =
+        wide_indices
+            ? Place(
+                  ggml_new_tensor_1d(c(), GGML_TYPE_I64, static_cast<std::int64_t>(cells64.size())),
+                  cells64)
+            : Place(
+                  ggml_new_tensor_1d(c(), GGML_TYPE_I32, static_cast<std::int64_t>(cells32.size())),
+                  cells32);
+    Launched(kg::SetRowsExt(launch(), ggml_set_rows(c(), destination, source, indices)),
+             "BF16 indexed copy");
+    auto expected = initial;
+    for (std::size_t row = 0; row < cells32.size(); ++row)
+      std::copy_n(values.begin() + static_cast<std::ptrdiff_t>(row * width), width,
+                  expected.begin() +
+                      static_cast<std::ptrdiff_t>(static_cast<std::size_t>(cells32[row]) * width));
+    EXPECT_EQ(Download<std::uint16_t>(destination), expected);
+    EXPECT_EQ(Download<std::uint16_t>(source), values);
   }
 }
 

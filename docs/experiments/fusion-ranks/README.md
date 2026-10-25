@@ -1,33 +1,36 @@
 <!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Fusion versus its own decomposition: first U6 measurement slice
+# Fusion versus its own decomposition: U6 qualification
 
-Status: [fresh W5 results](FRESH-W5-RESULTS.md) independently qualify all twelve
-registered exact F32 RMSNormMul tuples: eleven fusion wins and one neutral cell.
-The W5 native live-registry/planner verification recognized all twelve rows on
-compiler identity `4c2b14cf0a66eebb8f433daefff9b58b4cfc0afdc082d6ba0e5a1ec3ac200cee`.
-The U8 spatial-definition hook build produces identity
-`8148b25f8c488058047940556525d80736d9d5a4fd4b4401c7bd0fa323146830`:
-34 of the 195 compiler-owned object receipts change, including the component
-objects and their planner/backend dependents. The twelve W5 rows remain exact
-historical evidence and are stale on this build; selection retains the incumbent
-until newly source-matched comparisons are measured. The subsequent
-[U7a GDN gate spike](../gdn-gates/RESULTS.md) produces compiler identity
-`374364310fbe78618b0f332a189bb8d9db18fde6eea5ea646892aa088429c50e`;
-its narrow GDN screen does not refresh these RMSNormMul rows. The subsequent
-W7 combined native builds on both Sparks report compiler identity
-`f8c1cd49468ef9ddc0ffa0e476b92faa0406c3cb98bc471270172d3eb3264ca6`.
-The W5 rows and the GDN screen retain their original identities as historical
-evidence; neither is relabeled as a measurement of this build. No new timing,
-reranking or source exclusion was performed, and source-stale rank selection
-retains its incumbent. Full U6 remains open.
-The [original results](RESULTS.md) and
-[historical data](historical-v11-v12.json) retain unchanged measurements and
-identities; they are stale for current source. The registrations below preserve
-the original protocol and pre-execution status. The current-source rerun followed
-[FRESH-W5-REGISTRATION.md](FRESH-W5-REGISTRATION.md), using the corrected
-[compiler-owned source identity](SOURCE-IDENTITY.md).
+The [final qualification](U6-FINAL-RESULTS.md) installs 99 independently reviewed
+current-build decisions: 97 latency comparisons and two separate incumbent-quality
+rejections. The latency decisions comprise 52 incumbent wins, 36 neutral cells
+and nine alternative wins, from 4,836 ordered observations across both Sparks.
+Twenty-one installed-data controls pass, including actual production rejection of
+the slower spatial C144 fusion, exact-key hits, an unmeasured image miss, and
+EXL3's preserved OrdinaryOnly execution. Each decision applies only to its exact
+source, physical recipe, backend, device and preparation domain. This makes no
+whole-model speed or universal shape/format claim.
+
+The [production-regression registration](U6-PRODUCTION-REGRESSION-REGISTRATION.md)
+was committed before the final measurements. The final report records retained
+numerical refusals, bookend-drift failures, source identities and verification.
+Unmeasured, unsupported or stale records preserve ordinary execution. Quality
+rejections carry no timings and grant no speed evidence.
+
+Historical rows remain under their original identities: the twelve
+[RMS cells](READY-MATRIX-RESULTS.md), one
+[captured-event NEOX cell](READY-NEOX-CAPTURED-EVENTS-RESULTS.md) and one
+[NormGate cell](READY-NORMGATE-MEDIAN-BOOKENDS-RESULTS.md) are unchanged.
+The [actual full GDN first screen](ACTUAL-GDN-FIRST-SCREEN-RESULTS.md) installed
+no row and transfers no isolated Ready authority. The twelve legacy whole-program
+rows in `comparisons`, [original results](RESULTS.md),
+[W5 rerun](FRESH-W5-RESULTS.md) and [historical data](historical-v11-v12.json)
+retain their original observations. None is repinned to a later build.
+The [compiler-owned source identity](SOURCE-IDENTITY.md) and actual current
+descriptors determine applicability. The protocols below preserve the earlier
+experiments; the final registration governs the current data.
 
 ## Prospective protocol (2026-10-22, before measurement)
 
@@ -203,11 +206,12 @@ speed, arithmetic qualification or full-U6 completion follows from this screen.
 
 ## Prospective v12 capacity amendment for the last matrix case
 
-The reviewed v11 first screen and ten additional matrix cases produced eleven
-valid measurements. The twelfth case, width 4096 and 256 rows, refused its
-argument guard before backend setup and produced no timing. Preserve that
-refusal and every earlier attempt. No measured rank has been installed yet;
-the first eleven results are being audited separately.
+At the time of this historical v12 capacity amendment, the reviewed v11 first
+screen and ten additional matrix cases had produced eleven valid measurements.
+The twelfth case, width 4096 and 256 rows, refused its argument guard before
+backend setup and produced no timing. That refusal and every earlier attempt
+remain preserved. No measured rank had yet been installed at that stage; the
+first eleven results were being audited separately.
 
 The v12 harness replaces its blanket factor-16 input estimate with overflow-safe
 per-input F32 bounds. Before lowering, each arm checks its actual production
@@ -294,8 +298,9 @@ in `validate.cc` (exact dependency and disjoint intermediate checks), and
 then the same `ShiftBinaryLeft` normalization as standalone Mul, to the same
 upstream launchers on one context/stream. This slice aligns that normalization
 for width-one tensors too; no shape exemption is used.
-Other primitive implementations require their own launch-contract audit before
-comparisons qualify; all selected-fusion/shape-class coverage remains open.
+Other primitive implementations and shape classes outside the registered
+ready-body matrix require their own launch-contract audit and measurement;
+they remain open and no whole-model claim follows.
 
 The selection-environment digest includes every registered implementation
 identity/capability and every ordinary device-rank record. Registry ordering is
@@ -308,7 +313,7 @@ so changing a nested fusion's preference cannot influence their selection.
 The current ordered chain must independently match the recorded identities;
 without that proof, a query is explicitly unmeasured.
 
-Each declarative JSON comparison owns the fused implementation identity and
+Each legacy declarative JSON comparison owns the fused implementation identity and
 **every implementation in the ordered primitive chain**, measured medians,
 sample count, selection-environment digest, descriptive shape label and report provenance. Source changes
 make a comparison stale; missing evidence does not mean measured-neutral.
@@ -316,18 +321,45 @@ Complete comparison contents participate in `RankDataDigest`, registry digest
 and the existing plan-cache identity. The registry rejects malformed, unbound
 or overlapping comparisons.
 
+The version-2 JSON envelope keeps these historical rows in `comparisons` and
+adds a separate `recipe_comparisons` table. A recipe key identifies a canonical
+subject and boundary, policy, device, independent selection environment,
+full/warm preparation contract, and both ordered actual recipes and their
+source/build identities. Evidence contains paired times, sample count, protocol,
+receipt and provenance. Every exact field must match; a well-formed stale row
+remains legal data but cannot authorize a current comparison. Discovery by
+operation is only an index. The installed table contains fourteen recipe rows:
+twelve historical Ready RMSNorm/Mul rows and the later NEOX and NormGate rows.
+Production cumulative selection retains the
+chosen actual program, preserves earlier choices and revalidates certificates
+at Bind. Token steps and ordinary stateless component ports share this
+selection path; staged image execution reaches it through the normal component
+builder. Ordinary ports supply their actual graph interface and no token or
+state facts. An optional immutable part-content identity travels in the same
+owner-bounded address tuple; missing or different identities cannot borrow a
+measurement made with a different part. Whole-workload comparison seals cannot
+stand in for local region keys.
+
+Recipe records default to latency evidence. An explicit JSON
+`disposition: "reject_incumbent_quality"` instead requires zero timings and zero
+timing samples, with the same nonzero protocol, receipt, provenance and exact
+key identities. It selects the passing own alternative only through authenticated
+whole-program adoption, ahead of a competing local timing row. Local recipe
+selectors refuse this disposition. The disposition participates in the version-2
+data digest; it grants neither numerical eligibility nor local-cut authority.
+A changed source, preparation or physical recipe misses rather than transferring
+the rejection to another case.
+
 The data has a deliberately separate identity from implementation sources:
 `tools/fusion_rank_data.py` accepts only the documented JSON fields and emits
-C++ values, never source text supplied by the data. This generator, the IR
-own-decomposition/builder/inference sources, execution selection/serialization
-logic, planner final-selection/pattern sources and all existing backend code
-remain in the backend module source digest. The exact inventory is `module_files`
-in `src/kernels/ggml/CMakeLists.txt`. Only `data.json` is excluded from that source digest;
-its complete semantic contents enter the registry rank digest. Thus inserting
-measured implementation identities into the data does not create a circular
-hash, and changing measurements invalidates plans without changing the
-implementations that were measured. No runtime file reads or new dependencies
-are introduced.
+C++ values, never source text supplied by the data. The generator and the IR
+operation-trait schema are implementation inputs. The [compiler-owned source
+closure](SOURCE-IDENTITY.md) covers the actual transitive implementation objects
+and their compiler dependencies. `data.json` is a declared value input: its
+complete semantic contents enter the registry rank digest and invalidate cached
+plans, while measurement values stay outside implementation identity. Both
+comparison tables are excluded from independent selection identity. No runtime
+file reads are introduced.
 
 Before accepting a measurement, record the Git base, dependency patch and
 slice patch SHA-256, native build receipt, supervised job receipt, host,
