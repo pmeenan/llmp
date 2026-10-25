@@ -316,14 +316,19 @@ the commit gate.
    `~/.local/bin/mise`. Checkpoints come from the model archive (rule 14),
    staged on `spark` and copied to `spark-b` over the direct link. Details: docs/workflow.md
    ("Long runs on the Sparks"), docs/environment.md.
-10. **Checks run once per slice.** The full Spark set (build, shared
-    `-LE 'models|timing'`, exclusive `-L 'models|timing'`) runs once, on the
-    slice's final state, by whoever changes its code last; builders and
-    review or challenge rounds run targeted tests, the shared set and only
-    the model tests of the areas they touched (`-L models -R <area>`).
-    Never hand off broken, and read any `Skipped` result with `-V` before
-    believing it (RE-053). Say which checks ran where. docs/workflow.md
-    ("Check cadence").
+10. **Checks run once per slice, with narrow scope and dual-Spark parallelism.**
+    While iterating and verifying a slice (owner, 2026-10-21), build only the
+    touched targets, run targeted tests (`ctest -R <touched>`), the shared
+    `-LE 'models|timing'` set, and **only** the model tests of the areas the
+    slice touched (`-L models -R <area>`); defer the full all-models
+    `models|timing` sweep and the `cpu` preset build to milestone closeout unless
+    a slice directly touches them. Batch independent slices with disjoint file
+    sets into one parallel build/test/review wave, split imports, test subsets
+    and model qualifications across `spark` and `spark-b` in parallel, and
+    re-import only artifacts whose on-disk output changed (syncing the delta via
+    `rsync`). Never hand off broken, and read any `Skipped` result with `-V`
+    before believing it (RE-053). Say which checks ran where. docs/workflow.md
+    ("Check cadence", "Focused optimization checks").
 11. **Product behaviour agents must not undo.** Each is an owner direction;
     detail is in the cited place.
     - *Every quant of every supported model runs and is competitively fast;

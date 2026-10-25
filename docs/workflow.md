@@ -193,6 +193,29 @@ downgrade a heavy-path change to the light loop on their own.
   intermediate check cycles and handoffs. Whole-change review, safe admission,
   positive completion, the migration gates and one commit per completed slice
   still apply.
+  *Owner direction, 2026-10-21 (M3.5+):* apply four cycle-time rules to all
+  ongoing milestone work:
+  1. **Per-slice test scope is narrow:** while iterating and verifying a slice,
+     compile only the touched targets (`ninja <target>`), run targeted unit
+     tests (`ctest -R <touched>`), then run the shared `-LE 'models|timing'`
+     set and **only** the `-L models -R <area>` tests for the area the slice
+     touched. Defer the full all-models `models|timing` sweep and the `cpu`
+     preset build to milestone closeout unless a slice directly changes cross-family
+     model execution or CPU-only portability boundaries.
+  2. **Batch independent slices with disjoint file sets:** when adjacent plan
+     slices touch disjoint directories (e.g. format decoders vs. components vs.
+     tokenizer/chat), implement them in parallel with separate builder subagents,
+     run one combined `spark-native` compile/test pass and one review wave, and
+     commit each slice cleanly.
+  3. **Use both `spark` and `spark-b` in parallel:** do not serialize all
+     builds, imports, tests, and model qualifications onto a single Spark while
+     the second sits idle. Split independent `ctest` subsets, checkpoint imports,
+     and model-family quality/speed screens across `spark` and `spark-b`
+     simultaneously, then `rsync` published artifacts over the direct link.
+  4. **Re-import only affected artifacts:** when a change affects `spec.json`
+     or manifest provenance for specific families or roles, re-import only the
+     affected artifacts (never the entire 350+ GB store) and `rsync` the store
+     delta between `spark` and `spark-b`.
 - **Don't hand off broken.** Checks pass before you end your turn; if they
   don't, say so plainly instead of papering over it. Skipped or disabled
   tests are called out by name, and a CTest summary with `Skipped` lines is
