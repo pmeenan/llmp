@@ -49,10 +49,12 @@ class StateSnapshot {
 
 // One bounded, catalog-charged pinned allocation, driver-thread only. Its
 // payload, history, ranges, layout and decoding metadata share that allocation.
-// There is no token-pool borrow or second state payload. A failed copy retains
-// the complete allocation and its charge through PagedNode::KeepPinned and
-// permanently disables this store. A failed release also disables it, retaining
-// only any allocation the node still owns. Normal retirement precedes node teardown;
+// There is no token-pool borrow or second state payload. A copy whose end is
+// unproven hands the complete allocation and its charge to the node's
+// quarantine on the copy's stream (PagedNode::KeepPinned): the store forgets
+// it and refuses until a fence of that stream has freed it, then allocates
+// afresh. A failed release disables it for good, retaining only any
+// allocation the node still owns. Normal retirement precedes node teardown;
 // a late store destructor observes the expired node token and never calls it.
 class SnapshotStore {
  public:
@@ -94,7 +96,9 @@ class SnapshotStore {
                                            const execution::AdaptiveDepth& decoding);
   void* WriteAddress() const;
   StateSnapshot Publish();
-  void Unproven();
+  // A copy into or out of the allocation has an unproven end on `stream`
+  // (none: unknown, so the store stays disabled).
+  void Unproven(std::optional<std::uint32_t> stream = std::nullopt);
   std::expected<CaptureView, std::string> Read(const StateSnapshot& snapshot,
                                                const std::shared_ptr<const std::byte>& issuer,
                                                std::optional<base::Sha256Digest> execution_identity,

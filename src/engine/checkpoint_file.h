@@ -47,7 +47,12 @@ struct CheckpointFailure {
 class CheckpointFile {
  public:
   using Range = LiveState::Range;
-  using Copy = std::function<Status(void*, std::span<const Range>)>;
+  // A page's copy between the state and the staging. A copy whose end is
+  // unproven sets *retirement (as LiveState::Copy does, which has handed the
+  // staging to the node's quarantine on its stream): the staging is then
+  // never reused or freed here. Any other failure leaves it the file's.
+  using Copy =
+      std::function<Status(void*, std::span<const Range>, LiveState::CopyRetirement* retirement)>;
   using Prepare = std::function<Status()>;
   using Continue = std::function<bool()>;
 

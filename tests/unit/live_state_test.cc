@@ -31,6 +31,9 @@
 #include "expected_error.h"
 #include "platform/direct_io.h"
 #include "providers/device_runtime.h"
+#if defined(LLMP_TEST_FAKE_DEVICE)
+#include "providers/fake/fake_device_execution.h"
+#endif
 #include "runtime/intake_limits.h"
 #include "scheduler/commands.h"
 
@@ -175,11 +178,30 @@ class LiveStateTest : public ::testing::Test {
         "test pattern", 0);
   }
 
-  // The used state's bytes, packed.
+  // The region's bytes as the state holds them: its used ranges read to
+  // pinned memory in one copy (LiveState::Copy), the rest zero.
+  en::Status ReadState(std::vector<std::byte>& out) {
+    const auto ranges = model_.live.used_ranges();
+    std::uint64_t total = 0;
+    for (const auto& range : ranges) total += range.bytes;
+    out.assign(static_cast<std::size_t>(model_.live.bytes(0)), std::byte{0});
+    if (total == 0) return {};
+    std::vector<llmp::catalog::ExtentId> staging;
+    auto host = node_.Pinned((total + kExtent - 1) / kExtent * kExtent, 0, staging);
+    if (!host) return std::unexpected(host.error());
+    auto copied = model_.live.Copy(node_, model_.fence_closure(), 0, *host, ranges, true);
+    if (!copied) return copied;
+    std::uint64_t at = 0;
+    for (const auto& range : ranges) {
+      std::memcpy(out.data() + range.offset, static_cast<const std::byte*>(*host) + at,
+                  static_cast<std::size_t>(range.bytes));
+      at += range.bytes;
+    }
+    return node_.FreePinned(*host);
+  }
   std::vector<std::byte> Read() {
     std::vector<std::byte> copy;
-    std::array<std::vector<std::byte>*, 1> output = {&copy};
-    auto read = model_.live.Read(node_, model_.fence_closure(), 0, "test read", output);
+    auto read = ReadState(copy);
     EXPECT_TRUE(read) << llmp::test_support::Failed(read).value_or("");
     return copy;
   }
@@ -469,8 +491,10 @@ TEST_F(LiveStateTest, PlacementMemoRechecksGrowthTrimClearAndRestoreWithoutCachi
   EXPECT_EQ(Occupancy(), fixed_);
   EXPECT_TRUE(PlacementMemoHit());  // Sources/pins still match; pages are absent.
   ASSERT_TRUE(model_.Refresh());
-  void* pinned = model_.live.HostCopy(node_, 16);
-  ASSERT_NE(pinned, nullptr);
+  std::vector<llmp::catalog::ExtentId> pinned_staging;
+  auto pinned_buffer = node_.Pinned(kExtent, 0, pinned_staging);
+  ASSERT_TRUE(pinned_buffer);
+  void* pinned = *pinned_buffer;
   ASSERT_TRUE(
       model_.live.Copy(node_, model_.fence_closure(), 0, pinned, std::span(ranges).first(1), true));
   EXPECT_TRUE(PlacementMemoHit());  // Actual page-in still does not relocate.
@@ -507,6 +531,7 @@ TEST_F(LiveStateTest, PlacementMemoRechecksGrowthTrimClearAndRestoreWithoutCachi
         return {};
       },
       "test unpin state places"));
+  ASSERT_TRUE(node_.FreePinned(pinned));
 }
 
 TEST_F(LiveStateTest, OnlyUsedExtentsAreMappedAndTheirFirstContentsAreZero) {
@@ -523,8 +548,7 @@ TEST_F(LiveStateTest, OnlyUsedExtentsAreMappedAndTheirFirstContentsAreZero) {
   EXPECT_EQ(Occupancy(), fixed_ + kExtent);
   ASSERT_TRUE(model_.Refresh());
   std::vector<std::byte> copy;
-  std::array<std::vector<std::byte>*, 1> output = {&copy};
-  ASSERT_TRUE(model_.live.Read(node_, model_.fence_closure(), 0, "test state", output));
+  ASSERT_TRUE(ReadState(copy));
   EXPECT_EQ(copy.size(), 8 * kExtent);
   EXPECT_TRUE(std::ranges::all_of(copy, [](std::byte b) { return b == std::byte{0}; }));
   auto again = model_.live.Use(node_, ranges);
@@ -583,14 +607,13 @@ TEST_F(LiveStateTest, GrowthAndEvictionPreserveTheInitializedRangesAtTheirAddres
   EXPECT_EQ(Occupancy(), fixed_);
   ASSERT_TRUE(model_.Refresh());
   std::vector<std::byte> copy;
-  std::array<std::vector<std::byte>*, 1> output = {&copy};
-  ASSERT_TRUE(model_.live.Read(node_, model_.fence_closure(), 0, "restored state", output));
+  ASSERT_TRUE(ReadState(copy));
   EXPECT_TRUE(std::all_of(copy.begin(), copy.begin() + kExtent,
                           [](std::byte b) { return b == std::byte{0x5A}; }));
   EXPECT_TRUE(std::all_of(copy.begin() + kExtent, copy.end(),
                           [](std::byte b) { return b == std::byte{0}; }));
-  // Two live pages plus their cataloged packed host copy.
-  EXPECT_EQ(Occupancy(), fixed_ + (4 * kExtent));
+  // Two live pages; the read's pinned copy went with the read.
+  EXPECT_EQ(Occupancy(), fixed_ + (2 * kExtent));
 }
 
 TEST_F(LiveStateTest, ClearReleasesResidentAndSavedPagesAndRegrowthStartsWithZeros) {
@@ -619,8 +642,7 @@ TEST_F(LiveStateTest, ClearReleasesResidentAndSavedPagesAndRegrowthStartsWithZer
   ASSERT_TRUE(model_.live.Use(node_, first));
   ASSERT_TRUE(model_.Refresh());
   std::vector<std::byte> copy;
-  std::array<std::vector<std::byte>*, 1> output = {&copy};
-  ASSERT_TRUE(model_.live.Read(node_, model_.fence_closure(), 0, "cleared state", output));
+  ASSERT_TRUE(ReadState(copy));
   EXPECT_TRUE(std::ranges::all_of(copy, [](std::byte b) { return b == std::byte{0}; }));
 }
 
@@ -751,8 +773,7 @@ TEST_F(LiveStateTest, TrimDiscardsSavedTailAndRegrowthCannotRestoreItsOldContent
   ASSERT_TRUE(model_.live.Use(node_, both));
   ASSERT_TRUE(model_.Refresh());
   std::vector<std::byte> copy;
-  std::array<std::vector<std::byte>*, 1> output = {&copy};
-  ASSERT_TRUE(model_.live.Read(node_, model_.fence_closure(), 0, "trimmed state", output));
+  ASSERT_TRUE(ReadState(copy));
   EXPECT_EQ(copy.front(), std::byte{0x5A});
   EXPECT_TRUE(std::ranges::all_of(std::span(copy).subspan(4 * kExtent, kExtent),
                                   [](std::byte b) { return b == std::byte{0}; }));
@@ -936,8 +957,10 @@ TEST_F(LiveStateTest, DiskCheckpointRestoresTheWholeMutablePageAndDropsNewTailPa
   // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
   const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
   auto checkpoint = en::CheckpointFile::Capture(
-      node_, directory, *pages, [&](void* host, std::span<const en::LiveState::Range> ranges) {
-        return model_.live.Copy(node_, model_.fence_closure(), 0, host, ranges, true);
+      node_, directory, *pages,
+      [&](void* host, std::span<const en::LiveState::Range> ranges,
+          en::LiveState::CopyRetirement* retirement) {
+        return model_.live.Copy(node_, model_.fence_closure(), 0, host, ranges, true, retirement);
       });
   ASSERT_TRUE(checkpoint);
   EXPECT_EQ(Occupancy(), fixed_ + (3 * kExtent));  // staging is gone between turns
@@ -964,14 +987,14 @@ TEST_F(LiveStateTest, DiskCheckpointRestoresTheWholeMutablePageAndDropsNewTailPa
         }
         return model_.Refresh();
       },
-      [&](void* host, std::span<const en::LiveState::Range> ranges) {
-        return model_.live.Copy(node_, model_.fence_closure(), 0, host, ranges, false);
+      [&](void* host, std::span<const en::LiveState::Range> ranges,
+          en::LiveState::CopyRetirement* retirement) {
+        return model_.live.Copy(node_, model_.fence_closure(), 0, host, ranges, false, retirement);
       });
   ASSERT_TRUE(restored);
   EXPECT_EQ(model_.live.extents().size(), 3);
   std::vector<std::byte> copy;
-  const std::array<std::vector<std::byte>*, 1> output = {&copy};
-  ASSERT_TRUE(model_.live.Read(node_, model_.fence_closure(), 0, "restored checkpoint", output));
+  ASSERT_TRUE(ReadState(copy));
   EXPECT_TRUE(std::ranges::all_of(std::span(copy).first(3 * kExtent),
                                   [](std::byte b) { return b == std::byte{0x21}; }));
   EXPECT_TRUE(std::ranges::all_of(std::span(copy).subspan(3 * kExtent),
@@ -986,7 +1009,8 @@ TEST_F(LiveStateTest, DiskCheckpointPadsFileTransfersButRestoresOnlyLogicalBytes
   const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
   auto checkpoint = en::CheckpointFile::Capture(
       node_, directory, ranges,
-      [](void* host, std::span<const en::LiveState::Range> page) -> en::Status {
+      [](void* host, std::span<const en::LiveState::Range> page,
+         en::LiveState::CopyRetirement*) -> en::Status {
         std::memset(host, page.front().offset == 0 ? 0x35 : 0x72, page.front().bytes);
         return {};
       });
@@ -995,7 +1019,8 @@ TEST_F(LiveStateTest, DiskCheckpointPadsFileTransfersButRestoresOnlyLogicalBytes
   std::size_t copied = 0;
   auto restored = checkpoint->Restore(
       node_, [] { return en::Status{}; },
-      [&](void* host, std::span<const en::LiveState::Range> page) -> en::Status {
+      [&](void* host, std::span<const en::LiveState::Range> page,
+          en::LiveState::CopyRetirement*) -> en::Status {
         const auto want = page.front().offset == 0 ? std::byte{0x35} : std::byte{0x72};
         EXPECT_TRUE(
             std::ranges::all_of(std::span(static_cast<const std::byte*>(host), page.front().bytes),
@@ -1015,11 +1040,12 @@ TEST_F(LowCapacityStateTest, OptionalCheckpointAllocationRefusesBeforeStateMutat
   // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
   const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
   bool copied = false;
-  auto checkpoint = en::CheckpointFile::Capture(
-      node_, directory, range, [&](void*, std::span<const en::LiveState::Range>) -> en::Status {
-        copied = true;
-        return {};
-      });
+  auto checkpoint = en::CheckpointFile::Capture(node_, directory, range,
+                                                [&](void*, std::span<const en::LiveState::Range>,
+                                                    en::LiveState::CopyRetirement*) -> en::Status {
+                                                  copied = true;
+                                                  return {};
+                                                });
   ASSERT_FALSE(checkpoint);
   EXPECT_FALSE(checkpoint.error().invalid_state);
   EXPECT_FALSE(copied);
@@ -1032,14 +1058,33 @@ TEST_F(LiveStateTest, FailedCheckpointDeviceCopyRetainsItsOriginalStagingAllocat
       en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
   // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
   const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
-  auto checkpoint = en::CheckpointFile::Capture(
-      node_, directory, range, [](void*, std::span<const en::LiveState::Range>) -> en::Status {
-        return std::unexpected("copy completion is unknown");
-      });
+  auto checkpoint =
+      en::CheckpointFile::Capture(node_, directory, range,
+                                  [](void*, std::span<const en::LiveState::Range>,
+                                     en::LiveState::CopyRetirement* retirement) -> en::Status {
+                                    *retirement = en::LiveState::CopyRetirement::kUnproven;
+                                    return std::unexpected("copy completion is unknown");
+                                  });
   ASSERT_FALSE(checkpoint);
   EXPECT_TRUE(checkpoint.error().invalid_state);
   EXPECT_EQ(node_.kept_pinned(), 1);
   EXPECT_EQ(Occupancy(), fixed_ + kExtent + llmp::platform::kDirectIoAlignment);
+}
+
+TEST_F(LiveStateTest, CheckpointCopyRefusedBeforeItRanFreesItsStaging) {
+  const std::array<en::LiveState::Range, 1> range = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
+  const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
+  auto checkpoint =
+      en::CheckpointFile::Capture(node_, directory, range,
+                                  [](void*, std::span<const en::LiveState::Range>,
+                                     en::LiveState::CopyRetirement*) -> en::Status {
+                                    return std::unexpected("the copy was refused before it ran");
+                                  });
+  ASSERT_FALSE(checkpoint);
+  EXPECT_EQ(node_.kept_pinned(), 0);  // proven: nothing can reach it, so it is freed
+  EXPECT_EQ(Occupancy(), fixed_);
 }
 
 TEST_F(LiveStateTest, CancelledCheckpointCaptureDropsItsCandidateAfterTheCurrentPage) {
@@ -1051,7 +1096,8 @@ TEST_F(LiveStateTest, CancelledCheckpointCaptureDropsItsCandidateAfterTheCurrent
   std::size_t copied = 0;
   auto checkpoint = en::CheckpointFile::Capture(
       node_, directory, ranges,
-      [&](void* host, std::span<const en::LiveState::Range>) -> en::Status {
+      [&](void* host, std::span<const en::LiveState::Range>,
+          en::LiveState::CopyRetirement*) -> en::Status {
         std::memset(host, 0x45, 16);
         ++copied;
         return {};
@@ -1071,12 +1117,13 @@ TEST_F(LiveStateTest, RestoreCancellationReportsWhetherTheBranchNeedsClearing) {
       en::LiveState::Range{.region = 0, .offset = kExtent, .bytes = 16}};
   // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
   const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
-  auto checkpoint = en::CheckpointFile::Capture(
-      node_, directory, ranges,
-      [](void* host, std::span<const en::LiveState::Range>) -> en::Status {
-        std::memset(host, 0x45, 16);
-        return {};
-      });
+  auto checkpoint =
+      en::CheckpointFile::Capture(node_, directory, ranges,
+                                  [](void* host, std::span<const en::LiveState::Range>,
+                                     en::LiveState::CopyRetirement*) -> en::Status {
+                                    std::memset(host, 0x45, 16);
+                                    return {};
+                                  });
   ASSERT_TRUE(checkpoint);
   bool prepared = false;
   std::size_t copied = 0;
@@ -1084,7 +1131,8 @@ TEST_F(LiveStateTest, RestoreCancellationReportsWhetherTheBranchNeedsClearing) {
     prepared = true;
     return {};
   };
-  const auto copy = [&](void* host, std::span<const en::LiveState::Range>) -> en::Status {
+  const auto copy = [&](void* host, std::span<const en::LiveState::Range>,
+                        en::LiveState::CopyRetirement*) -> en::Status {
     EXPECT_EQ(static_cast<const std::byte*>(host)[0], std::byte{0x45});
     ++copied;
     return {};
@@ -1118,11 +1166,13 @@ TEST_F(CheckpointCapacityStateTest, RestoreStagingRefusalLeavesTheBranchUntouche
       en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
   // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
   const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
-  auto checkpoint = en::CheckpointFile::Capture(
-      node_, directory, range, [](void* host, std::span<const en::LiveState::Range>) -> en::Status {
-        std::memset(host, 0, 16);
-        return {};
-      });
+  auto checkpoint =
+      en::CheckpointFile::Capture(node_, directory, range,
+                                  [](void* host, std::span<const en::LiveState::Range>,
+                                     en::LiveState::CopyRetirement*) -> en::Status {
+                                    std::memset(host, 0, 16);
+                                    return {};
+                                  });
   ASSERT_TRUE(checkpoint);
   ASSERT_TRUE(model_.live.Use(node_, range));
   bool prepared = false;
@@ -1132,7 +1182,9 @@ TEST_F(CheckpointCapacityStateTest, RestoreStagingRefusalLeavesTheBranchUntouche
         prepared = true;
         return {};
       },
-      [](void*, std::span<const en::LiveState::Range>) { return en::Status{}; });
+      [](void*, std::span<const en::LiveState::Range>, en::LiveState::CopyRetirement*) {
+        return en::Status{};
+      });
   ASSERT_FALSE(restored);
   EXPECT_FALSE(restored.error().invalid_state);
   EXPECT_FALSE(prepared);
@@ -1161,11 +1213,13 @@ TEST_F(CheckpointCapacityStateTest, ABudgetFullOfPlansAndGraphsStillCheckpoints)
       en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
   // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
   const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
-  auto checkpoint = en::CheckpointFile::Capture(
-      node_, directory, range, [](void* host, std::span<const en::LiveState::Range>) -> en::Status {
-        std::memset(host, 0x5a, 16);
-        return {};
-      });
+  auto checkpoint =
+      en::CheckpointFile::Capture(node_, directory, range,
+                                  [](void* host, std::span<const en::LiveState::Range>,
+                                     en::LiveState::CopyRetirement*) -> en::Status {
+                                    std::memset(host, 0x5a, 16);
+                                    return {};
+                                  });
   ASSERT_TRUE(checkpoint);
   EXPECT_GT(asked, 0U);
   node_.SetReclaimer({});
@@ -1187,17 +1241,20 @@ TEST_F(CheckpointCapacityStateTest, ReservedStagingServesCheckpointsWithNothingT
       en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
   // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
   const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
-  auto checkpoint = en::CheckpointFile::Capture(
-      node_, directory, range, [](void* host, std::span<const en::LiveState::Range>) -> en::Status {
-        std::memset(host, 0x5a, 16);
-        return {};
-      });
+  auto checkpoint =
+      en::CheckpointFile::Capture(node_, directory, range,
+                                  [](void* host, std::span<const en::LiveState::Range>,
+                                     en::LiveState::CopyRetirement*) -> en::Status {
+                                    std::memset(host, 0x5a, 16);
+                                    return {};
+                                  });
   ASSERT_TRUE(checkpoint);
   EXPECT_EQ(Occupancy(), full);
   std::size_t copied = 0;
   auto restored = checkpoint->Restore(
       node_, [] { return en::Status{}; },
-      [&](void* host, std::span<const en::LiveState::Range> page) -> en::Status {
+      [&](void* host, std::span<const en::LiveState::Range> page,
+          en::LiveState::CopyRetirement*) -> en::Status {
         EXPECT_EQ(static_cast<const std::byte*>(host)[0], std::byte{0x5a});
         copied += page.front().bytes;
         return {};
@@ -1205,6 +1262,41 @@ TEST_F(CheckpointCapacityStateTest, ReservedStagingServesCheckpointsWithNothingT
   ASSERT_TRUE(restored);
   EXPECT_EQ(copied, 16U);
   EXPECT_EQ(Occupancy(), full);
+  node_.UnchargeHost(2 * kExtent);
+}
+
+// A copy whose end is unproven takes the reserved staging out of use,
+// quarantined on the copy's stream (as LiveState::Copy hands it over); the
+// stream's fence frees it and reserves it again, so a later checkpoint is
+// still served with nothing to reclaim.
+TEST_F(CheckpointCapacityStateTest, AFenceReservesStagingAgainAfterAnUnprovenCopy) {
+  ASSERT_TRUE(node_.ReserveStaging(en::CheckpointStagingBytes()));
+  const std::uint64_t reserved = Occupancy();
+  void* taken = node_.TakeStaging(en::CheckpointStagingBytes());
+  ASSERT_NE(taken, nullptr);
+  node_.KeepPinned(taken, 0U);
+  node_.ReturnStaging(taken, false);
+  EXPECT_EQ(node_.TakeStaging(en::CheckpointStagingBytes()), nullptr);
+  EXPECT_EQ(node_.kept_pinned(), 1);
+  const std::array<en::LiveState::Range, 1> range = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
+  const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
+  ASSERT_TRUE(node_.FenceStream(0U));
+  EXPECT_EQ(node_.kept_pinned(), 0);
+  EXPECT_EQ(Occupancy(), reserved);  // the reservation, made again
+  node_.SetHostFloor(0);
+  ASSERT_TRUE(node_.ChargeHost(2 * kExtent, true));  // required: past the budget
+  std::vector<llmp::catalog::ExtentId> staging;
+  EXPECT_FALSE(node_.Pinned(256, 0, staging));  // nothing else fits
+  auto checkpoint =
+      en::CheckpointFile::Capture(node_, directory, range,
+                                  [](void* host, std::span<const en::LiveState::Range>,
+                                     en::LiveState::CopyRetirement*) -> en::Status {
+                                    std::memset(host, 0x5a, 16);
+                                    return {};
+                                  });
+  ASSERT_TRUE(checkpoint) << checkpoint.error().detail;
   node_.UnchargeHost(2 * kExtent);
 }
 
@@ -1492,47 +1584,103 @@ TEST_F(LiveStateTest, ACommitRefusedAfterTheRestoreQueuedFailsAsQueuedWork) {
   ASSERT_TRUE(model_.live.Clear(node_, model_.fence_closure(), 0, "clear quarantined state"));
 }
 
-TEST(LiveStateBufferTest, UnprovenCopyRefusesReuseAndKeepsItsDestinationUntilExit) {
+TEST(PagedNodeQuarantineTest, AnUntaggedAllocationStaysQuarantinedUntilTeardown) {
   en::PagedNode node(en::NodeSettings{});
   ASSERT_TRUE(node.Open());
   const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
-  ASSERT_TRUE(node.Start(Bytes(fixed + kExtent)));
+  ASSERT_TRUE(node.Start(Bytes(fixed + 2 * kExtent)));
   node.Run();
-  en::LiveState state("test");
-  ASSERT_NE(state.HostCopy(node, 256), nullptr);
-  state.HostCopyUnproven();
-  EXPECT_EQ(state.HostCopy(node, 256), nullptr);
-  EXPECT_EQ(state.HostCopy(node, 512), nullptr);
+  std::vector<llmp::catalog::ExtentId> staging;
+  auto host = node.Pinned(kExtent, 0, staging);
+  ASSERT_TRUE(host);
+  node.KeepPinned(*host);
+  EXPECT_FALSE(node.FreePinned(*host));  // out of use: no caller may free it
   EXPECT_EQ(node.kept_pinned(), 1);
-  ASSERT_TRUE(node.TearDown({}));
-  // Deliberately retained, as a real unknown-completion destination is.
-}
-
-TEST(LiveStateBufferTest, StreamTaggedUnprovenCopyReclaimsOnFenceStreamAndTearDown) {
-  en::PagedNode node(en::NodeSettings{});
-  ASSERT_TRUE(node.Open());
-  const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
-  ASSERT_TRUE(node.Start(Bytes(fixed + kExtent)));
-  node.Run();
-  en::LiveState state("test");
-  ASSERT_NE(state.HostCopy(node, 256), nullptr);
-  state.HostCopyUnproven(0U);
-  en::LiveState untagged("untagged");
-  ASSERT_NE(untagged.HostCopy(node, 256), nullptr);
-  untagged.HostCopyUnproven();
-  EXPECT_TRUE(node.HasUnprovenWork(0U));
-  EXPECT_EQ(node.kept_pinned(), 2);
-
-  // Once stream 0 is fenced, its quarantined pinned destination is reclaimed,
-  // while the untagged destination remains quarantined until TearDown.
+  EXPECT_TRUE(node.unproven());
   ASSERT_TRUE(node.FenceStream(0U));
-  state.AcknowledgeFence();
-  EXPECT_NE(state.HostCopy(node, 256), nullptr);
-  ASSERT_TRUE(node.FreePinned(state.HostCopy(node, 256)));
-  EXPECT_FALSE(node.HasUnprovenWork(0U));
-  EXPECT_EQ(node.kept_pinned(), 1);
+  EXPECT_EQ(node.kept_pinned(), 1);  // nobody knew its stream: only teardown frees it
   ASSERT_TRUE(node.TearDown({}));
   EXPECT_EQ(node.kept_pinned(), 0);
+}
+
+TEST(PagedNodeQuarantineTest, AStreamTaggedAllocationIsFreedByItsStreamsFence) {
+  en::PagedNode node(en::NodeSettings{});
+  ASSERT_TRUE(node.Open());
+  const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.Start(Bytes(fixed + 3 * kExtent)));
+  node.Run();
+  std::vector<llmp::catalog::ExtentId> staging;
+  auto tagged = node.Pinned(kExtent, 0, staging);
+  auto untagged = node.Pinned(kExtent, 0, staging);
+  ASSERT_TRUE(tagged && untagged);
+  node.KeepPinned(*tagged, 0U);
+  node.KeepPinned(*untagged);
+  EXPECT_TRUE(node.HasUnprovenWork(0U));
+  EXPECT_TRUE(node.Quarantining(0U));
+  EXPECT_EQ(node.kept_pinned(), 2);
+  ASSERT_TRUE(node.FenceStream(0U));
+  EXPECT_FALSE(node.HasUnprovenWork(0U));
+  EXPECT_EQ(node.kept_pinned(), 1);
+  // The fenced allocation's room is the budget's again: a new one fits.
+  auto again = node.Pinned(kExtent, 0, staging);
+  ASSERT_TRUE(again);
+  ASSERT_TRUE(node.FreePinned(*again));
+  ASSERT_TRUE(node.TearDown({}));
+  EXPECT_EQ(node.kept_pinned(), 0);
+}
+
+#if defined(LLMP_TEST_FAKE_DEVICE)
+// The LiveState owner kind's recovery: a copy whose end is unproven hands
+// its buffer to the node's quarantine on its stream; the recovery's fence
+// frees it, and the state serves the next copy.
+TEST_F(LiveStateTest, AnUnprovenCopyIsQuarantinedUntilRecoveryThenTheStateServesAgain) {
+  const std::array<en::LiveState::Range, 1> range = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
+  ASSERT_TRUE(model_.live.Use(node_, range));
+  ASSERT_TRUE(model_.Refresh());
+  ASSERT_TRUE(node_.BeginRequest(0, model_.fence_closure(), "copy request"));
+  std::vector<llmp::catalog::ExtentId> staging;
+  auto host = node_.Pinned(kExtent, 0, staging);
+  ASSERT_TRUE(host);
+  static_cast<llmp::providers::fake::FakeDeviceExecution&>(node_.execution())
+      .FailNextQuery(llmp::providers::ProviderError::kUnknown);
+  auto retirement = en::LiveState::CopyRetirement::kProven;
+  EXPECT_FALSE(model_.live.Copy(node_, model_.fence_closure(), 0, *host, range, true, &retirement));
+  EXPECT_EQ(retirement, en::LiveState::CopyRetirement::kUnproven);
+  EXPECT_EQ(node_.kept_pinned(), 1);
+  EXPECT_TRUE(node_.HasUnprovenWork(0U));
+  EXPECT_FALSE(node_.FreePinned(*host));
+  ASSERT_TRUE(node_.RecoverAfterFence(model_));
+  EXPECT_EQ(node_.kept_pinned(), 0);
+  EXPECT_FALSE(node_.HasUnprovenWork(0U));
+  auto fresh = node_.Pinned(kExtent, 0, staging);
+  ASSERT_TRUE(fresh);
+  ASSERT_TRUE(model_.live.Copy(node_, model_.fence_closure(), 0, *fresh, range, true));
+  ASSERT_TRUE(node_.FreePinned(*fresh));
+}
+#endif
+
+// A copy refused before submission leaves its buffer the caller's.
+TEST_F(LiveStateTest, ACopyRefusedBeforeSubmissionKeepsItsBufferTheCallers) {
+  const std::array<en::LiveState::Range, 1> range = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
+  ASSERT_TRUE(model_.live.Use(node_, range));
+  ASSERT_TRUE(model_.Refresh());
+  ASSERT_TRUE(node_.BeginRequest(0, model_.fence_closure(), "copy request"));
+  std::vector<llmp::catalog::ExtentId> staging;
+  auto host = node_.Pinned(kExtent, 0, staging);
+  ASSERT_TRUE(host);
+  // A step whose closure is not within the request's is refused before
+  // anything is submitted.
+  llmp::catalog::Closure foreign = model_.fence_closure();
+  ASSERT_FALSE(foreign.extents.empty());
+  foreign.extents.front().second += 1;  // another contents generation
+  auto retirement = en::LiveState::CopyRetirement::kUnproven;
+  EXPECT_FALSE(model_.live.Copy(node_, foreign, 0, *host, range, true, &retirement));
+  EXPECT_EQ(retirement, en::LiveState::CopyRetirement::kProven);
+  EXPECT_EQ(node_.kept_pinned(), 0);
+  EXPECT_TRUE(node_.FreePinned(*host));
+  ASSERT_TRUE(node_.EndRequest(0));
 }
 
 // After Run the device-memory provider is the backing lane's alone, and the

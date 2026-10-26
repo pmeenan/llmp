@@ -2229,10 +2229,17 @@ job (a wide prefill chunk) is allowed its expected time at the floors.
    cohort's members all), and once they retire the model's stream is
    fenced (proof that nothing it queued still runs; on the direct path a
    step whose end could not be proven is proven ended by that later
-   fence) and the fence acknowledged by its runner, so a step or route
+   fence, and its own lost fence released) and the fence acknowledged by
+   its runner, its private batches or its image executor, each clearing
+   every hold the fence proves (engine/unproven_work.h): a step or route
    whose end went unproven (a lost fence, not a faulted launch, which
-   still ends in rung 3's restart) no longer refuses its next steps,
-   every slot the
+   still ends in rung 3's restart) no longer refuses its next steps, an
+   image's generation starts over, a row table's stalled reads serve
+   again once their completions are harvested (never by the fence alone),
+   the pinned buffers an unproven copy may still touch, which the node
+   quarantined on that stream, are freed, a snapshot store that lost
+   its allocation to them allocates afresh and the checkpoint staging
+   reservation is made again; every slot the
    failure may have touched has its state discarded (one spilled before
    it is kept), its cohort's fault lifts, its plans and graphs are
    dropped, its calibration samples not yet recorded are dropped (the

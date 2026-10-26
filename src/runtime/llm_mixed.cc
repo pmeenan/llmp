@@ -78,7 +78,7 @@ Status Llm::RunCausalWave(std::span<PromptSession* const> prompts,
   };
   // Stack inventories follow the actual fixed slot representation. Native
   // control, programs, resources and results are independently prepaid together
-  // before any companion by the canonical complete-batch execution path.
+  // by the canonical complete-batch execution path.
   std::array<PreparedPrefill, kMaxBranches> prompt_storage{};
   std::array<PreparedGeneration, kMaxBranches> generation_storage{};
   std::size_t pcount = 0, gcount = 0;

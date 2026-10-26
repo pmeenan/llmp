@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "engine/draft_companions.h"
+#include "engine/prompt_wave.h"
 
 #include <gtest/gtest.h>
 
@@ -56,7 +56,7 @@ std::vector<en::StageState> Stages() {
                               .target_writes = true}})}};
 }
 
-class DraftCompanionsTest : public ::testing::Test {
+class PromptWaveTest : public ::testing::Test {
  protected:
   en::PagedNode node_{
       en::NodeSettings{.compute_streams = 1, .slots = 2, .copy_lane = true, .slot_bytes = kExtent}};
@@ -236,12 +236,12 @@ class DraftCompanionsTest : public ::testing::Test {
   }
 };
 
-class JoinedPromptDraftCompanionsTest : public DraftCompanionsTest {
+class JoinedPromptPromptWaveTest : public PromptWaveTest {
  protected:
   void ConfigureBatching(md::Batching& caps) override { caps.join_prefill = true; }
 };
 
-TEST_F(JoinedPromptDraftCompanionsTest, JoinedTargetWavePublishesBothOwners) {
+TEST_F(JoinedPromptPromptWaveTest, JoinedTargetWavePublishesBothOwners) {
   const std::array owners{0U, 1U};
   (void)node_.TakeTimes(0);
   bool joined_target = false;
@@ -259,7 +259,7 @@ TEST_F(JoinedPromptDraftCompanionsTest, JoinedTargetWavePublishesBothOwners) {
   }
 }
 
-TEST_F(JoinedPromptDraftCompanionsTest, RejectedJoinedTargetNeverPublishes) {
+TEST_F(JoinedPromptPromptWaveTest, RejectedJoinedTargetNeverPublishes) {
   const std::array owners{0U, 1U};
   source_->options().fail_phase = pl::Phase::kPrefill;
   source_->options().fail_run = llmp::kernels::StepError::kRejected;
@@ -271,7 +271,7 @@ TEST_F(JoinedPromptDraftCompanionsTest, RejectedJoinedTargetNeverPublishes) {
   EXPECT_EQ(node_.kept_pinned(), 0U);
 }
 
-class OutputPaymentDraftCompanionsTest : public DraftCompanionsTest {
+class OutputPaymentPromptWaveTest : public PromptWaveTest {
  protected:
   void Configure(en::RunnerConfig&) override {
     // Size/measure actual outputs during normal Setup, rather than changing
@@ -280,7 +280,7 @@ class OutputPaymentDraftCompanionsTest : public DraftCompanionsTest {
   }
 };
 
-TEST_F(OutputPaymentDraftCompanionsTest, OutputPaymentRefusalPrecedesAnyProgramOrStateSubmission) {
+TEST_F(OutputPaymentPromptWaveTest, OutputPaymentRefusalPrecedesAnyProgramOrStateSubmission) {
   const std::array owners{0U};
   auto warm = Prompt(owners, 1);
   ASSERT_FALSE(warm.outcomes[0].refusal) << warm.outcomes[0].refusal->what;
@@ -309,7 +309,7 @@ TEST_F(OutputPaymentDraftCompanionsTest, OutputPaymentRefusalPrecedesAnyProgramO
   EXPECT_TRUE(slots().usable(0));
 }
 
-TEST_F(DraftCompanionsTest, RetainedOutputsSurviveLaterStepsAndResultMoves) {
+TEST_F(PromptWaveTest, RetainedOutputsSurviveLaterStepsAndResultMoves) {
   const std::array owners{std::uint32_t{0}, std::uint32_t{1}};
   auto first = Prompt(owners, 2);
   ASSERT_EQ(first.outcomes.size(), 2U);
@@ -328,7 +328,7 @@ TEST_F(DraftCompanionsTest, RetainedOutputsSurviveLaterStepsAndResultMoves) {
   EXPECT_EQ(retained.paid_bytes(), paid);
 }
 
-TEST_F(DraftCompanionsTest, FeatureCopyBeforeARejectedDraftRetiresBeforePeerContinues) {
+TEST_F(PromptWaveTest, FeatureCopyBeforeARejectedDraftRetiresBeforePeerContinues) {
   const std::array owners{0U};
   Prefill(0, 7);
   auto decoder = Decoder();
@@ -359,6 +359,42 @@ TEST_F(DraftCompanionsTest, FeatureCopyBeforeARejectedDraftRetiresBeforePeerCont
   const std::array peer{1U};
   auto prompt = Prompt(peer, 7);
   ASSERT_FALSE(prompt.outcomes[0].refusal) << prompt.outcomes[0].refusal->what;
+}
+
+// A plain target step (here a certain span) commits rows the MTP drafter's
+// cursor never followed. Its next catch-up starts at the oldest feature the
+// target's tap still holds, so drafting resumes rather than being refused
+// for the rest of the reply.
+TEST_F(PromptWaveTest, DraftingResumesAfterACertainSpan) {
+  const std::array owners{0U};
+  Prefill(0, 7);
+  auto decoder = Decoder();
+  decoder.Reset(0);
+  const auto speculated = Decode(decoder, owners);
+  ASSERT_FALSE(speculated.outcomes[0].refusal) << speculated.outcomes[0].refusal->what;
+  ASSERT_EQ(speculated.outcomes[0].drafts.size(), 1U);
+  EXPECT_FALSE(speculated.outcomes[0].drafts[0].refusal);
+  EXPECT_GT(speculated.outcomes[0].drafts[0].proposed, 0U);
+  // A forced span: the anchor and three certain tokens, one target step.
+  const auto past = slots().positions(0);
+  History(0, past + 4);
+  const auto certain = std::span(history_[0]).subspan(past + 1, 3);
+  const std::array work{en::DecodeWork{
+      .slot = 0, .history = std::span(history_[0]).first(past + 1), .certain = certain}};
+  const auto forced = decoder.Step(work);
+  ASSERT_FALSE(forced.outcomes[0].refusal) << forced.outcomes[0].refusal->what;
+  EXPECT_FALSE(forced.speculated);
+  ASSERT_EQ(slots().positions(0), past + 4);
+  const auto resumed = Decode(decoder, owners);
+  ASSERT_FALSE(resumed.outcomes[0].refusal) << resumed.outcomes[0].refusal->what;
+  ASSERT_EQ(resumed.outcomes[0].drafts.size(), 1U);
+  EXPECT_FALSE(resumed.outcomes[0].drafts[0].refusal)
+      << resumed.outcomes[0].drafts[0].refusal->what;
+  EXPECT_GT(resumed.outcomes[0].drafts[0].proposed, 0U);
+  // Its first pass caught up from the forced span's first row: the oldest
+  // feature its tap held (the row before it, the tap's carry).
+  EXPECT_EQ(decoder.cursor(0, 0), past + 4);
+  ASSERT_FALSE(drafts_[0].empty());
 }
 
 }  // namespace

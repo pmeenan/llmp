@@ -610,6 +610,8 @@ llmp_gtest(fake_device_runtime_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 add_executable(live_state_fake_test live_state_test.cc)
 target_link_libraries(live_state_fake_test PRIVATE llmp_runtime llmp_engine_core
                                                    llmp_fake_device_backend)
+# Its fault injection (an unproven copy's recovery) needs the fake device.
+target_compile_definitions(live_state_fake_test PRIVATE LLMP_TEST_FAKE_DEVICE=1)
 llmp_gtest(live_state_fake_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
@@ -650,10 +652,10 @@ target_link_libraries(compound_routed_test PRIVATE llmp_engine_core llmp_fake_st
 llmp_gtest(compound_routed_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
-add_executable(draft_companions_test draft_companions_test.cc)
-target_link_libraries(draft_companions_test PRIVATE llmp_engine_core llmp_fake_step_source
+add_executable(prompt_wave_test prompt_wave_test.cc)
+target_link_libraries(prompt_wave_test PRIVATE llmp_engine_core llmp_fake_step_source
                                                    llmp_fake_device_backend llmp_platform)
-llmp_gtest(draft_companions_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
+llmp_gtest(prompt_wave_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
 add_executable(anchored_drafter_test anchored_drafter_test.cc)

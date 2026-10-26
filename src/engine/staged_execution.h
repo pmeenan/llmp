@@ -153,13 +153,21 @@ class StagedExecution final : public PagedModel {
   const catalog::Closure& fence_closure() const override;
   std::vector<catalog::ExtentId> managed_extents() const override;
   Status Release() override;
-  Status AcknowledgeFence() override;
+  // After a recovery's fence of its stream: every hold that fence proves
+  // cleared (the stopped job's flight and mark), a refused geometry
+  // replacement's retirement resumed, the generation back at its start and
+  // the plans dropped, so the next request is served.
+  Status AcknowledgeFence(const FenceProof& proof) override;
   bool unproven() const noexcept;
 
   // Before the first launch or after completed Finish, without a request lease.
   // Content replacement preserves maps; geometry uses measured admission.
   Status ReplaceRequest(StagedRequest request);
   Status ReplaceGeometry(StagedGeometry geometry);
+  // The installed geometry's request layout (none before Setup). A
+  // recovery may install a replacement whose ReplaceGeometry was refused
+  // part way (AcknowledgeFence), so a frontend reads it here.
+  std::optional<base::Sha256Digest> request_layout() const;
   Status FirstOutput(std::string& sha);
   Status Finish(std::string& sha);
   Status Abandon();
@@ -170,7 +178,7 @@ class StagedExecution final : public PagedModel {
   Lifetime* lifetime_ = nullptr;
   bool drained_ = false, release_failed_ = false;
   kernels::PlanRecordSink plan_report_sink_;
-  Status RetireAfterFence() override;
+  Status RetireAfterFence(const FenceProof& proof) override;
   void RetireRoot();
   PagedNode& node_;
   int index_;
@@ -180,6 +188,11 @@ class StagedExecution final : public PagedModel {
   Status PrepareState(State& state);
   Status BindState(State& state);
   Status RunThrough(std::size_t end, std::string& sha);
+  // ReplaceGeometry's last part: `previous` retired and `candidate` (fully
+  // prepared and bound) installed; resumed by AcknowledgeFence when the
+  // retirement stopped part way.
+  Status InstallGeometry(const std::shared_ptr<State>& previous,
+                         const std::shared_ptr<State>& candidate);
 };
 }  // namespace llmp::engine
 #endif  // LLMP_ENGINE_STAGED_EXECUTION_H_

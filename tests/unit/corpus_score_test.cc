@@ -13,7 +13,7 @@
 #include <memory>
 #include <vector>
 
-#include "engine/draft_companions.h"
+#include "engine/prompt_wave.h"
 #include "expected_error.h"
 #include "fake_step_source.h"
 #include "ir/builder.h"

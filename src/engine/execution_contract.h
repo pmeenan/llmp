@@ -121,7 +121,7 @@ class NumericalDomain {
   std::expected<void, std::string> CheckMode(NumericalUse use) const;
   std::expected<void, std::string> CheckShape(const planner::StepShape& shape) const;
   // The caller supplies all possible shapes of the operation, including both
-  // futures, companions, owed settle/commit and adaptive alternatives. This
+  // futures, drafter stages, owed settle/commit and adaptive alternatives. This
   // pure value check does not discover omitted work or evaluate callbacks.
   std::expected<void, std::string> CheckUse(NumericalUse use,
                                             std::span<const planner::StepShape> shapes) const;
@@ -156,8 +156,8 @@ struct StageExecutionInput {
 
 class ExecutionContract {
  public:
-  // A required contract seals the whole ordered composition, including any
-  // legacy companion. Missing backend/registry/stage facts are refused.
+  // A required contract seals the whole ordered composition, every drafter
+  // stage included. Missing backend/registry/stage facts are refused.
   static std::expected<ExecutionContract, std::string> Create(
       NumericalDomain domain, std::span<const StageExecutionInput> stages);
 

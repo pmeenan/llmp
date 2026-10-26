@@ -1139,6 +1139,28 @@ TEST_F(EngineImageTest, QueuedFailureQuarantinesTheWholeFlightUntilPositiveDrain
   // TearDown owns the positive drain in the common fixture cleanup. No failed
   // completion or destruction is interpreted as a retirement certificate.
 }
+// A9: once a recovery's fence proves the failed stage's job ended, the image
+// drops what kept the state for it (its flight, its mark, its plans), starts
+// its generation over, and serves the next request.
+TEST_F(EngineImageTest, AQueuedFailureRecoversAfterItsStreamsFenceAndServesAgain) {
+  ASSERT_TRUE(life->Start(path));
+  life->trace->fail_second = true;
+  std::string value;
+  ASSERT_TRUE(life->image->FirstOutput(value));
+  ASSERT_FALSE(life->image->Finish(value));
+  EXPECT_FALSE(life->image->FirstOutput(value));  // refused while unproven
+  life->trace->fail_second = false;
+  auto recovered = life->node.RecoverAfterFence(life->image->paged());
+  ASSERT_TRUE(recovered) << Failed(recovered).value_or("");
+  std::string first, last;
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  ASSERT_TRUE(life->image->Finish(last));
+  EXPECT_FALSE(last.empty());
+  // And again: a replaced request serves too.
+  ASSERT_TRUE(life->image->ReplaceRequest(life->Request(9)));
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  ASSERT_TRUE(life->image->Finish(last));
+}
 TEST_F(EngineImageTest, NodeRetainsUnknownStagesAfterTheRuntimeAdapterIsDropped) {
   ASSERT_TRUE(life->Start(path));
   life->trace->fail_second = true;

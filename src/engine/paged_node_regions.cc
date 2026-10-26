@@ -796,11 +796,25 @@ void PagedNode::ReturnStaging(void* pointer, bool proven) {
     staging_taken_ = false;
     return;
   }
-  // A copy may still reach it: kept to the process's end, out of use.
+  // A copy may still reach it: out of use, in the quarantine (tagged with
+  // the copy's stream when the copier put it there, else to teardown). Once
+  // a fence has freed it, the reservation is made again (FenceStream).
   KeepPinned(staging_);
+  staging_lost_ = staging_;
+  staging_owed_ = staging_bytes_;
   staging_ = nullptr;
   staging_bytes_ = 0;
   staging_taken_ = false;
+}
+
+void PagedNode::RestoreStaging() {
+  if (staging_owed_ == 0 || staging_ != nullptr) return;
+  if (staging_lost_ != nullptr && std::ranges::any_of(quarantine_, [&](const Quarantined& q) {
+        return q.pointer == staging_lost_;
+      }))
+    return;  // not freed yet: its room is not the budget's again
+  staging_lost_ = nullptr;
+  if (ReserveStaging(staging_owed_)) staging_owed_ = 0;  // else retried at the next fence
 }
 
 void PagedNode::SortSpans() { std::ranges::sort(spans_, {}, &Span::base); }

@@ -48,11 +48,11 @@
 #include "engine/batch_inventory.h"
 #include "engine/component_source.h"
 #include "engine/copy_sink.h"
-#include "engine/draft_companions.h"
 #include "engine/graph_plan.h"
 #include "engine/paged_node.h"
 #include "engine/ple_rows.h"
 #include "engine/prefill.h"
+#include "engine/prompt_wave.h"
 #include "engine/runner_memory.h"
 #include "engine/runner_owner.h"
 #include "engine/step_inputs.h"
@@ -2825,6 +2825,180 @@ class ComponentCommitTest : public ModelRunnerTest {
   }
 };
 
+// A runner with one paged row table (a PLE-style gathered weight) over a
+// published v1 artifact.
+class RowTableRunnerTest : public ModelRunnerTest {
+ protected:
+  format::TensorFormat table_format_{.encoding = format::Encoding::kF32,
+                                     .layout = format::Layout::kDense,
+                                     .shape = {.ne = {16, 64, 1, 1}, .rank = 2}};
+  const ir::WeightRef table_ref_{.role = 17};
+
+  std::vector<pl::StepShape> SetupShapes() override {
+    return {Shape(pl::Phase::kDecode, {Seg(0, 0, 4, 4)})};
+  }
+  void Configure(en::RunnerConfig& config) override {
+    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");
+    ASSERT_NE(scratch, nullptr);
+    llmp::test::V1Plan plan;
+    plan.groups = {{.kind = llmp::artifact::GroupKind::kGlobal,
+                    .resources = {{.name = "table", .format = table_format_, .rows = true}}}};
+    auto weights = std::make_unique<en::PagedWeights>();
+    // One store a test: tests run in parallel, and each publishes its own.
+    const auto store = std::filesystem::path(scratch) /
+                       (std::string("row-table-") +
+                        ::testing::UnitTest::GetInstance()->current_test_info()->test_suite_name() +
+                        "-" + ::testing::UnitTest::GetInstance()->current_test_info()->name());
+    ASSERT_TRUE(weights->Open(llmp::test::Publish(store, llmp::test::Render(plan))));
+    config.weights.push_back(
+        {.weights = std::move(weights), .places = {en::GroupPlace::kNone}, .slabs = {}});
+    config.row_tables.push_back({.weight = table_ref_,
+                                 .resource = 0,
+                                 .format = table_format_,
+                                 .part = format::PartRole::kData,
+                                 .rows_per_token = 1});
+  }
+};
+
+// A row table's own ring for its tests: reads complete at once, or, while
+// `hold` is set, are kept in flight (a stalled drive), and complete when it
+// clears. It notes whether a read was submitted while completions of reads
+// that stalled had not been harvested yet (their tokens would be taken for
+// the new plan's).
+class StallingRowStorage final : public llmp::providers::Storage {
+ public:
+  struct Shared {
+    bool hold = false;
+    std::uint64_t submitted = 0, stale_harvested = 0;
+    bool mixed = false;
+  };
+  explicit StallingRowStorage(std::shared_ptr<Shared> shared) : shared_(std::move(shared)) {}
+  std::size_t depth() const override { return 64; }
+  std::size_t in_flight() const override { return held_.size() + done_.size(); }
+  llmp::providers::Submission Submit(const llmp::providers::IoRequest& request) override {
+    ++shared_->submitted;
+    const bool stale_pending =
+        !held_.empty() || std::ranges::any_of(done_, [](const Done& d) { return d.stale; });
+    if (stale_pending) shared_->mixed = true;
+    std::memset(request.memory, 0x2A, request.length);
+    const Done read{.completion = {.token = request.token, .result = std::int64_t{request.length}},
+                    .stale = shared_->hold};
+    (shared_->hold ? held_ : done_).push_back(read);
+    return llmp::providers::Submission::kAccepted;
+  }
+  llmp::providers::Submission Cancel(std::uint64_t /*token*/) override {
+    return llmp::providers::Submission::kNotStarted;
+  }
+  std::size_t Harvest(std::span<llmp::providers::IoCompletion> out, bool /*wait*/) override {
+    if (!shared_->hold) {
+      done_.insert(done_.end(), held_.begin(), held_.end());
+      held_.clear();
+    }
+    const std::size_t n = std::min(out.size(), done_.size());
+    for (std::size_t i = 0; i < n; ++i) {
+      out[i] = done_[i].completion;
+      if (done_[i].stale) ++shared_->stale_harvested;
+    }
+    done_.erase(done_.begin(), done_.begin() + static_cast<std::ptrdiff_t>(n));
+    return n;
+  }
+  void Wake() override {}
+
+ private:
+  struct Done {
+    llmp::providers::IoCompletion completion;
+    bool stale = false;  // submitted while held: an earlier plan's
+  };
+  std::shared_ptr<Shared> shared_;
+  std::vector<Done> held_, done_;
+};
+
+// A row table whose reads stall (A7): the step that gave up on them is
+// refused, the table stays refused while they are still in flight, and once
+// their completions land, they are harvested and discarded, so the next step
+// (or a recovery's fence) serves again.
+class RowTableStallTest : public RowTableRunnerTest {
+ protected:
+  std::shared_ptr<StallingRowStorage::Shared> storage_ =
+      std::make_shared<StallingRowStorage::Shared>();
+  std::vector<std::int32_t> history_ = Tokens(16, 3);
+  ts::FakeSourceOptions SourceOptions() override {
+    auto options = RowTableRunnerTest::SourceOptions();
+    options.extra_inputs = [](const pl::StepShape& shape) {
+      std::uint64_t rows = 0;
+      for (const auto& segment : shape.segments) rows += segment.rows;
+      return std::vector<kn::InputSlot>{
+          {.bytes = rows * sizeof(std::int32_t), .kind = kn::InputKind::kSideRows}};
+    };
+    options.side_rows = [](std::uint16_t, std::uint16_t, std::span<const std::int32_t> history,
+                           std::uint32_t position, std::span<std::int32_t> out) -> en::Status {
+      if (position >= history.size() || out.size() != 1) return std::unexpected("side rows");
+      out[0] = history[position] % 64;
+      return {};
+    };
+    return options;
+  }
+  void Configure(en::RunnerConfig& config) override {
+    RowTableRunnerTest::Configure(config);
+    config.row_storage =
+        [shared = storage_](
+            std::size_t) -> std::expected<std::unique_ptr<llmp::providers::Storage>, std::string> {
+      return std::make_unique<StallingRowStorage>(shared);
+    };
+    config.row_read_stall = std::chrono::milliseconds(50);
+  }
+  std::expected<en::StepReport, en::StepRefusal> Step(std::uint32_t past) {
+    const std::array work{en::SegmentWork{
+        .tokens = std::span(history_).subspan(past, 4), .bytes = {}, .history = history_}};
+    return runner_->RunStep({.shape = Shape(pl::Phase::kDecode, {Seg(0, past, 4, 4)}),
+                             .work = work,
+                             .step_bytes = {},
+                             .advance = true,
+                             .ahead = {}});
+  }
+};
+
+TEST_F(RowTableStallTest, StalledReadsAreHarvestedThenTheTableServesAgain) {
+  storage_->hold = true;
+  auto stalled = Step(0);
+  ASSERT_FALSE(stalled);
+  EXPECT_FALSE(stalled.error().clean);
+  EXPECT_TRUE(runner_->unproven());
+  EXPECT_EQ(runner_->slots().positions(0), 0U);
+  // Still in flight: the table refuses, its ring and landing untouched.
+  const auto submitted = storage_->submitted;
+  auto refused = Step(0);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().what.find("unproven completion"), std::string::npos)
+      << refused.error().what;
+  EXPECT_EQ(storage_->submitted, submitted);
+  // The reads land: harvested and discarded before the ring is used again.
+  storage_->hold = false;
+  auto served = Step(0);
+  ASSERT_TRUE(served) << served.error().what;
+  EXPECT_GT(storage_->stale_harvested, 0U);
+  EXPECT_FALSE(storage_->mixed);
+  EXPECT_FALSE(runner_->unproven());
+  EXPECT_EQ(runner_->slots().positions(0), 4U);
+}
+
+TEST_F(RowTableStallTest, ARecoverysFenceHarvestsLandedReadsAndTheNextStepServes) {
+  storage_->hold = true;
+  ASSERT_FALSE(Step(0));
+  storage_->hold = false;
+  // D-102's rung 2: the fence's acknowledgement settles the landed reads.
+  ASSERT_TRUE(node_.RecoverAfterFence(*runner_));
+  EXPECT_FALSE(runner_->unproven());
+  EXPECT_GT(storage_->stale_harvested, 0U);
+  auto recovered = runner_->slots().RecoverInPlace({});
+  ASSERT_TRUE(recovered) << recovered.error();
+  ASSERT_TRUE(runner_->slots().SelectSlots(std::vector<std::uint32_t>{0, 1, 2}));
+  ASSERT_TRUE(node_.BeginRequest(0, runner_->slots().execution(), "test request"));
+  auto served = Step(0);
+  ASSERT_TRUE(served) << served.error().what;
+  EXPECT_FALSE(storage_->mixed);
+}
+
 TEST_F(ComponentCommitTest, JoinedSavesSurviveAPeerStepAndLatePreparationFailure) {
   auto verified = Verify();
   ASSERT_TRUE(verified) << verified.error().what;
@@ -3983,6 +4157,44 @@ TEST(PrivateBatchDeathTest, UnknownJobRetainsPrivateBackingAndParentAfterAllCall
                 std::_Exit(::testing::Test::HasFailure() ? 1 : 0);
               }()),
               ::testing::ExitedWithCode(0), "");
+}
+
+// The prompt batch owner kind's recovery: a batch step whose end is
+// unproven keeps the batch, its backing and the runner's flight; the
+// recovery's fence proves it ended, the batch closes, and the runner serves
+// the next step.
+TEST_F(PrivateBatchTest, AnUnprovenBatchStepRecoversAfterItsFenceAndTheRunnerServes) {
+  auto composer = en::WaveComposer::For(Caps(), owned_->slots());
+  ASSERT_TRUE(composer);
+  std::array<std::int32_t, 17> tokens{};
+  std::iota(tokens.begin(), tokens.end(), 7);
+  auto item = Decode(0, 0, 17);
+  item.phase = pl::Phase::kScore;
+  const std::array pending{item};
+  const std::array work{en::SegmentWork{.tokens = tokens, .bytes = {}, .history = tokens}};
+  const std::array<std::span<const std::int32_t>, 1> histories{tokens};
+  auto batch = en::PromptBatch::Prepare(*owned_, *composer, pending, work, histories);
+  ASSERT_TRUE(batch) << ts::Failed(batch).value_or(kn::ResourceFailure{}).what;
+  auto& execution = static_cast<llmp::providers::fake::FakeDeviceExecution&>(node_.execution());
+  execution.FailNextQuery(llmp::providers::ProviderError::kUnknown);
+  auto report = en::RunWave(*owned_, *composer, pending, work, true, {}, {}, *batch);
+  ASSERT_EQ(report.outcomes.size(), 1U);
+  ASSERT_TRUE(report.outcomes[0].refusal);
+  EXPECT_FALSE(report.outcomes[0].refusal->clean);
+  EXPECT_FALSE(batch->Close());  // its step's end is unproven
+  ASSERT_TRUE(node_.RecoverAfterFence(*owned_));
+  EXPECT_FALSE(batch->ready());
+  EXPECT_FALSE(owned_->unproven());
+  *batch = {};
+  auto recovered = owned_->slots().RecoverInPlace({});
+  ASSERT_TRUE(recovered) << recovered.error();
+  ASSERT_TRUE(owned_->slots().SelectSlots(std::vector<std::uint32_t>{0, 1, 2}));
+  ASSERT_TRUE(node_.BeginRequest(0, owned_->slots().execution(), "test request"));
+  const std::array<std::int32_t, 1> next{4};
+  const std::array next_work{en::SegmentWork{.tokens = next, .bytes = {}}};
+  auto served = owned_->RunStep(
+      {.shape = Shape(pl::Phase::kDecode, {Seg(1, 0, 1, 1)}), .work = next_work, .ahead = {}});
+  ASSERT_TRUE(served) << ts::Failed(served).value_or(en::StepRefusal{}).what;
 }
 
 TEST_F(PrivateResourcesTest, ReleaseRefusesBeforeDestroyingAnyParentResource) {

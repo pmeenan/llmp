@@ -768,12 +768,15 @@ TEST(StepTransactionTest, UnprovenStepFailureRetainsWitnessesUntilFenceRecovery)
     const llmp::catalog::Closure& fence_closure() const override { return closure_; }
     std::vector<llmp::catalog::ExtentId> managed_extents() const override { return {}; }
     en::Status Release() override { return {}; }
-    en::Status AcknowledgeFence() override {
-      unproven.ClearAfterFence();
+    en::Status AcknowledgeFence(const en::FenceProof& proof) override {
+      EXPECT_EQ(proof.stream(), stream_);
+      unproven.Clear(proof);
+      flight.Clear(proof);
       acknowledged = true;
       return {};
     }
-    en::UnprovenWork unproven;
+    en::UnprovenMark unproven;
+    en::RetainedFlight<int> flight;
     bool acknowledged = false;
 
    private:
@@ -786,6 +789,7 @@ TEST(StepTransactionTest, UnprovenStepFailureRetainsWitnessesUntilFenceRecovery)
   static_cast<llmp::providers::fake::FakeDeviceExecution&>(node.execution())
       .FailNextQuery(llmp::providers::ProviderError::kUnknown);
   model.unproven.Mark();
+  model.flight.Retain(std::make_shared<int>(7));
   en::JobReport failed_report;
   auto step = node.Job(
       {}, [](pr::NativeStream) { return sc::JobResult::kQueued; }, "unprovable step", 0, {},
@@ -793,6 +797,7 @@ TEST(StepTransactionTest, UnprovenStepFailureRetainsWitnessesUntilFenceRecovery)
   EXPECT_FALSE(step);
   EXPECT_EQ(failed_report.retirement, en::JobReport::Retirement::kUnproven);
   EXPECT_TRUE(model.unproven.active());
+  EXPECT_TRUE(model.flight.held());
   EXPECT_TRUE(node.unproven());
   EXPECT_TRUE(node.InRequest(0));
   EXPECT_FALSE(node.EndRequest(0));
@@ -803,6 +808,7 @@ TEST(StepTransactionTest, UnprovenStepFailureRetainsWitnessesUntilFenceRecovery)
   ASSERT_TRUE(recovered) << recovered.error();
   EXPECT_TRUE(model.acknowledged);
   EXPECT_FALSE(model.unproven.active());
+  EXPECT_FALSE(model.flight.held());
   EXPECT_FALSE(node.unproven());
   EXPECT_FALSE(node.InRequest(0));
 
@@ -817,39 +823,103 @@ TEST(StepTransactionTest, UnprovenStepFailureRetainsWitnessesUntilFenceRecovery)
   ASSERT_TRUE(node.EndRequest(0));
   EXPECT_FALSE(node.InRequest(0));
 
-  auto& execution = static_cast<llmp::providers::fake::FakeDeviceExecution&>(node.execution());
-  const pr::FenceId leaked(0, 1);
-  ASSERT_EQ(execution.Query(leaked).value_or(pr::FenceState::kPending), pr::FenceState::kComplete);
-  ASSERT_TRUE(execution.Release(leaked));
-  ASSERT_TRUE(node.TearDown({}));
+  // The lost step's own fence was released once the recovery's fence proved
+  // it: the stream holds no fence, so teardown destroys it.
+  auto torn = node.TearDown({});
+  ASSERT_TRUE(torn) << torn.error();
 }
 
-TEST(StepTransactionTest, UnprovenWorkLifecycle) {
-  en::UnprovenWork work;
-  EXPECT_FALSE(work.active());
-  EXPECT_FALSE(static_cast<bool>(work));
+// A job tried on a stream whose direct step's end went unproven is refused
+// without dropping that step's record: the request (its lease, its count
+// and its lost fence) stays for the recovery's fence to prove, release and
+// end, so teardown finds no fence left on the stream.
+TEST(StepTransactionTest, AJobAfterALostDirectFenceKeepsTheRequestForItsProof) {
+  en::PagedNode node(en::NodeSettings{
+      .compute_streams = 1, .slots = 1, .slot_bytes = en::kPagedExtent, .direct_steps = true});
+  ASSERT_TRUE(node.Open());
+  const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.Start(llmp::base::Bytes(fixed + 4 * en::kPagedExtent)));
+  node.Run();
+  class Owner final : public en::PagedModel {
+   public:
+    std::uint32_t stream() const override { return 0; }
+    const llmp::catalog::Closure& fence_closure() const override { return closure_; }
+    std::vector<llmp::catalog::ExtentId> managed_extents() const override { return {}; }
+    en::Status Release() override { return {}; }
 
-  work.Mark();
-  EXPECT_TRUE(work.active());
-  EXPECT_TRUE(static_cast<bool>(work));
+   private:
+    llmp::catalog::Closure closure_;
+  };
+  Owner owner;
+  ASSERT_TRUE(node.BeginRequest(0, {}, "request with lost fence"));
+  static_cast<llmp::providers::fake::FakeDeviceExecution&>(node.execution())
+      .FailNextQuery(llmp::providers::ProviderError::kUnknown);
+  EXPECT_FALSE(
+      node.Job({}, [](pr::NativeStream) { return sc::JobResult::kQueued; }, "unprovable step", 0));
+  ASSERT_TRUE(node.InRequest(0));
+  // Another owner's job on the stream before the recovery.
+  en::JobReport report;
+  EXPECT_FALSE(node.Job(
+      {}, [](pr::NativeStream) { return sc::JobResult::kQueued; }, "a later step", 0, {}, &report));
+  EXPECT_EQ(report.retirement, en::JobReport::Retirement::kNotSubmitted);
+  EXPECT_TRUE(node.InRequest(0));
+  EXPECT_TRUE(node.unproven());
+  auto recovered = node.RecoverAfterFence(owner);
+  ASSERT_TRUE(recovered) << recovered.error();
+  EXPECT_FALSE(node.InRequest(0));
+  EXPECT_FALSE(node.unproven());
+  auto torn = node.TearDown({});
+  ASSERT_TRUE(torn) << torn.error();
+}
 
-  work.ClearAfterFence();
-  EXPECT_FALSE(work.active());
+TEST(StepTransactionTest, MarksAndFlightsClearOnlyWithTheirStreamsFence) {
+  en::PagedNode node(
+      en::NodeSettings{.compute_streams = 2, .slots = 1, .slot_bytes = en::kPagedExtent});
+  ASSERT_TRUE(node.Open());
+  const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.Start(llmp::base::Bytes(fixed + 4 * en::kPagedExtent)));
+  node.Run();
+  class Owner final : public en::PagedModel {
+   public:
+    explicit Owner(std::uint32_t stream) : stream_(stream) {}
+    std::uint32_t stream() const override { return stream_; }
+    const llmp::catalog::Closure& fence_closure() const override { return closure_; }
+    std::vector<llmp::catalog::ExtentId> managed_extents() const override { return {}; }
+    en::Status Release() override { return {}; }
+    en::Status AcknowledgeFence(const en::FenceProof& proof) override {
+      if (proof.stream() != stream_) return std::unexpected("another stream's proof");
+      mark.Clear(proof);
+      flight.Clear(proof);
+      return {};
+    }
+    en::UnprovenMark mark;
+    en::RetainedFlight<int> flight;
 
-  int dummy = 42;
-  work.KeepPinned(&dummy);
-  EXPECT_TRUE(work.active());
-  EXPECT_EQ(work.kept_pinned(), 1u);
-
-  // Cleared after fence retains kept pinned allocations
-  work.ClearAfterFence();
-  EXPECT_TRUE(work.active());
-  EXPECT_EQ(work.kept_pinned(), 1u);
-
-  // Full clear drops kept pinned allocations
-  work.Clear();
-  EXPECT_FALSE(work.active());
-  EXPECT_EQ(work.kept_pinned(), 0u);
+   private:
+    std::uint32_t stream_;
+    llmp::catalog::Closure closure_;
+  };
+  Owner first(0), second(1);
+  for (auto* owner : {&first, &second}) {
+    owner->mark.Mark();
+    owner->flight.Retain(std::make_shared<int>(1));
+  }
+  EXPECT_TRUE(first.mark.active() && first.flight.held());
+  // A flight whose own completion proved its end goes without a fence.
+  en::RetainedFlight<int> retired;
+  retired.Retain(std::make_shared<int>(2));
+  retired.ReleaseRetired();
+  EXPECT_FALSE(retired.held());
+  // One stream's fence clears that stream's owner alone.
+  ASSERT_TRUE(node.RecoverAfterFence(first));
+  EXPECT_FALSE(first.mark.active());
+  EXPECT_FALSE(first.flight.held());
+  EXPECT_TRUE(second.mark.active());
+  EXPECT_TRUE(second.flight.held());
+  ASSERT_TRUE(node.RecoverAfterFence(second));
+  EXPECT_FALSE(second.mark.active());
+  EXPECT_FALSE(second.flight.held());
+  ASSERT_TRUE(node.TearDown({}));
 }
 
 TEST(StepTransactionTest, SupplementalJobReclaimsBeforeMaterializingSelectedExtents) {

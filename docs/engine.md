@@ -30,7 +30,7 @@ row tables (`ple_rows.h`), and the shared runners over step programs
 (`model_runner.h`, `staged_execution.h`, `step_runs.h`, `step_inputs.h`,
 `step_transaction.h`, `plan_cache.h`, `coverage.h`) with the wave composer
 (`wave_composer.h`), prefill orchestrator (`prefill.h`), decoding modes with
-any number of drafters (`decoding.h`, `draft_companions.h`),
+any number of drafters (`decoding.h`), the prompt wave (`prompt_wave.h`),
 and the component step source (`component_source.h`, `graph_plan.h`,
 `execution_contract.h`, `program_lifecycle.h`, `supplemental_run.h`). It reaches
 the device through the providers, the device runtime and the paging kernels
@@ -94,7 +94,6 @@ The module contains only shared engine code (no per-family code):
 | `copy_sink.h` | — | Output copy destination contracts |
 | `coverage.h` | `coverage.cc` | Tensor role and coverage checks |
 | `decoding.h` | `decoding.cc` | Decoding modes (`DecodingOrchestrator`): plain, sampled, speculative cascade/alternatives |
-| `draft_companions.h` | `draft_companions.cc` | Shared prompt wave execution and batching |
 | `execution_contract.h` | `execution_contract.cc` | Execution contract validation and lifecycle |
 | `expert_slab.h` | `expert_slab.cc` | Expert slab layout and pitch (`llmp_engine`) |
 | `graph_plan.h` | `graph_plan.cc` | Planned step graph binding and lowering |
@@ -109,6 +108,7 @@ The module contains only shared engine code (no per-family code):
 | `prefill.h` | `prefill.cc` | `PrefillOrchestrator`: chunking, joins and futures |
 | `prefill_lookahead.h` | — | Future shape prediction and lookahead groups |
 | `program_lifecycle.h` | `program_lifecycle.cc` | Step program lifecycle and resource bindings |
+| `prompt_wave.h` | `prompt_wave.cc` | The prompt wave (`RunPromptWave`): prefill, decode and scored target chunks, with prompt batching |
 | `request_cohort.h` | `request_cohort.cc` | Request slots, active sets, closures, fault isolation |
 | `runner_memory.h` | `runner_memory.cc` | Runner device memory and pinned staging |
 | `runner_owner.h` | `runner_owner.cc` | Node-retained paid runner root and authenticated retirement |
@@ -151,7 +151,7 @@ future has independent refusal and cleanup; the CPU callback publishes no future
 logical state or cursor. DeepSeek V4 and Qwen3.8 select two-stage CPU planning
 and independently prepare eligible fresh backing before the job, draining it
 after completion and before current publication. Qwen3.8 funds two target plus
-two MTP plans (`draft_companions.h`); its companion prediction uses post-success
+two MTP plans (`prompt_wave.h`); its drafter-plan prediction uses post-success
 pending state. [Actual controls and factors](experiments/ds-qwen-prefill-prediction/README.md).
 `PromptSession::NextPrefillHint` supplies the same checkpoint/scoring-aware
 descriptors to scalar and joined prefill after current funding. Each future
@@ -803,6 +803,32 @@ external private views refuse teardown before eviction or stream destruction.
 Dropping those views allows retry. A successful authenticated release retires
 the root. Destroying a node with unretired adopted resources fails before its
 providers are destroyed; the service already exits on unproven retirement.
+
+### Unproven work
+
+Work whose end cannot be proven (a lost fence, a read that stalled) follows
+one contract (`unproven_work.h`). The node owns a per-stream quarantine of the
+pinned buffers and storage rings it may still touch (`PagedNode::KeepPinned`,
+`RetireRing`): a buffer an unproven copy used (`LiveState::Copy`, which says so
+in its `CopyRetirement`) is quarantined on the copy's stream, and only a fence
+of that stream the node saw complete (`FenceStream`) frees it; an untagged one
+waits for teardown, which fences every compute and copy stream first. The
+reserved checkpoint staging an unproven copy took is reserved again once its
+fence has freed it. A request whose direct step's end is unproven stays open,
+with that step's count and lost fence, whatever is tried on its stream
+meanwhile, until a fence proves the step (`ProveDirectStep`). Every
+other owner keeps what that work may use in a typed retention: a flight
+(`RetainedFlight`: a runner's step transaction and routed flight, an image
+state's job) or a mark (`UnprovenMark`: a private batch, an image state). Each
+is cleared only with a `FenceProof`, which the node alone mints for the stream
+it fenced and hands to `PagedModel::AcknowledgeFence` (recovery) or
+`RetireAfterFence` (teardown); a flight whose own completion proved its end
+goes with `ReleaseRetired`. A row table's stalled reads are the exception: no
+stream fence proves a read, so the table refuses until its ring's completions
+have been harvested and discarded (`ModelRunner::SettleRowReads`), at its next
+step's planning or at the fence's acknowledgement. Each owner kind has a
+recover-then-serve test (direct step, runner, row table, prompt batch, staged
+image, LiveState).
 
 A producer-minted private execution view preserves the canonical registry,
 selection policy and numerical authority while owning distinct binding storage

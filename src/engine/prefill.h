@@ -74,7 +74,7 @@ struct PromptWork {
   // Rows into `tokens` no chunk crosses (a checkpoint's boundary); 0: none.
   std::uint32_t boundary = 0;
   // Full history through these prompt tokens, required by stages whose
-  // declared prompt companions replay earlier token/feature pairs.
+  // steps read their owners' histories (side-row lookups).
   std::span<const std::int32_t> history{};
 };
 

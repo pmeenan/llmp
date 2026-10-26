@@ -73,6 +73,9 @@ Status EngineImage::PrepareRequest(const ImageInput& input) {
   if (!execution_) return std::unexpected("image preparation before setup");
   if (auto idle = execution_->CheckRequestBoundary(); !idle) return idle;
   if (!prepare_request_) return std::unexpected("image source has no serving request preparation");
+  // The installed geometry's: a recovery may have installed a replacement
+  // whose ReplaceGeometry failed part way (StagedExecution::AcknowledgeFence).
+  if (const auto installed = execution_->request_layout()) layout_ = *installed;
   auto candidate = prepare_request_(input, layout_);
   if (!candidate) return std::unexpected(candidate.error());
   if (auto* request = std::get_if<ImageRequest>(&*candidate))

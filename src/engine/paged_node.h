@@ -438,14 +438,16 @@ class PagedModel {
 
  private:
   friend class PagedNode;
-  // Only the node calls this after real stream fences and before eviction.
-  // Host callback status, a caller boolean or a destructor cannot grant it.
-  virtual Status RetireAfterFence() { return {}; }
+  // Only the node calls this after real stream fences and before eviction,
+  // with the proof of its stream's fence (unproven_work.h). Host callback
+  // status, a caller boolean or a destructor cannot grant it.
+  virtual Status RetireAfterFence(const FenceProof& /*proof*/) { return {}; }
   // Only the node calls this, after a real fence of stream() outside
-  // teardown (RecoverAfterFence): the work an earlier failure left
-  // unproven has ended. The model stays in service: it drops what that
-  // work retained (its flights, its plans), so its next step is admitted.
-  virtual Status AcknowledgeFence() { return {}; }
+  // teardown (RecoverAfterFence), with its proof: the work an earlier
+  // failure left unproven has ended. The model stays in service: it clears
+  // every hold that fence proves (its flights, marks and plans, each with
+  // the proof), so its next step is admitted.
+  virtual Status AcknowledgeFence(const FenceProof& /*proof*/) { return {}; }
 };
 
 // Embedded in an adopted runner's paid root, so registration needs no second
@@ -678,13 +680,19 @@ class PagedNode {
   // idle state never starves it. TakeStaging returns it if it is at least
   // `bytes` and free (nullptr otherwise: the caller allocates its own);
   // ReturnStaging gives it back, or, `proven` false (a copy's completion
-  // unknown), keeps it out of use to the process's end.
+  // unknown), hands it to the quarantine; once a fence has freed it, the
+  // reservation is made again (FenceStream).
   Status ReserveStaging(std::uint64_t bytes);
   void* TakeStaging(std::uint64_t bytes);
   void ReturnStaging(void* pointer, bool proven);
   // Caller proves no access is in flight. Removes its staging extent.
   Status FreePinned(void* pointer);
-  // Unknown completion: retain the allocation until a stream fence or teardown.
+  // Unknown completion: the node's quarantine (unproven_work.h) takes an
+  // allocation of its own (from Pinned) out of use. Tagged with the stream
+  // whose work may still touch it, a fence of that stream (FenceStream)
+  // frees it; untagged, only teardown's fence of every stream does. A
+  // pointer the node does not own (already quarantined, or not its own)
+  // only marks the stream as holding unproven work until its fence.
   void KeepPinned(void* pointer, std::optional<std::uint32_t> stream = std::nullopt);
   // A model's own storage ring, at its end. With reads still in flight
   // (stalled ones, which may yet land), the ring and the pinned memory
@@ -692,12 +700,15 @@ class PagedNode {
   // destroyed nor freed, since only a read's completion retires its memory
   // (storage.h); returns true then. Otherwise the ring is destroyed.
   bool RetireRing(std::unique_ptr<providers::Storage> ring, std::span<void* const> landings);
-  // Pinned allocations RetireRing kept from Close's frees.
-  std::size_t kept_pinned() const noexcept { return unproven_.kept_pinned(); }
-  std::size_t unproven_storage_rings() const noexcept { return unproven_.unproven_storage_rings(); }
-  bool unproven() const noexcept { return unproven_.active(); }
-  NodeUnproven& unproven_work() noexcept { return unproven_; }
-  const NodeUnproven& unproven_work() const noexcept { return unproven_; }
+  // Pinned allocations quarantined (KeepPinned, RetireRing), and rings kept.
+  std::size_t kept_pinned() const noexcept { return quarantine_.size(); }
+  std::size_t unproven_storage_rings() const noexcept { return retired_rings_.size(); }
+  // Whether anything the node tracks is unproven: a request's step, a
+  // supplemental operation, or what the quarantine holds.
+  bool unproven() const noexcept;
+  // Whether `stream`'s quarantine holds anything a fence of it would free
+  // or clear (its tagged allocations, or a recorded unproven mark).
+  bool Quarantining(std::uint32_t stream) const noexcept;
 
   // Memory the node counts beside the catalog's extents (D-090 as amended
   // 2026-10-02): the models' plans and graphs (engine/plan_account.h
@@ -956,7 +967,7 @@ class PagedNode {
   Status RecoverAfterFence(PagedModel& model);
   bool InRequest(std::uint32_t stream) const { return requests_.contains(stream); }
   bool HasUnprovenWork(std::uint32_t stream) const noexcept {
-    return InRequest(stream) || unproven_.HasStream(stream);
+    return InRequest(stream) || Quarantining(stream);
   }
   // `body` run as one request on `stream` over `closure` (BeginRequest,
   // then EndRequest whatever `body` returned): its failure, else the end's.
@@ -1069,11 +1080,15 @@ class PagedNode {
     // Of those, the direct steps whose external work (each counted on the
     // channel) was never seen to end, which a later stream fence can prove
     // (ProveDirectStep); a supplemental operation's, which its retirement
-    // proves (FinishSupplemental); and other work's (a scheduled step's),
-    // which nothing short of teardown does.
+    // proves (FinishSupplemental); and other work's (a scheduled step's,
+    // whose operation the device lane quarantined, faulting the scheduler),
+    // which nothing short of a restart does (FenceStream refuses it).
     std::uint32_t direct_unproven = 0;
     bool supplemental_unproven = false;
     bool other_unproven = false;
+    // The fences of those direct steps, recorded but never seen complete:
+    // released once a later fence proves them (ProveDirectStep).
+    std::vector<providers::FenceId> lost_fences;
   };
   Status ApplyRequestReplacement(OpenRequest& open, catalog::Closure& next,
                                  scheduler::Scheduler::LeaseReplacementStorage* prepared,
@@ -1110,7 +1125,8 @@ class PagedNode {
   // cancelled, so EndRequest releases its lease.
   Status ProveDirectStep(std::uint32_t stream, OpenRequest& open);
   // A request that can take no further step: awaited and erased, with the
-  // error `why`.
+  // error `why`; one whose work is unproven is kept (as EndRequest keeps
+  // it), for FenceStream to prove and end.
   Status Ended(std::uint32_t stream, std::string_view what, std::string_view why);
   void Signal(std::uint64_t request);
   // Ends every open request holding any of `extents`; how many.
@@ -1155,7 +1171,23 @@ class PagedNode {
   Status GrowPageable(Mapped& mapped, std::uint64_t bytes);
   std::shared_ptr<StagingLifetime> staging_lifetime_ = std::make_shared<StagingLifetime>();
   std::vector<void*> pinned_;
-  NodeUnproven unproven_;
+  // The quarantine (KeepPinned): allocations of pinned_ taken out of use,
+  // each with the stream whose fence frees it (none: teardown's), or a
+  // ring's landing (never freed); the streams marked unproven; the rings
+  // RetireRing kept (never destroyed).
+  struct Quarantined {
+    void* pointer = nullptr;
+    std::optional<std::uint32_t> stream;
+    bool ring = false;
+  };
+  std::vector<Quarantined> quarantine_;
+  std::vector<std::uint32_t> unproven_streams_;
+  std::vector<providers::Storage*> retired_rings_;
+  // Frees what the quarantine holds for `stream` (none: every stream's,
+  // untagged included, at teardown) now that a fence proved its end, and
+  // clears the stream's mark; what cannot be freed stays quarantined, and
+  // every failure is returned. Rings' landings are never freed.
+  Status ReleaseQuarantine(std::optional<std::uint32_t> stream);
   Status ReleaseQuarantinedPinned(void* pointer);
 
   // The host memory charged beside the catalog (ChargeHost).
@@ -1188,10 +1220,15 @@ class PagedNode {
   // it fits), on the scheduler's thread.
   std::uint64_t Shortfall(std::uint64_t bytes) const;
 
-  // ReserveStaging's buffer.
+  // ReserveStaging's buffer; and one an unproven copy took out of use
+  // (ReturnStaging), whose reservation RestoreStaging makes again once a
+  // fence has freed it.
   void* staging_ = nullptr;
   std::uint64_t staging_bytes_ = 0;
   bool staging_taken_ = false;
+  void* staging_lost_ = nullptr;
+  std::uint64_t staging_owed_ = 0;
+  void RestoreStaging();
 
   // Before the scheduler, so it outlives the programs that refer to it.
   std::map<std::uint32_t, std::unique_ptr<OpenRequest>> requests_;  // by stream

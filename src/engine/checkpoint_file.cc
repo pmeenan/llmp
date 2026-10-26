@@ -38,6 +38,8 @@ class Staging {
   Staging& operator=(Staging&&) = delete;
   ~Staging() {
     if (base_ != nullptr) {
+      // Unknown: the copier quarantined it on its stream already, and then
+      // these do nothing more; otherwise the node keeps it to its teardown.
       if (reserved_) {
         node_.ReturnStaging(base_, !unknown_);
       } else if (unknown_) {
@@ -255,8 +257,9 @@ std::expected<CheckpointFile, CheckpointFailure> CheckpointFile::Capture(
     if (go_on && !go_on()) {
       return Failure("checkpoint capture cancelled", false, true);
     }
-    if (auto copied = copy(staging.memory(), std::span(&range, 1)); !copied) {
-      staging.Unknown();
+    LiveState::CopyRetirement retirement = LiveState::CopyRetirement::kProven;
+    if (auto copied = copy(staging.memory(), std::span(&range, 1), &retirement); !copied) {
+      if (retirement == LiveState::CopyRetirement::kUnproven) staging.Unknown();
       return Failure(copied.error(), true);
     }
     const std::uint64_t transfer = support::Round(range.bytes, kAlignment);
@@ -304,8 +307,9 @@ std::expected<void, CheckpointFailure> CheckpointFile::Restore(PagedNode& node,
     if (!read) {
       return Failure("reading checkpoint: " + std::system_category().message(read.error()), true);
     }
-    if (auto copied = copy(staging.memory(), std::span(&range, 1)); !copied) {
-      staging.Unknown();
+    LiveState::CopyRetirement retirement = LiveState::CopyRetirement::kProven;
+    if (auto copied = copy(staging.memory(), std::span(&range, 1), &retirement); !copied) {
+      if (retirement == LiveState::CopyRetirement::kUnproven) staging.Unknown();
       return Failure(copied.error(), true);
     }
     at += transfer;

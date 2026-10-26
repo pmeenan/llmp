@@ -33,6 +33,9 @@ namespace sc = scheduler;
 using step_inputs::WriteComputed;
 using step_inputs::WriteRows;
 using support::Error;
+// A prepared batch step's host inputs. A history counts by its length: what
+// the step reads of it (its side rows) is derived again and compared
+// (PreparedInputsMatch), never hashed whole.
 base::Sha256Digest HostInputIdentity(const StepRequest& request) {
   base::Sha256 hash;
   const auto bytes = [&](std::span<const std::byte> values) {
@@ -45,7 +48,8 @@ base::Sha256Digest HostInputIdentity(const StepRequest& request) {
   for (const auto& work : request.work) {
     bytes(std::as_bytes(work.tokens));
     bytes(work.bytes);
-    bytes(std::as_bytes(work.history));
+    const auto history = std::uint64_t{work.history.size()};
+    hash.Update(std::as_bytes(std::span(&history, 1)));
     const std::array<std::uint32_t, 2> feature{static_cast<std::uint32_t>(work.feature.kind),
                                                work.feature.position};
     bytes(std::as_bytes(std::span(feature)));
@@ -63,7 +67,7 @@ std::unexpected<StepRefusal> Refused(std::string what, bool clean = true,
 }  // namespace
 
 std::expected<void, StepRefusal> StepTransaction::Validate(const StepRequest& request) const {
-  if (runner_.unproven_.has_routed())
+  if (runner_.routed_flight_.held())
     return Refused("a routed step retains unproven effects", false);
   if (!runner_.bound_ || runner_.released_ || runner_.closing_)
     return Refused("the model runner is not bound");
@@ -300,7 +304,49 @@ struct StepTransaction::Frame {
 };
 
 bool StepTransaction::PreparedInputsMatch(const StepRequest& request) const {
-  return prepared_ && prepared_->host_inputs == HostInputIdentity(request);
+  if (!prepared_ || prepared_->host_inputs != HostInputIdentity(request)) return false;
+  if (!request.side_rows.empty() || prepared_->entry == nullptr) return true;
+  const auto& inputs = prepared_->entry->planned->program->inputs();
+  std::vector<std::int32_t> ids;
+  for (std::size_t index = 0; index < inputs.size() && index < prepared_->side_rows.size();
+       ++index) {
+    if (inputs[index].kind != kn::InputKind::kSideRows) continue;
+    if (!DeriveSideRows(request, inputs[index], ids) || ids != prepared_->side_rows[index])
+      return false;
+  }
+  return true;
+}
+
+std::expected<void, StepRefusal> StepTransaction::DeriveSideRows(
+    const StepRequest& request, const kn::InputSlot& input, std::vector<std::int32_t>& ids) const {
+  const auto& shape = request.shape;
+  std::uint64_t rows = 0;
+  for (std::size_t i = 0; i < shape.segments.size(); ++i)
+    if (input.segment == ir::kJoinedSegment || input.segment == i) rows += shape.segments[i].rows;
+  if (rows == 0 || input.bytes % (rows * sizeof(std::int32_t)) != 0)
+    return Refused("side rows have no whole number of heads");
+  const auto heads = input.bytes / (rows * sizeof(std::int32_t));
+  if (heads == 0) return Refused("side rows have no heads");
+  ids.resize(input.bytes / sizeof(std::int32_t));
+  std::size_t at = 0;
+  for (std::size_t i = 0; i < shape.segments.size(); ++i) {
+    if (input.segment != ir::kJoinedSegment && input.segment != i) continue;
+    const auto& segment = shape.segments[i];
+    const auto& work = request.work[i];
+    const std::uint64_t token_first = std::uint64_t{segment.past};
+    if (token_first > work.history.size() || segment.rows > work.history.size() - token_first ||
+        work.tokens.size() != segment.rows ||
+        !std::ranges::equal(work.tokens, work.history.subspan(token_first, segment.rows)))
+      return Refused("side rows require the owner's complete matching token history");
+    for (std::uint32_t row = 0; row < segment.rows; ++row) {
+      auto derived = runner_.source_->SideRows(shape.stage, input.component, work.history,
+                                               static_cast<std::uint32_t>(token_first + row),
+                                               std::span(ids).subspan(at, heads));
+      if (!derived) return Refused(derived.error());
+      at += heads;
+    }
+  }
+  return {};
 }
 
 StepTransaction::StepTransaction(ModelRunner& runner) : runner_(runner) {}
@@ -649,34 +695,8 @@ std::expected<void, StepRefusal> StepTransaction::PlanRows(Frame& frame) {
       if (input.bytes != request.side_rows.size_bytes())
         return Refused("the side rows must fill their slot");
       ids.assign(request.side_rows.begin(), request.side_rows.end());
-    } else {
-      std::uint64_t rows = 0;
-      for (std::size_t i = 0; i < shape.segments.size(); ++i)
-        if (input.segment == ir::kJoinedSegment || input.segment == i)
-          rows += shape.segments[i].rows;
-      if (rows == 0 || input.bytes % (rows * sizeof(std::int32_t)) != 0)
-        return Refused("side rows have no whole number of heads");
-      const auto heads = input.bytes / (rows * sizeof(std::int32_t));
-      if (heads == 0) return Refused("side rows have no heads");
-      ids.resize(input.bytes / sizeof(std::int32_t));
-      std::size_t at = 0;
-      for (std::size_t i = 0; i < shape.segments.size(); ++i) {
-        if (input.segment != ir::kJoinedSegment && input.segment != i) continue;
-        const auto& segment = shape.segments[i];
-        const auto& work = request.work[i];
-        const std::uint64_t token_first = std::uint64_t{segment.past};
-        if (token_first > work.history.size() || segment.rows > work.history.size() - token_first ||
-            work.tokens.size() != segment.rows ||
-            !std::ranges::equal(work.tokens, work.history.subspan(token_first, segment.rows)))
-          return Refused("side rows require the owner's complete matching token history");
-        for (std::uint32_t row = 0; row < segment.rows; ++row) {
-          auto derived = runner_.source_->SideRows(shape.stage, input.component, work.history,
-                                                   static_cast<std::uint32_t>(token_first + row),
-                                                   std::span(ids).subspan(at, heads));
-          if (!derived) return Refused(derived.error());
-          at += heads;
-        }
-      }
+    } else if (auto derived = DeriveSideRows(request, input, ids); !derived) {
+      return derived;
     }
     if (std::ranges::any_of(ids, [](const auto id) { return id < 0; }))
       return Refused("a side row is negative");
@@ -684,7 +704,9 @@ std::expected<void, StepRefusal> StepTransaction::PlanRows(Frame& frame) {
       if (table->config.weight.stage != shape.stage ||
           table->config.weight.component != input.component)
         continue;
-      if (table->unproven.active())
+      // Stalled reads of an earlier step are harvested first: once none is
+      // left in flight, the ring and its landing serve again.
+      if (!ModelRunner::SettleRowReads(*table))
         return Refused("row-table reads have unproven completion", false);
       auto plan = PlanPleRows(table->table, ids, PleLandingBound(table->capacity), table->capacity);
       if (!plan) return Refused(plan.error());
@@ -1300,12 +1322,21 @@ std::expected<void, StepRefusal> StepTransaction::PrepareState(Frame& frame) {
     if (fd < 0)
       return Refused("a row table's shard is not open",
                      transaction.FinishPreparations().has_value());
-    if (auto loaded = ReadPleRows(*table.storage, fd, read.plan, table.landing); !loaded) {
+    // A prepared batch step planned its rows at preparation: an earlier
+    // step's reads that stalled since must be harvested before this ring
+    // takes new ones (their tokens restart at 0, as these would).
+    if (!ModelRunner::SettleRowReads(table)) {
+      (void)transaction.FinishPreparations();
+      return Refused("row-table reads have unproven completion", false);
+    }
+    if (auto loaded = ReadPleRows(*table.storage, fd, read.plan, table.landing,
+                                  runner_.config_.row_read_stall);
+        !loaded) {
       if (table.storage->in_flight() != 0) {
-        table.unproven.Mark();
+        table.reads_unproven = true;
       }
       const bool drained = transaction.FinishPreparations().has_value();
-      return Refused(loaded.error(), drained && !table.unproven.active());
+      return Refused(loaded.error(), drained && !table.reads_unproven);
     }
     std::ranges::copy(read.plan.sources, table.sources);
     *table.count = static_cast<std::uint32_t>(read.plan.sources.size());
@@ -1465,7 +1496,7 @@ void StepTransaction::Queue(Frame& frame) {
   // erase positive completion of this first job's ordered prefix.
   frame.prefix_retirement = job_report.retirement;
   if (program.routed() && posted && failure.empty() && !frame.execution.launch()->faulted()) {
-    if (auto continued = runner_.ContinueRouted(report.path, runner_.unproven_.step());
+    if (auto continued = runner_.ContinueRouted(report.path, runner_.step_flight_.get());
         !continued) {
       failure = continued.error();
       unknown = true;  // prefix effects exist; no completion inferred from refusal

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "engine/draft_companions.h"
+#include "engine/prompt_wave.h"
 
 #include <algorithm>
 #include <vector>

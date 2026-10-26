@@ -867,6 +867,7 @@ LiveState::Status LiveState::Copy(PagedNode& node, const catalog::Closure& fence
   if (host == nullptr) {
     return Error("a state snapshot has no host buffer");
   }
+  JobReport report;
   auto posted = node.Job(
       fence,
       [&, host, to_host](providers::NativeStream native) {
@@ -888,8 +889,12 @@ LiveState::Status LiveState::Copy(PagedNode& node, const catalog::Closure& fence
         }
         return sc::JobResult::kQueued;
       },
-      to_host ? "saving used conversation state" : "restoring used conversation state", stream);
-  if (!posted) {
+      to_host ? "saving used conversation state" : "restoring used conversation state", stream, {},
+      &report);
+  // Refused before anything was submitted, or a failure whose fence was
+  // seen: nothing can reach the buffer any more, which stays the caller's.
+  // Otherwise the node quarantines it until a fence of this stream.
+  if (!posted && report.retirement == JobReport::Retirement::kUnproven) {
     node.KeepPinned(host, stream);
     if (retirement != nullptr) {
       *retirement = CopyRetirement::kUnproven;
@@ -1133,87 +1138,6 @@ LiveState::Status LiveState::Clear(PagedNode& node, const catalog::Closure& fenc
   return {};
 }
 
-void* LiveState::HostCopy(PagedNode& node, std::uint64_t bytes) {
-  if (host_copy_unproven_.active()) {
-    return nullptr;
-  }
-  bytes = bytes == 0 ? total_bytes() : bytes;
-  bytes = std::max<std::uint64_t>(bytes, 256);
-  if (host_copy_ != nullptr && host_capacity_ >= bytes) {
-    return host_copy_;
-  }
-  if (host_copy_ != nullptr) {
-    if (!node.FreePinned(host_copy_)) {
-      return nullptr;
-    }
-    host_copy_ = nullptr;
-    host_capacity_ = 0;
-  }
-  std::vector<ExtentId> staging;
-  auto allocated = node.Pinned(bytes, kShared, staging);
-  if (!allocated) {
-    return nullptr;
-  }
-  host_node_ = &node;
-  host_copy_ = *allocated;
-  host_capacity_ = bytes;
-  return host_copy_;
-}
-
-LiveState::Status LiveState::Read(PagedNode& node, const catalog::Closure& fence,
-                                  std::uint32_t stream, std::string_view what,
-                                  std::span<std::vector<std::byte>* const> out,
-                                  CopyRetirement* retirement) {
-  if (retirement != nullptr) {
-    *retirement = CopyRetirement::kProven;
-  }
-  if (auto finished = FinishPreparation(); !finished) return finished;
-  const std::vector<Range> ranges = used_ranges();
-  auto* host = static_cast<std::byte*>(HostCopy(node, std::max<std::uint64_t>(used_bytes(), 256)));
-  if (host == nullptr) {
-    return Error("pinned host memory for the state's copy");
-  }
-  std::vector<std::pair<std::uint64_t, std::uint64_t>> reads;  // base, bytes
-  reads.reserve(ranges.size());
-  for (const Range& range : ranges) {
-    reads.emplace_back(base(range.region) + range.offset, range.bytes);
-  }
-  auto posted = node.Job(
-      fence,
-      [&reads, host](providers::NativeStream native) {
-        std::uint64_t at = 0;
-        for (const auto& [base, bytes] : reads) {
-          if (bytes != 0 && !providers::CopyAsync(native, host + at, Pointer(base), bytes,
-                                                  providers::CopyKind::kDeviceToHost)
-                                 .ok()) {
-            return sc::JobResult::kUnknown;
-          }
-          at += bytes;
-        }
-        return sc::JobResult::kQueued;
-      },
-      what, stream);
-  if (!posted) {
-    HostCopyUnproven(stream);
-    if (retirement != nullptr) {
-      *retirement = CopyRetirement::kUnproven;
-    }
-    return posted;
-  }
-  for (std::size_t i = 0; i < out.size(); ++i) {
-    out[i]->assign(static_cast<std::size_t>(bytes(i)), std::byte{0});
-  }
-  std::uint64_t at = 0;
-  for (const Range& range : ranges) {
-    if (range.region < out.size()) {
-      std::copy_n(host + at, static_cast<std::size_t>(range.bytes),
-                  out[range.region]->data() + range.offset);
-    }
-    at += range.bytes;
-  }
-  return {};
-}
-
 bool LiveState::LiftIfPreserved(PagedNode& node) {
   if (!quarantined_) {
     return true;
@@ -1432,12 +1356,6 @@ void LiveState::Release(providers::VmmProvider& memory, std::vector<std::string>
       problems.push_back(std::format("{} could not be released", r.mapped.name));
     }
   }
-  if (host_copy_unproven_.active()) {
-    problems.emplace_back("the state's pinned copy retained until exit: completion unproven");
-  }
-  host_copy_ = nullptr;
-  host_node_ = nullptr;
-  host_capacity_ = 0;
   if (spill_fd_ >= 0) {
     // An unnamed file goes with it; a named one stays for the next process
     // to adopt or empty (D-105).

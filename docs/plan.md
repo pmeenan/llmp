@@ -891,9 +891,11 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
 - [ ] **F3b Tool-call hot path:** device greedy and verify kept when the mask is
       the identity, lazy and class-based masks, template-derived openers, every
       declared tool rendered.
-- [ ] **F4 Engine recovery:** one fence-proof unproven-work contract with
-      recover-then-serve tests per owner, MTP drafting after plain steps, step
-      failure classification, image fence acknowledgement, history copies.
+- [x] **F4 Engine recovery:** one fence-proof unproven-work contract with
+      recover-then-serve tests per owner, MTP drafting after plain steps,
+      image fence acknowledgement and request layout, row-read settling,
+      checkpoint staging re-reserved after a fence, history copies (the
+      generated-input classification item was superseded by F6).
 - [ ] **F5 Serving:** output delivery as host-only state, one cohort decision
       function, kept-record commit by descriptor, clock-skew and lock-file edges.
 - [x] **F6 Comparison out of production:** exact-site recipe comparison moved to

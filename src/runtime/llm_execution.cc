@@ -9,7 +9,7 @@
 #include <utility>
 
 #include "base/check.h"
-#include "engine/draft_companions.h"
+#include "engine/prompt_wave.h"
 #include "model/state_contract.h"
 #include "runtime/model_settings.h"
 #include "runtime/serving.h"
@@ -445,15 +445,16 @@ std::expected<std::size_t, std::string> Llm::HeadRows(std::span<const std::byte>
   return outputs.size() / row;
 }
 
-std::expected<std::vector<float>, std::string> Llm::LogitsRow(std::span<const std::byte> outputs,
-                                                              std::size_t row) const {
+std::expected<std::span<const float>, std::string> Llm::LogitsRow(
+    std::span<const std::byte> outputs, std::size_t row) const {
   auto rows = HeadRows(outputs);
   if (!rows) return std::unexpected(rows.error());
   if (row >= *rows) return Error(std::format("{}'s step returned no row {}", name_, row));
-  std::vector<float> logits(logit_width_);
-  std::memcpy(logits.data(), outputs.data() + (row * logits.size() * sizeof(float)),
-              logits.size() * sizeof(float));
-  return logits;
+  const std::size_t width = logit_width_;
+  const std::byte* at = outputs.data() + (row * width * sizeof(float));
+  if (reinterpret_cast<std::uintptr_t>(at) % alignof(float) != 0)
+    return Error(std::format("{}'s step returned misaligned logits", name_));
+  return std::span(reinterpret_cast<const float*>(at), width);
 }
 
 // ------------------------------------------------------------- decoding
@@ -514,8 +515,12 @@ en::DecodingPolicy Llm::Policy() {
       for (const auto token : tokens)
         if (token < 0 || std::cmp_greater_equal(token, logit_width_))
           return Error("a verify returned a token outside the target vocabulary");
+      // As the logits judge: kept drafts stop at the first natural stop
+      // token, which is then the verdict's last token, no row after it kept.
+      const auto* session = (*branch)->generation_session_;
       std::size_t accepted = 0;
-      while (accepted + 1 < verified.size() && tokens[accepted] == verified[accepted + 1])
+      while (accepted + 1 < verified.size() && tokens[accepted] == verified[accepted + 1] &&
+             !(session && session->IsStop(verified[accepted + 1], nullptr)))
         ++accepted;
       en::Verdict verdict{.keep = static_cast<std::uint32_t>(accepted + 1), .tokens = {}};
       verdict.tokens.assign(verified.begin() + 1,
@@ -554,7 +559,7 @@ en::DecodingPolicy Llm::Policy() {
             }
             if (plan->tokens.size() != 1 || plan->tokens.front() != verified[m + 1]) {
               token = verified[m + 1];
-              if (want_rows_.at(slot)) kept_rows.push_back(std::move(*row));
+              if (want_rows_.at(slot)) kept_rows.emplace_back(row->begin(), row->end());
               next = token;
               break;
             }
@@ -576,7 +581,7 @@ en::DecodingPolicy Llm::Policy() {
         if (!chosen) return std::unexpected(chosen.error());
         token = *chosen;
       }
-      if (want_rows_.at(slot)) kept_rows.push_back(std::move(*row));
+      if (want_rows_.at(slot)) kept_rows.emplace_back(row->begin(), row->end());
       if (token >= 0) {
         next = token;
         break;
@@ -673,7 +678,7 @@ void Llm::RunPlain(std::span<PreparedGeneration> units) {
             unit.anchor_processed = true;
             break;
           }
-          unit.logits.push_back(std::move(*scored));
+          unit.logits.emplace_back(scored->begin(), scored->end());
         }
         if (!unit.result) continue;
       }
@@ -684,7 +689,7 @@ void Llm::RunPlain(std::span<PreparedGeneration> units) {
         unit.anchor_processed = true;
         continue;
       }
-      unit.row = std::move(*row);
+      unit.row.assign(row->begin(), row->end());
     }
     unit.result = {};
   }
@@ -805,8 +810,9 @@ Status Llm::RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) {
          wave_mode_->Choose(width, sampled) == execution::AdaptiveWaveMode::Mode::kPlain) ||
         (prepared.size() == 1 && prepared[0].step.left == 1)) {
       // Sessions still consume a speculative result, but this selected form
-      // commits one target row. RunPlain retains the ordinary companion/tap
-      // writes; no draft state is substituted or copied from another owner.
+      // commits one target row. Its target step writes the drafters' taps as
+      // any does, and their next catch-up starts from what the taps hold; no
+      // draft state is substituted or copied from another owner.
       RunPlain(prepared);
       for (auto& unit : prepared) {
         if (!unit.result) continue;
@@ -1057,7 +1063,7 @@ Status Llm::RunPrefill(std::span<PreparedPrefill> prepared) {
         unit.result = Error(row.error());
         continue;
       }
-      if (unit.logits) *unit.logits = std::move(*row);
+      if (unit.logits) unit.logits->assign(row->begin(), row->end());
     } else if (unit.logits) {
       unit.logits->clear();
     }
@@ -1164,8 +1170,8 @@ Status Llm::RunPreparedPrefillWave(std::span<PreparedPrefill> prepared) {
     return RunPrefill(prepared);
   auto& unit = prepared[0];
   const auto original = unit.all;
-  // This only chooses a candidate; exact selected target/companion resources
-  // and all results still go through complete-batch admission before progress.
+  // This only chooses a candidate; the exact selected target resources and
+  // all results still go through complete-batch admission before progress.
   // A head row needs device output, pinned DMA and immutable host publication.
   const auto free = node_ref_.FreeBytes();
   if (!free) {
@@ -1381,9 +1387,10 @@ std::vector<en::LiveState::Range> Llm::UsedStateRangesFor(const Branch& branch) 
 }
 
 Status Llm::SaveUsedStateFor(Branch& branch, void* host,
-                             std::span<const en::LiveState::Range> ranges) {
+                             std::span<const en::LiveState::Range> ranges,
+                             en::LiveState::CopyRetirement* retirement) {
   if (auto built = Built(); !built) return built;
-  return runner_->slots().CopyState(Slot(branch), host, ranges, /*to_host=*/true);
+  return runner_->slots().CopyState(Slot(branch), host, ranges, /*to_host=*/true, retirement);
 }
 
 std::expected<std::vector<en::LiveState::Range>, std::string> Llm::CheckpointRangesFor(
@@ -1397,9 +1404,10 @@ std::expected<std::vector<en::LiveState::Range>, std::string> Llm::CheckpointRan
 }
 
 Status Llm::CopyCheckpointStateFor(Branch& branch, void* host,
-                                   std::span<const en::LiveState::Range> ranges, bool to_host) {
+                                   std::span<const en::LiveState::Range> ranges, bool to_host,
+                                   en::LiveState::CopyRetirement* retirement) {
   if (auto built = Built(); !built) return built;
-  return runner_->slots().CopyState(Slot(branch), host, ranges, to_host);
+  return runner_->slots().CopyState(Slot(branch), host, ranges, to_host, retirement);
 }
 
 Status Llm::CheckCheckpointMetadataFor(const Branch& /*branch*/, std::uint32_t position,
@@ -1432,13 +1440,15 @@ Status Llm::CompletePositionRestoreFor(Branch& branch, std::uint32_t position) {
 
 Status Llm::RestoreSnapshotFor(Branch& branch, void* host,
                                std::span<const en::LiveState::Range> ranges, std::uint32_t cursor,
-                               std::string_view layout) {
+                               std::string_view layout, en::LiveState::CopyRetirement* retirement) {
+  if (retirement != nullptr) *retirement = en::LiveState::CopyRetirement::kProven;
   // The authenticated capture names its original layout.
   if (auto prepared = PreparePositionRestoreFor(branch, cursor, cursor, ranges, layout);
       !prepared) {
     return prepared;
   }
-  if (auto copied = CopyCheckpointStateFor(branch, host, ranges, /*to_host=*/false); !copied) {
+  if (auto copied = CopyCheckpointStateFor(branch, host, ranges, /*to_host=*/false, retirement);
+      !copied) {
     return copied;
   }
   return CompletePositionRestoreFor(branch, cursor);

@@ -123,14 +123,15 @@ Status PromptBatch::Data::Close() {
   node.RetireModelRoot(registered);
   return {};
 }
-Status PromptBatch::Data::RetireAfterFence() {
+Status PromptBatch::Data::RetireAfterFence(const FenceProof& proof) {
   // Called only by the node after actual stream fences. It can now break a
   // retained flight cycle; a public capability's Close cannot claim this fact.
   if (closed) return {};
   if (owner) {
-    owner->unproven_.ClearAfterFence();
+    owner->step_flight_.Clear(proof);
+    owner->routed_flight_.Clear(proof);
   }
-  unproven.ClearAfterFence();
+  unproven.Clear(proof);
   pending = 0;
   return Close();
 }

@@ -1926,13 +1926,17 @@ TEST_F(DecodingTest, CompletePassScheduleTruncatesOnlyTheVerifyAndDoesNotTeachTa
   EXPECT_EQ(observations.back(), (std::tuple{2U, 3U, true}));
 }
 
-TEST_F(DecodingTest, CompletePassScheduleRefusesContextTailBeforeEffects) {
+// Near the context's end a complete pass schedule shrinks to the rows left
+// (E8), rather than refusing the unit, and teaches nothing.
+TEST_F(DecodingTest, CompletePassScheduleShrinksAtTheContextTail) {
   auto spec = Mtp(3);
   spec.draft_before_limit = true;
   auto policy = Policy();
   std::uint32_t observations = 0;
-  policy.observe = [&](std::uint32_t, std::size_t, std::uint32_t, std::uint32_t, bool) {
+  bool taught = false;
+  policy.observe = [&](std::uint32_t, std::size_t, std::uint32_t, std::uint32_t, bool complete) {
     ++observations;
+    taught = taught || complete;
   };
   auto decoding =
       Make({.kind = en::DecodingMode::Kind::kSpeculative, .drafters = {spec}}, std::move(policy));
@@ -1962,18 +1966,33 @@ TEST_F(DecodingTest, CompletePassScheduleRefusesContextTailBeforeEffects) {
   }
   history_[0].push_back(Truth(kContext - 2));
   decoding.Reset(0);
-  const auto queued = source_->queued();
-  const auto executed = source_->executed();
   const auto tail = Unit(decoding, {0}, 8);
-  ASSERT_TRUE(tail.outcomes[0].refusal);
-  EXPECT_EQ(tail.outcomes[0].refusal->what,
-            "the requested draft depth exceeds its declared bounds");
-  EXPECT_EQ(tail.steps, 0U);
-  EXPECT_TRUE(tail.outcomes[0].drafts.empty());
-  EXPECT_EQ(runner_->slots().positions(0), kContext - 2);
-  EXPECT_EQ(source_->queued(), queued);
-  EXPECT_EQ(source_->executed(), executed);
-  EXPECT_EQ(observations, 0U);
+  ASSERT_FALSE(tail.outcomes[0].refusal) << tail.outcomes[0].refusal->what;
+  ASSERT_EQ(tail.outcomes[0].drafts.size(), 1U);
+  EXPECT_EQ(tail.outcomes[0].drafts[0].depth, 2U);  // the two rows left, not 3
+  EXPECT_EQ(tail.outcomes[0].drafts[0].steps, 2U);
+  EXPECT_EQ(tail.outcomes[0].drafts[0].proposed, 2U);
+  EXPECT_EQ(verified_[0].size(), 2U);  // the anchor and the one draft that fits
+  EXPECT_EQ(runner_->slots().positions(0), kContext);
+  EXPECT_EQ(observations, 1U);
+  EXPECT_FALSE(taught);
+}
+
+// A full-block verify holds every proposal of its block even past what the
+// reply may still emit; its judge sees only the rows within `left` (E7).
+TEST_F(DecodingTest, AFullBlockVerifyJudgesOnlyTheRowsTheReplyMayEmit) {
+  auto spec = Block(3);
+  spec.draft_before_limit = true;
+  auto decoding =
+      Make({.kind = en::DecodingMode::Kind::kSpeculative, .drafters = {spec}}, Policy());
+  const std::array<std::uint32_t, 1> prompt{40};
+  Prefill(prompt, &decoding);
+  const auto tail = Unit(decoding, {0}, 2);
+  ASSERT_FALSE(tail.outcomes[0].refusal) << tail.outcomes[0].refusal->what;
+  EXPECT_EQ(tail.outcomes[0].proposed.size(), 3U);  // the whole block verified
+  EXPECT_EQ(verified_[0].size(), 2U);               // only `left` rows judged
+  EXPECT_LE(tail.outcomes[0].kept, 2U);
+  EXPECT_LE(tail.outcomes[0].tokens.size(), 2U);
 }
 
 TEST_F(DecodingTest, CompletePassScheduleRefusesMultiDrafterDeclaration) {

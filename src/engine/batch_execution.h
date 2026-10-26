@@ -83,14 +83,15 @@ struct PromptBatch::Data final : kernels::ResourceDependency, PagedModel {
   std::byte* pinned = nullptr;
   bool private_resources = true, owns_request = false, closing = false, closed = false,
        published = false;
-  UnprovenWork unproven;
+  // A batch step's end unproven (unproven_work.h): cleared by its fence.
+  UnprovenMark unproven;
 
  private:
   // This callback is inaccessible as a caller-asserted drain override.
-  Status RetireAfterFence() override;
+  Status RetireAfterFence(const FenceProof& proof) override;
   // A recovery's fence (PagedNode::RecoverAfterFence) retires it the same
   // way: the batch closes, its runner stays in service.
-  Status AcknowledgeFence() override { return RetireAfterFence(); }
+  Status AcknowledgeFence(const FenceProof& proof) override { return RetireAfterFence(proof); }
 };
 }  // namespace llmp::engine
 #endif  // LLMP_ENGINE_BATCH_EXECUTION_H_

@@ -11,6 +11,7 @@
 #include <memory>
 #include <span>
 #include <utility>
+#include <vector>
 
 #include "engine/model_runner.h"
 
@@ -68,6 +69,11 @@ class StepTransaction {
   enum class Retirement : std::uint8_t { kUnused, kQueued, kRetired, kUnproven };
   explicit StepTransaction(ModelRunner& runner);
   bool PreparedInputsMatch(const StepRequest& request) const;
+  // The side-table rows `input` reads for `request`'s rows, derived from
+  // each owner's token history (what a step reads of its histories).
+  std::expected<void, StepRefusal> DeriveSideRows(const StepRequest& request,
+                                                  const kernels::InputSlot& input,
+                                                  std::vector<std::int32_t>& ids) const;
   std::expected<void, StepRefusal> Validate(const StepRequest& request) const;
   std::expected<void, StepRefusal> ValidateAuthorization(
       const StepRequest& request, std::span<const StepAuthorization> authorization) const;

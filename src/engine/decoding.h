@@ -28,7 +28,10 @@
 //   (the verify's first row after a verify), so its first pass catches up
 //   the rows the last verify kept. One further behind than its chunk bound
 //   (an alternative not chosen for a while) catches up its last chunk's
-//   rows only.
+//   rows only, and one behind what the target's tap still holds (a plain
+//   step since: a forced or certain span, a plain wave) from the oldest
+//   feature the tap holds; the rows before stay stale, which costs
+//   acceptance only.
 // - A drafter that reads the target's state (`borrows_target`: Gemma4's
 //   assistant reading the target's KV) borrows the target's stage frozen
 //   for its passes (SlotLifecycle::Borrow), after what the last verify
@@ -119,7 +122,10 @@ struct DrafterSpec {
   // instead of F32 head rows. Any next-feature output follows those tokens.
   bool device_tokens = false;
   // Run the complete requested autoregressive pass count before truncating
-  // the verify at the reply boundary. Refused unless this is the sole drafter.
+  // the verify at the reply boundary (a full block verify judges only the
+  // rows the reply may still emit); near the context's end the count shrinks
+  // to the rows left, and such a unit teaches no adaptive depth. Refused
+  // unless this is the sole drafter.
   bool draft_before_limit = false;
   // Source-row -> target-token IDs for a selected head. Its source factory
   // validates the complete table against the holding artifact and vocabulary

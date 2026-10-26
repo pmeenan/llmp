@@ -419,7 +419,6 @@ class SlotLifecycle {
   void QuarantineOwners(std::span<const std::uint32_t> slots);
   // Every slot quarantined until RecoverInPlace.
   void Fault();
-  void AcknowledgeFence() noexcept;
   // After a failed job: request_cohort.h's CheckFailedJob.
   void CheckFailedJob();
   // The closures rebuilt, the held request refreshed to the execution

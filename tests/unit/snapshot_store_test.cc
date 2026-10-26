@@ -21,6 +21,7 @@
 #include "engine/paged_node.h"
 #include "expected_error.h"
 #include "llm_fixture.h"
+#include "providers/fake/fake_device_execution.h"
 #include "providers/fake/fake_device_runtime.h"
 #include "runtime/serving.h"
 
@@ -265,7 +266,29 @@ TEST_F(SnapshotStoreTest, ExpiredIssuerRejectsDirectReadsWhileNodeLivesAndAllows
   EXPECT_FALSE(store.Digest(*saved));
 }
 
-TEST_F(SnapshotStoreTest, UnknownCaptureRetainsTheWholeChargeAndBorrowAfterIssuerAndStoreRetire) {
+// A capture whose copy failed with its fence seen ended: the store keeps its
+// allocation (unpublished) and serves the next capture.
+TEST_F(SnapshotStoreTest, AFailedCaptureWhoseEndWasProvenKeepsTheStoreAndItsAllocation) {
+  Start(false, false);
+  Warm();
+  const auto before = Occupancy();
+  rt::SnapshotStore store(*node_, kRoom);
+  auto previous = BranchAt(0).CaptureState(store);
+  ASSERT_TRUE(previous) << Failed(previous).value_or("");
+  const auto charge = store.capacity();
+  fake::FailNextCopy(llmp::providers::CopyKind::kDeviceToHost, CopyBytes(), true);
+  EXPECT_FALSE(BranchAt(0).CaptureState(store));
+  EXPECT_TRUE(store.usable());
+  EXPECT_FALSE(store.Digest(*previous));  // its generation was replaced
+  EXPECT_EQ(node_->kept_pinned(), 0U);
+  EXPECT_EQ(Occupancy() - before, charge);
+}
+
+// A capture whose copy's fence was lost: its allocation goes to the node's
+// quarantine on the model's stream, whole and charged, even after its issuer
+// and store retire, and the store refuses until a fence of that stream frees
+// it; then it serves again.
+TEST_F(SnapshotStoreTest, AnUnprovenCaptureQuarantinesItsAllocationUntilItsStreamsFence) {
   Start(false, false);
   Warm();
   const auto before = Occupancy();
@@ -273,8 +296,8 @@ TEST_F(SnapshotStoreTest, UnknownCaptureRetainsTheWholeChargeAndBorrowAfterIssue
   auto previous = BranchAt(0).CaptureState(*store);
   ASSERT_TRUE(previous) << Failed(previous).value_or("");
   const auto charge = store->capacity();
-  const auto bytes = CopyBytes();
-  fake::FailNextCopy(llmp::providers::CopyKind::kDeviceToHost, bytes, true);
+  static_cast<llmp::providers::fake::FakeDeviceExecution&>(node_->execution())
+      .FailNextQuery(llmp::providers::ProviderError::kUnknown);
   EXPECT_FALSE(BranchAt(0).CaptureState(*store));
   EXPECT_FALSE(store->usable());
   EXPECT_FALSE(store->Digest(*previous));
@@ -283,36 +306,34 @@ TEST_F(SnapshotStoreTest, UnknownCaptureRetainsTheWholeChargeAndBorrowAfterIssue
   const auto operations = Operations();
   EXPECT_FALSE(BranchAt(0).CaptureState(*store));
   EXPECT_EQ(Operations(), operations);
-  auto* pending = Access::BorrowedAddress(*store);
-  ASSERT_NE(pending, nullptr);
-  Close();
-  llm_.reset();
-  const auto after_issuer = Occupancy();
-  store.reset();
-  // A late producer still owns a valid borrow; both payload and private tail
-  // remain charged after their metadata/issuer objects have been destroyed.
-  std::memset(pending, 0x42, bytes);
-  EXPECT_EQ(node_->kept_pinned(), 1U);
-  EXPECT_EQ(PinnedSpanBytes(pending), charge);
-  EXPECT_EQ(Occupancy(), after_issuer);
+  const auto stream = llm_->paged().stream();
+  ASSERT_TRUE(node_->FenceStream(stream));
+  EXPECT_EQ(node_->kept_pinned(), 0U);
+  EXPECT_TRUE(store->usable());
+  EXPECT_EQ(Occupancy(), before);
 }
 
-TEST_F(SnapshotStoreTest, UnknownRestoreInvalidatesCapabilityAndRetainsItsWholeAllocation) {
+TEST_F(SnapshotStoreTest, AnUnprovenRestoreInvalidatesTheCapabilityUntilItsStreamsFence) {
   Start(false, false);
   Warm();
   const auto before = Occupancy();
   rt::SnapshotStore store(*node_, kRoom);
   auto saved = BranchAt(0).CaptureState(store);
   ASSERT_TRUE(saved) << Failed(saved).value_or("");
-  fake::FailNextCopy(llmp::providers::CopyKind::kHostToDevice, CopyBytes(), true);
+  static_cast<llmp::providers::fake::FakeDeviceExecution&>(node_->execution())
+      .FailNextQuery(llmp::providers::ProviderError::kUnknown);
   EXPECT_FALSE(BranchAt(0).RestoreState(store, *saved));
   EXPECT_FALSE(store.usable());
   EXPECT_FALSE(store.Digest(*saved));
   EXPECT_EQ(node_->kept_pinned(), 1U);
-  EXPECT_EQ(Occupancy() - before, store.capacity());
   const auto operations = Operations();
   EXPECT_FALSE(BranchAt(0).RestoreState(store, *saved));
   EXPECT_EQ(Operations(), operations);  // no second restore submission
+  ASSERT_TRUE(node_->FenceStream(llm_->paged().stream()));
+  EXPECT_EQ(node_->kept_pinned(), 0U);
+  EXPECT_TRUE(store.usable());
+  EXPECT_FALSE(store.Digest(*saved));  // the capability stays invalid
+  EXPECT_EQ(Occupancy(), before);
 }
 
 TEST_F(SnapshotStoreTest, MalformedRangeAndTotalSizesNeverReachCopyOrAllocation) {

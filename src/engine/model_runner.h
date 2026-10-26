@@ -41,6 +41,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -220,6 +221,12 @@ struct RunnerConfig {
     std::vector<std::pair<format::PartRole, std::uint32_t>> source_parts{};
   };
   std::vector<RowTable> row_tables;
+  // Test hooks only: each row table's own ring (unset: providers::
+  // OpenStorage), and how long its reads may make no progress before a step
+  // gives up on them (ReadPleRows).
+  std::function<std::expected<std::unique_ptr<providers::Storage>, std::string>(std::size_t depth)>
+      row_storage{};
+  std::chrono::milliseconds row_read_stall = kPleStall;
   // Explicit routed execution support. The weak owner names the caller's
   // complete node/source/runner environment; it grants lifetime, not source
   // or residency authority. A step locks it before effects and retains it on
@@ -258,9 +265,8 @@ struct FeatureFrom {
     // features by position, which its steps write): row r reads position
     // `position + r`'s committed cell in the ring or currently held chunk.
     // A chunk tap retains its preceding tail through ordinary spill/restore;
-    // checkpoint replacement or adoption requires a validated durable
-    // repeat-pending control before lookup. Without that policy, replacement
-    // clears the transient span until a target step writes fresh features.
+    // checkpoint replacement or adoption clears the transient span until a
+    // target step writes fresh features.
     kTap,
     // The slot's carry on the step's stage: the next features the last
     // drafter step with features of that slot on that stage returned (its
@@ -291,7 +297,7 @@ class CopySink;
 
 // One exact segment's execution permission. Only the engine's decoding and
 // prompt orchestrators can mint it; copying it grants no fresh ledger unit.
-// A default permit authorizes no repeat-pending or compound work.
+// A default permit authorizes no mixed-origin or borrowed-state work.
 class StepAuthorization {
  public:
   StepAuthorization() = default;
@@ -468,9 +474,8 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
   //   slot's committed positions (`past` == SlotLifecycle::positions);
   // - on a drafter, never advancing (drafts commit nothing): from anywhere
   //   its catch-up starts, ending at or past the committed positions (no
-  //   step wholly behind them, but for a repeat-pending drafter's owned
-  //   schedule) and within one chunk bound of its stage (its layout's
-  //   max_rows) past them; a drafter
+  //   step wholly behind them) and within one chunk bound of its stage (its
+  //   layout's max_rows) past them; a drafter
   //   whose contract borrows the target's state only while the target's
   //   stage is borrowed (SlotLifecycle::Borrow).
   // Refusal names the slot; peers are untouched. RunStep admits a joined
@@ -498,9 +503,18 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
   std::string report_json() const;
   std::string plan_report() const;
   void ReportPlans(const kernels::PlanRecordSink& sink) const;
-  bool unproven() const noexcept { return unproven_.active(); }
-  UnprovenWork& unproven_work() noexcept { return unproven_; }
-  const UnprovenWork& unproven_work() const noexcept { return unproven_; }
+  // The oldest committed position whose target feature `stage`'s tap
+  // (model::FeatureTap) still holds for `slot`: a catch-up's first row may
+  // read from there on (EmitFeatureCopies). None: the stage has no tap, or
+  // it holds nothing of the slot's.
+  std::optional<std::uint32_t> OldestTapFeature(std::uint32_t slot, std::uint16_t stage) const;
+  // Whether `stage`'s steps read their owners' token histories (side-row
+  // lookups): a step of a stage that does not needs none.
+  bool ReadsHistory(std::uint16_t stage) const;
+  // A step or routed flight whose end is unproven, retained until a fence of
+  // the runner's stream (AcknowledgeFence, RetireAfterFence), or a row
+  // table's stalled reads, until their completions are harvested.
+  bool unproven() const noexcept;
 
  private:
   friend class StepTransaction;
@@ -568,6 +582,7 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
   std::vector<catalog::ExtentId> weight_extents() const;
   struct RoutedState;
   struct RoutedFlight;
+  struct RowTableState;
   std::expected<std::shared_ptr<RoutedFlight>, std::string> PrepareBatchRouting(
       Plans::Entry& planned, const kernels::ExecutionResources& resources,
       std::span<std::byte> pinned, StepRuns& execution, StepPlanRuns& runs,
@@ -593,10 +608,14 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
   Status CheckRoutedWeightBindings(std::span<const kernels::RoutedWeight> reads) const;
   std::vector<catalog::ExtentId> base_weight_extents() const;
   std::shared_ptr<RoutedState> routed_;
-  // Unproven work retained until cleared only by a positive stream fence.
-  // Release clears this only after its existing whole-node drain contract,
-  // AcknowledgeFence after a recovery's fence of the runner's stream.
-  UnprovenWork unproven_;
+  // The step transaction under way (or whose end is unproven) and a routed
+  // step's flight (unproven_work.h). Each goes when its own retirement
+  // proves its end (ReleaseRetired); one left unproven, only with a fence of
+  // the runner's stream (AcknowledgeFence, RetireAfterFence).
+  RetainedFlight<StepTransaction> step_flight_;
+  RetainedFlight<RoutedFlight> routed_flight_;
+  // Whether a retained step's end is unproven, or a routed flight is held.
+  bool flights_unproven() const noexcept;
   // Whether a target's verify saves in, or commits, a slot's stage.
   bool Verifies(std::uint32_t slot, std::size_t stage) const;
   // The cells an owner of `past` positions and `rows` rows reads alone on
@@ -605,8 +624,16 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
   // Its steps read only the cells before their rows (model::ReadsFrozen).
   bool Frozen(std::size_t stage) const { return frozen_.at(stage); }
 
-  Status RetireAfterFence() override;
-  Status AcknowledgeFence() override;
+  Status RetireAfterFence(const FenceProof& proof) override;
+  Status AcknowledgeFence(const FenceProof& proof) override;
+  // The fence-proven flights cleared, and every row table's landed stalled
+  // reads settled.
+  void ClearAfterFence(const FenceProof& proof);
+  // A row table's stalled reads (RowTableState::reads_unproven): every
+  // completion its ring has harvested without waiting and discarded (their
+  // tokens are an earlier plan's), and the mark cleared once none is left
+  // in flight. Whether the table may read again.
+  static bool SettleRowReads(RowTableState& table);
   void RetireRoot();
   friend class RunnerOwner;
   struct Lifetime;
@@ -661,7 +688,10 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
     std::uint64_t* sources = nullptr;
     std::uint32_t* count = nullptr;
     std::unique_ptr<providers::Storage> storage;
-    UnprovenWork unproven;
+    // A read gave up with reads still in flight (ReadPleRows): nothing may
+    // reuse the ring or the landing until their completions are harvested.
+    // Only that harvest proves them (SettleRowReads), never a stream fence.
+    bool reads_unproven = false;
   };
   std::vector<std::unique_ptr<RowTableState>> row_tables_;
   // Every slot's carried features (by slot, then stage: carry_offset_ and

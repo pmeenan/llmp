@@ -175,6 +175,23 @@ The entries below record each change; the record of the milestone is
   its kernel version, operand encoding and layout and row and width bands
   ([fusion ranks](docs/experiments/fusion-ranks/README.md)); the U6 rows are
   retired.
+- A speculative model's MTP drafter keeps drafting after a plain step (a
+  forced tool-call span, a certain span, a plain wave): its next catch-up
+  starts at the oldest feature the target's tap still holds, where it was
+  refused for the rest of the reply. The device greedy verify stops its kept
+  drafts at the first stop token, a full-block verify judges only the rows
+  the reply may still emit, and a complete pass schedule shrinks at the
+  context's end instead of refusing the unit.
+- Hang recovery (D-102's rung 2) serves again after every kind of unproven
+  work: a row table whose reads stalled (once their completions land), an
+  image whose stage's job was unproven, a private batch, and a copy whose
+  pinned buffer the node quarantines on its stream until that stream's fence
+  frees it (a snapshot store then allocates afresh, and the reserved
+  checkpoint staging is reserved again). A lost direct-step fence is
+  released once a later fence proves it, even after a later job on the
+  stream was refused, partial fence failures
+  keep every pinned buffer quarantined, and teardown fences every stream
+  before freeing untagged ones.
 
 - Qwen-Image requests are served again: binding a stored stage graph accepts
   request scalars the stage does not use, and recipe scalar names come from

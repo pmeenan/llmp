@@ -292,10 +292,45 @@ base::Bytes PagedNode::ApplyBudget(base::Bytes budget) {
 void PagedNode::KeepPinned(void* pointer, std::optional<std::uint32_t> stream) {
   if (const auto at = std::ranges::find(pinned_, pointer); at != pinned_.end()) {
     pinned_.erase(at);
-    unproven_.KeepPinned(pointer, stream);
-  } else if (stream.has_value()) {
-    unproven_.RecordStream(*stream);
+    quarantine_.push_back({.pointer = pointer, .stream = stream, .ring = false});
   }
+  if (stream.has_value() &&
+      std::ranges::find(unproven_streams_, *stream) == unproven_streams_.end())
+    unproven_streams_.push_back(*stream);
+}
+
+bool PagedNode::Quarantining(std::uint32_t stream) const noexcept {
+  return std::ranges::find(unproven_streams_, stream) != unproven_streams_.end() ||
+         std::ranges::any_of(quarantine_,
+                             [stream](const Quarantined& q) { return q.stream == stream; });
+}
+
+bool PagedNode::unproven() const noexcept {
+  return supplemental_ != nullptr || !unproven_streams_.empty() ||
+         std::ranges::any_of(quarantine_, [](const Quarantined& q) { return !q.ring; }) ||
+         std::ranges::any_of(requests_, [](const auto& kv) { return kv.second->unproven; });
+}
+
+Status PagedNode::ReleaseQuarantine(std::optional<std::uint32_t> stream) {
+  std::vector<std::string> errors;
+  std::vector<Quarantined> kept;
+  for (Quarantined& q : quarantine_) {
+    if (q.ring || (stream.has_value() && q.stream != stream)) {
+      kept.push_back(q);
+      continue;
+    }
+    if (auto released = ReleaseQuarantinedPinned(q.pointer); !released) {
+      errors.push_back(released.error());
+      kept.push_back(q);  // still the node's, still out of use
+    }
+  }
+  quarantine_ = std::move(kept);
+  if (stream.has_value()) {
+    std::erase(unproven_streams_, *stream);
+  } else {
+    unproven_streams_.clear();
+  }
+  return errors.empty() ? Status{} : Joined(errors);
 }
 
 Status PagedNode::ReleaseQuarantinedPinned(void* pointer) {
@@ -384,12 +419,12 @@ bool PagedNode::RetireRing(std::unique_ptr<providers::Storage> ring,
   for (void* const landing : landings) {
     if (const auto it = std::ranges::find(pinned_, landing); it != pinned_.end()) {
       pinned_.erase(it);
-      unproven_.KeepPinned(landing, std::nullopt, true);
+      quarantine_.push_back({.pointer = landing, .stream = std::nullopt, .ring = true});
     }
   }
   // Destroying a ring with reads in flight is fatal (UringStorage), and
   // closing it would not stop them landing: it is never destroyed.
-  unproven_.RetainStorageRing(ring.release());
+  retired_rings_.push_back(ring.release());
   return true;
 }
 
@@ -694,9 +729,15 @@ Status PagedNode::FenceStream(std::uint32_t stream) {
       request.cancelled = true;
     }
   }
-  if (const auto open = requests_.find(stream); open != requests_.end() && open->second->unproven &&
-                                                open->second->direct_unproven != 0 &&
-                                                !open->second->other_unproven) {
+  if (const auto open = requests_.find(stream);
+      open != requests_.end() && open->second->other_unproven) {
+    // A scheduled step's end went unproven on the device lane, which
+    // quarantined its operation and faulted the scheduler: no fence of the
+    // driver's proves it, and only a restart (D-102's rung 3) recovers.
+    return Error("a scheduled step's end is unproven: its scheduler faulted");
+  }
+  if (const auto open = requests_.find(stream);
+      open != requests_.end() && open->second->unproven && open->second->direct_unproven != 0) {
     if (auto proven = ProveDirectStep(stream, *open->second); !proven) return proven;
   }
   if (InRequest(stream)) (void)EndRequest(stream);
@@ -711,37 +752,33 @@ Status PagedNode::FenceStream(std::uint32_t stream) {
   auto fenced = Job(
       catalog::Closure{}, [](providers::NativeStream) { return sc::JobResult::kQueued; },
       "fencing a model's stream after a failure", stream);
-  if (fenced) {
-    for (void* pointer : unproven_.TakePinnedForStream(stream)) {
-      if (auto released = ReleaseQuarantinedPinned(pointer); !released) {
-        return released;
-      }
-    }
-    if (!supplemental_ &&
-        std::ranges::none_of(requests_, [](const auto& kv) { return kv.second->unproven; }) &&
-        !unproven_.has_streams()) {
-      unproven_.ClearAfterFence();
-    }
-  }
-  return fenced;
+  if (!fenced) return fenced;
+  // Every allocation the stream's work may have touched is tried, and what
+  // cannot be freed stays quarantined (never dropped untracked).
+  auto released = ReleaseQuarantine(stream);
+  // Checkpoint staging an unproven copy took is reserved again once freed,
+  // so a full budget still never starves a checkpoint.
+  RestoreStaging();
+  return released;
 }
 
 Status PagedNode::RecoverAfterFence(PagedModel& model) {
   const std::uint32_t stream = model.stream();
   if (auto fenced = FenceStream(stream); !fenced) return fenced;
+  const FenceProof proof(stream);
   // Private batches first: their close clears the runner's active batch.
   std::vector<std::string> errors;
   for (auto* root = model_roots_; root;) {
     auto* next = root->next;
     auto keep = root->keep;  // Close may detach the root
     if (root->model != &model && root->model->stream() == stream) {
-      if (auto acknowledged = root->model->AcknowledgeFence(); !acknowledged)
+      if (auto acknowledged = root->model->AcknowledgeFence(proof); !acknowledged)
         errors.push_back(acknowledged.error());
     }
     root = next;
   }
   if (!errors.empty()) return Joined(errors);
-  return model.AcknowledgeFence();
+  return model.AcknowledgeFence(proof);
 }
 
 Status PagedNode::TearDown(std::span<PagedModel* const> models) {
@@ -789,8 +826,10 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
     }
     return errors.empty() ? Status{} : Joined(errors);
   };
+  // Called only once each model's stream was fenced: its proof.
   auto retire_models = [&]() -> Status {
-    return visit_models([](PagedModel& model) { return model.RetireAfterFence(); });
+    return visit_models(
+        [](PagedModel& model) { return model.RetireAfterFence(FenceProof(model.stream())); });
   };
   // Requests first: their leases would hold what the teardown evicts.
   std::vector<std::uint32_t> open;
@@ -886,12 +925,21 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
       problems.emplace_back("a compute stream was not fenced: backing is left as it is");
       return Joined(problems);
     }
+    // The lanes have joined: every stream, each model's (listed or not) and
+    // the copy stream, fenced by the driver alone before the quarantine's
+    // untagged allocations (whose stream nobody knew) may go.
+    for (const auto id : streams_) {
+      if (id.valid() && !Fence(*execution_, id, settings_.quiet)) {
+        problems.emplace_back("a stream could not be fenced: the quarantine is left as it is");
+        return Joined(problems);
+      }
+    }
   } else if (execution_ != nullptr) {
     // Setup ended before the scheduler existed, and a model may already
     // have queued work on its stream (the EXL3 launch context zeroes its
     // lock area): each compute stream is fenced before any memory goes.
-    for (std::size_t i = 0; i < settings_.compute_streams && i < streams_.size(); ++i) {
-      if (!Fence(*execution_, streams_[i], settings_.quiet)) {
+    for (std::size_t i = 0; i < streams_.size(); ++i) {
+      if (streams_[i].valid() && !Fence(*execution_, streams_[i], settings_.quiet)) {
         problems.emplace_back("a compute stream could not be fenced: backing is left as it is");
         return Joined(problems);
       }
@@ -927,10 +975,9 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
       problems.push_back(std::format("{} backings were left", memory_->backings()));
     }
   }
-  for (void* pointer : unproven_.TakeFencedPinned()) {
-    if (auto released = ReleaseQuarantinedPinned(pointer); !released) {
-      problems.push_back(released.error());
-    }
+  // Every stream was fenced above: the whole quarantine but rings' landings.
+  if (auto released = ReleaseQuarantine(std::nullopt); !released) {
+    problems.push_back(released.error());
   }
   for (void* pointer : pinned_) {
     providers::FreePinned(pointer);

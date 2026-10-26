@@ -10,7 +10,7 @@
 #include <format>
 #include <utility>
 
-#include "engine/draft_companions.h"
+#include "engine/prompt_wave.h"
 #include "engine/support.h"
 #include "model/state_contract.h"
 
@@ -371,9 +371,12 @@ DecodeReport DecodingOrchestrator::Single(std::span<const DecodeWork> work, bool
 DecodeReport DecodingOrchestrator::Certain(std::span<const DecodeWork> work) {
   DecodeReport report;
   report.outcomes.resize(work.size());
+  // The rows' tokens (the anchor, then the certain ones), contiguous; the
+  // whole history before them only for a target whose steps read it.
+  const bool whole = runner_->ReadsHistory(0);
   std::uint64_t bytes = 0;
   for (const auto& unit : work)
-    bytes += (unit.history.size() + unit.certain.size()) * sizeof(std::int32_t) +
+    bytes += ((whole ? unit.history.size() : 1) + unit.certain.size()) * sizeof(std::int32_t) +
              sizeof(PendingWork) + sizeof(SegmentWork) + 256;
   auto payment = runner_->PayHostMetadata(bytes);
   if (!payment) {
@@ -406,8 +409,9 @@ DecodeReport DecodingOrchestrator::Certain(std::span<const DecodeWork> work) {
       continue;
     }
     const auto past = slots.positions(unit.slot);
-    histories[i].reserve(unit.history.size() + unit.certain.size());
-    histories[i].assign(unit.history.begin(), unit.history.end());
+    const auto kept = whole ? unit.history : unit.history.last(1);
+    histories[i].reserve(kept.size() + unit.certain.size());
+    histories[i].assign(kept.begin(), kept.end());
     histories[i].insert(histories[i].end(), unit.certain.begin(), unit.certain.end());
     const auto rows = static_cast<std::uint32_t>(1 + unit.certain.size());
     pending.push_back({.slot = unit.slot,
@@ -421,13 +425,15 @@ DecodeReport DecodingOrchestrator::Certain(std::span<const DecodeWork> work) {
                        .row_invariant = false,
                        .alone = false});
     segments.push_back(
-        {.tokens = std::span<const std::int32_t>(histories[i]).subspan(past), .bytes = {}});
-    views.push_back(histories[i]);
+        {.tokens = std::span<const std::int32_t>(histories[i]).subspan(whole ? past : 0),
+         .bytes = {}});
+    views.push_back(whole ? std::span<const std::int32_t>(histories[i])
+                          : std::span<const std::int32_t>{});
     indexes.push_back(i);
   }
-  // The ordinary target/companion lifecycle consumes every known row, including
-  // target-written drafter features. No model-drafter dispatch or acceptance
-  // random draws occur; prompt numerical permission covers the causal rows.
+  // One target step consumes every known row, writing the drafters' tapped
+  // features as any target step does. No drafter runs and no acceptance is
+  // drawn; prompt numerical permission covers the causal rows.
   auto wave = RunPromptWave(*runner_, *composer_, pending, segments, views);
   report.steps = wave.steps;
   for (std::size_t j = 0; j < indexes.size(); ++j) {
@@ -460,10 +466,18 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
     std::vector<bool> caught_up;              // by drafter: its catch-up pass ran
     std::vector<std::size_t> run;             // by drafter: its DraftRun's index
     std::optional<std::uint32_t> full_depth;  // checked before any replay unit begins
+    bool full_cut = false;                    // full_depth was cut at the context's end
     std::optional<std::size_t> alternative;   // the drafter chosen
+    // The history through the proposals so far, copied once a unit, for
+    // stages whose steps read it (ModelRunner::ReadsHistory); else empty.
+    std::vector<std::int32_t> history;
   };
   std::vector<Unit> units(work.size());
   const std::uint32_t target_context = slots.context(0);
+  const bool target_history = runner_->ReadsHistory(0);
+  bool any_history = target_history;
+  for (const DrafterSpec& d : mode_.drafters)
+    any_history = any_history || runner_->ReadsHistory(d.stage);
 
   // Each slot's unit: its drafters and their depths, within the verify's
   // rows (the reply's end, the context, the runner's verify).
@@ -497,12 +511,13 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
       if (work.size() > 1 && spec.shared_wave_depth != 0) {
         want = std::min(want, spec.shared_wave_depth);
       }
-      if (want > target_context - u.positions || u.positions >= context ||
-          want > context - u.positions) {
-        out.refusal = Refusal("the requested draft depth exceeds its declared bounds", w.slot);
-        continue;
-      }
-      u.full_depth = want;
+      // Near the context's end the schedule shrinks to the rows left (its
+      // stage's, and the target's), and a unit with none left verifies its
+      // anchor alone; such a unit teaches nothing (full_cut).
+      const std::uint32_t room =
+          u.positions < context ? std::min(target_context, context) - u.positions : 0;
+      u.full_cut = want > room;
+      u.full_depth = std::min(want, room);
     }
     u.live = true;
     u.depth.assign(drafters, 0);
@@ -527,6 +542,7 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
       const DrafterSpec& spec = mode_.drafters[d];
       // A first pass reads the features before its rows: none at position 0.
       if ((spec.anchored || spec.features) && u.positions == 0) continue;
+      if (u.full_depth == 0U) continue;  // no row left before the context's end
       std::uint32_t want = u.full_depth    ? *u.full_depth
                            : policy_.depth ? policy_.depth(w.slot, d)
                            : spec.adaptive ? adaptive_.at(At(w.slot, d)).Choose()
@@ -544,9 +560,13 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
       const std::uint32_t context = slots.context(spec.stage);
       const std::uint32_t room = end < context ? static_cast<std::uint32_t>(context - end) : 0;
       u.depth[d] = spec.draft_before_limit ? want : std::min({want, budget, room});
-      u.full[d] = u.depth[d] == want;
+      u.full[d] = u.depth[d] == want && !u.full_cut;
       budget -= std::min(budget, u.depth[d]);
       proposals += u.depth[d];
+    }
+    if (u.live && any_history) {
+      u.history.reserve(w.history.size() + proposals);
+      u.history.assign(w.history.begin(), w.history.end());
     }
   }
 
@@ -580,7 +600,8 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
     }
     for (std::uint32_t pass = 0; pass < passes; ++pass) {
       std::vector<PendingWork> pending;
-      std::vector<std::vector<std::int32_t>> tokens, histories;
+      std::vector<std::vector<std::int32_t>> tokens;
+      std::vector<std::span<const std::int32_t>> histories;
       std::vector<FeatureFrom> features;
       std::vector<std::size_t> of;
       tokens.reserve(work.size());
@@ -605,6 +626,16 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
           // units) catches up its last chunk's rows: its older rows stay
           // stale, which costs acceptance, never what the verify keeps.
           past = std::min(cursor_.at(At(w.slot, d)), last);
+          // A plain step since its last verify (a forced or certain span, a
+          // plain wave) committed rows its cursor never followed: it catches
+          // up those the target's tap still holds, from the oldest held
+          // feature; older rows stay stale, which, as below, costs
+          // acceptance only.
+          if (spec.features) {
+            if (const auto oldest = runner_->OldestTapFeature(w.slot, spec.stage);
+                oldest && past < *oldest + 1)
+              past = std::min(*oldest + 1, last);
+          }
           if (last - past + 1 > chunk) past = last + 1 - chunk;
           rows = last - past + 1;
           token_first = past;
@@ -639,8 +670,9 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
         } else {
           features.emplace_back();
         }
-        auto& history = histories.emplace_back(w.history.begin(), w.history.end());
-        history.insert(history.end(), u.proposed.begin(), u.proposed.end());
+        histories.push_back(runner_->ReadsHistory(spec.stage)
+                                ? std::span<const std::int32_t>(u.history)
+                                : std::span<const std::int32_t>{});
         tokens.push_back(std::move(in));
         pending.push_back({.slot = w.slot,
                            .stage = spec.stage,
@@ -707,6 +739,8 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
         }
         const auto take = static_cast<std::uint32_t>(std::min<std::size_t>(proposed->size(), want));
         u.proposed.insert(u.proposed.end(), proposed->begin(), proposed->begin() + take);
+        if (any_history)
+          u.history.insert(u.history.end(), proposed->begin(), proposed->begin() + take);
         run.proposed += take;
         if (take < want || block) drafting[i] = false;
       }
@@ -715,7 +749,8 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
 
   // One verify of every slot's anchor and proposals.
   std::vector<PendingWork> pending;
-  std::vector<std::vector<std::int32_t>> verified, histories;
+  std::vector<std::vector<std::int32_t>> verified;
+  std::vector<std::span<const std::int32_t>> histories;
   std::vector<std::size_t> of;
   verified.reserve(work.size());
   const bool full_block_verify = drafters == 1 &&
@@ -744,9 +779,9 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
                        .greedy = work[i].greedy,
                        .row_invariant = mode_.row_invariant,
                        .alone = false});
-    auto& history = histories.emplace_back(work[i].history.begin(), work[i].history.end());
-    history.insert(history.end(), u.proposed.begin(),
-                   u.proposed.begin() + static_cast<std::ptrdiff_t>(count));
+    histories.push_back(target_history ? std::span<const std::int32_t>(u.history).first(
+                                             work[i].history.size() + count)
+                                       : std::span<const std::int32_t>{});
     verified.push_back(std::move(rows));
     of.push_back(i);
   }
@@ -772,7 +807,16 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
       if (u.caught_up[d]) cursor_.at(At(slot, d)) = u.positions;
     }
     const auto rows = static_cast<std::uint32_t>(verified[j].size());
-    auto verdict = policy_.judge(slot, verified[j], out.outputs);
+    // A full-block verify may hold rows past what the reply may still
+    // emit: only those within `left` are judged (each row's outputs alike).
+    std::span<const std::int32_t> judged_rows = verified[j];
+    std::span<const std::byte> judged_outputs = out.outputs;
+    if (full_block_verify && rows > work[i].left && work[i].left > 0 &&
+        out.outputs.size() % rows == 0) {
+      judged_rows = judged_rows.first(work[i].left);
+      judged_outputs = judged_outputs.first(out.outputs.size() / rows * work[i].left);
+    }
+    auto verdict = policy_.judge(slot, judged_rows, judged_outputs);
     if (verdict && full_block_verify && verdict->keep > work[i].left) {
       verdict->keep = work[i].left;
       if (verdict->tokens.size() > verdict->keep) verdict->tokens.resize(verdict->keep);

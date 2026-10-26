@@ -30,6 +30,7 @@
 #ifndef LLMP_ENGINE_PLE_ROWS_H_
 #define LLMP_ENGINE_PLE_ROWS_H_
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -116,15 +117,20 @@ constexpr bool RowPagingPays(std::uint64_t table_bytes, std::uint64_t lookups,
   return table_bytes > cost;
 }
 
+// How long ReadPleRows waits for reads that make no progress.
+inline constexpr std::chrono::milliseconds kPleStall{30000};
+
 // Runs a plan's reads into `landing` on `storage` (the caller's own ring,
-// never the storage lane's), polling (never sleeping) until every one has
-// completed, an unknown submission included (it is in flight, storage.h);
-// refused on a short or failed read,
+// never the storage lane's, with nothing else in flight on it), polling
+// (never sleeping) until every one has completed, an unknown submission
+// included (it is in flight, storage.h); refused on a short or failed read,
 // after draining the rest. Refused without draining if reads make no
-// progress for 30 s: they may still land, so the caller must neither reuse
-// the landing nor destroy the ring.
+// progress for `stall`: they may still land, so the caller must neither
+// reuse the landing nor destroy the ring until their completions have been
+// harvested (and discarded: their tokens are this plan's).
 std::expected<void, std::string> ReadPleRows(providers::Storage& storage, int fd,
-                                             const PleRowPlan& plan, std::byte* landing);
+                                             const PleRowPlan& plan, std::byte* landing,
+                                             std::chrono::milliseconds stall = kPleStall);
 
 // The job's gather is a kernel of its own (kernels/paging/paging.h,
 // GatherPleRows).

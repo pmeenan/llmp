@@ -8,7 +8,7 @@
 #include <limits>
 #include <utility>
 
-#include "engine/draft_companions.h"
+#include "engine/prompt_wave.h"
 
 namespace llmp::engine {
 

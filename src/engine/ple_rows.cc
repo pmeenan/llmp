@@ -120,15 +120,15 @@ std::expected<PleRowPlan, std::string> PlanPleRows(const PleTable& table,
 }
 
 std::expected<void, std::string> ReadPleRows(providers::Storage& storage, int fd,
-                                             const PleRowPlan& plan, std::byte* landing) {
+                                             const PleRowPlan& plan, std::byte* landing,
+                                             std::chrono::milliseconds stall) {
   std::size_t next = 0;
   std::size_t in_flight = 0;
   std::string failure;
   std::array<providers::IoCompletion, 64> done{};
   // Nobody wakes this ring, so a harvest returns empty-handed only when the
-  // ring could not wait; reads that make no progress for this long are
-  // given up on, not spun on forever.
-  constexpr auto kStall = std::chrono::seconds(30);
+  // ring could not wait; reads that make no progress for `stall` are given
+  // up on, not spun on forever.
   auto progressed = std::chrono::steady_clock::now();
   while (next < plan.reads.size() || in_flight > 0) {
     while (failure.empty() && next < plan.reads.size() && in_flight < storage.depth()) {
@@ -161,11 +161,11 @@ std::expected<void, std::string> ReadPleRows(providers::Storage& storage, int fd
     const std::size_t got = storage.Harvest(done, false);
     if (got == 0) {
       std::this_thread::yield();
-      if (std::chrono::steady_clock::now() - progressed > kStall) {
+      if (std::chrono::steady_clock::now() - progressed > stall) {
         // Reads still in flight may yet land: the caller must not reuse
         // the landing or destroy the ring.
         return Error(
-            std::format("{} n-gram row reads made no progress in {} s", in_flight, kStall.count()));
+            std::format("{} n-gram row reads made no progress in {} ms", in_flight, stall.count()));
       }
       continue;
     }

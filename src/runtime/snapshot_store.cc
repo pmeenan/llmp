@@ -53,6 +53,8 @@ struct SnapshotControl {
   std::weak_ptr<const std::byte> issuer;
   bool completed = false;
   bool unproven = false;
+  // The stream whose fence frees the quarantined allocation (unproven).
+  std::optional<std::uint32_t> unproven_stream;
 
   const CaptureHeader& Header() const {
     return *reinterpret_cast<const CaptureHeader*>(static_cast<const std::byte*>(allocation) +
@@ -79,12 +81,21 @@ bool SnapshotStore::NodeAlive() const {
   const auto observer = node_lifetime_.lock();
   return observer && observer->live();
 }
-bool SnapshotStore::usable() const { return NodeAlive() && !control_->unproven; }
+bool SnapshotStore::usable() const {
+  return NodeAlive() && (!control_->unproven || (control_->unproven_stream.has_value() &&
+                                                 !node_->Quarantining(*control_->unproven_stream)));
+}
 std::uint64_t SnapshotStore::capacity() const { return control_->capacity; }
 
 std::expected<void, std::string> SnapshotStore::CheckNode(const engine::PagedNode* node) const {
   if (!usable() || node != node_ || ceiling_ == 0) {
     return std::unexpected("the snapshot store has no live, matching bounded node");
+  }
+  // A fence of the stream freed what an unproven copy left: a store whose
+  // allocation went to the quarantine starts afresh (Prepare allocates).
+  if (control_->unproven) {
+    control_->unproven = false;
+    control_->unproven_stream.reset();
   }
   return {};
 }
@@ -192,14 +203,18 @@ StateSnapshot SnapshotStore::Publish() {
   return out;
 }
 
-void SnapshotStore::Unproven() {
+void SnapshotStore::Unproven(std::optional<std::uint32_t> stream) {
   control_->completed = false;
   control_->unproven = true;
-  // Retain a possibly borrowed allocation only while the node still owns it.
-  // A failed release may already have freed it: KeepPinned then does nothing.
+  control_->unproven_stream = stream;
+  // Retain a possibly borrowed allocation only while the node still owns it
+  // (the copy may have quarantined it already, tagged with its stream). A
+  // failed release may already have freed it: KeepPinned then does nothing.
   // Either way, this store never reads, reuses or releases the address again.
   // Retained header/history/ranges need no pool or branch accounting owner.
-  if (NodeAlive()) node_->KeepPinned(control_->allocation);
+  if (NodeAlive()) node_->KeepPinned(control_->allocation, stream);
+  control_->allocation = nullptr;
+  control_->capacity = 0;
 }
 
 std::expected<void, std::string> SnapshotStore::Authenticate(const StateSnapshot& snapshot) const {

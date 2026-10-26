@@ -1258,7 +1258,6 @@ std::expected<SlotMask, std::string> SlotLifecycle::RecoverInPlace(
   if (released_ || !bound_) return Refuse("slots are not bound");
   if (node_.InRequest(stream_) || node_.HasUnprovenWork(stream_))
     return Refuse("a request or unproven work is still open on the stream");
-  AcknowledgeFence();
   const bool faulted = cohort_.faulted();
   cohort_.Recover();
   SlotMask discarded = 0;
@@ -1685,16 +1684,6 @@ Status SlotLifecycle::CompleteOwed(std::span<const std::uint32_t> indices, bool 
     for (auto& stage : slots_[index].stages)
       if (stage.ordered_borrow) stage.ordered_borrow->active = true;
   return {};
-}
-
-void SlotLifecycle::AcknowledgeFence() noexcept {
-  for (Slot& slot : slots_) {
-    for (Stage& stage : slot.stages) {
-      if (stage.live) {
-        stage.live->AcknowledgeFence();
-      }
-    }
-  }
 }
 
 }  // namespace llmp::engine

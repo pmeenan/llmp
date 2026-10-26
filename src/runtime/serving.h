@@ -1287,7 +1287,7 @@ class Llm final : public Served {
   // model with one conversation has its default branch alone).
   //
   // One chunk: all[n_past, end) after n_past (all holds every token from
-  // position 0); the shared pipeline updates its companion state and
+  // position 0); the shared pipeline updates its drafters' state and
   // returns the last row's logits.
   Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
                      std::vector<float>& logits);
@@ -1381,13 +1381,15 @@ class Llm final : public Served {
   std::uint64_t UsedStateBytesFor(const Branch& branch) const;
   std::vector<engine::LiveState::Range> UsedStateRangesFor(const Branch& branch) const;
   Status SaveUsedStateFor(Branch& branch, void* host,
-                          std::span<const engine::LiveState::Range> ranges);
+                          std::span<const engine::LiveState::Range> ranges,
+                          engine::LiveState::CopyRetirement* retirement = nullptr);
 
   std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRangesFor(
       const Branch& branch, std::uint32_t positions) const;
 
   Status CopyCheckpointStateFor(Branch& branch, void* host,
-                                std::span<const engine::LiveState::Range> ranges, bool to_host);
+                                std::span<const engine::LiveState::Range> ranges, bool to_host,
+                                engine::LiveState::CopyRetirement* retirement = nullptr);
   // Position-aware restoration: the slot lifecycle authenticates completed
   // positions before the host history can be restored.
   // `layout` is the kept layout ID (D-105) of the state being restored or
@@ -1403,7 +1405,8 @@ class Llm final : public Served {
   Status CompletePositionRestoreFor(Branch& branch, std::uint32_t position);
   Status RestoreSnapshotFor(Branch& branch, void* host,
                             std::span<const engine::LiveState::Range> ranges, std::uint32_t cursor,
-                            std::string_view layout);
+                            std::string_view layout,
+                            engine::LiveState::CopyRetirement* retirement = nullptr);
   Status AdoptPositionFor(Branch& branch, std::span<const std::int32_t> tokens,
                           std::uint32_t cursor, std::span<const engine::LiveState::Range> ranges,
                           std::string_view layout);
@@ -1566,9 +1569,10 @@ class Llm final : public Served {
   void RunPlain(std::span<PreparedGeneration> units);
   // One speculative unit each.
   void RunSpeculative(std::span<PreparedGeneration> units);
-  // A head row's logits from a step's outputs (`row` of them).
-  std::expected<std::vector<float>, std::string> LogitsRow(std::span<const std::byte> outputs,
-                                                           std::size_t row) const;
+  // A head row's logits from a step's outputs (`row` of them), in place: a
+  // view of `outputs`, which must outlive it.
+  std::expected<std::span<const float>, std::string> LogitsRow(std::span<const std::byte> outputs,
+                                                               std::size_t row) const;
   std::expected<std::size_t, std::string> HeadRows(std::span<const std::byte> outputs) const;
   // The decoding orchestrators' drafter cursors follow a slot's positions
   // after anything that changes its state from outside a unit.

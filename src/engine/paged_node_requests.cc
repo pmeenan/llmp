@@ -221,7 +221,6 @@ Status PagedNode::SupplementalJob(const catalog::Closure& selected, sc::DeviceJo
   if (!proof || !retired) {
     open.unproven = true;
     open.supplemental_unproven = true;
-    unproven_.Mark();
     return Error("supplemental completion is unproven; complete payload and base lease retained");
   }
   if (report) report->retirement = JobReport::Retirement::kRetired;
@@ -836,7 +835,6 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
   if (!retired) {
     open.unproven = true;
     open.other_unproven = true;
-    unproven_.Mark();
     return Error(std::format("{}: its step's end could not be proven", what));
   }
   if (open.channel.step_failed.load(std::memory_order_relaxed)) {
@@ -884,6 +882,23 @@ Status PagedNode::ProveDirectStep(std::uint32_t stream, OpenRequest& open) {
     }
   }
   if (!seen) return Error("an unproven step's stream fence was not seen complete");
+  // Stream order: the steps' own fences, recorded before it, are complete
+  // too. Each is queried (the provider settles a fence only once it has
+  // seen it complete) and released; one the provider still refuses is never
+  // touched again, as a lane's.
+  const auto settle = [this](providers::FenceId id) {
+    for (std::uint32_t tries = 0; tries < kFenceRefusals; ++tries) {
+      const auto state = execution_->Query(id);
+      if (!state && state.error().error != providers::ProviderError::kFailed) return;
+      if (state && *state == providers::FenceState::kComplete) break;
+    }
+    for (std::uint32_t tries = 0; tries < kFenceRefusals; ++tries) {
+      const auto released = execution_->Release(id);
+      if (released || released.error().error != providers::ProviderError::kFailed) return;
+    }
+  };
+  for (const auto lost : open.lost_fences) settle(lost);
+  open.lost_fences.clear();
   for (std::uint32_t tries = 0; tries < kFenceRefusals; ++tries) {
     const auto released = execution_->Release(*fence);
     if (released || released.error().error != providers::ProviderError::kFailed) break;
@@ -906,8 +921,13 @@ Status PagedNode::Ended(std::uint32_t stream, std::string_view what, std::string
     Cancel(open.request);
   }
   auto ended = Await(open.done, open.what, open.request);
+  const auto failure = Error(std::format("{}: {}{}", what, why, ended ? "" : ": " + ended.error()));
+  // As EndRequest: under unproven work the request stays, its lease, its
+  // steps' count and their lost fences with it, for a stream fence to prove
+  // (FenceStream); its task has ended.
+  if (open.unproven) return failure;
   requests_.erase(found);  // `open` is gone from here on
-  return Error(std::format("{}: {}{}", what, why, ended ? "" : ": " + ended.error()));
+  return failure;
 }
 
 Status PagedNode::DirectStep(std::uint32_t stream, OpenRequest& open, sc::DeviceJob job,
@@ -953,7 +973,6 @@ Status PagedNode::DirectStep(std::uint32_t stream, OpenRequest& open, sc::Device
     // Nothing can show when the queued work ends: its lease is kept.
     open.unproven = true;
     ++open.direct_unproven;
-    unproven_.Mark();
     return Error(
         std::format("{}: its step's fence could not be recorded: {}", what, fence.error().detail));
   }
@@ -1018,7 +1037,9 @@ Status PagedNode::DirectStep(std::uint32_t stream, OpenRequest& open, sc::Device
   if (!seen) {
     open.unproven = true;  // its lease is kept: the step may still touch it
     ++open.direct_unproven;
-    unproven_.Mark();
+    // Its fence stays recorded (the provider counts it against the stream)
+    // until a later fence proves it ended (ProveDirectStep).
+    if (fence) open.lost_fences.push_back(*fence);
     open.cancelled = open.cancelled || cancelled;
     if (cancelled) {
       hang_cancelled_ = true;

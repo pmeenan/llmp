@@ -1313,8 +1313,9 @@ Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool
   }
   auto file = engine::CheckpointFile::Capture(
       *node_, place, *ranges,
-      [&](void* host, std::span<const engine::LiveState::Range> page) {
-        return CopyCheckpointStateFor(branch, host, page, true);
+      [&](void* host, std::span<const engine::LiveState::Range> page,
+          engine::LiveState::CopyRetirement* retirement) {
+        return CopyCheckpointStateFor(branch, host, page, true, retirement);
       },
       progress);
   if (!file) {
@@ -1453,8 +1454,9 @@ Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, st
         return PreparePositionRestoreFor(branch, position, restored_cursor, checkpoint.footprint,
                                          checkpoint.layout);
       },
-      [&](void* host, std::span<const engine::LiveState::Range> page) {
-        return CopyCheckpointStateFor(branch, host, page, false);
+      [&](void* host, std::span<const engine::LiveState::Range> page,
+          engine::LiveState::CopyRetirement* retirement) {
+        return CopyCheckpointStateFor(branch, host, page, false, retirement);
       },
       progress);
   if (!restored) {
@@ -1587,8 +1589,12 @@ std::expected<StateSnapshot, std::string> Llm::CaptureState(Branch& branch, Snap
       !prepared) {
     return std::unexpected(prepared.error());
   }
-  if (auto saved = SaveUsedStateFor(branch, store.WriteAddress(), ranges); !saved) {
-    store.Unproven();
+  auto retirement = engine::LiveState::CopyRetirement::kProven;
+  if (auto saved = SaveUsedStateFor(branch, store.WriteAddress(), ranges, &retirement); !saved) {
+    // A copy refused before it ran leaves the store's allocation its own,
+    // unpublished; one whose end is unproven is the node's quarantine's.
+    if (retirement == engine::LiveState::CopyRetirement::kUnproven)
+      store.Unproven(runner_->stream());
     return std::unexpected(saved.error());
   }
   auto snapshot = store.Publish();
@@ -1620,11 +1626,13 @@ Status Llm::RestoreState(Branch& branch, SnapshotStore& store, const StateSnapsh
   }
   Unkeep(branch);
   if (auto settled = SettleFor(branch); !settled) return settled;
+  auto retirement = engine::LiveState::CopyRetirement::kProven;
   if (auto restored = RestoreSnapshotFor(branch, captured->payload, captured->ranges,
-                                         captured->cursor, captured->layout);
+                                         captured->cursor, captured->layout, &retirement);
       !restored) {
     if (StateRefusedFor(branch) && StateUsableFor(branch)) return restored;
-    store.Unproven();
+    if (retirement == engine::LiveState::CopyRetirement::kUnproven)
+      store.Unproven(runner_->stream());
     branch.needs_clear_ = true;
     ReleaseTokens(branch.history_, branch.history_charge_);
     return restored;

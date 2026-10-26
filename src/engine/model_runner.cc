@@ -743,6 +743,29 @@ Status ModelRunner::EmitFeatureCopies(const kn::StepProgram& program, const Step
   return {};
 }
 
+std::optional<std::uint32_t> ModelRunner::OldestTapFeature(std::uint32_t slot,
+                                                           std::uint16_t stage) const {
+  if (slot >= slots_.slots() || stage >= slots_.stages()) return std::nullopt;
+  const auto* tap = model::FeatureTap(slots_.layout(stage));
+  if (tap == nullptr) return std::nullopt;
+  const std::uint32_t committed = slots_.positions(slot);
+  if (tap->contract.cells == model::CellRule::kPositionRing) {
+    return committed > tap->cells ? static_cast<std::uint32_t>(committed - tap->cells) : 0U;
+  }
+  const TapRows held = HeldTapRows(slot, stage);
+  if (held.count == 0) return std::nullopt;
+  return held.first > held.preceding ? held.first - held.preceding : 0U;
+}
+
+bool ModelRunner::ReadsHistory(std::uint16_t stage) const {
+  if (stage < stage_facts_.size() ? stage_facts_[stage].uses_side_rows
+                                  : source_->UsesSideRows(stage))
+    return true;
+  return std::ranges::any_of(row_tables_, [stage](const auto& table) {
+    return table && table->config.weight.stage == stage;
+  });
+}
+
 ModelRunner::TapRows ModelRunner::HeldTapRows(std::uint32_t slot, std::size_t stage) const {
   const std::size_t at = (std::size_t{slot} * slots_.stages()) + stage;
   const std::uint32_t committed = slots_.positions(slot);
@@ -997,9 +1020,16 @@ Status ModelRunner::SetupRowTables() {
       table->capacity =
           std::max(table->capacity, std::uint64_t{shape.rows()} * config.rows_per_token);
     }
-    auto ring = providers::OpenStorage(64);
-    if (!ring) return Error(std::format("row-table storage: {}", ring.error().message()));
-    table->storage = std::move(*ring);
+    if (config_.row_storage) {
+      auto ring = config_.row_storage(64);
+      if (!ring || *ring == nullptr)
+        return Error(std::format("row-table storage: {}", ring ? "none given" : ring.error()));
+      table->storage = std::move(*ring);
+    } else {
+      auto ring = providers::OpenStorage(64);
+      if (!ring) return Error(std::format("row-table storage: {}", ring.error().message()));
+      table->storage = std::move(*ring);
+    }
     row_tables_.push_back(std::move(table));
     auto& held = *row_tables_.back();  // stable through partial setup and release
     std::uint64_t slot_bytes = 0, source_bytes = 0;
@@ -1125,36 +1155,60 @@ Status ModelRunner::Bind() {
   return {};
 }
 
-Status ModelRunner::RetireAfterFence() {
+bool ModelRunner::flights_unproven() const noexcept {
+  return routed_flight_.held() || (step_flight_.held() && step_flight_->unproven());
+}
+
+bool ModelRunner::unproven() const noexcept {
+  return flights_unproven() || std::ranges::any_of(row_tables_, [](const auto& table) {
+           return table && table->reads_unproven;
+         });
+}
+
+bool ModelRunner::SettleRowReads(RowTableState& table) {
+  if (!table.reads_unproven) return true;
+  if (!table.storage) {
+    table.reads_unproven = false;
+    return true;
+  }
+  // Polled, never waited on: each completion is a stalled read's own end,
+  // and its token an earlier plan's (ReadPleRows restarts them at 0), so it
+  // is discarded before the ring is used again.
+  std::array<providers::IoCompletion, 64> done{};
+  while (table.storage->Harvest(done, false) != 0) {
+  }
+  if (table.storage->in_flight() != 0) return false;
+  table.reads_unproven = false;
+  return true;
+}
+
+void ModelRunner::ClearAfterFence(const FenceProof& proof) {
+  step_flight_.Clear(proof);
+  routed_flight_.Clear(proof);
+  for (auto& table : row_tables_) {
+    if (table) (void)SettleRowReads(*table);
+  }
+}
+
+Status ModelRunner::RetireAfterFence(const FenceProof& proof) {
   // PagedNode alone authenticates completed stream fences. Internal flights
   // may now release their unknown-work cycles; external views keep the actual
   // environment alive and refuse physical teardown until their last drop.
   closing_ = true;
   if (programs_.launch()) programs_.launch()->Retire();
-  unproven_.ClearAfterFence();
-  for (auto& table : row_tables_) {
-    if (table && (!table->storage || table->storage->in_flight() == 0)) {
-      table->unproven.ClearAfterFence();
-    }
-  }
+  ClearAfterFence(proof);
   if (resource_leases_.load(std::memory_order_acquire) != 0)
     return Error("private resource views still retain this runner's launch and backing");
   return {};
 }
 
-Status ModelRunner::AcknowledgeFence() {
+Status ModelRunner::AcknowledgeFence(const FenceProof& proof) {
   // As RetireAfterFence, without closing: a recovery's fence proved that the
   // work an unproven step or route left queued has ended, so their owners
   // go, and the plans that work may have used are dropped with them.
   if (released_ || closing_) return {};
   if (batch_active_) return Error("a private batch still holds the runner after its fence");
-  unproven_.ClearAfterFence();
-  slots_.AcknowledgeFence();
-  for (auto& table : row_tables_) {
-    if (table && (!table->storage || table->storage->in_flight() == 0)) {
-      table->unproven.ClearAfterFence();
-    }
-  }
+  ClearAfterFence(proof);
   DropPlans();
   return {};
 }
@@ -1165,14 +1219,15 @@ Status ModelRunner::Release() {
     return Error("private resource views still retain this runner's launch and backing");
   if (lifetime_ && !closing_)
     return Error("a retained runner requires node-authenticated drain before release");
+  // Release's contract is node teardown after its stream fences, which
+  // cleared the flights with their proof (RetireAfterFence); a flight still
+  // unproven here was never fenced, and keeps everything it uses.
+  if (flights_unproven())
+    return Error("an unproven step or route retains the runner until its stream is fenced");
   released_ = true;
-  // Release's existing contract is node teardown after successful drain and
-  // stream fences. Only that proof may break a retained routed-owner cycle.
-  unproven_.ClearAfterFence();
+  // A ring's stalled reads that landed since are harvested: then it goes.
   for (auto& table : row_tables_) {
-    if (table && (!table->storage || table->storage->in_flight() == 0)) {
-      table->unproven.ClearAfterFence();
-    }
+    if (table) (void)SettleRowReads(*table);
   }
   // The recordings name the launch and the memory: they go first (D-090).
   DropPlans();
@@ -1199,8 +1254,7 @@ Status ModelRunner::Release() {
 // --------------------------------------------------------------------- plans
 
 void ModelRunner::DropPlans() {
-  if (!batch_active_ && !unproven_.has_routed() &&
-      (!unproven_.step() || !unproven_.step()->unproven())) {
+  if (!batch_active_ && !flights_unproven()) {
     ForgetCompletedRouting();
     plans_.Clear();
   }
@@ -1214,9 +1268,7 @@ void ModelRunner::ReclaimCandidates(std::uint32_t owner, bool running,
 }
 
 std::uint64_t ModelRunner::Reclaim(memory::ReclaimKind kind, std::uint64_t id) {
-  if (released_ || slots_.faulted() || batch_active_ || unproven_.has_routed() ||
-      (unproven_.step() && unproven_.step()->unproven()))
-    return 0;
+  if (released_ || slots_.faulted() || batch_active_ || flights_unproven()) return 0;
   std::array<PlanCacheBase*, 1> caches{&plans_};
   ForgetCompletedRouting();
   return ReclaimPlan(caches, kind, id);
@@ -1437,13 +1489,13 @@ std::expected<void, StepRefusal> ModelRunner::Admit(const pl::Segment& segment, 
 std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& request) {
   if (batch_active_ && request.batch.data_ != batch_active_)
     return Refused("the runner is inside another owned complete batch");
-  if (unproven_.has_step()) return Refused("a step retains unproven effects", false);
+  if (step_flight_.held()) return Refused("a step retains unproven effects", false);
   auto transaction = StepTransaction::Begin(*this, request);
   if (!transaction) return std::unexpected(std::move(transaction.error()));
-  unproven_.RetainStep(std::move(*transaction));
-  auto result = unproven_.step()->Run(request);
-  if (unproven_.step()->releasable())
-    unproven_.ReleaseStep();
+  step_flight_.Retain(std::move(*transaction));
+  auto result = step_flight_->Run(request);
+  if (step_flight_->releasable())
+    step_flight_.ReleaseRetired();
   else if (!result)
     result.error().clean = false;
   return result;

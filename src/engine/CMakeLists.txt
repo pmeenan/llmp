@@ -34,7 +34,7 @@ add_library(llmp_engine_core STATIC paged_node.cc paged_node_regions.cc paged_no
                                       plan_account.cc coverage.cc program_lifecycle.cc step_runs.cc step_source.cc model_runner.cc runner_owner.cc
                                       step_transaction.cc step_inputs.cc
                                       wave_composer.cc prefill.cc decoding.cc component_source.cc graph_plan.cc
-                                      draft_companions.cc batch_inventory.cc batch_resources.cc execution_contract.cc
+                                      prompt_wave.cc batch_inventory.cc batch_resources.cc execution_contract.cc
                                       supplemental_run.cc model_runner_routed.cc staged_execution.cc)
 target_include_directories(llmp_engine_core PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_engine_core PUBLIC llmp_scheduler llmp_memory llmp_storage

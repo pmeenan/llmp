@@ -54,7 +54,6 @@
 
 #include "catalog/catalog.h"
 #include "engine/paged_node.h"
-#include "engine/unproven_work.h"
 #include "kernels/paging/paging.h"
 #include "platform/kept_files.h"
 #include "providers/device_execution.h"
@@ -144,9 +143,12 @@ class LiveState {
   // Copies only these initialized ranges, packed in their given order,
   // between state and the caller's sufficiently large pinned buffer.
   enum class CopyRetirement : std::uint8_t { kProven, kUnproven };
-  // Optional ownership result: pre-dispatch refusal is proven. A failed
-  // posted copy is conservatively unproven; the caller must stop further
-  // shared-stream work and retain its owners, as KeepPinned already does.
+  // Optional ownership result: a refusal before submission, or a failure
+  // whose fence was seen, is proven (the buffer stays the caller's). A
+  // posted copy whose end is unproven hands the buffer to the node's
+  // quarantine on `stream` (PagedNode::KeepPinned), which frees it once a
+  // fence of that stream proves the copy ended; the caller must stop further
+  // shared-stream work, retain its owners and never touch the buffer again.
   Status Copy(PagedNode& node, const catalog::Closure& fence, std::uint32_t stream, void* host,
               std::span<const Range> ranges, bool to_host, CopyRetirement* retirement = nullptr);
   std::size_t regions() const { return regions_.size(); }
@@ -245,32 +247,6 @@ class LiveState {
   // Kept zeroed backing (ZeroForReuse) not in the state: what teardown
   // must evict besides extents().
   std::vector<catalog::ExtentId> kept_extents() const;
-  // Every region read to the host (a job), one output per region (empty
-  // for a region not added).
-  Status Read(PagedNode& node, const catalog::Closure& fence, std::uint32_t stream,
-              std::string_view what, std::span<std::vector<std::byte>* const> out,
-              CopyRetirement* retirement = nullptr);
-  // Pinned host memory of total_bytes() (allocated on first use; null if
-  // that failed): Read's copy, and a harness's scratch.
-  void* HostCopy(PagedNode& node, std::uint64_t bytes = 0);
-  // A failed copy may still own the DMA destination. Keep it until fenced or
-  // exit and refuse subsequent reuse, even when the requested size is smaller.
-  void HostCopyUnproven(std::optional<std::uint32_t> stream = std::nullopt) {
-    host_copy_unproven_.Mark();
-    if (host_node_ != nullptr && host_copy_ != nullptr) {
-      host_node_->KeepPinned(host_copy_, stream);
-    }
-    host_copy_ = nullptr;
-    host_capacity_ = 0;
-  }
-  void AcknowledgeFence() noexcept {
-    if (host_copy_unproven_.active()) {
-      host_copy_unproven_.ClearAfterFence();
-      host_copy_ = nullptr;
-      host_capacity_ = 0;
-    }
-  }
-
   // ------------------------------------------------------------- the guard
 
   bool quarantined() const { return quarantined_; }
@@ -386,10 +362,6 @@ class LiveState {
   bool zeroed_ = false;
   std::optional<platform::FileIdentity> spill_identity_;
   std::string spill_note_;
-  void* host_copy_ = nullptr;
-  PagedNode* host_node_ = nullptr;
-  std::uint64_t host_capacity_ = 0;
-  UnprovenWork host_copy_unproven_;
   bool quarantined_ = false;
   std::uint64_t refused_bytes_ = 0;  // refused_bytes()
 

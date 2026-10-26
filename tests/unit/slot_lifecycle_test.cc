@@ -1495,9 +1495,12 @@ TEST_F(LowCapacitySlotTest, AnAdoptedRestoreRefusedPartwayResumesFromTheFiles) {
 
 TEST_F(SlotLifecycleTest, RecoverInPlaceRefusesWhileStreamHasUnprovenPinnedWork) {
   Select({0});
-  en::LiveState scratch("scratch");
-  ASSERT_NE(scratch.HostCopy(node_, 256), nullptr);
-  scratch.HostCopyUnproven(0U);
+  // A copy's buffer whose end is unproven, in the node's quarantine on the
+  // slots' stream.
+  std::vector<llmp::catalog::ExtentId> staging;
+  auto scratch = node_.Pinned(256, 0, staging);
+  ASSERT_TRUE(scratch);
+  node_.KeepPinned(*scratch, 0U);
   EXPECT_TRUE(node_.HasUnprovenWork(0U));
   EXPECT_FALSE(slots().RecoverInPlace());
   ASSERT_TRUE(node_.FenceStream(0U));
