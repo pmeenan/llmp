@@ -7,6 +7,7 @@
 #include <set>
 #include <string_view>
 
+#include "base/sha256.h"
 #include "spec/stored.h"
 
 namespace llmp::import {
@@ -17,7 +18,8 @@ std::unexpected<Error> Refuse(std::string_view reason, Rule rule = Rule::kConfig
 }  // namespace
 std::expected<void, Error> ValidateImageComponentReuse(
     const ComponentPlan& plan, const artifact::Artifact& artifact,
-    std::span<const std::optional<base::Sha256Digest>> expected, std::uint64_t metadata_bytes) {
+    std::span<const std::optional<base::Sha256Digest>> expected, std::uint64_t metadata_bytes,
+    std::string_view options) {
   const auto& source = plan.checkpoint;
   if (artifact.format_version() != 1 || source.role.empty() || source.files.empty() ||
       expected.size() != source.files.size() || artifact.sources().size() != source.files.size() ||
@@ -29,6 +31,20 @@ std::expected<void, Error> ValidateImageComponentReuse(
       plan.canonical.container != source.container ||
       plan.spec.pipeline != spec::PipelineKind::kImage)
     return Refuse("reused image component architecture or container differs from its plan");
+  // The mapping, its version and the options that planned it, and what the
+  // importer did to the bytes: a component plan copies whole source tensors,
+  // so it applies no fold or relayout. A route, permutation or relayout fix
+  // that keeps names, formats and the spec bumps the mapping's version.
+  const auto& importer = artifact.converter();
+  if (plan.mapping_architecture.empty() || plan.mapping_version == 0 ||
+      importer.mapping_architecture != plan.mapping_architecture ||
+      importer.mapping_version != plan.mapping_version)
+    return Refuse("reused image component was planned by another mapping or mapping version");
+  if (importer.options_sha256 != base::Sha256().Update(options).Finish())
+    return Refuse("reused image component was imported with other options");
+  if (!artifact.folds().empty() || !artifact.source_folds().empty() ||
+      !artifact.relayouts().empty())
+    return Refuse("reused image component records transformations its plan does not make");
   const auto text = artifact.spec_json();
   if (!text) return Refuse("reused image component has no stored spec");
   // The parser's nodes/indices and strings are bounded by document bytes.

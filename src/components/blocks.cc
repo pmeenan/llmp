@@ -134,7 +134,8 @@ constexpr std::array kEmbeddingParams{
               .most = 1e6,
               .fallback = 1.0},
 };
-constexpr std::array kEmbeddingRoles{WeightRole{.name = "table"}};
+constexpr std::array kEmbeddingRoles{
+    WeightRole{.name = "table", .import_transform = {.row_table = true}}};
 
 std::expected<std::vector<RoleShape>, std::string> EmbeddingShapes(const Instance& in) {
   return std::vector<RoleShape>{Role(0, {in.stage.width, 0})};
@@ -193,7 +194,9 @@ constexpr std::array kProjectedParams{
               .fallback = 16},
 };
 enum : std::uint16_t { kTable, kProjection };
-constexpr std::array kProjectedRoles{WeightRole{.name = "table"}, WeightRole{.name = "projection"}};
+constexpr std::array kProjectedRoles{
+    WeightRole{.name = "table", .import_transform = {.row_table = true}},
+    WeightRole{.name = "projection"}};
 
 std::uint64_t FeatureWidth(const Instance& in) {
   return static_cast<std::uint64_t>(in.params.Int("feature"));

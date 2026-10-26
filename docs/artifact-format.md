@@ -50,14 +50,24 @@ prefix receipt, hashes the complete file and writes its selected ranges.
 An archive manifest supplies an additional required complete-file identity.
 Changed identity, size, parsed bytes or archive hash abandons the private
 staging directory. Sparse zero padding is included in shard and chunk hashes.
-After structural, embedded-spec and complete-file/chunk verification, the
-writer syncs the staged files and directories and publishes by one rename.
-New store ancestors and archive catalog/event directories are synced along
-with their containing directories before reporting durable publication.
-An existing artifact is verified before reuse. The writer serializes
-publication with `.staging/native-import.lock`; incomplete private staging
-directories are never installed artifacts. Its orphan sweep removes abandoned
-job directories only after acquiring their locks.
+After the streams, one read of each written shard computes its SHA-256 and,
+as the same bytes pass, its groups' chunk digests; shards are read and synced
+in parallel (up to eight workers; a worker thread the system cannot create
+aborts the import, which publishes nothing, D-116 as amended). After structural and embedded-spec
+verification, the writer syncs the staged files and directories and publishes
+by one rename. New store ancestors and archive catalog/event directories are
+synced along with their containing directories before reporting durable
+publication. An existing artifact of the identity the import computed is
+reused after structural verification (its listed sizes, shard headers, index
+and stored spec) without re-reading its payload: its manifest lists exactly
+the file and chunk digests the import computed from the bytes it wrote, and
+payload deep verification is install-time work (D-054). The writer serializes
+publication with `.staging/native-import.lock`, which `llmp import` takes
+before it plans and holds through every publication of the import (an image
+pipeline's components and composition), so a second import into the store
+fails at once; incomplete private staging directories are never installed
+artifacts. Its orphan sweep removes abandoned job directories only after
+acquiring their locks.
 
 ### Historical ModelOpt publication evidence (M3.6)
 

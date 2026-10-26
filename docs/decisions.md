@@ -149,6 +149,32 @@ Import success alone is not a serving, quality or performance qualification.
 semantic metadata in these declarative mappings without checkpoint-specific
 execution code.
 
+*Amended 2026-10-26 (M3.5 review fix F9: classification by default).* A
+transformers-style config (safetensors, MLX, EXL3) has no default
+classification: a key its mapping neither reads nor lists in its auxiliary
+namespaces is refused, unless it is one of one shared list of provenance keys
+(`spec::HfProvenanceKeys`: framework and output options, tokenizer and media
+token ids, generation defaults, training-only options), a sub-config's
+(`text_config.` and the like) included, so a math-bearing key a new dialect
+adds is refused instead of dropped. GGUF keeps its rule: its own namespace
+refuses, other unread keys are provenance with a warning. An image
+component's `config.json` (a safetensors component's) is classified too: read
+by its mapping (a parameter or requirement of its role, its recipe's source
+keys), listed with its reason (`ImageComponentRule::auxiliary`, a configured
+spatial mapping's `auxiliary`), required absent or null (`null_keys`,
+`null_semantics`), or shared provenance (the HF list and the diffusers keys);
+any other refuses. An image requirement may be optional (absent holds as its
+value). The importer's role-driven transforms (head-ordering permutations,
+singleton squeezes, row-interleaved tables, expert projections and their
+stacking) are declared by the component catalog's roles
+(`components::ImportTransform`, `ComponentDef::head_ordering`), as derived
+parameter folds are, and expert tables are classified by the selected mapping
+alone. Re-imports on `spark-b` reproduce the published artifacts byte for byte
+(Gemma 4 31B GGUF, the Qwen3.8 ModelOpt target and its MTP drafter, the Qwen3.8
+MLX target, both Qwen2.5 EXL3 fixtures, Ming's configured VAE and transformer);
+Qwen-Image's components keep every file and change only by D-109's new
+mapping record.
+
 ## D-124: Physical memory modes: dedicated node pool versus shared-machine mode (2026-10-21, status: accepted by the owner, 2026-10-25, as amended that day (below); implements memory pool preallocation and shared-workstation operational profiles; amends D-004, D-006, D-096, D-097)
 
 **Decision.** Physical memory management operates in two explicit operational modes configured via `[memory] mode = "dedicated" | "shared"` (with optional `[memory] budget_gib = <int>`, defaulting to 0 for full detected capacity):
@@ -716,6 +742,33 @@ CLI's semantics, so the next product MINOR becomes 0.2.0 under D-062; exit
 meanings remain 0/1/2. Container-aware mapping lookup, declared folds and
 derived policy gates are internal data-model changes, not new stored fields.
 
+*Amended 2026-10-26 (M3.5 review fix F9: publication passes and the store
+lock).* After the source streams the writer reads each written shard once,
+computing its SHA-256 and its groups' chunk digests together, shards in
+parallel (up to eight workers); the staged job is not deep-verified again
+(that read is of the bytes just hashed). A worker thread the system cannot
+create aborts the import (the build has no exceptions, and the owner accepts
+this): nothing is published, and the next import's lock sweeps its staging
+job. An existing artifact of the identity
+the import computed is reused after structural verification (manifest
+identity, listed sizes, shard headers, index, stored spec) without re-reading
+its payload: its manifest lists exactly the digests this import computed, and
+payload deep verification is install-time work (D-054). "Existing content is
+fully verified before reuse" above is superseded: damage that keeps every
+file's size is not found by a re-import. `llmp import` takes the store's
+native import lock before planning (each path's first bound) and holds it
+through every publication of the import, so a second import into the store
+fails then, at once; argument and source checks before it leave the store
+untouched, and a refusal after it leaves the store holding only its staging
+lock. Measured on `spark-b` (main `66ba9fc2` against this change, wall
+times): Gemma 4 31B UD-Q4_K_XL (18.8 GB GGUF) first import 86.8 s before,
+21.1 s after, a re-import of its existing ID 94.9 s before, 21.3 s after
+(warm source page cache), the same ID `090809981d…` both ways; the Qwen3.8
+Flash Next MLX target (106 GB) 1,016 s before (beside a shared test run for
+part of it), 276 s after, the same ID `44ef8f91…`; the Qwen-Image-2.1
+pipeline (31 GB) 138 s before, 66 s after. Exit meanings and arguments are
+unchanged.
+
 ## D-115: One archive checkpoint writer, enforced across hosts by atomic NAS directory ownership  (2026-10-10, status: accepted by the owner's single-writer requirement; supersedes D-114's lock-free checkpoint claims)
 
 **Decision.** Checkpoint writer protocol version 2 serializes normal
@@ -1158,6 +1211,18 @@ ordinary source import, and the composition keeps normal publication and archive
 provenance checks. Without this option, ordinary import is unchanged. D-122's
 stored-topology re-import can therefore replace only changed stages and their
 composition while retaining an unchanged text component.
+
+*Amended 2026-10-26 (M3.5 review fix F9).* The match set adds the planning
+mapping: image component artifacts (a pipeline's components and configured
+spatial components) record the mapping that planned them and its version in
+the manifest's importer, and reuse requires the plan's mapping architecture
+and version, the plan's options digest, and no recorded fold, source fold or
+relayout (a component plan copies whole tensors). A route, permutation or
+relayout fix that keeps names, formats and the spec bumps the mapping's
+version and so refuses reuse. Image component artifacts published before
+record no mapping: they still open and serve, but are not reusable until
+re-imported (their IDs change; specs and tensor inventories do not). The
+importer's own version is not compared, so reuse survives releases.
 
 **Decision.**
 

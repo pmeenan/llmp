@@ -86,7 +86,8 @@ constexpr std::array kNgramParams{
     ParamSpec{.name = "offsets", .type = ParamType::kInts, .least = 0, .most = kInt64},
     ParamSpec{.name = "vocab", .type = ParamType::kInts, .least = 1, .most = kInt64},
 };
-constexpr std::array kNgramRoles{WeightRole{.name = "table", .rows_on_demand = true}};
+constexpr std::array kNgramRoles{
+    WeightRole{.name = "table", .rows_on_demand = true, .import_transform = {.row_table = true}}};
 
 std::uint64_t NgramHeads(const Instance& in) {
   return static_cast<std::uint64_t>(in.params.Int("ngram") - 1) *
@@ -208,7 +209,10 @@ constexpr std::array kPleRoles{
     WeightRole{.name = "norm_key", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
     WeightRole{.name = "norm_query", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
     WeightRole{.name = "norm_conv", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
-    WeightRole{.name = "conv", .encodings = kNormEncodings},
+    // A converter's [channels, 1, kernel] convolution: the unit axis dropped.
+    WeightRole{.name = "conv",
+               .encodings = kNormEncodings,
+               .import_transform = {.squeeze_rank = 3, .squeeze_axes = 0b011}},
 };
 
 struct PleDims {
@@ -453,7 +457,7 @@ constexpr std::array kMtpParams{
 };
 enum : std::uint16_t { kTable, kNormEmbd, kFcEmbd, kNormHidden, kFcHidden };
 constexpr std::array kMtpRoles{
-    WeightRole{.name = "table"},
+    WeightRole{.name = "table", .import_transform = {.row_table = true}},
     WeightRole{.name = "norm_embd", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
     WeightRole{.name = "fc_embd"},
     WeightRole{.name = "norm_hidden", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},

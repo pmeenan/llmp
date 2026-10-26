@@ -1245,6 +1245,12 @@ constexpr std::array kQwen38TargetNativeAuxiliary = {
     AuxiliaryNamespace{"mtp.", "MTP drafter configuration"},
     AuxiliaryNamespace{"mtp_num_hidden_layers", "MTP drafter layer count"},
     AuxiliaryNamespace{"text_config.model_type", "nested text configuration model_type"},
+    AuxiliaryNamespace{"text_config.intermediate_size",
+                       "dense FFN width; every imported layer routes its experts (a dense layer's "
+                       "tensors have no rule and are refused)"},
+    AuxiliaryNamespace{
+        "text_config.mtp_use_dedicated_embeddings",
+        "MTP drafter embedding sharing (the drafter's own import reads its tensors)"},
 };
 constexpr std::array kQwen38MtpNativeAuxiliary = {
     AuxiliaryNamespace{"full_attention_interval",
@@ -1277,6 +1283,10 @@ constexpr std::array kQwen38MtpNativeAuxiliary = {
     AuxiliaryNamespace{"num_hidden_layers", "target layer count"},
     AuxiliaryNamespace{"mtp.", "MTP drafter nested config"},
     AuxiliaryNamespace{"text_config.model_type", "nested text configuration model_type"},
+    AuxiliaryNamespace{"text_config.intermediate_size",
+                       "dense FFN width; the drafter's block routes its experts"},
+    AuxiliaryNamespace{"text_config.mtp_use_dedicated_embeddings",
+                       "MTP embedding sharing: the drafter borrows its target's table"},
 };
 constexpr std::array kMtpNativeTensorAliases = {
     TensorAlias{"mtp.fc_embedding.weight", "fc_embd.weight"},

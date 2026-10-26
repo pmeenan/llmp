@@ -896,6 +896,20 @@ TEST(ImportNormalizeTest, MalformedDeclarationsAndSemanticAliasesAreRefused) {
   const std::array aux{AuxiliaryNamespace{"gemma2.", "must not swallow model keys"}};
   table.auxiliary = aux;
   EXPECT_FALSE(ValidateImportMapping(table, "gguf"));
+  // Auxiliary entries overlap when one key matches both: two whole keys
+  // that share a spelling's start are distinct; a prefix covers its keys.
+  const std::array distinct{AuxiliaryNamespace{"note", "a whole key"},
+                            AuxiliaryNamespace{"note_more", "another whole key"}};
+  table.auxiliary = distinct;
+  EXPECT_TRUE(ValidateImportMapping(table, "gguf"));
+  const std::array covered{AuxiliaryNamespace{"note.", "a prefix"},
+                           AuxiliaryNamespace{"note.more", "a key under it"}};
+  table.auxiliary = covered;
+  EXPECT_FALSE(ValidateImportMapping(table, "gguf"));
+  const std::array twice{AuxiliaryNamespace{"note", "a whole key"},
+                         AuxiliaryNamespace{"note", "the same key"}};
+  table.auxiliary = twice;
+  EXPECT_FALSE(ValidateImportMapping(table, "gguf"));
   table = selected->mapping;
   table.pipeline = static_cast<spec::PipelineKind>(255);
   EXPECT_FALSE(ValidateImportMapping(table, "gguf"));
@@ -2188,6 +2202,52 @@ TEST(ImportNormalizeSafetensorsTest, RealisticTransformersConfigNormalizesWithEi
   }
 }
 
+// A transformers config's key its mapping neither reads nor classifies is
+// refused unless it is shared provenance (spec::HfProvenanceKeys), a
+// sub-config's too: nothing math-bearing is dropped silently.
+TEST(ImportNormalizeSafetensorsTest, UnclassifiedConfigKeysRefuseAndSharedProvenanceIsNamed) {
+  const auto entries = fixtures::TinyQwen2HfEntries();
+  const auto with = [](std::string_view extra) {
+    auto config = fixtures::TinyQwen2HfConfig();
+    config.insert(config.rfind('}'), std::string(",") + std::string(extra));
+    return config;
+  };
+  auto input =
+      ParseSafetensors(fixtures::Shard(entries),
+                       with(R"("text_config":{"use_cache":true},"chunk_size_feed_forward":0)"));
+  ASSERT_TRUE(input) << test_support::Failed(input, &Error::ToString).value_or("");
+  auto bound = NormalizationBound(*input);
+  ASSERT_TRUE(bound) << test_support::Failed(bound, &Error::ToString).value_or("");
+  auto plan = test_support::NormalizeWithFixtureTarget(std::move(*input),
+                                                       {bound->metadata_bytes, bound->work_units});
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  for (const auto& [key, entry] : std::array<std::pair<std::string_view, std::string_view>, 4>{
+           {{"output_attentions", "output_attentions"},
+            {"generation_config.top_k", "generation_config."},
+            {"text_config.use_cache", "use_cache"},
+            {"chunk_size_feed_forward", "chunk_size_feed_forward"}}}) {
+    const auto at = std::ranges::find(plan->source().metadata, key, &MetaEntry::key);
+    ASSERT_NE(at, plan->source().metadata.end()) << key;
+    const auto use =
+        plan->metadata()[static_cast<std::size_t>(at - plan->source().metadata.begin())];
+    EXPECT_EQ(use.classification, MetadataClass::kAuxiliary) << key;
+    EXPECT_EQ(plan->auxiliary_namespaces()[use.destination].prefix, entry) << key;
+  }
+  for (const std::string_view extra :
+       {R"("new_training_note":{"anything":true})", R"("embedding_multiplier":12.0)",
+        R"("logits_scaling":8.0)", R"("text_config":{"residual_multiplier":0.22})"}) {
+    auto unknown = ParseSafetensors(fixtures::Shard(entries), with(extra));
+    ASSERT_TRUE(unknown) << extra;
+    const auto refused = NormalizationBound(*unknown);
+    ASSERT_FALSE(refused) << extra;
+    EXPECT_EQ(refused.error().kind, ItemKind::kKey) << extra;
+    EXPECT_EQ(refused.error().reason,
+              "a configuration key its mapping neither reads nor classifies, and not known "
+              "provenance")
+        << extra;
+  }
+}
+
 TEST(ImportNormalizeSafetensorsTest, ModelOptMxfp4SafetensorsNormalizesAndRoutesEveryPart) {
   auto entries = fixtures::TinyQwen2HfEntries();
   for (auto& entry : entries) {
@@ -2583,7 +2643,8 @@ TEST(ImportNormalizeSafetensorsTest, Gemma4NativeDirectGammaPreservesEveryNormRo
           "sliding_attention":{"rope_type":"default","rope_theta":10000}})") +
                             (moe ? R"(,"enable_moe_block":true,"num_experts":4,
                               "top_k_experts":2,"moe_intermediate_size":8}})"
-                                 : R"(,"enable_moe_block":false}})");
+                                 : R"(,"enable_moe_block":false,
+                              "expert_intermediate_size":null}})");
         auto bytes = fixtures::Shard(entries, mlx ? R"({"format":"mlx"})" : "");
         std::size_t payload = 0;
         for (const auto& e : entries) payload += e.bytes;
@@ -2603,6 +2664,19 @@ TEST(ImportNormalizeSafetensorsTest, Gemma4NativeDirectGammaPreservesEveryNormRo
         }
         auto source = mlx ? ParseMlx(bytes, config) : ParseSafetensors(bytes, config);
         ASSERT_TRUE(source) << test_support::Failed(source, &Error::ToString).value_or("");
+        if (!moe) {
+          // A dense release's absent experts' width is null (Gemma 4 31B,
+          // E2B and E4B state it so); a width given is read by nothing and
+          // refuses.
+          auto stated = config;
+          stated.replace(stated.find(R"("expert_intermediate_size":null)"), 31,
+                         R"("expert_intermediate_size":8)");
+          auto widened = mlx ? ParseMlx(bytes, stated) : ParseSafetensors(bytes, stated);
+          ASSERT_TRUE(widened);
+          const auto refused = NormalizationBound(*widened);
+          ASSERT_FALSE(refused);
+          EXPECT_EQ(refused.error().kind, ItemKind::kKey);
+        }
         auto plan = Normalize(std::move(*source), kFunded);
         ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
         ASSERT_TRUE(plan->is_indexed());

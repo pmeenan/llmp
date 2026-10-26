@@ -136,6 +136,39 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- `llmp import` publishes faster: one parallel read of each written shard
+  computes its file and chunk digests (the four read-backs and five hash
+  passes of the output are now one read and the source stream), and
+  re-importing an existing artifact no longer re-reads its payload (it is
+  structurally verified; payload deep verification is install-time work).
+  On `spark-b` a 18.8 GB Gemma 4 31B GGUF imports in 21.1 s (86.8 s before)
+  and re-imports in 21.3 s (94.9 s), the 106 GB Qwen3.8 MLX target in 276 s
+  (1,016 s) and the 31 GB Qwen-Image pipeline in 66 s (138 s), each the same
+  payload as before. The store's import lock is
+  taken before planning, so a second import into the store fails at once
+  (D-116 as amended 2026-10-26).
+- A safetensors, MLX or EXL3 config key the mapping neither reads nor
+  classifies is refused instead of being kept as unread provenance, except
+  one shared list of provenance keys (framework options, tokenizer and media
+  token ids, generation defaults); image components' `config.json` keys are
+  classified the same way (D-125 as amended 2026-10-26).
+- `--reuse-component` also requires the artifact's planning mapping, its
+  version and the import options to match, and no recorded fold or relayout;
+  image component manifests now record their mapping (re-import an image
+  component to make it reusable; its ID changes, its spec does not; D-109 as
+  amended 2026-10-26).
+- The importer's role-driven transforms (GDN head tiling, convolution and
+  shared-gate squeezes, row-interleaved tables, expert projections) are
+  declared by the component catalog, and expert tables are classified by the
+  selected mapping alone, never by scanning every registered mapping.
+- `llmp_import_fuzz` reaches the safetensors gathers, expert relayouts, GDN
+  permutations, HF FP8 blocks, ModelOpt MXFP4 and NVFP4, MLX MXFP8 and affine
+  modes, the configured spatial recipes and image component reuse (branches
+  0x80 to 0x82, ten new seeds in `tests/unit/data/import_fuzz/`;
+  `--save-last=PATH` keeps the input in flight for replaying an abort):
+  `--corpus=tests/unit/data/import_fuzz --iterations=10000`, seed `20261021`,
+  20 seeds, 4.77 s on `spark-b` `spark-native`, 2026-10-26, 0 failures
+  (100,000 iterations: 46.8 s, 0 failures).
 - Output already generated is host-only work: a cohort whose members only
   wait for their clients to read no longer swaps its model back in (or fails
   a finished reply when that swap is refused), a member whose generation is

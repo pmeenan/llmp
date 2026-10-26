@@ -25,6 +25,7 @@
 #include "import/expert_relayout.h"
 #include "import/indexed_parts.h"
 #include "kernels/reference/decode.h"
+#include "spec/mapping.h"
 #include "spec/spec.h"
 
 namespace llmp::import {
@@ -402,24 +403,47 @@ TEST(ImportExpertRelayoutTest, RowTablesRelayOutOnlyWhatAKernelReadsInterleaved)
   }
 }
 
-TEST(ImportExpertRelayoutTest, NamesExpertTablesByCanonicalRole) {
-  spec::ModelSpec spec;
-  spec.stages.resize(1);
-  spec.stages[0].layers.resize(13);
-  for (std::uint32_t l = 0; l < 13; ++l) {
-    spec::ComponentRef moe{.kind = "ffn.moe", .version = 1};
-    moe.weights.push_back({.role = "gate_experts",
-                           .tensor = std::format("blk.{}.ffn_gate_exps.weight", l),
-                           .part = PartRole::kCodes});
-    moe.weights.push_back({.role = "up_experts",
-                           .tensor = std::format("blk.{}.ffn_up_exps.weight", l),
-                           .part = PartRole::kCodes});
-    moe.weights.push_back({.role = "down_experts",
-                           .tensor = std::format("blk.{}.ffn_down_exps.weight", l),
-                           .part = PartRole::kCodes});
-    spec.stages[0].layers[l].components.push_back(std::move(moe));
-  }
-  const auto gate = ExpertTableOf(TensorAssembly{.name = "blk.12.ffn_gate_exps.weight"}, 3, &spec);
+// A selected mapping naming one MoE's expert tables a layer by the roles the
+// catalog declares expert projections for (components::ImportTransform).
+constexpr std::array kMoeSlots{spec::SlotRule{.slot = "moe", .kind = "ffn.moe"},
+                               spec::SlotRule{.slot = "ffn", .kind = "ffn.glu"}};
+constexpr std::array kMoeTensors{
+    spec::TensorRule{.pattern = "blk.{layer}.ffn_gate_exps.weight",
+                     .slot = "moe",
+                     .role = "gate_experts",
+                     .part = PartRole::kCodes,
+                     .experts = true},
+    spec::TensorRule{.pattern = "blk.{layer}.ffn_up_exps.weight",
+                     .slot = "moe",
+                     .role = "up_experts",
+                     .part = PartRole::kCodes,
+                     .experts = true},
+    spec::TensorRule{.pattern = "blk.{layer}.ffn_down_exps.weight",
+                     .slot = "moe",
+                     .role = "down_experts",
+                     .part = PartRole::kCodes,
+                     .experts = true},
+    spec::TensorRule{.pattern = "blk.{layer}.ffn_gate_up_exps.weight",
+                     .slot = "moe",
+                     .role = "gate_up_experts",
+                     .part = PartRole::kCodes,
+                     .experts = true},
+    spec::TensorRule{.pattern = "custom.gate.weight",
+                     .slot = "moe",
+                     .role = "gate_experts",
+                     .part = PartRole::kCodes,
+                     .experts = true},
+    // A dense FFN's gate is not an expert table, whatever its name.
+    spec::TensorRule{.pattern = "blk.{layer}.ffn_gate_dense_exps.weight",
+                     .slot = "ffn",
+                     .role = "gate",
+                     .part = PartRole::kCodes},
+};
+constexpr spec::Mapping kMoe{.architecture = "fixture", .slots = kMoeSlots, .tensors = kMoeTensors};
+constexpr spec::Mapping kNone{.architecture = "fixture"};
+
+TEST(ImportExpertRelayoutTest, NamesExpertTablesByCatalogRoleOfTheSelectedMapping) {
+  const auto gate = ExpertTableOf(TensorAssembly{.name = "blk.12.ffn_gate_exps.weight"}, 3, kMoe);
   ASSERT_TRUE(gate && *gate);
   EXPECT_EQ((*gate)->output, 3U);
   EXPECT_EQ((*gate)->moe, 12U);
@@ -427,11 +451,11 @@ TEST(ImportExpertRelayoutTest, NamesExpertTablesByCanonicalRole) {
   EXPECT_EQ((*gate)->name, "blk.12.ffn_gate_exps.weight");
   EXPECT_EQ((*gate)->stacked, "blk.12.ffn_gate_up_exps.weight");
   EXPECT_EQ((*gate)->scales, "blk.12.ffn_gate_exps.weight_scale_2");
-  const auto down = ExpertTableOf(TensorAssembly{.name = "blk.0.ffn_down_exps.weight"}, 0, &spec);
+  const auto down = ExpertTableOf(TensorAssembly{.name = "blk.0.ffn_down_exps.weight"}, 0, kMoe);
   ASSERT_TRUE(down && *down);
   EXPECT_EQ((*down)->projection, ExpertProjection::kDown);
   EXPECT_TRUE((*down)->stacked.empty());
-  const auto up = ExpertTableOf(TensorAssembly{.name = "blk.0.ffn_up_exps.weight"}, 0, &spec);
+  const auto up = ExpertTableOf(TensorAssembly{.name = "blk.0.ffn_up_exps.weight"}, 0, kMoe);
   ASSERT_TRUE(up && *up);
   EXPECT_EQ((*up)->projection, ExpertProjection::kUp);
   for (const std::string_view bad :
@@ -439,11 +463,18 @@ TEST(ImportExpertRelayoutTest, NamesExpertTablesByCanonicalRole) {
         "blk.-1.ffn_gate_exps.weight", "blk.65536.ffn_gate_exps.weight",
         "blk.123456.ffn_gate_exps.weight", "blk.1ffn_gate_exps.weight", "blk_exps.weight",
         "blk.1.ffn_gate_up_exps.weight", "blk.1.ffn_gate_exps.weight_scale",
-        "blk.1.ffn_gate_shexp.weight", "blk.1.2.ffn_gate_exps.weight", "token_embd.weight"}) {
-    const auto res = ExpertTableOf(TensorAssembly{.name = std::string(bad)}, 0, &spec);
+        "blk.1.ffn_gate_shexp.weight", "blk.1.2.ffn_gate_exps.weight", "token_embd.weight",
+        "blk.1.ffn_gate_dense_exps.weight"}) {
+    const auto res = ExpertTableOf(TensorAssembly{.name = std::string(bad)}, 0, kMoe);
     ASSERT_TRUE(res);
     EXPECT_FALSE(*res) << bad;
   }
+  // Only the selected mapping classifies: a name other registered mappings
+  // (Qwen3.8's, DeepSeek's) give an expert table is not one here.
+  const auto foreign =
+      ExpertTableOf(TensorAssembly{.name = "blk.0.ffn_gate_exps.weight"}, 0, kNone);
+  ASSERT_TRUE(foreign);
+  EXPECT_FALSE(*foreign);
 }
 
 // A gate without its MoE's up is relaid out alone, under its own name; a
@@ -454,14 +485,7 @@ TEST(ImportExpertRelayoutTest, LoneGatesKeepTheirNameAndPartlessTablesAreRefused
   for (const auto role : {PartRole::kCodes, PartRole::kBlockScales, PartRole::kTensorScale})
     outputs[0].parts.push_back(
         {.part = role, .kind = PartAssemblyKind::kMatrices, .sources = {0, 1}});
-  spec::ModelSpec spec;
-  spec.stages.resize(1);
-  spec.stages[0].layers.resize(1);
-  spec::ComponentRef moe{.kind = "ffn.moe", .version = 1};
-  moe.weights.push_back(
-      {.role = "gate_experts", .tensor = "blk.0.ffn_gate_exps.weight", .part = PartRole::kCodes});
-  spec.stages[0].layers[0].components.push_back(std::move(moe));
-  const auto gate = ExpertTableOf(outputs[0], 0, &spec);
+  const auto gate = ExpertTableOf(outputs[0], 0, kMoe);
   ASSERT_TRUE(gate && *gate);
   auto lone = outputs;
   auto relaid = RelayoutExpertTables(lone, std::span(&**gate, 1));
@@ -518,37 +542,44 @@ TEST(ImportExpertRelayoutTest, KeepsTablesItCannotRelayLosslesslyAndRefusesBadLi
   EXPECT_FALSE(RelayoutExpertTables(outputs, outside));
 }
 
-TEST(ImportExpertRelayoutTest, RelayoutExpertTablesWithNullSpec) {
-  std::vector<TensorAssembly> outputs(1);
-  outputs[0] = {.name = "blk.0.ffn_gate_exps.weight", .format = Split(64, 128, 2)};
-  for (const auto role : {PartRole::kCodes, PartRole::kBlockScales, PartRole::kTensorScale})
-    outputs[0].parts.push_back(
-        {.part = role, .kind = PartAssemblyKind::kMatrices, .sources = {0, 1}});
-  auto relaid = RelayoutExpertTables(outputs, nullptr);
-  ASSERT_TRUE(relaid);
-  EXPECT_EQ(relaid->tables, 1U);
-}
-
-TEST(ImportExpertRelayoutTest, RelayoutExpertTablesWithSpec) {
-  std::vector<TensorAssembly> outputs(1);
-  outputs[0] = {.name = "custom.gate.weight", .format = Split(64, 128, 2)};
-  for (const auto role : {PartRole::kCodes, PartRole::kBlockScales, PartRole::kTensorScale})
-    outputs[0].parts.push_back(
-        {.part = role, .kind = PartAssemblyKind::kMatrices, .sources = {0, 1}});
-  spec::ModelSpec spec;
-  spec::Stage stage;
-  spec::Layer layer;
-  spec::ComponentRef comp;
-  comp.kind = "ffn.moe";
-  comp.weights.push_back({.role = "gate_experts", .tensor = "custom.gate.weight"});
-  layer.components.push_back(std::move(comp));
-  stage.layers.push_back(std::move(layer));
-  spec.stages.push_back(std::move(stage));
-
-  auto relaid = RelayoutExpertTables(outputs, &spec);
+// The selected mapping's tables relay out; a gate and up stack only within
+// one MoE (one layer's), and a mapping that names no expert tables leaves
+// the outputs as they are.
+TEST(ImportExpertRelayoutTest, RelayoutExpertTablesByTheSelectedMapping) {
+  const auto table = [](std::string name) {
+    TensorAssembly a{.name = std::move(name), .format = Split(64, 128, 2)};
+    for (const auto role : {PartRole::kCodes, PartRole::kBlockScales, PartRole::kTensorScale})
+      a.parts.push_back({.part = role, .kind = PartAssemblyKind::kMatrices, .sources = {0, 1}});
+    return a;
+  };
+  std::vector<TensorAssembly> outputs{table("blk.0.ffn_gate_exps.weight")};
+  auto relaid = RelayoutExpertTables(outputs, kMoe);
   ASSERT_TRUE(relaid);
   EXPECT_EQ(relaid->tables, 1U);
   EXPECT_EQ(outputs[0].format.layout, Layout::kScaleAtoms);
+  std::vector<TensorAssembly> unnamed{table("blk.0.ffn_gate_exps.weight")};
+  auto kept = RelayoutExpertTables(unnamed, kNone);
+  ASSERT_TRUE(kept);
+  EXPECT_EQ(kept->tables, 0U);
+  EXPECT_EQ(unnamed[0].format.layout, Layout::kSplit);
+  std::vector<TensorAssembly> custom{table("custom.gate.weight")};
+  auto named = RelayoutExpertTables(custom, kMoe);
+  ASSERT_TRUE(named);
+  EXPECT_EQ(named->tables, 1U);
+  EXPECT_EQ(custom[0].format.layout, Layout::kScaleAtoms);
+  // A gate and an up of two layers: two MoEs, nothing stacked.
+  std::vector<TensorAssembly> apart{table("blk.0.ffn_gate_exps.weight"),
+                                    table("blk.1.ffn_up_exps.weight")};
+  auto separate = RelayoutExpertTables(apart, kMoe);
+  ASSERT_TRUE(separate);
+  EXPECT_EQ(separate->tables, 2U);
+  EXPECT_EQ(separate->stacked, 0U);
+  std::vector<TensorAssembly> together{table("blk.3.ffn_gate_exps.weight"),
+                                       table("blk.3.ffn_up_exps.weight")};
+  auto stacked = RelayoutExpertTables(together, kMoe);
+  ASSERT_TRUE(stacked);
+  EXPECT_EQ(stacked->stacked, 1U);
+  EXPECT_EQ(together[0].name, "blk.3.ffn_gate_up_exps.weight");
 }
 
 TEST(ImportExpertRelayoutTest, RejectsMissingOrMismatchedTensorScaleSources) {

@@ -488,10 +488,16 @@ std::expected<void, Error> ValidateImportMapping(const spec::Mapping& table,
         return Invalid();
     for (const auto& k : table.key_aliases)
       if (matches_aux_raw(k.source) && k.unless_present.empty()) return Invalid();
-    for (std::size_t j = 0; j < i; ++j)
-      if (a.prefix.starts_with(table.auxiliary[j].prefix) ||
-          table.auxiliary[j].prefix.starts_with(a.prefix))
-        return Invalid();
+    // Two entries overlap when one key matches both: a whole key only one
+    // equal to it or under a prefix ("vocab_size" and "vocab_size_per_layer_input"
+    // are two keys).
+    for (std::size_t j = 0; j < i; ++j) {
+      const auto& b = table.auxiliary[j];
+      const auto covers = [](std::string_view x, std::string_view y) {
+        return x.ends_with('.') ? y.starts_with(x) : x == y;
+      };
+      if (covers(a.prefix, b.prefix) || covers(b.prefix, a.prefix)) return Invalid();
+    }
   }
   for (const auto& r : table.requirements) {
     if (!spec::IsSourceKey(r.key)) return Invalid();

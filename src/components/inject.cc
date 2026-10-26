@@ -52,7 +52,8 @@ constexpr std::array kParams{
     ParamSpec{.name = "cells", .type = ParamType::kInt, .least = 1, .most = 1 << 24},
 };
 enum : std::uint16_t { kTable, kFc, kNorm };
-constexpr std::array kRoles{WeightRole{.name = "table"}, WeightRole{.name = "fc"},
+constexpr std::array kRoles{WeightRole{.name = "table", .import_transform = {.row_table = true}},
+                            WeightRole{.name = "fc"},
                             WeightRole{.name = "norm", .encodings = kF32Only}};
 
 std::uint64_t Taps(const Instance& in) { return static_cast<std::uint64_t>(in.params.Int("taps")); }

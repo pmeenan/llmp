@@ -2652,11 +2652,20 @@ or copying a second payload.
 Unknown tensors (except declared rotary-buffer patterns), duplicate
 aliases, invalid scalar or per-layer list types, unsupported container/family
 pairs, inconsistent formats or file extents, and overlaps through physical
-file aliases refuse. Unread metadata outside declared semantic namespaces is
-retained as provenance with an import warning. Keys in the mapping's own
-architecture namespace (`<architecture>.`, derived from the mapping rather
-than listed), or HF rotary/quantization/attention-scale namespaces, must be
-consumed or refused; adding a converter provenance field is allowed.
+file aliases refuse. Keys in the mapping's own architecture namespace
+(`<architecture>.`, derived from the mapping rather than listed), or HF
+rotary/quantization/attention-scale namespaces, must be consumed or refused.
+A GGUF's unread metadata outside those namespaces is retained as provenance
+with an import warning. A transformers-style config (safetensors, MLX, EXL3)
+keys nothing by default (D-125 as amended 2026-10-26): a key its mapping
+neither reads nor classifies (its auxiliary list) is refused unless it is one
+of the shared provenance keys (`spec::HfProvenanceKeys`: framework options,
+tokenizer and media token ids, generation defaults, training-only options),
+a sub-config's included; a new math-bearing key cannot be dropped silently.
+An image component's `config.json` is classified the same way
+(`ImageComponentRule::auxiliary` and `null_keys`, a configured spatial
+mapping's `auxiliary` and `null_semantics`, with the diffusers provenance
+keys).
 Transformers' `tie_word_embeddings` is read by every Hugging Face table:
 untied, the head must be present (safetensors' `lm_head.weight`, EXL3's
 `lm_head.trellis`) rather than fall back to the token table.
@@ -2958,6 +2967,18 @@ The ModelOpt target folds its 148 zero-centered norms and 36 A vectors
 a win generalized across formats). A stage without the folds (a source
 whose norms or A could not fold whole) reaches the fused patterns with
 them as derived parameters (below).
+
+The importer's other role-driven transforms are declared in the catalog the
+same way (`components::ImportTransform` on the role, 2026-10-26): a head
+ordering fold's permutation (`gdn.value_heads_tiled`: each GDN role's axis,
+unit and the key-head blocks that stay in place, the geometry's parameters in
+`ComponentDef::head_ordering`), a converter's extra unit axis dropped (GDN's
+and the n-gram PLE's convolutions, a MoE's shared gate), a row-gathered
+table's row-interleaved layout, and a MoE's expert projections with the role
+a gate stacks into. `import/normalize.cc` and `import/expert_relayout.cc`
+apply them by role; expert tables are classified by the selected mapping's
+rules alone (never another registered mapping's), paired within one layer's
+MoE.
 
 **Split routed experts in ordinary programs** (2026-10-15). Split-part
 expert arrays (MLX's affine experts; NVFP4 experts a normalization could
@@ -3400,9 +3421,11 @@ This import capability does not qualify a new full generation pipeline.
 For an affected-stage re-import, `llmp import --reuse-component ROLE=ARTIFACT_ID`
 can explicitly retain an unchanged prepared component. Before any publication,
 its complete archive source receipts, canonical spec and tensor inventory must
-match the current plan. This authenticates existing metadata and retains prior
-prepared weights without another payload pass; it does not newly deep-verify
-payload bytes (D-109).
+match the current plan, and its manifest's importer record the plan's mapping,
+mapping version and options, with no fold or relayout (a component plan makes
+none). This authenticates existing metadata and retains prior prepared weights
+without another payload pass; it does not newly deep-verify payload bytes
+(D-109).
 
 ## Partitioning
 

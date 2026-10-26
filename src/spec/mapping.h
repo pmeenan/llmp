@@ -763,6 +763,23 @@ inline constexpr std::size_t kMaxPolicyText = 4096;
 // (a target whose layer types a key gives, layer_type_key, gives none).
 inline constexpr std::string_view kTargetLastLayer = "llmp.target.last_layer.";
 
+// Keys of a transformers (MLX, EXL3) config that never change the math of
+// the model a mapping imports: provenance, framework and training options,
+// tokenizer and media token ids, generation defaults. A key of such a
+// source that its mapping neither reads nor classifies is accepted only as
+// one of these, and otherwise refused, so no math-bearing key is dropped
+// silently (D-125 as amended). Each entry is one whole key, or a prefix
+// ending in '.'.
+std::span<const AuxiliaryNamespace> HfProvenanceKeys();
+// The same for a diffusers component's config.json: its own provenance
+// keys (`_class_name`, `_diffusers_version`, ...) besides the HF ones.
+std::span<const AuxiliaryNamespace> DiffusersProvenanceKeys();
+// The index in `keys` of the entry `key` is: the key itself, or the key
+// under its sub-configs (each leading "<name>_config." segment stripped:
+// "text_config.use_cache" is "use_cache").
+std::optional<std::size_t> ProvenanceIndex(std::span<const AuxiliaryNamespace> keys,
+                                           std::string_view key);
+
 // The compiled mappings, and the one for an architecture.
 std::span<const Mapping* const> Mappings();
 const Mapping* FindMapping(std::span<const Mapping* const> mappings, std::string_view architecture,

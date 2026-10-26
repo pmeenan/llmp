@@ -239,6 +239,11 @@ std::expected<void, std::string> ValidateImageMapping(const ImageMapping& m) {
       if (ignored.empty() || text.contains('{') || !IsSourceKey(text))
         return Refused(std::format("{}: an ignored tensor name that is not a source key", c.role));
     }
+    for (const auto& aux : c.auxiliary)
+      if (!IsSourceKey(aux.prefix) || aux.reason.empty() || !aux.equals_tensor.empty())
+        return Refused(std::format("{}: an invalid configuration key classification", c.role));
+    for (const auto key : c.null_keys)
+      if (!IsSourceKey(key)) return Refused(std::format("{}: an invalid null key", c.role));
   }
   if (m.host_inputs.empty()) return Refused("declared image host inputs");
   for (std::size_t i = 0; i < m.host_inputs.size(); ++i) {
@@ -367,7 +372,7 @@ std::expected<ModelSpec, std::string> SynthesizeImageFamily(
     const auto values = values_of(q.role, q.file);
     if (!values) return Refused(std::format("no {}{} for requirement {}", q.role, q.file, q.key));
     const ParamValue* v = ValueOf(*values, q.key);
-    bool holds = false;
+    bool holds = v == nullptr && q.optional;
     if (v != nullptr) switch (q.type) {
         case ValueType::kInt: {
           const auto* i = std::get_if<std::int64_t>(v);

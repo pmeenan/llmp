@@ -456,6 +456,17 @@ constexpr std::array<std::string_view, 4> kIgnoredTensors{
     "encoder.", "quant_conv.", "decoder.up_blocks.{layer}.upsamplers.0.time_conv.weight",
     "decoder.up_blocks.{layer}.upsamplers.0.time_conv.bias"};
 
+// The config keys the recipe does not read, and why.
+constexpr std::array kAuxiliary{
+    AuxiliaryNamespace{"attn_scales",
+                       "the encoder's attention scales; an attention block they add elsewhere "
+                       "is a tensor the stage does not read, refused"},
+    AuxiliaryNamespace{"temperal_downsample",
+                       "the encoder's temporal steps; one image is one frame (the decoder's "
+                       "time convolutions are left out)"},
+};
+constexpr std::array<std::string_view, 2> kNullKeys{"latents_mean", "latents_std"};
+
 const Mapping kMapping{.architecture = "qwen_image_vae",
                        .source_architectures = kSourceArchitectures,
                        .version = 1,
@@ -464,7 +475,9 @@ const Mapping kMapping{.architecture = "qwen_image_vae",
                        .stage = "vae",
                        .stage_recipe = &kVaeRecipe,
                        .containers = kContainers,
-                       .ignored_tensors = kIgnoredTensors};
+                       .auxiliary = kAuxiliary,
+                       .ignored_tensors = kIgnoredTensors,
+                       .null_semantics = kNullKeys};
 
 }  // namespace
 

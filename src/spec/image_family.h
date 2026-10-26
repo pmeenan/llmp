@@ -72,6 +72,15 @@ struct ImageComponentRule {
   // "{layer}" (once) stands for a block index. Any other tensor its kinds
   // do not read is refused.
   std::span<const std::string_view> ignored_tensors{};
+  // The keys of its config.json (a safetensors component's) the mapping
+  // reads neither as a parameter nor a requirement of its role, each with
+  // the reason it does not change the stage's math (a whole key, or a
+  // prefix ending in '.'), and the keys that must be absent or null (a
+  // feature the stage does not implement). Besides these and the shared
+  // provenance keys (spec::HfProvenanceKeys, DiffusersProvenanceKeys), a
+  // config key is refused (D-125 as amended).
+  std::span<const AuxiliaryNamespace> auxiliary{};
+  std::span<const std::string_view> null_keys{};
 };
 
 // How a family parameter is read: from a component's config (by role) or
@@ -98,6 +107,8 @@ struct ImageRequirement {
   std::string_view key{};
   ValueType type = ValueType::kString;
   Literal value{};
+  // Absent holds as well (the source's default is `value`).
+  bool optional = false;
 };
 
 // Source-owned meanings of host inputs. Stage and port numbers are mapping

@@ -170,6 +170,17 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
   if (auto warned = warn_skipped(*input); !warned) return Failure(err, warned.error());
   for (const auto& child : input->components)
     if (auto warned = warn_skipped(child); !warned) return Failure(err, warned.error());
+  // The store's import lock, taken before planning (each path's first
+  // bound) and held through every publication: a second import into this
+  // store fails then, at once, rather than after its own planning. Argument
+  // and source checks before it leave the store untouched.
+  std::optional<import::StoreLock> lock;
+  const auto take_lock = [&]() -> std::expected<void, import::Error> {
+    auto taken = import::StoreLock::Acquire(store);
+    if (!taken) return std::unexpected(taken.error());
+    lock.emplace(std::move(*taken));
+    return {};
+  };
   const auto finish = [&](const import::WriteResult& result, const import::Checkpoint& checkpoint,
                           bool composition, bool drafter,
                           const std::optional<std::string>& list_name = std::nullopt) {
@@ -224,9 +235,11 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
       if (rule.allow_unstated_extra && labels && labels->size() > plan.cost().layers)
         warn(canonical, "trailing unimported layer labels retained as source provenance");
     }
-    auto result = import::WriteArtifact(
-        plan,
-        {.store = store, .build = build, .expected = expected, .metadata_bytes = metadata - used});
+    auto result = import::WriteArtifact(plan, {.store = store,
+                                               .lock = &*lock,
+                                               .build = build,
+                                               .expected = expected,
+                                               .metadata_bytes = metadata - used});
     if (!result) return Failure(err, result.error());
     return finish(*result, checkpoint, false, false);
   };
@@ -234,6 +247,7 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     return bound.metadata_bytes <= metadata;
   };
   if (component == "mtp") {
+    if (auto locked = take_lock(); !locked) return Failure(err, locked.error());
     if (auto prebound = import::NormalizationBound(*input, {.component = component}); !prebound)
       return Failure(err, prebound.error());
     if (!target)
@@ -274,6 +288,7 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
       }
     }
     auto result = import::WriteArtifact(*plan, {.store = store,
+                                                .lock = &*lock,
                                                 .build = build,
                                                 .expected = drafter_expected,
                                                 .metadata_bytes = metadata - bound->metadata_bytes,
@@ -297,6 +312,7 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
                      {.rule = import::Rule::kUnsupported,
                       .reason = "no configured spatial component mapping matches --component"});
     if (target || !reuse.empty()) return usage();
+    if (auto locked = take_lock(); !locked) return Failure(err, locked.error());
     auto bound = import::NormalizationBound(*spatial_source, {.component = component});
     if (!bound) return Failure(err, bound.error());
     if (!funded(*bound))
@@ -313,6 +329,7 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     }
     auto result =
         import::WriteArtifact(*plan, {.store = store,
+                                      .lock = &*lock,
                                       .build = build,
                                       .expected = component_expected,
                                       .metadata_bytes = metadata - bound->metadata_bytes});
@@ -329,6 +346,7 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
         return Failure(err, {.rule = import::Rule::kConfig,
                              .reason = "--reuse-component names an unknown image component role"});
     }
+    if (auto locked = take_lock(); !locked) return Failure(err, locked.error());
     auto bound = import::ImagePipelineBound(*input, {metadata, UINT64_MAX});
     if (!bound) return Failure(err, bound.error());
     if (!funded(*bound))
@@ -381,6 +399,7 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
       }
       auto result =
           import::WriteArtifact(comp_plan, {.store = store,
+                                            .lock = &*lock,
                                             .build = build,
                                             .expected = component_expected[i],
                                             .metadata_bytes = metadata - bound->metadata_bytes});
@@ -396,6 +415,7 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
 
     auto comp_result = import::WriteComposition({
         .store = store,
+        .lock = &*lock,
         .build = build,
         .architecture = input->architecture,
         .components = std::move(published_components),
@@ -411,6 +431,7 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
   if (const auto* mapping = import::FindImportMapping(input->container, input->architecture);
       mapping && mapping->stage_recipe != nullptr) {
     if (target) return usage();
+    if (auto locked = take_lock(); !locked) return Failure(err, locked.error());
     auto bound = import::NormalizationBound(*input);
     if (!bound) return Failure(err, bound.error());
     if (!funded(*bound))
@@ -426,12 +447,14 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     }
     auto result =
         import::WriteArtifact(*plan, {.store = store,
+                                      .lock = &*lock,
                                       .build = build,
                                       .expected = component_expected,
                                       .metadata_bytes = metadata - bound->metadata_bytes});
     if (!result) return Failure(err, result.error());
     return finish(*result, *input, false, true);
   }
+  if (auto locked = take_lock(); !locked) return Failure(err, locked.error());
   auto bound = import::NormalizationBound(*input);
   if (!bound) {
     if (bound.error().kind == import::ItemKind::kTensor &&

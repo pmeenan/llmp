@@ -72,4 +72,12 @@ std::optional<std::uint16_t> RoleIndex(const ComponentDef& def, std::string_view
   return static_cast<std::uint16_t>(at - def.roles.begin());
 }
 
+const ImportTransform* ImportTransformOf(std::string_view kind, std::uint16_t version,
+                                         std::string_view role) {
+  const ComponentDef* def = Find(kind, version);
+  if (def == nullptr) return nullptr;
+  const auto index = RoleIndex(*def, role);
+  return index ? &def->roles[*index].import_transform : nullptr;
+}
+
 }  // namespace llmp::components

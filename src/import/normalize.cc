@@ -63,9 +63,18 @@ struct Key {
   std::uint8_t types = 0;
   std::uint32_t auxiliary = 0;
 };
-std::optional<Key> Classify(const spec::Mapping& t, std::string_view container,
-                            std::string_view key, bool is_null = false,
-                            const Checkpoint* source = nullptr) {
+constexpr std::string_view kUnconsumedSemantics =
+    "unconsumed semantic metadata changes unsupported mapping semantics";
+constexpr std::string_view kUnclassifiedConfig =
+    "a configuration key its mapping neither reads nor classifies, and not known provenance";
+// A transformers-style config (safetensors, MLX, EXL3): its keys are refused
+// unless classified (the mapping's, or spec::HfProvenanceKeys).
+bool HfConfigSource(std::string_view container) {
+  return container == "safetensors" || container == "mlx" || container == "exl3";
+}
+std::expected<Key, std::string_view> Classify(const spec::Mapping& t, std::string_view container,
+                                              std::string_view key, bool is_null = false,
+                                              const Checkpoint* source = nullptr) {
   const auto& m = t;
   if ((container == "gguf" &&
        (key == "general.architecture" || key == "general.alignment" || key == "split.no" ||
@@ -140,13 +149,21 @@ std::optional<Key> Classify(const spec::Mapping& t, std::string_view container,
                    candidate[semantic.size()] == '.'));
   };
   for (const auto semantic : t.semantic)
-    if (semantic_match(key, semantic) || semantic_match(nested, semantic)) return std::nullopt;
+    if (semantic_match(key, semantic) || semantic_match(nested, semantic))
+      return std::unexpected(kUnconsumedSemantics);
   // The architecture's own namespace (a GGUF's "<general.architecture>.")
   // and llmpalooza's are math-bearing wherever a table maps them.
   const std::string_view own = m.architecture;
   if ((key.size() > own.size() && key.starts_with(own) && key[own.size()] == '.') ||
       key.starts_with("llmp."))
-    return std::nullopt;
+    return std::unexpected(kUnconsumedSemantics);
+  // A transformers config's key no rule classifies: known provenance (its
+  // entry after the mapping's own and the unread slot), else refused.
+  if (HfConfigSource(container)) {
+    const auto provenance = spec::ProvenanceIndex(spec::HfProvenanceKeys(), key);
+    if (!provenance) return std::unexpected(kUnclassifiedConfig);
+    return Key{.auxiliary = static_cast<std::uint32_t>(t.auxiliary.size() + 1 + *provenance)};
+  }
   return Key{.auxiliary = static_cast<std::uint32_t>(t.auxiliary.size())};
 }
 bool SelectedValue(const MetaValue& value, std::uint8_t types) {
@@ -214,6 +231,17 @@ std::optional<std::uint64_t> MetaBytes(const MetaValue& value) {
       },
       value);
   return valid && a.ok && bytes <= kMaxGgufMetadataBytes ? std::optional(bytes) : std::nullopt;
+}
+
+// The import transform the component catalog declares for the role a
+// mapping's tensor rule binds (its slot's component's), or null.
+const components::ImportTransform* RoleTransform(const spec::Mapping& mapping,
+                                                 const spec::TensorRule& rule) {
+  if (rule.role.empty()) return nullptr;
+  const auto slot = std::ranges::find(mapping.slots, rule.slot, &spec::SlotRule::slot);
+  return slot == mapping.slots.end()
+             ? nullptr
+             : components::ImportTransformOf(slot->kind, slot->version, rule.role);
 }
 
 struct ResolvedName {
@@ -514,61 +542,65 @@ std::expected<AssemblyInventory, Error> Assemble(const Checkpoint& source,
         role = &r;
         break;
       }
-    if (role) {
-      bool reshape = false;
-      if (role->role == "conv" && out.format.layout == format::Layout::kDense &&
-          out.parts.size() == 1 && out.format.shape.rank == 3 &&
-          (out.format.shape.ne[0] == 1 || out.format.shape.ne[1] == 1)) {
-        out.format.shape = {
-            .ne = {out.format.shape.ne[0] == 1 ? out.format.shape.ne[1] : out.format.shape.ne[0],
-                   out.format.shape.ne[2], 1, 1},
-            .rank = 2};
-        reshape = true;
-      } else if (role->role == "shared_gate" && out.format.shape.rank == 2 &&
-                 out.format.shape.ne[1] == 1) {
-        out.format.shape = {.ne = {out.format.shape.ne[0], 1, 1, 1}, .rank = 1};
-        reshape = true;
-      }
-      if (reshape)
+    // The role's declared squeeze (components::ImportTransform): a
+    // converter's extra unit axis dropped, the same bytes.
+    const components::ImportTransform* transform = role ? RoleTransform(table, *role) : nullptr;
+    if (transform && transform->squeeze_rank != 0 &&
+        out.format.shape.rank == transform->squeeze_rank) {
+      auto& shape = out.format.shape;
+      std::optional<std::size_t> axis;
+      for (std::size_t d = 0; d < shape.rank && !axis; ++d)
+        if (((transform->squeeze_axes >> d) & 1U) != 0 && shape.ne[d] == 1) axis = d;
+      if (axis &&
+          (*axis != 0 || (out.format.layout == format::Layout::kDense && out.parts.size() == 1))) {
+        for (std::size_t d = *axis; d + 1 < format::kMaxDims; ++d) shape.ne[d] = shape.ne[d + 1];
+        shape.ne[format::kMaxDims - 1] = 1;
+        --shape.rank;
         for (auto& part : out.parts) part.kind = PartAssemblyKind::kDenseReshape;
+      }
     }
     inventory.outputs.push_back(std::move(out));
   }
   return inventory;
 }
-// The component's source convention is grouped by key head. Its runtime
-// contract uses tiled value heads. Plan one lossless permutation for every
-// encoded part of each role, then record the component fold as a whole.
-std::expected<std::vector<std::uint32_t>, Error> TileGdnHeads(
-    const spec::Stage& stage, std::vector<TensorAssembly>& outputs) {
+// The head-ordering folds of a stage's components (components::
+// HeadOrdering): a component's source convention groups value heads by key
+// head and its contract orders them as its fold names. Plan one lossless
+// permutation for every encoded part of each role whose declared transform
+// realizes `fold`, then record the fold as a whole.
+std::expected<std::vector<std::uint32_t>, Error> OrderHeads(const spec::Stage& stage,
+                                                            std::string_view fold,
+                                                            std::vector<TensorAssembly>& outputs) {
   std::vector<std::uint32_t> changed;
   for (const auto& layer : stage.layers)
     for (const auto& ref : layer.components) {
-      if (ref.kind != "attention.gdn") continue;
+      const auto* def = components::Find(ref.kind, ref.version);
+      if (def == nullptr || def->head_ordering.fold.empty() || def->head_ordering.fold != fold)
+        continue;
       const auto integer = [&](std::string_view name) -> std::uint64_t {
         const auto* p = ref.Find(name);
         const auto* n = p ? std::get_if<std::int64_t>(&p->value) : nullptr;
         return n && *n > 0 ? static_cast<std::uint64_t>(*n) : 0;
       };
-      const auto keys = integer("k_heads"), values = integer("v_heads"), dim = integer("head_dim");
-      if (keys == 0 || values == 0 || dim == 0) return Bad("GDN head geometry is absent");
+      const auto& geometry = def->head_ordering;
+      const auto keys = integer(geometry.keys), values = integer(geometry.values),
+                 dim = integer(geometry.width);
+      if (keys == 0 || values == 0 || dim == 0) return Bad("head ordering geometry is absent");
       std::set<std::uint32_t> selected;
       for (const auto& w : ref.weights) {
+        const auto role = components::RoleIndex(*def, w.role);
+        if (!role || def->roles[*role].ordering_fold != fold) continue;
+        const auto& transform = def->roles[*role].import_transform;
+        if (transform.head_axis == components::HeadAxis::kNone) continue;
         const auto at = std::ranges::find(outputs, w.tensor, &TensorAssembly::name);
         if (at == outputs.end()) continue;  // companion part: same output permutation
-        const bool scalar = w.role == "a" || w.role == "dt_bias";
-        const bool projected_scalar = w.role == "alpha" || w.role == "beta";
-        const bool qkv = w.role == "qkv";
-        const bool conv = w.role == "conv";
-        const bool gate = w.role == "gate";
-        const bool output = w.role == "output";
-        if (!scalar && !projected_scalar && !qkv && !conv && !gate && !output) continue;
         const auto oi = static_cast<std::uint32_t>(at - outputs.begin());
         if (!selected.insert(oi).second) continue;
-        const auto axis = scalar || output ? HeadAxis::kColumns : HeadAxis::kRows;
+        const auto axis = transform.head_axis == components::HeadAxis::kRows ? HeadAxis::kRows
+                                                                             : HeadAxis::kColumns;
         auto permutation = HeadPermutationPlan::Make(at->format, axis, keys, values,
-                                                     scalar || projected_scalar ? 1 : dim,
-                                                     qkv || conv ? 2 * keys * dim : 0);
+                                                     transform.head_width ? dim : 1,
+                                                     transform.leading_key_heads * keys * dim);
         if (!permutation) return std::unexpected(permutation.error());
         at->permutation = std::move(*permutation);
         changed.push_back(oi);
@@ -863,9 +895,7 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const spec::M
       return Bad("metadata exceeds the reader accounting bound", ItemKind::kKey, i, Rule::kBounds);
     const auto key =
         Classify(t, s.container, e.key, std::holds_alternative<std::nullptr_t>(e.value), &s);
-    if (!key)
-      return Bad("unconsumed semantic metadata changes unsupported mapping semantics",
-                 ItemKind::kKey, i);
+    if (!key) return Bad(key.error(), ItemKind::kKey, i);
     if (key->kind == MetadataClass::kSelected) {
       if (!SelectedValue(e.value, key->types))
         return Bad("selected metadata has the wrong type", ItemKind::kKey, i);
@@ -1656,18 +1686,17 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const spec::Mapp
     if (!inventory) return std::unexpected(inventory.error());
     assembled = std::move(*inventory);
     if (selected_output) assembled->outputs.push_back(std::move(*selected_output));
-    auto relaid = RelayoutExpertTables(assembled->outputs, nullptr, &table);
+    auto relaid = RelayoutExpertTables(assembled->outputs, table);
     if (!relaid) return std::unexpected(relaid.error());
+    // Row-gathered lookup tables, by their roles' declared transform.
     for (auto& out : assembled->outputs) {
       const auto role = std::ranges::find_if(table.tensors, [&](const auto& r) {
-        return r.role == "table" && nd::Match(r.pattern, out.name, cost->layers).has_value();
+        const auto* transform = RoleTransform(table, r);
+        return transform && transform->row_table &&
+               nd::Match(r.pattern, out.name, cost->layers).has_value();
       });
       if (role == table.tensors.end()) continue;
-      const auto slot = std::ranges::find(table.slots, role->slot, &spec::SlotRule::slot);
-      if (slot != table.slots.end() &&
-          (slot->site == spec::Site::kSide || slot->site == spec::Site::kEmbedding)) {
-        if (auto row = RelayoutRowTable(out); !row) return std::unexpected(row.error());
-      }
+      if (auto row = RelayoutRowTable(out); !row) return std::unexpected(row.error());
     }
     if (table.role == spec::StageRole::kDrafter) {
       // A component publication authenticates only its contributing shards and
@@ -1783,10 +1812,14 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const spec::Mapp
   });
   plan.values_.reserve(kRuleLimit);
   plan.metadata_.reserve(input.metadata.size());
-  plan.auxiliary_.reserve(table.auxiliary.size() + 1);
+  plan.auxiliary_.reserve(table.auxiliary.size() + 1 +
+                          (HfConfigSource(input.container) ? spec::HfProvenanceKeys().size() : 0));
   for (const auto& aux : table.auxiliary)
     plan.auxiliary_.push_back({std::string(aux.prefix), std::string(aux.reason)});
   plan.auxiliary_.push_back({"", "unread metadata retained as source provenance"});
+  if (HfConfigSource(input.container))
+    for (const auto& provenance : spec::HfProvenanceKeys())
+      plan.auxiliary_.push_back({std::string(provenance.prefix), std::string(provenance.reason)});
   for (std::size_t i = 0; i < input.metadata.size(); ++i) {
     const auto& e = input.metadata[i];
     const auto key = *Classify(table, input.container, e.key,
@@ -1938,14 +1971,15 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const spec::Mapp
                                     .kind = PartAssemblyKind::kCopy,
                                     .sources = {plan.routes_[ci].source_tensor}}}});
     }
-    if (assembled && std::ranges::any_of(table.folds, [&](const auto& f) {
-          return f.imported && f.container == input.container && f.fold == "gdn.value_heads_tiled";
-        })) {
-      auto tiled = TileGdnHeads(own_stage(), outputs);
-      if (!tiled) return std::unexpected(tiled.error());
-      if (!tiled->empty()) {
-        plan.canonical_.folds.push_back("gdn.value_heads_tiled");
-        plan.planned_folds_.push_back({"gdn.value_heads_tiled", std::move(*tiled)});
+    // The imported folds a component's head ordering realizes (the others
+    // are derived parameters, below).
+    for (const auto& f : table.folds) {
+      if (!assembled || !f.imported || f.container != input.container) continue;
+      auto ordered = OrderHeads(own_stage(), f.fold, outputs);
+      if (!ordered) return std::unexpected(ordered.error());
+      if (!ordered->empty()) {
+        plan.canonical_.folds.emplace_back(f.fold);
+        plan.planned_folds_.push_back({std::string(f.fold), std::move(*ordered)});
       }
     }
     auto applied = FoldDerivedParameters(own_stage(), outputs);

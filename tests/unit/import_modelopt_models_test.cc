@@ -109,7 +109,7 @@ TEST(ImportModelOptModelsTest, ClosedNativeTargetOwnsEverySourceAndPreservesForm
   ASSERT_GE(*memory.available, kCombined + kMargin);
   // Exercise the real dispatcher without a redundant whole-payload write.
   // A tiny budget must refuse normalization; a larger one reaches the owned
-  // plan but refuses the independently prepaid writer before store creation.
+  // plan but refuses the independently prepaid writer before publication.
   // NOLINTNEXTLINE(concurrency-mt-unsafe): explicit read-only test configuration.
   const char* cli_store = std::getenv("LLMP_TEST_MODELOPT_CLI_STORE");
   ASSERT_NE(cli_store, nullptr);
@@ -134,7 +134,15 @@ TEST(ImportModelOptModelsTest, ClosedNativeTargetOwnsEverySourceAndPreservesForm
       RecordProperty("cli_writer_warning_records", std::to_string(diagnostics.warnings));
     std::fclose(output);
     std::fclose(error);
-    EXPECT_FALSE(std::filesystem::exists(cli_store));
+    // The import took the store's lock before planning: the store holds its
+    // staging directory with the lock alone, nothing published.
+    std::error_code ignored;
+    for (const auto& entry : std::filesystem::directory_iterator(cli_store, ignored))
+      EXPECT_EQ(entry.path().filename(), ".staging");
+    for (const auto& entry : std::filesystem::directory_iterator(
+             std::filesystem::path(cli_store) / ".staging", ignored))
+      EXPECT_EQ(entry.path().filename(), "native-import.lock");
+    std::filesystem::remove_all(cli_store, ignored);
   }
   ASSERT_FALSE(HasFailure());
   RecordProperty("cli_normalization_unfunded_refused", true);

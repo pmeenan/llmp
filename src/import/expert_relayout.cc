@@ -15,6 +15,7 @@
 #include <system_error>
 #include <utility>
 
+#include "components/component.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "spec/mapping.h"
@@ -87,55 +88,37 @@ std::string ExpandPattern(std::string_view pattern, std::uint32_t layer) {
                      pattern.substr(at + spec::kLayerField.size()));
 }
 
-std::string StackedNameFromRules(std::span<const spec::TensorRule> tensors, std::string_view name,
-                                 std::string_view role, std::uint32_t layer,
-                                 bool require_weight_suffix) {
-  const std::string_view stacked_role =
-      role == "routed_gate" ? "routed_gate_up" : "gate_up_experts";
-  for (const auto& r : tensors) {
-    if (r.role != role || ExpandPattern(r.pattern, layer) != name) continue;
-    for (const auto& s : tensors) {
-      if (s.slot != r.slot || s.role != stacked_role ||
-          (s.part != PartRole::kCodes && s.part != PartRole::kData))
-        continue;
-      if (require_weight_suffix && !s.pattern.ends_with(".weight")) continue;
-      return ExpandPattern(s.pattern, layer);
-    }
+// A mapping's tensor rule's role's import transform (the catalog's, by its
+// slot's component), or null.
+const components::ImportTransform* TransformOf(const spec::Mapping& m, const spec::TensorRule& r) {
+  if (r.role.empty()) return nullptr;
+  const auto slot = std::ranges::find(m.slots, r.slot, &spec::SlotRule::slot);
+  return slot == m.slots.end() ? nullptr
+                               : components::ImportTransformOf(slot->kind, slot->version, r.role);
+}
+
+// The stacked table's name for the gate rule `gate` at `layer`: the rule of
+// the role its transform stacks into, in the same slot, holding codes or
+// data (a ".weight" spelling first).
+std::string StackedNameFromRules(std::span<const spec::TensorRule> tensors,
+                                 const spec::TensorRule& gate, std::string_view stacked,
+                                 std::uint32_t layer, bool require_weight_suffix) {
+  for (const auto& s : tensors) {
+    if (s.slot != gate.slot || s.role != stacked ||
+        (s.part != PartRole::kCodes && s.part != PartRole::kData))
+      continue;
+    if (require_weight_suffix && !s.pattern.ends_with(".weight")) continue;
+    return ExpandPattern(s.pattern, layer);
   }
   return {};
 }
 
-std::string StackedNameFromMapping(const spec::Mapping& m, std::string_view name,
-                                   std::string_view role, std::uint32_t layer,
-                                   bool require_weight_suffix) {
-  if (auto s = StackedNameFromRules(m.tensors, name, role, layer, require_weight_suffix);
-      !s.empty())
-    return s;
-  for (const auto& d : m.dialects) {
-    if (auto s = StackedNameFromRules(d.tensors, name, role, layer, require_weight_suffix);
-        !s.empty())
+std::string StackedName(std::span<const spec::TensorRule> tensors, const spec::TensorRule& gate,
+                        std::string_view stacked, std::uint32_t layer) {
+  if (stacked.empty()) return {};
+  for (const bool require_weight : {true, false})
+    if (auto s = StackedNameFromRules(tensors, gate, stacked, layer, require_weight); !s.empty())
       return s;
-  }
-  return {};
-}
-
-std::string ResolveStackedName(const spec::Mapping* mapping, std::string_view name,
-                               std::string_view role, std::uint32_t layer) {
-  for (const bool require_weight : {true, false}) {
-    if (mapping != nullptr) {
-      if (auto s = StackedNameFromMapping(*mapping, name, role, layer, require_weight); !s.empty())
-        return s;
-      if (mapping->companion != nullptr) {
-        if (auto s = StackedNameFromMapping(*mapping->companion, name, role, layer, require_weight);
-            !s.empty())
-          return s;
-      }
-    }
-    for (const spec::Mapping* m : spec::Mappings()) {
-      if (auto s = StackedNameFromMapping(*m, name, role, layer, require_weight); !s.empty())
-        return s;
-    }
-  }
   return {};
 }
 
@@ -163,30 +146,29 @@ std::optional<std::uint32_t> MatchLayer(std::string_view pattern, std::string_vi
   return layer;
 }
 
+// A routed-expert table of `m`'s rules: the role its rule binds declares
+// an expert projection (components::ImportTransform). Its MoE is its
+// layer's, a drafter's apart from its target's.
 std::optional<ExpertTable> MatchInRules(const spec::Mapping& m,
                                         std::span<const spec::TensorRule> tensors,
                                         std::string_view name, std::uint32_t output) {
   for (const auto& r : tensors) {
     if (r.part != PartRole::kData && r.part != PartRole::kCodes) continue;
-    ExpertProjection proj = ExpertProjection::kOther;
-    if (r.role == "gate_experts" || r.role == "routed_gate")
-      proj = ExpertProjection::kGate;
-    else if (r.role == "up_experts" || r.role == "routed_up")
-      proj = ExpertProjection::kUp;
-    else if (r.role == "down_experts" || r.role == "routed_down")
-      proj = ExpertProjection::kDown;
-    if (proj == ExpertProjection::kOther) continue;
-    const auto slot = std::ranges::find(m.slots, r.slot, &spec::SlotRule::slot);
-    if (slot == m.slots.end() || slot->kind != "ffn.moe") continue;
+    const components::ImportTransform* transform = TransformOf(m, r);
+    if (transform == nullptr || transform->expert == components::ExpertProjection::kNone) continue;
     const auto layer = MatchLayer(r.pattern, name);
     if (!layer) continue;
+    const auto proj =
+        transform->expert == components::ExpertProjection::kGate ? ExpertProjection::kGate
+        : transform->expert == components::ExpertProjection::kUp ? ExpertProjection::kUp
+                                                                 : ExpertProjection::kDown;
     const std::uint32_t moe_base = m.role == spec::StageRole::kDrafter ? (1U << 16U) : 0U;
     return ExpertTable{.output = output,
                        .projection = proj,
                        .moe = moe_base + *layer,
                        .name = std::string(name),
                        .stacked = proj == ExpertProjection::kGate
-                                      ? ResolveStackedName(&m, name, r.role, *layer)
+                                      ? StackedName(tensors, r, transform->stacked, *layer)
                                       : "",
                        .scales = std::string(name) + "_scale_2"};
   }
@@ -206,71 +188,12 @@ std::optional<ExpertTable> MatchInMapping(const spec::Mapping& m, std::string_vi
 
 std::expected<std::optional<ExpertTable>, Error> ExpertTableOf(const TensorAssembly& tensor,
                                                                std::uint32_t output,
-                                                               const spec::ModelSpec* spec,
-                                                               const spec::Mapping* mapping) {
-  if (spec != nullptr) {
-    std::uint32_t moe_id = 0;
-    const auto match_component = [&](const spec::ComponentRef& c, std::uint32_t layer,
-                                     std::uint32_t current_moe) -> std::optional<ExpertTable> {
-      for (const auto& w : c.weights) {
-        if (w.tensor != tensor.name) continue;
-        if (!w.stage.empty() ||
-            (w.part != format::PartRole::kData && w.part != format::PartRole::kCodes))
-          continue;
-        ExpertProjection proj = ExpertProjection::kOther;
-        if (w.role == "gate_experts" || w.role == "routed_gate")
-          proj = ExpertProjection::kGate;
-        else if (w.role == "up_experts" || w.role == "routed_up")
-          proj = ExpertProjection::kUp;
-        else if (w.role == "down_experts" || w.role == "routed_down")
-          proj = ExpertProjection::kDown;
-        if (proj == ExpertProjection::kOther) continue;
-        return ExpertTable{.output = output,
-                           .projection = proj,
-                           .moe = current_moe,
-                           .name = tensor.name,
-                           .stacked = proj == ExpertProjection::kGate
-                                          ? ResolveStackedName(mapping, tensor.name, w.role, layer)
-                                          : "",
-                           .scales = tensor.name + "_scale_2"};
-      }
-      return std::nullopt;
-    };
-    for (const auto& stage : spec->stages) {
-      for (std::size_t l = 0; l < stage.layers.size(); ++l) {
-        for (const auto& c : stage.layers[l].components) {
-          if (c.kind != "ffn.moe") continue;
-          const std::uint32_t current_moe = moe_id++;
-          if (auto t = match_component(c, static_cast<std::uint32_t>(l), current_moe)) return t;
-        }
-      }
-      for (std::size_t m = 0; m < stage.heads.mtp.size(); ++m) {
-        const auto& c = stage.heads.mtp[m];
-        if (c.kind != "ffn.moe") continue;
-        const std::uint32_t current_moe = moe_id++;
-        if (auto t = match_component(c, static_cast<std::uint32_t>(m), current_moe)) return t;
-      }
-    }
-  }
-  if (mapping != nullptr) {
-    if (auto t = MatchInMapping(*mapping, tensor.name, output)) return t;
-    if (mapping->companion != nullptr) {
-      if (auto t = MatchInMapping(*mapping->companion, tensor.name, output)) return t;
-    }
-  }
-  for (const spec::Mapping* m : spec::Mappings()) {
-    if (auto t = MatchInMapping(*m, tensor.name, output)) return t;
-    if (m->companion != nullptr) {
-      if (auto t = MatchInMapping(*m->companion, tensor.name, output)) return t;
-    }
+                                                               const spec::Mapping& mapping) {
+  if (auto t = MatchInMapping(mapping, tensor.name, output)) return t;
+  if (mapping.companion != nullptr) {
+    if (auto t = MatchInMapping(*mapping.companion, tensor.name, output)) return t;
   }
   return std::optional<ExpertTable>{};
-}
-
-std::expected<std::optional<ExpertTable>, Error> ExpertTableOf(const TensorAssembly& tensor,
-                                                               const spec::ModelSpec* spec,
-                                                               const spec::Mapping* mapping) {
-  return ExpertTableOf(tensor, 0, spec, mapping);
 }
 
 bool RelaysOut(const format::TensorFormat& t) {
@@ -368,11 +291,10 @@ std::expected<ExpertRelayoutSummary, Error> RelayoutExpertTables(
 }
 
 std::expected<ExpertRelayoutSummary, Error> RelayoutExpertTables(
-    std::vector<TensorAssembly>& outputs, const spec::ModelSpec* spec,
-    const spec::Mapping* mapping) {
+    std::vector<TensorAssembly>& outputs, const spec::Mapping& mapping) {
   std::vector<ExpertTable> tables;
   for (std::size_t i = 0; i < outputs.size(); ++i) {
-    auto table = ExpertTableOf(outputs[i], static_cast<std::uint32_t>(i), spec, mapping);
+    auto table = ExpertTableOf(outputs[i], static_cast<std::uint32_t>(i), mapping);
     if (!table) return std::unexpected(table.error());
     if (*table) tables.push_back(std::move(**table));
   }

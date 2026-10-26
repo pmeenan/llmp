@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <format>
 #include <iterator>
@@ -15,7 +16,9 @@
 #include <map>
 #include <numeric>
 #include <set>
+#include <thread>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "artifact/composition.h"
@@ -119,6 +122,18 @@ struct Cleanup {
     if (!path.empty()) fs::remove_all(path, ignored);
   }
 };
+// The lock a publication holds: the caller's on this store, or its own.
+std::expected<std::optional<StoreLock>, Error> HeldLock(const fs::path& store,
+                                                        const StoreLock* lock) {
+  if (lock != nullptr) {
+    if (lock->store() != store)
+      return Bad("the held import lock is another store's", Rule::kConfig);
+    return std::optional<StoreLock>{};
+  }
+  auto own = StoreLock::Acquire(store);
+  if (!own) return std::unexpected(own.error());
+  return std::optional<StoreLock>(std::move(*own));
+}
 struct Member {
   std::uint32_t tensor = 0;
   std::optional<std::uint32_t> expert{};
@@ -771,39 +786,105 @@ std::string FileJson(std::string_view path, std::string_view role, std::uint64_t
                      std::string_view hash) {
   return O({{"bytes", N(bytes)}, {"path", Q(path)}, {"role", Q(role)}, {"sha256", Q(hash)}});
 }
-// Deep verification is deliberately payload bounded. Structural verification
-// already reconstructs headers and validates the zero-pad geometry.
-std::expected<void, Error> Deep(const fs::path& root, const artifact::Artifact& artifact) {
-  std::vector<std::byte> buffer(artifact::kChunkBytes);
-  for (const auto& listed : artifact.files()) {
-    auto input = OpenCheckpointFile(root / listed.path, kNoItem);
-    if (!input) return std::unexpected(input.error());
-    base::Sha256 hash;
-    for (std::uint64_t at = 0; at < listed.bytes.value();) {
-      auto bytes = std::span(buffer).first(static_cast<std::size_t>(
-          std::min<std::uint64_t>(buffer.size(), listed.bytes.value() - at)));
-      if (auto ok = ReadExactly(input->fd.get(), at, bytes, kNoItem); !ok) return ok;
-      hash.Update(bytes);
-      at += bytes.size();
+// The one read of the written shards after their streams: each shard's
+// SHA-256 and, as the same bytes pass, the SHA-256 of every chunk of the
+// groups it holds, which tile it after its header in group order (Place).
+// Shards are read and synced in parallel, each by one worker with its own
+// chunk-sized buffer; each chunk digest has one writer.
+struct ShardDigests {
+  std::vector<base::Sha256Digest> files{}, chunks{};
+};
+constexpr std::size_t kMaxHashWorkers = 8;
+std::expected<ShardDigests, Error> HashShards(const fs::path& job, const Layout& layout) {
+  ShardDigests out;
+  out.files.resize(layout.shards.size());
+  std::vector<std::pair<std::size_t, std::size_t>> groups(layout.shards.size(), {0, 0});
+  std::uint64_t chunk_count = 0;
+  for (std::size_t gi = 0, at = 0; gi < layout.groups.size(); ++gi) {
+    const auto& g = layout.groups[gi];
+    if (g.shard >= layout.shards.size() || g.first_chunk != chunk_count ||
+        (gi == 0 && g.shard != 0) ||
+        (gi != 0 && g.shard != layout.groups[gi - 1].shard &&
+         g.shard != layout.groups[gi - 1].shard + 1))
+      return Bad("publication groups do not tile their shards", Rule::kConfig);
+    if (gi == 0 || g.shard != layout.groups[gi - 1].shard) {
+      groups[g.shard].first = gi;
+      at = 0;
     }
-    if (input->bytes != listed.bytes.value() || hash.Finish() != listed.sha256)
-      return Bad("a staged or existing artifact file failed full verification");
+    if (g.offset != at) return Bad("publication groups do not tile their shards", Rule::kConfig);
+    at += g.stored;
+    groups[g.shard].second = gi + 1;
+    chunk_count += (g.stored + artifact::kChunkBytes - 1) / artifact::kChunkBytes;
+    if (gi + 1 == layout.groups.size() || layout.groups[gi + 1].shard != g.shard)
+      if (at != layout.shards[g.shard].bytes)
+        return Bad("publication groups do not tile their shards", Rule::kConfig);
   }
-  for (std::size_t gi = 0; gi < artifact.groups().size(); ++gi) {
-    const auto& g = artifact.groups()[gi];
-    auto input = OpenCheckpointFile(root / artifact.shards()[g.shard].path, kNoItem);
-    if (!input) return std::unexpected(input.error());
-    for (std::uint32_t k = 0; k < g.chunks; ++k) {
-      auto range = artifact::ChunkRangeOf(artifact.layout(), {static_cast<std::uint32_t>(gi), k});
-      if (!range) return Bad("an artifact chunk has invalid geometry");
-      auto bytes = std::span(buffer).first(static_cast<std::size_t>(range->length.value()));
-      if (auto ok = ReadExactly(input->fd.get(), range->file_offset.value(), bytes, kNoItem); !ok)
-        return ok;
-      if (base::Sha256().Update(bytes).Finish() != artifact.chunk_sha256()[g.first_chunk + k])
-        return Bad("an artifact chunk failed verification");
+  // Every shard holds groups: none after the last group's goes unhashed.
+  if (layout.groups.empty() ? !layout.shards.empty()
+                            : layout.groups.back().shard + 1 != layout.shards.size())
+    return Bad("publication groups do not tile their shards", Rule::kConfig);
+  out.chunks.resize(static_cast<std::size_t>(chunk_count));
+  std::vector<std::optional<Error>> failures(layout.shards.size());
+  std::atomic<std::size_t> next{0};
+  const auto work = [&]() {
+    std::vector<std::byte> buffer(artifact::kChunkBytes);
+    for (std::size_t s = next++; s < layout.shards.size(); s = next++) {
+      const auto& shard = layout.shards[s];
+      const auto fail = [&](std::string_view reason) {
+        failures[s] = Error{.rule = Rule::kIo, .reason = reason};
+      };
+      FD file(::open((job / shard.path).c_str(), O_RDWR | O_CLOEXEC));
+      if (!file.valid()) {
+        fail("cannot reopen a written shard");
+        continue;
+      }
+      base::Sha256 hash;
+      const auto read = [&](std::uint64_t at,
+                            std::uint64_t bytes) -> std::optional<std::span<const std::byte>> {
+        auto piece = std::span(buffer).first(static_cast<std::size_t>(bytes));
+        if (auto ok = ReadExactly(file.get(), at, piece, kNoItem); !ok) {
+          failures[s] = ok.error();
+          return std::nullopt;
+        }
+        hash.Update(piece);
+        return piece;
+      };
+      bool ok = true;
+      for (std::uint64_t at = 0; ok && at < shard.header.size();) {
+        const auto bytes = std::min<std::uint64_t>(buffer.size(), shard.header.size() - at);
+        ok = read(at, bytes).has_value();
+        at += bytes;
+      }
+      for (std::size_t gi = groups[s].first; ok && gi < groups[s].second; ++gi) {
+        const auto& g = layout.groups[gi];
+        for (std::uint64_t at = 0, k = 0; ok && at < g.stored; at += artifact::kChunkBytes, ++k) {
+          const auto bytes = std::min<std::uint64_t>(artifact::kChunkBytes, g.stored - at);
+          const auto piece = read(shard.header.size() + g.offset + at, bytes);
+          ok = piece.has_value();
+          if (ok)
+            out.chunks[static_cast<std::size_t>(g.first_chunk + k)] =
+                base::Sha256().Update(*piece).Finish();
+        }
+      }
+      if (!ok) continue;
+      if (::fsync(file.get()) != 0) {
+        fail("cannot sync a written shard");
+        continue;
+      }
+      out.files[s] = hash.Finish();
     }
-  }
-  return {};
+  };
+  const std::size_t workers =
+      std::min({layout.shards.size(), kMaxHashWorkers,
+                std::max<std::size_t>(1, std::thread::hardware_concurrency())});
+  std::vector<std::thread> threads;
+  threads.reserve(workers > 0 ? workers - 1 : 0);
+  for (std::size_t w = 1; w < workers; ++w) threads.emplace_back(work);
+  work();
+  for (auto& thread : threads) thread.join();
+  for (auto& failure : failures)
+    if (failure) return std::unexpected(std::move(*failure));
+  return out;
 }
 
 std::expected<WriteResult, Error> Publish(const PublicationView& plan,
@@ -821,17 +902,9 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
       return Bad("a parsed source lacks a valid identity receipt", Rule::kConfig);
   }
   std::error_code error;
-  if (auto ok = CreateImportDirectory(options.store, true); !ok) return std::unexpected(ok.error());
+  auto held = HeldLock(options.store, options.lock);
+  if (!held) return std::unexpected(held.error());
   const fs::path staging = options.store / ".staging";
-  auto status = fs::symlink_status(staging, error);
-  if (error && error != std::errc::no_such_file_or_directory)
-    return Bad("cannot examine staging directory");
-  if (fs::is_symlink(status)) return Bad("artifact staging must not be a symlink");
-  error.clear();
-  if (auto ok = CreateImportDirectory(staging, false); !ok) return std::unexpected(ok.error());
-  auto lock = platform::LockFile::Acquire(staging / "native-import.lock");
-  if (!lock) return Bad("another import owns this store or its lock cannot be opened");
-  SweepOrphanedStagingJobs(staging);
   std::array<std::byte, 32> random{};
   if (!platform::FillRandom(random)) return Bad("cannot generate a private staging name");
   const fs::path job = staging / ("job-" + base::ToHex(base::Sha256().Update(random).Finish()));
@@ -1021,41 +1094,21 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
   }
 
   std::vector<std::string> chunks, groups, resources, arrays, shards, transformations;
-  std::vector<std::byte> buffer(artifact::kChunkBytes);
-  for (const auto& shard : layout->shards) {
-    FD file(::open((job / shard.path).c_str(), O_RDWR | O_CLOEXEC));
-    if (!file.valid()) return Bad("cannot reopen a written shard");
-    base::Sha256 hash;
+  auto digests = HashShards(job, *layout);
+  if (!digests) return std::unexpected(digests.error());
+  for (std::size_t s = 0; s < layout->shards.size(); ++s) {
+    const auto& shard = layout->shards[s];
     const auto size = shard.header.size() + shard.bytes;
-    for (std::uint64_t at = 0; at < size;) {
-      auto bytes = std::span(buffer).first(
-          static_cast<std::size_t>(std::min<std::uint64_t>(buffer.size(), size - at)));
-      if (auto ok = ReadExactly(file.get(), at, bytes, kNoItem); !ok)
-        return std::unexpected(ok.error());
-      hash.Update(bytes);
-      at += bytes.size();
-    }
-    if (::fsync(file.get()) != 0) return Bad("cannot sync a written shard");
-    files.emplace(shard.path, FileJson(shard.path, "shard", size, base::ToHex(hash.Finish())));
+    files.emplace(shard.path, FileJson(shard.path, "shard", size, base::ToHex(digests->files[s])));
     shards.push_back(O({{"data_bytes", N(shard.bytes)},
                         {"data_offset", N(shard.header.size())},
                         {"header_sha256", Q(Hex(shard.header))},
                         {"path", Q(shard.path)}}));
   }
+  chunks.reserve(digests->chunks.size());
+  for (const auto& digest : digests->chunks) chunks.push_back(Q(base::ToHex(digest)));
   for (std::size_t gi = 0; gi < layout->groups.size(); ++gi) {
     const auto& g = layout->groups[gi];
-    const auto& shard = layout->shards[g.shard];
-    auto file = OpenCheckpointFile(job / shard.path, kNoItem);
-    if (!file) return std::unexpected(file.error());
-    for (std::uint64_t at = 0; at < g.stored; at += artifact::kChunkBytes) {
-      auto bytes = std::span(buffer).first(
-          static_cast<std::size_t>(std::min<std::uint64_t>(buffer.size(), g.stored - at)));
-      if (auto ok =
-              ReadExactly(file->fd.get(), shard.header.size() + g.offset + at, bytes, kNoItem);
-          !ok)
-        return std::unexpected(ok.error());
-      chunks.push_back(Q(base::ToHex(base::Sha256().Update(bytes).Finish())));
-    }
     groups.push_back(O({{"expert", g.expert ? N(*g.expert) : "null"},
                         {"first_chunk", N(g.first_chunk)},
                         {"kind", Q(g.kind)},
@@ -1187,15 +1240,18 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
   auto stored_source = spec::SourceOf(*opened);
   if (!stored_source || !ValidatePublicationSpec(*stored, stored_source->tensors))
     return Bad("the produced artifact does not bind its embedded spec", Rule::kConfig);
-  if (auto ok = Deep(job, *opened); !ok) return std::unexpected(ok.error());
   for (const auto& directory : {job / "data", job / "meta", job}) {
     if (auto ok = Sync(directory); !ok) return std::unexpected(ok.error());
   }
   const auto destination = options.store / id;
+  // An existing artifact of this ID: its manifest, which the ID hashes,
+  // lists exactly the file and chunk digests this import computed from the
+  // bytes it just wrote, so its payload is not re-read (deep verification
+  // is install-time work, D-054). Structural opening checks its listed
+  // files' sizes, its shard headers byte for byte and its documents.
   const auto verify_existing = [&]() -> std::expected<WriteResult, Error> {
     auto previous = artifact::Artifact::Open(destination, {.expected_id = id});
     if (!previous) return Bad("the existing artifact is damaged");
-    if (auto ok = Deep(destination, *previous); !ok) return Bad("the existing artifact is damaged");
     auto prev_stored = spec::StoredSpec(*previous);
     if (!prev_stored || *prev_stored != plan.spec()) return Bad("the existing artifact is damaged");
     auto prev_source = spec::SourceOf(*previous);
@@ -1225,6 +1281,22 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
   return WriteResult{id, destination, false};
 }
 }  // namespace
+
+std::expected<StoreLock, Error> StoreLock::Acquire(const fs::path& store) {
+  if (store.empty()) return Bad("invalid import store", Rule::kConfig);
+  std::error_code error;
+  if (auto ok = CreateImportDirectory(store, true); !ok) return std::unexpected(ok.error());
+  const fs::path staging = store / ".staging";
+  auto status = fs::symlink_status(staging, error);
+  if (error && error != std::errc::no_such_file_or_directory)
+    return Bad("cannot examine staging directory");
+  if (fs::is_symlink(status)) return Bad("artifact staging must not be a symlink");
+  if (auto ok = CreateImportDirectory(staging, false); !ok) return std::unexpected(ok.error());
+  auto lock = platform::LockFile::Acquire(staging / "native-import.lock");
+  if (!lock) return Bad("another import owns this store or its lock cannot be opened");
+  SweepOrphanedStagingJobs(staging);
+  return StoreLock(store, std::move(*lock));
+}
 
 std::expected<publication_detail::PlacementSummary, Error> publication_detail::InspectPlacement(
     const NormalizedPlan& plan, std::uint64_t metadata_bytes) {
@@ -1289,7 +1361,9 @@ std::expected<WriteResult, Error> WriteArtifact(const ComponentPlan& plan,
                   .model_spec = plan.spec,
                   .payload = plan.payload_bytes,
                   .copy_routes = plan.routes,
-                  .groups = plan.groups},
+                  .groups = plan.groups,
+                  .mapping_architecture = plan.mapping_architecture,
+                  .mapping_version = plan.mapping_version},
                  options);
 }
 
@@ -1348,17 +1422,9 @@ std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions
   }
 
   std::error_code error;
-  if (auto ok = CreateImportDirectory(options.store, true); !ok) return std::unexpected(ok.error());
+  auto held = HeldLock(options.store, options.lock);
+  if (!held) return std::unexpected(held.error());
   const fs::path staging = options.store / ".staging";
-  auto status = fs::symlink_status(staging, error);
-  if (error && error != std::errc::no_such_file_or_directory)
-    return Bad("cannot examine staging directory");
-  if (fs::is_symlink(status)) return Bad("composition staging must not be a symlink");
-  error.clear();
-  if (auto ok = CreateImportDirectory(staging, false); !ok) return std::unexpected(ok.error());
-  auto lock = platform::LockFile::Acquire(staging / "native-import.lock");
-  if (!lock) return Bad("another import owns this store or its lock cannot be opened");
-  SweepOrphanedStagingJobs(staging);
   std::array<std::byte, 32> random{};
   if (!platform::FillRandom(random)) return Bad("cannot generate a private staging name");
   const fs::path job = staging / ("job-" + base::ToHex(base::Sha256().Update(random).Finish()));

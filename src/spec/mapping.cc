@@ -1273,6 +1273,103 @@ std::expected<const PolicyRule*, std::string> DefaultRule(const Mapping& mapping
   return nullptr;
 }
 
+namespace {
+constexpr std::array kHfProvenance{
+    AuxiliaryNamespace{"architectures", "transformers class provenance"},
+    AuxiliaryNamespace{"transformers_version", "transformers writer version provenance"},
+    AuxiliaryNamespace{"model_type", "transformers model type provenance"},
+    AuxiliaryNamespace{"_name_or_path", "transformers loader provenance"},
+    AuxiliaryNamespace{"_commit_hash", "transformers loader provenance"},
+    AuxiliaryNamespace{"_attn_implementation", "transformers attention kernel choice"},
+    AuxiliaryNamespace{"_attn_implementation_autoset", "transformers attention kernel choice"},
+    AuxiliaryNamespace{"_torchspec_version", "training tool version provenance"},
+    AuxiliaryNamespace{"is_multimodal",
+                       "whether the release carries media components "
+                       "(their tensors are the mapping's to exclude)"},
+    AuxiliaryNamespace{"language_model_only",
+                       "whether the release carries media components "
+                       "(their tensors are the mapping's to exclude)"},
+    AuxiliaryNamespace{"torch_dtype", "checkpoint nominal dtype; tensors state their own"},
+    AuxiliaryNamespace{"dtype", "checkpoint nominal dtype; tensors state their own"},
+    AuxiliaryNamespace{"use_cache", "transformers generation cache default"},
+    AuxiliaryNamespace{"cache_implementation", "transformers cache implementation"},
+    AuxiliaryNamespace{"return_dict", "transformers output container option"},
+    AuxiliaryNamespace{"output_attentions", "transformers output option"},
+    AuxiliaryNamespace{"output_hidden_states", "transformers output option"},
+    AuxiliaryNamespace{"output_router_logits", "router training loss output"},
+    AuxiliaryNamespace{"router_aux_loss_coef", "router training loss weight"},
+    AuxiliaryNamespace{"router_z_loss_coef", "router training loss weight"},
+    AuxiliaryNamespace{"chunk_size_feed_forward", "feed-forward chunking: the same products"},
+    AuxiliaryNamespace{"pretraining_tp", "pretraining tensor-parallel slicing: the same products"},
+    AuxiliaryNamespace{"id2label.", "classification head labels"},
+    AuxiliaryNamespace{"label2id.", "classification head labels"},
+    AuxiliaryNamespace{"problem_type", "classification head training objective"},
+    AuxiliaryNamespace{"initializer_range", "weight initializer scale"},
+    AuxiliaryNamespace{"initializer_factor", "weight initializer scale"},
+    AuxiliaryNamespace{"attention_dropout", "training dropout"},
+    AuxiliaryNamespace{"dropout", "training dropout"},
+    AuxiliaryNamespace{"bos_token_id", "tokenizer framing"},
+    AuxiliaryNamespace{"eos_token_id", "tokenizer framing"},
+    AuxiliaryNamespace{"pad_token_id", "tokenizer framing"},
+    AuxiliaryNamespace{"sep_token_id", "tokenizer framing"},
+    AuxiliaryNamespace{"image_token_id", "media token of a component outside the import"},
+    AuxiliaryNamespace{"image_token_index", "media token of a component outside the import"},
+    AuxiliaryNamespace{"video_token_id", "media token of a component outside the import"},
+    AuxiliaryNamespace{"audio_token_id", "media token of a component outside the import"},
+    AuxiliaryNamespace{"vision_start_token_id", "media token of a component outside the import"},
+    AuxiliaryNamespace{"vision_end_token_id", "media token of a component outside the import"},
+    AuxiliaryNamespace{"boi_token_id", "media token of a component outside the import"},
+    AuxiliaryNamespace{"eoi_token_id", "media token of a component outside the import"},
+    AuxiliaryNamespace{"boi_token_index", "media token of a component outside the import"},
+    AuxiliaryNamespace{"eoi_token_index", "media token of a component outside the import"},
+    AuxiliaryNamespace{"boa_token_id", "media token of a component outside the import"},
+    AuxiliaryNamespace{"eoa_token_id", "media token of a component outside the import"},
+    AuxiliaryNamespace{"eoa_token_index", "media token of a component outside the import"},
+    AuxiliaryNamespace{"vision_soft_tokens_per_image",
+                       "media tokens of a component outside the import"},
+    AuxiliaryNamespace{"mm_tokens_per_image", "media tokens of a component outside the import"},
+    AuxiliaryNamespace{"generation_config.", "generation defaults (sampling, not the model)"},
+    // A media sub-config given as null: the component is absent (a present
+    // one's keys are "<name>_config.<key>", which the mapping classifies).
+    AuxiliaryNamespace{"audio_config", "an absent audio component"},
+    AuxiliaryNamespace{"vision_config", "an absent vision component"},
+    AuxiliaryNamespace{"do_sample", "generation default"},
+    AuxiliaryNamespace{"temperature", "generation default"},
+    AuxiliaryNamespace{"top_k", "generation default"},
+    AuxiliaryNamespace{"top_p", "generation default"},
+    AuxiliaryNamespace{"typical_p", "generation default"},
+    AuxiliaryNamespace{"repetition_penalty", "generation default"},
+    AuxiliaryNamespace{"length_penalty", "generation default"},
+    AuxiliaryNamespace{"max_length", "generation default"},
+    AuxiliaryNamespace{"min_length", "generation default"},
+};
+constexpr std::array kDiffusersProvenance{
+    AuxiliaryNamespace{"_class_name", "diffusers class provenance"},
+    AuxiliaryNamespace{"_diffusers_version", "diffusers writer version provenance"},
+    AuxiliaryNamespace{"_name_or_path", "diffusers loader provenance"},
+    AuxiliaryNamespace{"_use_default_values", "diffusers defaulted keys record"},
+};
+bool ProvenanceMatch(std::string_view key, std::string_view entry) {
+  return entry.ends_with('.') ? key.starts_with(entry) : key == entry;
+}
+}  // namespace
+
+std::span<const AuxiliaryNamespace> HfProvenanceKeys() { return kHfProvenance; }
+std::span<const AuxiliaryNamespace> DiffusersProvenanceKeys() { return kDiffusersProvenance; }
+
+std::optional<std::size_t> ProvenanceIndex(std::span<const AuxiliaryNamespace> keys,
+                                           std::string_view key) {
+  // At most a few nesting levels; a key is bounded by the readers.
+  for (std::size_t depth = 0; depth < 4; ++depth) {
+    for (std::size_t i = 0; i < keys.size(); ++i)
+      if (ProvenanceMatch(key, keys[i].prefix)) return i;
+    const auto dot = key.find('.');
+    if (dot == std::string_view::npos || !key.substr(0, dot).ends_with("_config")) break;
+    key.remove_prefix(dot + 1);
+  }
+  return std::nullopt;
+}
+
 std::span<const Mapping* const> Mappings() {
   static const std::array all = {&mappings::Gemma2Mapping(),  &mappings::Gemma3Mapping(),
                                  &mappings::Gemma4Mapping(),  &mappings::Gemma4AssistantMapping(),
@@ -1809,13 +1906,21 @@ Status ValidateMapping(const Mapping& m) {
         m.companion != nullptr || !m.key_prefix.empty() || m.unprefixed_keys ||
         !m.tensor_prefix.empty() || !m.source_key_prefix.empty() || !m.layer_count_key.empty() ||
         !m.gates.empty() || !m.tensor_aliases.empty() || !m.key_aliases.empty() ||
-        !m.auxiliary.empty() || !m.requirements.empty() || !m.lists.empty() ||
+        m.auxiliary.size() > kMaxMappingRules || !m.requirements.empty() || !m.lists.empty() ||
         !m.encodings.empty() || m.extended_components || !m.shapes.empty() ||
-        !m.row_indices.empty() || !m.semantic.empty() || !m.null_semantics.empty() ||
-        !m.tensor_presence.empty() || !m.semantic_tensors.empty() || !m.dialects.empty() ||
+        !m.row_indices.empty() || !m.semantic.empty() ||
+        m.null_semantics.size() > kMaxMappingRules || !m.tensor_presence.empty() ||
+        !m.semantic_tensors.empty() || !m.dialects.empty() ||
         m.ignored_tensors.size() > kMaxMappingRules || m.ignored_tensor_prefixes.size() > 8)
       return Refuse(where,
                     "a configured spatial mapping needs one matching denoiser or VAE recipe");
+    // Its config's keys the recipe does not read (import/image_pipeline.cc
+    // classifies every key): each a whole key or a '.'-ended prefix.
+    for (const auto& aux : m.auxiliary)
+      if (!IsText(aux.prefix) || aux.reason.empty() || !aux.equals_tensor.empty())
+        return Refuse(where, "invalid configuration key classification in spatial mapping");
+    for (const auto key : m.null_semantics)
+      if (!IsText(key)) return Refuse(where, "invalid null key in spatial mapping");
     for (const auto pattern : m.ignored_tensors)
       if (!IsPattern(pattern, pattern.find(kLayerField) != std::string_view::npos))
         return Refuse(where, "invalid ignored tensor pattern in spatial mapping");

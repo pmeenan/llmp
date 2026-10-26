@@ -911,7 +911,7 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       selected-operation interface, no kernel-source include cycles and a
       stricter boundary check; one mapping value language, one Qwen-Image VAE
       mapping and a shared tensor-name dictionary.
-- [ ] **F9 Import throughput and leftovers:** one parallel post-write hash
+- [x] **F9 Import throughput and leftovers:** one parallel post-write hash
       pass, reuse provenance, unknown-key policy, fuzzing of the newer
       routes, component-declared import transforms.
 - [ ] **F14 Test-suite audit:** obsolete, disabled and ignored tests deleted;

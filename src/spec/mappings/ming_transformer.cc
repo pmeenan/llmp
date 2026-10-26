@@ -578,6 +578,21 @@ const StageRecipe kRecipe{.name = "transformer",
                           .exports = kExports,
                           .expected_outputs = kOutputShapes};
 
+// The config keys the recipe does not read, and why. The timestep's scale
+// and the caption padding and frame options are the pipeline's host-side
+// work (its timestep and caption inputs, its output); no serving adapter
+// reads them yet, which it must when one does.
+constexpr std::array kAuxiliary{
+    AuxiliaryNamespace{"axes_lens", "rotary table lengths, a precomputation bound"},
+    AuxiliaryNamespace{"n_kv_heads",
+                       "key and value heads: other than n_heads, the k and v projections' "
+                       "shapes differ from the recipe's and are refused"},
+    AuxiliaryNamespace{"t_scale", "the host-computed timestep input's scale"},
+    AuxiliaryNamespace{"alignment_padding_mode", "the host-built caption padding and its mask"},
+    AuxiliaryNamespace{"multi_frame_output", "the pipeline's output framing"},
+};
+constexpr std::array<std::string_view, 1> kNullKeys{"siglip_feat_dim"};
+
 const Mapping kMapping{.architecture = "diffusion_transformer",
                        .source_architectures = kSourceArchitectures,
                        .version = 1,
@@ -585,7 +600,9 @@ const Mapping kMapping{.architecture = "diffusion_transformer",
                        .role = StageRole::kDenoiser,
                        .stage = "transformer",
                        .stage_recipe = &kRecipe,
-                       .containers = kContainers};
+                       .containers = kContainers,
+                       .auxiliary = kAuxiliary,
+                       .null_semantics = kNullKeys};
 
 }  // namespace
 

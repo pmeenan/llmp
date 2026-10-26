@@ -104,21 +104,49 @@ enum : std::uint16_t {
   kInputNorm,
   kPostNorm,
 };
+// The checkpoint convention groups value heads by key head; the contract
+// tiles them (gdn.value_heads_tiled). Each role's head permutation: the
+// fused q, k, v rows (and the convolution's channels) keep q's and k's two
+// blocks of key heads in place; per-head scalars move one element a head.
+constexpr ImportTransform Tiled(HeadAxis axis, bool head_width, std::uint8_t leading = 0) {
+  return {.head_axis = axis, .head_width = head_width, .leading_key_heads = leading};
+}
+// A converter's [channels, 1, kernel] convolution: the unit axis dropped.
+constexpr ImportTransform TiledConv() {
+  ImportTransform t = Tiled(HeadAxis::kRows, true, 2);
+  t.squeeze_rank = 3;
+  t.squeeze_axes = 0b011;
+  return t;
+}
+constexpr std::string_view kTiled = "gdn.value_heads_tiled";
 constexpr std::array kRoles{
-    WeightRole{.name = "qkv", .ordering_fold = "gdn.value_heads_tiled"},
-    WeightRole{.name = "gate", .ordering_fold = "gdn.value_heads_tiled"},
-    WeightRole{.name = "beta", .ordering_fold = "gdn.value_heads_tiled"},
-    WeightRole{.name = "alpha", .ordering_fold = "gdn.value_heads_tiled"},
+    WeightRole{.name = "qkv",
+               .ordering_fold = kTiled,
+               .import_transform = Tiled(HeadAxis::kRows, true, 2)},
     WeightRole{
-        .name = "dt_bias", .encodings = kNormEncodings, .ordering_fold = "gdn.value_heads_tiled"},
+        .name = "gate", .ordering_fold = kTiled, .import_transform = Tiled(HeadAxis::kRows, true)},
+    WeightRole{
+        .name = "beta", .ordering_fold = kTiled, .import_transform = Tiled(HeadAxis::kRows, false)},
+    WeightRole{.name = "alpha",
+               .ordering_fold = kTiled,
+               .import_transform = Tiled(HeadAxis::kRows, false)},
+    WeightRole{.name = "dt_bias",
+               .encodings = kNormEncodings,
+               .ordering_fold = kTiled,
+               .import_transform = Tiled(HeadAxis::kColumns, false)},
     WeightRole{.name = "a",
                .encodings = kNormEncodings,
                .derived = kLogDecay,
-               .ordering_fold = "gdn.value_heads_tiled"},
-    WeightRole{
-        .name = "conv", .encodings = kNormEncodings, .ordering_fold = "gdn.value_heads_tiled"},
+               .ordering_fold = kTiled,
+               .import_transform = Tiled(HeadAxis::kColumns, false)},
+    WeightRole{.name = "conv",
+               .encodings = kNormEncodings,
+               .ordering_fold = kTiled,
+               .import_transform = TiledConv()},
     WeightRole{.name = "norm", .encodings = kNormEncodings},
-    WeightRole{.name = "output", .ordering_fold = "gdn.value_heads_tiled"},
+    WeightRole{.name = "output",
+               .ordering_fold = kTiled,
+               .import_transform = Tiled(HeadAxis::kColumns, true)},
     WeightRole{.name = "input_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
     WeightRole{.name = "post_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
 };
@@ -551,6 +579,10 @@ const ComponentDef& AttentionGdn() {
       .version = 1,
       .params = kParams,
       .roles = kRoles,
+      .head_ordering = {.fold = kTiled,
+                        .keys = "k_heads",
+                        .values = "v_heads",
+                        .width = "head_dim"},
       .numerical = kNumericalSites,
       .shapes = Shapes,
       .state = State,

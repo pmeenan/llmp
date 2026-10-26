@@ -211,7 +211,7 @@ inline std::string TinyQwen2HfConfig(std::string_view dtype = "dtype") {
       "hidden_act":"silu","use_sliding_window":false,"sliding_window":null,"rope_scaling":null,
       "attention_dropout":0.0,"bos_token_id":1,"eos_token_id":2,"vocab_size":10,
       "tie_word_embeddings":false,"use_cache":true,"transformers_version":"5.17.0",
-      "new_training_note":{"anything":true},")") +
+      "output_attentions":false,"generation_config":{"top_k":20},")") +
          std::string(dtype) + R"(":"float16"})";
 }
 

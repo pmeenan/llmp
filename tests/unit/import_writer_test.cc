@@ -8,6 +8,7 @@
 #include <bit>
 #include <format>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <utility>
@@ -227,6 +228,18 @@ std::vector<std::byte> Gguf(const Checkpoint& s) {
   file.resize(begin + static_cast<std::size_t>(s.files[0].bytes));
   for (std::size_t i = begin; i < file.size(); ++i) file[i] = static_cast<std::byte>(i % 251);
   return file;
+}
+
+// Nothing published in `store`: the import took its lock before planning,
+// so the store may hold its staging directory with the lock alone.
+bool NothingPublished(const std::filesystem::path& store) {
+  std::error_code error;
+  if (!std::filesystem::exists(store, error)) return true;
+  for (const auto& entry : std::filesystem::directory_iterator(store, error))
+    if (entry.path().filename() != ".staging") return false;
+  for (const auto& entry : std::filesystem::directory_iterator(store / ".staging", error))
+    if (entry.path().filename() != "native-import.lock") return false;
+  return !error;
 }
 
 class ImportWriterTest : public fixtures::ScratchTest {
@@ -1031,7 +1044,7 @@ TEST_F(ImportWriterTest, CliTakesTheMtpComponentAndItsDraftHeadOnlyTogether) {
                                              store,    "--component", "mtp"};
   EXPECT_EQ(cli::Run(gguf, output, error), cli::kExitFailure);
   EXPECT_EQ(std::ftell(output), 0);
-  EXPECT_FALSE(std::filesystem::exists(dir_ / "never-created"));
+  EXPECT_TRUE(NothingPublished(dir_ / "never-created"));
   std::fclose(output);
   std::fclose(error);
 }
@@ -1063,8 +1076,37 @@ TEST_F(ImportWriterTest, CliRefusesIncompleteModelOptWithoutPublishingOrFallingB
     EXPECT_NE(std::string_view(text.data(), count).find("llmp import:"), std::string_view::npos);
     std::fclose(output);
     std::fclose(error);
-    EXPECT_FALSE(std::filesystem::exists(store));
+    EXPECT_TRUE(NothingPublished(store));
   }
+}
+
+// The CLI takes the store's lock before it plans: while another import
+// holds it, an import fails at once, naming the lock, and publishes nothing.
+TEST_F(ImportWriterTest, CliFailsAtOnceWhileAnotherImportHoldsTheStore) {
+  Write(dir_ / "source/model.gguf", Gguf(Tiny()));
+  const std::string requested = (dir_ / "source/model.gguf").string();
+  const std::string store = (dir_ / "store").string();
+  auto held = StoreLock::Acquire(dir_ / "store");
+  ASSERT_TRUE(held);
+  const std::array<std::string_view, 4> args{"import", requested, "--store", store};
+  std::FILE* output = std::tmpfile();
+  std::FILE* error = std::tmpfile();
+  ASSERT_NE(output, nullptr);
+  ASSERT_NE(error, nullptr);
+  EXPECT_EQ(cli::Run(args, output, error), cli::kExitFailure);
+  EXPECT_EQ(std::ftell(output), 0);
+  std::rewind(error);
+  std::array<char, 1024> text{};
+  const auto count = std::fread(text.data(), 1, text.size(), error);
+  EXPECT_NE(std::string_view(text.data(), count).find("another import owns this store"),
+            std::string_view::npos);
+  EXPECT_TRUE(NothingPublished(dir_ / "store"));
+  held = std::unexpected(Error{});  // released
+  std::rewind(output);
+  EXPECT_EQ(cli::Run(args, output, error), cli::kExitOk);
+  EXPECT_GT(std::ftell(output), 0);
+  std::fclose(output);
+  std::fclose(error);
 }
 
 TEST_F(ImportWriterTest, SafetensorsAndConfigReceiptsDescribeExactlyParsedBytes) {
@@ -2512,7 +2554,7 @@ TEST_F(ImportWriterTest, PublicationIsPrivateAndPreservesExistingModes) {
   const auto options = Options("permissive/nested/store");
   const auto modes = MakeExistingTreePublic(options.store);
   const auto previous = ::umask(0000);
-  auto reused = WriteArtifact(*plan, options);  // includes full existing-payload verification
+  auto reused = WriteArtifact(*plan, options);  // reuses the existing artifact of its ID
   (void)::umask(previous);
   ASSERT_TRUE(reused);
   EXPECT_TRUE(reused->reused);
@@ -2592,6 +2634,109 @@ TEST_F(ImportWriterTest, CompositionIsPrivateAndPreservesExistingModes) {
   EXPECT_FALSE(WriteComposition(options));
   for (const auto& entry : std::filesystem::directory_iterator(options.store / ".staging"))
     EXPECT_EQ(entry.path().filename(), "native-import.lock");
+}
+
+// The store lock an import takes before it plans (StoreLock): while it is
+// held, another import into the store fails at once; the holder's
+// publications run under it; it is its own store's alone.
+TEST_F(ImportWriterTest, HeldStoreLockRefusesASecondImportAndServesItsHoldersPublications) {
+  auto lock = StoreLock::Acquire(dir_ / "store");
+  ASSERT_TRUE(lock) << test_support::Failed(lock, &Error::ToString).value_or("");
+  EXPECT_TRUE(std::filesystem::exists(dir_ / "store/.staging/native-import.lock"));
+  EXPECT_FALSE(StoreLock::Acquire(dir_ / "store"));
+  auto plan = Plan();
+  ASSERT_TRUE(plan);
+  auto unlocked = WriteArtifact(*plan, Options());
+  ASSERT_FALSE(unlocked);
+  EXPECT_EQ(unlocked.error().reason, "another import owns this store or its lock cannot be opened");
+  auto options = Options();
+  options.lock = &*lock;
+  auto written = WriteArtifact(*plan, options);
+  ASSERT_TRUE(written) << test_support::Failed(written, &Error::ToString).value_or("");
+  EXPECT_FALSE(written->reused);
+  auto again = WriteArtifact(*plan, options);
+  ASSERT_TRUE(again);
+  EXPECT_TRUE(again->reused);
+  auto other = Options("other");
+  other.lock = &*lock;
+  EXPECT_FALSE(WriteArtifact(*plan, other));
+  EXPECT_FALSE(std::filesystem::exists(dir_ / "other"));
+  CompositionWriteOptions composition{
+      .store = dir_ / "store",
+      .lock = &*lock,
+      .build = "test",
+      .architecture = "fixture",
+      .components = {{.role = "target", .artifact = written->id, .architecture = "Gemma2"}}};
+  EXPECT_TRUE(WriteComposition(composition));
+  composition.lock = nullptr;
+  EXPECT_FALSE(WriteComposition(composition));
+}
+
+// An existing artifact of the identity an import computes is reused without
+// re-reading its payload: the identity hashes a manifest that lists exactly
+// the file and chunk digests the import computed from the bytes it wrote.
+// Structural opening still refuses a changed size (above); payload damage
+// at the same size is install-time deep verification's (D-054).
+// The one post-write pass (shards hashed in parallel, chunk digests as the
+// bytes pass) publishes exactly the digests of the bytes on disk: every
+// listed file's and every group's chunks', recomputed here independently.
+TEST_F(ImportWriterTest, PublishedFileAndChunkDigestsAreThoseOfTheWrittenBytes) {
+  for (const bool moe : {false, true}) {
+    SCOPED_TRACE(moe ? "moe" : "dense");
+    auto plan = Plan(moe);
+    ASSERT_TRUE(plan);
+    auto written = WriteArtifact(*plan, Options(moe ? "moe" : "dense"));
+    ASSERT_TRUE(written) << test_support::Failed(written, &Error::ToString).value_or("");
+    auto opened = artifact::Artifact::Open(written->path, {.expected_id = written->id});
+    ASSERT_TRUE(opened);
+    const auto read = [](const std::filesystem::path& path) {
+      std::ifstream file(path, std::ios::binary);
+      return std::vector<char>(std::istreambuf_iterator<char>(file), {});
+    };
+    for (const auto& listed : opened->files()) {
+      const auto bytes = read(written->path / listed.path);
+      EXPECT_EQ(bytes.size(), listed.bytes.value()) << listed.path;
+      EXPECT_EQ(base::Sha256().Update(std::as_bytes(std::span(bytes))).Finish(), listed.sha256)
+          << listed.path;
+    }
+    std::size_t chunks = 0;
+    for (std::size_t gi = 0; gi < opened->groups().size(); ++gi) {
+      const auto& g = opened->groups()[gi];
+      const auto shard = read(written->path / opened->shards()[g.shard].path);
+      for (std::uint32_t k = 0; k < g.chunks; ++k, ++chunks) {
+        auto range = artifact::ChunkRangeOf(opened->layout(), {static_cast<std::uint32_t>(gi), k});
+        ASSERT_TRUE(range);
+        ASSERT_LE(range->file_offset.value() + range->length.value(), shard.size());
+        const auto piece = std::as_bytes(std::span(shard))
+                               .subspan(static_cast<std::size_t>(range->file_offset.value()),
+                                        static_cast<std::size_t>(range->length.value()));
+        EXPECT_EQ(base::Sha256().Update(piece).Finish(), opened->chunk_sha256()[g.first_chunk + k])
+            << gi << ":" << k;
+      }
+    }
+    EXPECT_EQ(chunks, opened->chunk_sha256().size());
+    EXPECT_GT(opened->groups().size(), 1U);
+  }
+}
+
+TEST_F(ImportWriterTest, ExistingArtifactOfItsIdentityIsReusedWithoutReReadingItsPayload) {
+  auto plan = Plan();
+  ASSERT_TRUE(plan);
+  auto first = WriteArtifact(*plan, Options());
+  ASSERT_TRUE(first) << test_support::Failed(first, &Error::ToString).value_or("");
+  const auto shard = first->path / "data/00000.safetensors";
+  std::fstream file(shard, std::ios::in | std::ios::out | std::ios::binary);
+  ASSERT_TRUE(file);
+  file.seekg(-1, std::ios::end);
+  char last = 0;
+  file.get(last);
+  file.seekp(-1, std::ios::end);
+  file.put(static_cast<char>(last ^ 1));
+  file.close();
+  auto again = WriteArtifact(*plan, Options());
+  ASSERT_TRUE(again) << test_support::Failed(again, &Error::ToString).value_or("");
+  EXPECT_TRUE(again->reused);
+  EXPECT_EQ(again->id, first->id);
 }
 
 TEST_F(ImportWriterTest, CreateImportDirectoryHandlesTrailingSlashesOnExistingDirectories) {

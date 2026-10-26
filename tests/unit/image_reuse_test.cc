@@ -41,7 +41,12 @@ class ImageReuseTest : public fixtures::ScratchTest {
     spec::ModelSpec model{.pipeline = spec::PipelineKind::kImage, .stages = {stage}};
     spec::Canonicalize(model);
     const std::array<model::ImageTensor, 1> tensors{{{"weight", "F32", {2}}}};
-    return image_pipeline_detail::PlanComponent(checkpoint, tensors, {}, model, {});
+    auto plan = image_pipeline_detail::PlanComponent(checkpoint, tensors, {}, model, {});
+    if (plan) {
+      plan->mapping_architecture = "ToyImagePipeline";
+      plan->mapping_version = 3;
+    }
+    return plan;
   }
   std::vector<std::optional<base::Sha256Digest>> Identities(const Checkpoint& checkpoint) {
     std::vector<std::optional<base::Sha256Digest>> identities;
@@ -141,6 +146,20 @@ TEST_F(ImageReuseTest, RefusesChangedSourceConfigurationInventoryAndUnfundedMeta
   wrong_format.canonical = plan->canonical;
   wrong_format.canonical.tensors[0].name = "other";
   EXPECT_FALSE(valid(wrong_format, identities));
+  // Another mapping or mapping version (a route, permutation or relayout
+  // fix keeps names, formats and the spec), or other options.
+  auto remapped = *plan;
+  remapped.mapping_version = 4;
+  EXPECT_FALSE(valid(remapped, identities));
+  remapped.mapping_version = plan->mapping_version;
+  remapped.mapping_architecture = "OtherImagePipeline";
+  EXPECT_FALSE(valid(remapped, identities));
+  remapped.mapping_architecture.clear();
+  remapped.mapping_version = 0;
+  EXPECT_FALSE(valid(remapped, identities));
+  EXPECT_FALSE(ValidateImageComponentReuse(*plan, *opened, identities, kMetadata, "{\"x\":1}"));
+  EXPECT_EQ(opened->converter().mapping_architecture, "ToyImagePipeline");
+  EXPECT_EQ(opened->converter().mapping_version, 3U);
   checkpoint->files[0].bytes += 1;
   EXPECT_FALSE(valid(*plan, identities));
   checkpoint->files[0].bytes -= 1;

@@ -156,6 +156,39 @@ struct DerivedValue {
   std::string_view fold{};
 };
 
+// How the importer brings a role's checkpoint tensor into the form its
+// component reads, declared with the role so the importer applies it by
+// role, never by architecture or name (D-108, D-113; import/normalize.h,
+// import/expert_relayout.h). The checkpoint conventions themselves are the
+// mapping's; these are what the component's contract makes of them.
+enum class ExpertProjection : std::uint8_t { kNone, kGate, kUp, kDown };
+enum class HeadAxis : std::uint8_t { kNone, kRows, kColumns };
+struct ImportTransform {
+  // A routed-expert table's projection. A gate's table relaid out with its
+  // MoE's up of the same format is stacked into `stacked`, a role of the
+  // same component.
+  ExpertProjection expert = ExpertProjection::kNone;
+  std::string_view stacked{};
+  // A source of rank `squeeze_rank`, one more than the role's, drops its
+  // first axis of extent 1 among `squeeze_axes` (a bit an axis): the same
+  // bytes. A non-dense or several-part source only when that axis is not
+  // the first (blocks run along it).
+  std::uint8_t squeeze_rank = 0;
+  std::uint8_t squeeze_axes = 0;
+  // A row-gathered lookup table: a block-scaled table a device kernel reads
+  // row-interleaved is relaid out so (import/expert_relayout.h
+  // RelayoutRowTable).
+  bool row_table = false;
+  // The head permutation that realizes the role's ordering_fold from the
+  // source's key-grouped order (the component's HeadOrdering gives the
+  // geometry): along `head_axis`, in units of one head's width
+  // (`head_width`) or of one element, after `leading_key_heads` blocks of
+  // key heads that stay in place (a fused q and k before the values).
+  HeadAxis head_axis = HeadAxis::kNone;
+  bool head_width = false;
+  std::uint8_t leading_key_heads = 0;
+};
+
 struct WeightRole {
   std::string_view name{};
   // The encodings it accepts. Empty: any valid format the format layer
@@ -170,6 +203,15 @@ struct WeightRole {
   DerivedValue derived{};
   // A stored ordering convention governing every encoded part of this role.
   std::string_view ordering_fold{};
+  ImportTransform import_transform{};
+};
+
+// The geometry of a component's head-ordering fold (WeightRole::
+// ordering_fold, realized by ImportTransform's head permutation): the
+// parameters that give its key and value head counts and one head's width.
+struct HeadOrdering {
+  std::string_view fold{};
+  std::string_view keys{}, values{}, width{};
 };
 
 // A role in use for an instance and the logical shape its parameters
@@ -404,6 +446,8 @@ struct ComponentDef {
   std::string_view (*side_input)(const Instance& instance) = nullptr;
   std::span<const ParamSpec> params{};
   std::span<const WeightRole> roles{};
+  // Its head-ordering fold's geometry; an empty fold: none.
+  HeadOrdering head_ordering{};
   std::span<const NumericalSite> numerical{};
   // The roles an instance uses and their shapes, or why its parameters do
   // not make a valid instance (heads not a multiple of the KV heads).
@@ -487,6 +531,11 @@ const ComponentDef* Find(std::string_view kind, std::uint16_t version);
 
 // A definition's role index by name, if it has one.
 std::optional<std::uint16_t> RoleIndex(const ComponentDef& def, std::string_view name);
+
+// The import transform of a component's role (by kind, version and role
+// name), or null for an unknown component or role.
+const ImportTransform* ImportTransformOf(std::string_view kind, std::uint16_t version,
+                                         std::string_view role);
 
 }  // namespace llmp::components
 

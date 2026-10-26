@@ -52,13 +52,15 @@ struct ExpertTable {
   std::string name{}, stacked{}, scales{};
 };
 
-// An expert table identified from a component's role in spec.
-std::expected<std::optional<ExpertTable>, Error> ExpertTableOf(
-    const TensorAssembly& tensor, const spec::ModelSpec* spec,
-    const spec::Mapping* mapping = nullptr);
-std::expected<std::optional<ExpertTable>, Error> ExpertTableOf(
-    const TensorAssembly& tensor, std::uint32_t output, const spec::ModelSpec* spec,
-    const spec::Mapping* mapping = nullptr);
+// An output's routed-expert table, if the selected mapping (or its
+// companion: a drafter's target) names it with a tensor rule whose role the
+// component catalog declares an expert projection
+// (components::ImportTransform): its MoE is the rule's layer (a drafter's
+// apart from its target's), its stacked name the rule in the same slot of
+// the role its gate stacks into. No other mapping is consulted.
+std::expected<std::optional<ExpertTable>, Error> ExpertTableOf(const TensorAssembly& tensor,
+                                                               std::uint32_t output,
+                                                               const spec::Mapping& mapping);
 
 struct ExpertRelayoutSummary {
   std::uint32_t tables = 0;         // relaid out
@@ -82,10 +84,9 @@ bool RelaysOut(const format::TensorFormat& table);
 std::expected<ExpertRelayoutSummary, Error> RelayoutExpertTables(
     std::vector<TensorAssembly>& outputs, std::span<const ExpertTable> tables);
 
-// Overload identifying expert tables from spec.
+// Overload identifying the expert tables by the selected mapping (ExpertTableOf).
 std::expected<ExpertRelayoutSummary, Error> RelayoutExpertTables(
-    std::vector<TensorAssembly>& outputs, const spec::ModelSpec* spec,
-    const spec::Mapping* mapping = nullptr);
+    std::vector<TensorAssembly>& outputs, const spec::Mapping& mapping);
 
 // A row-gathered table (an embedding or side table: the caller names it by
 // role) of a block-scaled encoding a device kernel reads row-interleaved

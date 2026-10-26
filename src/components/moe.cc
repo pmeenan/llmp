@@ -377,9 +377,11 @@ constexpr std::array kRoles{
                .encodings = defs::kNormEncodings,
                .derived = defs::kZeroCenteredNorm},
     WeightRole{.name = "gate_up_experts"},
-    WeightRole{.name = "gate_experts"},
-    WeightRole{.name = "up_experts"},
-    WeightRole{.name = "down_experts"},
+    WeightRole{
+        .name = "gate_experts",
+        .import_transform = {.expert = ExpertProjection::kGate, .stacked = "gate_up_experts"}},
+    WeightRole{.name = "up_experts", .import_transform = {.expert = ExpertProjection::kUp}},
+    WeightRole{.name = "down_experts", .import_transform = {.expert = ExpertProjection::kDown}},
     WeightRole{.name = "expert_scale", .encodings = defs::kNormEncodings},
     WeightRole{.name = "routed_post_norm",
                .encodings = defs::kNormEncodings,
@@ -389,7 +391,9 @@ constexpr std::array kRoles{
     WeightRole{.name = "gate_scale", .encodings = kF32Only},
     WeightRole{.name = "up_scale", .encodings = kF32Only},
     WeightRole{.name = "down_scale", .encodings = kF32Only},
-    WeightRole{.name = "shared_gate"},
+    // A converter's [1, width] gate matrix: the unit axis dropped.
+    WeightRole{.name = "shared_gate",
+               .import_transform = {.squeeze_rank = 2, .squeeze_axes = 0b010}},
     WeightRole{.name = "router_bias", .encodings = defs::kNormEncodings},
 };
 
@@ -722,8 +726,10 @@ constexpr std::array kHashParams{
     ParamSpec{.name = "used", .type = ParamType::kInt, .least = 1, .most = 64},
 };
 constexpr std::array<format::Encoding, 1> kI32{format::Encoding::kI32};
-constexpr std::array kHashRoles{
-    WeightRole{.name = "table", .encodings = kI32, .rows_on_demand = true}};
+constexpr std::array kHashRoles{WeightRole{.name = "table",
+                                           .encodings = kI32,
+                                           .rows_on_demand = true,
+                                           .import_transform = {.row_table = true}}};
 
 std::expected<std::vector<RoleShape>, std::string> HashShapes(const Instance& in) {
   if (in.params.Int("used") > in.params.Int("experts")) {

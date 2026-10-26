@@ -781,6 +781,30 @@ constexpr std::array<std::string_view, 3> kTextIgnored{"model.visual.", "lm_head
 constexpr std::array<std::string_view, 3> kVaeIgnored{
     "encoder.", "quant_conv.", "decoder.up_blocks.{layer}.upsampler.time_conv."};
 
+// The components' config keys the stages do not read, and why.
+constexpr std::array kTextAuxiliary{
+    AuxiliaryNamespace{"vision_config.", "vision tower, left out (its tensors are ignored)"},
+    AuxiliaryNamespace{"tie_word_embeddings", "output head tying; the encoder has no output head"},
+    AuxiliaryNamespace{"text_config.max_position_embeddings",
+                       "trained context; the encoder's plain rotary reads prompt positions"},
+    AuxiliaryNamespace{"text_config.rope_scaling.mrope_interleaved",
+                       "multimodal rotary sections: a text prompt's positions are equal in "
+                       "every section, which is plain rotary"},
+    AuxiliaryNamespace{"text_config.rope_scaling.mrope_section",
+                       "multimodal rotary sections: a text prompt's positions are equal in "
+                       "every section, which is plain rotary"},
+};
+constexpr std::array kVaeAuxiliary{
+    AuxiliaryNamespace{"base_dim", "the encoder's width; the encoder is left out"},
+    AuxiliaryNamespace{"in_channels", "the encoder's input channels; the encoder is left out"},
+    AuxiliaryNamespace{"attn_scales",
+                       "the encoder's attention scales; an attention block they add elsewhere "
+                       "is a tensor the stage does not read, refused"},
+    AuxiliaryNamespace{"scale_factor_temporal",
+                       "frames a latent frame decodes to; one image is "
+                       "one frame (the time convolutions are left out)"},
+};
+constexpr std::array<std::string_view, 1> kVaeNullKeys{"patch_size"};
 constexpr std::array kComponents{
     ImageComponentRule{.role = kText,
                        .stage = "text_encoder",
@@ -788,7 +812,8 @@ constexpr std::array kComponents{
                        .kinds = kTextKinds,
                        .architectures = kTextArchitectures,
                        .containers = kSafetensorsContainer,
-                       .ignored_tensors = kTextIgnored},
+                       .ignored_tensors = kTextIgnored,
+                       .auxiliary = kTextAuxiliary},
     ImageComponentRule{.role = kFlow,
                        .stage = "denoiser",
                        .stage_role = StageRole::kDenoiser,
@@ -803,7 +828,9 @@ constexpr std::array kComponents{
                        .architectures = kVaeArchitectures,
                        .containers = kSafetensorsContainer,
                        .recipe = &kVaeRecipe,
-                       .ignored_tensors = kVaeIgnored},
+                       .ignored_tensors = kVaeIgnored,
+                       .auxiliary = kVaeAuxiliary,
+                       .null_keys = kVaeNullKeys},
 };
 
 constexpr ImageParamRule Text(std::string_view param, std::string_view key) {
@@ -878,6 +905,10 @@ constexpr std::array kRequirements{
                      .key = "text_config.attention_bias",
                      .type = ValueType::kBool,
                      .value = {.flag = false}},
+    ImageRequirement{.role = kText,
+                     .key = "text_config.rope_scaling.rope_type",
+                     .value = {.text = "default"},
+                     .optional = true},
     ImageRequirement{
         .role = kFlow, .key = "patch_size", .type = ValueType::kInt, .value = {.integer = 1}},
     ImageRequirement{.role = kFlow,

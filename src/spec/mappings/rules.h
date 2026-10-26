@@ -49,6 +49,7 @@ inline constexpr std::array kSafetensorsAuxiliary{
                        "model.embed_tokens.weight", 1},
     AuxiliaryNamespace{"layer_types", "transformer block layer types"},
     AuxiliaryNamespace{"text_config.layer_types", "text transformer block layer types"},
+    AuxiliaryNamespace{"mlp_bias", "MLP projection biases: a bias tensor no rule reads is refused"},
 };
 
 // Gemma owns its mathematical keys rather than inheriting Qwen's auxiliary windows.
@@ -78,6 +79,19 @@ inline constexpr std::array kNativeAuxiliary{
     AuxiliaryNamespace{"vision_config.", "vision component outside this text-only import"},
     AuxiliaryNamespace{"audio_config.", "audio component outside this text-only import"},
     AuxiliaryNamespace{"quantization.", "checkpoint quantization metadata"},
+    AuxiliaryNamespace{"full_attention_interval",
+                       "the full-attention interval; the required layer_types states each "
+                       "layer's type, as transformers reads it"},
+    AuxiliaryNamespace{"mlp_only_layers",
+                       "a MoE model's dense-FFN layers: such a layer's dense tensors have no "
+                       "rule and are refused"},
+    AuxiliaryNamespace{"mtp_num_hidden_layers",
+                       "the MTP drafter's layers, outside the target (its tensors are refused "
+                       "unless excluded)"},
+    AuxiliaryNamespace{"mtp_use_dedicated_embeddings",
+                       "the MTP drafter's embedding sharing, outside the target"},
+    AuxiliaryNamespace{"vocab_size_per_layer_input",
+                       "the per-layer input table's rows, stated by its tensor's extent"},
     AuxiliaryNamespace{"quantization_config.", "checkpoint quantization metadata"},
 };
 

@@ -526,9 +526,13 @@ constexpr std::array kGemma4NativeSemantic{std::string_view("rope_*"),
                                            std::string_view("moe_*"),
                                            std::string_view("top_k_experts"),
                                            std::string_view("zz_*")};
+// A dense release states its absent experts' width as null
+// (`expert_intermediate_size`; its `num_experts` and `top_k_experts` are
+// read): a width given is not read, and refuses (D-125 as amended).
 constexpr std::array kGemma4NativeNulls{
     std::string_view("rope_scaling"), std::string_view("rope_parameters"),
-    std::string_view("final_logit_softcapping"), std::string_view("use_bidirectional_attention")};
+    std::string_view("final_logit_softcapping"), std::string_view("use_bidirectional_attention"),
+    std::string_view("expert_intermediate_size")};
 constexpr std::array kGemma4NativeRequirements{
     ScalarRequirement{.key = "enable_moe_block",
                       .optional = true,

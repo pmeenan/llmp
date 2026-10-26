@@ -3417,5 +3417,52 @@ TEST(ComponentsTest, EmissionDependsOnPastOnlyThroughShapeParameters) {
   EXPECT_GT(compared, 0U);
 }
 
+// The import transforms the catalog declares (ImportTransform) are
+// consistent: a head-ordering role's fold is its component's, whose
+// geometry names parameters it has; a gate's stack role is its own
+// component's; a squeeze names an axis of its rank.
+TEST(ComponentCatalogTest, ImportTransformsAreConsistentWithTheirComponents) {
+  std::size_t ordered = 0, experts = 0, squeezed = 0, tables = 0;
+  for (const ComponentDef* def : Catalog()) {
+    const auto has_param = [&](std::string_view name) {
+      return std::ranges::any_of(def->params, [&](const ParamSpec& p) { return p.name == name; });
+    };
+    if (!def->head_ordering.fold.empty()) {
+      EXPECT_TRUE(has_param(def->head_ordering.keys)) << def->kind;
+      EXPECT_TRUE(has_param(def->head_ordering.values)) << def->kind;
+      EXPECT_TRUE(has_param(def->head_ordering.width)) << def->kind;
+    }
+    for (const WeightRole& role : def->roles) {
+      const ImportTransform& t = role.import_transform;
+      EXPECT_EQ(ImportTransformOf(def->kind, def->version, role.name), &t);
+      if (t.head_axis != HeadAxis::kNone) {
+        ++ordered;
+        EXPECT_FALSE(def->head_ordering.fold.empty()) << def->kind << " " << role.name;
+        EXPECT_EQ(role.ordering_fold, def->head_ordering.fold) << def->kind << " " << role.name;
+      }
+      if (!role.ordering_fold.empty() && role.ordering_fold == def->head_ordering.fold) {
+        EXPECT_NE(t.head_axis, HeadAxis::kNone) << def->kind << " " << role.name;
+      }
+      if (t.expert != ExpertProjection::kNone) ++experts;
+      if (!t.stacked.empty()) {
+        EXPECT_EQ(t.expert, ExpertProjection::kGate) << def->kind << " " << role.name;
+        EXPECT_TRUE(RoleIndex(*def, t.stacked).has_value()) << def->kind << " " << t.stacked;
+      }
+      if (t.squeeze_rank != 0) {
+        ++squeezed;
+        EXPECT_NE(t.squeeze_axes, 0U) << def->kind << " " << role.name;
+        EXPECT_EQ(t.squeeze_axes >> t.squeeze_rank, 0U) << def->kind << " " << role.name;
+      }
+      tables += t.row_table;
+    }
+  }
+  EXPECT_EQ(ordered, 8U);  // GDN's tiled roles
+  EXPECT_EQ(experts, 3U);  // a MoE's gate, up and down
+  EXPECT_EQ(squeezed, 3U);
+  EXPECT_GE(tables, 5U);
+  EXPECT_EQ(ImportTransformOf("ffn.moe", 1, "no-such-role"), nullptr);
+  EXPECT_EQ(ImportTransformOf("no.such", 1, "table"), nullptr);
+}
+
 }  // namespace
 }  // namespace llmp::components
