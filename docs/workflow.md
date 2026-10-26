@@ -88,11 +88,13 @@ commits. Preserve host/source ownership, job locking and the required final chec
 
 Some areas are where an externally consumed runtime earns or loses trust. A
 change that touches any of them gets, in addition to the loop above, an
-adversarial challenge pass — a reviewer whose brief is to break it: construct
+adversarial challenge — a reviewer whose brief is to break it: construct
 the input, race, cancellation, or failure that violates a pager invariant,
-corrupts an artifact, or escapes a bound — followed by fix/verify rounds until
-the challenge comes back clean or finds only low-severity issues, which are
-fixed without another round (D-084).
+corrupts an artifact, or escapes a bound (D-084). *Owner direction,
+2026-10-26:* one agent does the review and the challenge in a single pass and
+fixes what it finds. Another round follows only when a fix changes real
+logic, and it covers only that fix; the orchestrating agent may check a
+small fix itself instead.
 
 - Memory manager, catalog, reservation/lease logic, eviction — anything the
   pager invariants in [architecture.md](architecture.md) govern.
@@ -250,6 +252,12 @@ downgrade a heavy-path change to the light loop on their own.
   (`ImageGeneration|ImageRequest|ImageSpatial|ImageWholeVae|ImageTimestep`).
   Suite names, not file names: list them with `ctest -N -L models`. A round that finds only low-severity
   issues fixes them without another round.
+  *Owner direction, 2026-10-26 (verification in batches):* builders and
+  review rounds verify with targeted tests (`-R <touched>`) and the model
+  tests of the areas they touched, not the full shared set. The full shared
+  set and the union of the touched model areas run once, on the merged tree
+  just before commit. Finished slices from the two streams are merged
+  together and checked by that one run, then land as separate commits.
   Never run two check tiers on one tree at once.
   *Owner override, 2026-09-29:* during the current M3 optimization run,
   keep per-slice checks on the Sparks and defer all x86 workstation checks
@@ -391,7 +399,9 @@ not a second time from the internet.
   takes no lock; use that only for work that loads neither the CPU nor
   the GPU.
 - **Start** with a timeout of at most 600 seconds by default
-  (the process group gets SIGTERM, then SIGKILL). Split longer batches into
+  (the process group gets SIGTERM, then SIGKILL); a full shared test set
+  (`-LE 'models|timing'`) may run as one job of up to 900 s (owner,
+  2026-10-26). Split longer batches into
   separately supervised and waited jobs. D-085's needed-now exception above
   still applies to a justified longer run; state its expected time and why
   it is needed before starting it. An exclusive job waits until no other

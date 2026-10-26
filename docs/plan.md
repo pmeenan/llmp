@@ -907,14 +907,22 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
 - [ ] **F7 Decode GEMV and planner cost:** one-pass VecQ at 5–8 columns, rank
       data instead of capability vetoes, upstream prefetch, stable op identity in
       digests, cheaper inference, geometric decode buckets.
-- [ ] **F8 Kernel-source boundaries:** a vendor-free selected-operation interface,
-      no kernel-source include cycles, a stricter boundary check.
-- [ ] **F9a Import throughput and leftovers** and **F9b one mapping value
-      language,** one Qwen-Image VAE mapping, shared tensor-name dictionary.
-- [ ] **F10 Hygiene and docs:** raw experiment dumps and unused scripts removed,
-      one test-store resolver, `m35-record.md`, doc drift.
-- [ ] **F11 Swap continuation at 8K:** the DeepSeek-to-Qwen3.8 8K continuation
-      differs (15 of 16 logits) at `265c821a`; bisect and fix.
+- [ ] **F8 Boundaries and mapping language:** a vendor-free
+      selected-operation interface, no kernel-source include cycles and a
+      stricter boundary check; one mapping value language, one Qwen-Image VAE
+      mapping and a shared tensor-name dictionary.
+- [ ] **F9 Import throughput and leftovers:** one parallel post-write hash
+      pass, reuse provenance, unknown-key policy, fuzzing of the newer
+      routes, component-declared import transforms.
+- [ ] **F10 Hygiene, docs and final checks:** raw experiment dumps and unused
+      scripts removed, one test-store resolver, `m35-record.md`, doc drift, then
+      the full Spark check set and a speed confirmation of every family.
+- [ ] **F12 Known model-test failures and swap continuation:** every model
+      test that already failed at `265c821a` (stale frozen digests, a Gemma Q8
+      cache admission, Gemma 4 tool rendering, the gemma2 store artifact
+      refused at admission) is fixed, re-recorded with evidence or corrected,
+      and the DeepSeek-to-Qwen3.8 8K continuation that differs (15 of 16
+      logits) is bisected and fixed.
 
 - [x] **Family selection** (approved by the owner 2026-09-29: all 13
       checkpoints of [m35-families.md](m35-families.md), with the answers

@@ -279,9 +279,10 @@ the commit gate.
    build, review, challenge, fixes, checks and docs, then lands as one
    squashed commit (M3.6: one per reviewed sub-task, and main always builds
    and passes); only a protocol's pre-registration is committed apart
-   (workflow.md). Heavy-path changes repeat challenge and fix rounds until a
-   round is clean or finds only low-severity issues, which are fixed without
-   another round.
+   (workflow.md). Heavy-path changes get one adversarial review that both
+   reviews and tries to break them; another round follows only when a fix
+   changes real logic, and the orchestrator may check a small fix itself
+   (owner, 2026-10-26).
 6. **C++23 conventions.** Clang-first. Ordinary `.cc` files use the host
    compiler; CUDA-facing translation units stay narrow and don't leak heavy
    runtime containers through headers. Typed byte counts, spans/views,
@@ -310,7 +311,8 @@ the commit gate.
    it needs the workstation, under `hostlock shared --label "llmp: <what>" --
    <cmd>` (the owner's lock tool, where installed), waiting for its turn
    rather than working around it. No `nohup`,
-   no log-marker or `pgrep` polling loops, jobs of at most 600 s, and never
+   no log-marker or `pgrep` polling loops, jobs of at most 600 s (a full
+   shared test set may run as one job of up to 900 s), and never
    copy a build directory between paths (CMake caches absolute paths; sync
    sources with `rsync -rlpc --exclude=/build`). Job steps call
    `~/.local/bin/mise`. Checkpoints come from the model archive (rule 14),
@@ -326,7 +328,11 @@ the commit gate.
     sets into one parallel build/test/review wave, split imports, test subsets
     and model qualifications across `spark` and `spark-b` in parallel, and
     re-import only artifacts whose on-disk output changed (syncing the delta via
-    `rsync`). Never hand off broken, and read any `Skipped` result with `-V`
+    `rsync`). Builders and reviewers verify with targeted tests and the model
+    tests of what they touched; the full shared set and the union of touched
+    model areas run once, on the merged tree, before commit, and finished
+    slices from both streams land together under one such check (owner,
+    2026-10-26). Never hand off broken, and read any `Skipped` result with `-V`
     before believing it (RE-053). Say which checks ran where. docs/workflow.md
     ("Check cadence", "Focused optimization checks").
 11. **Product behaviour agents must not undo.** Each is an owner direction;
