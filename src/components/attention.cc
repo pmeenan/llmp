@@ -273,17 +273,16 @@ Dims DimsOf(const Instance& in) {
                                                      : std::array<std::uint64_t, 3>{a0, a1, a2};
   const bool llama3_rope = p.Flag("llama3_rope");
   const bool yarn_enabled = !llama3_rope && (p.Flag("yarn") || p.Real("rope_factor") > 1.0);
-  const float yarn_factor = p.Given("rope_factor") ? F32(p.Real("rope_factor"))
-                                                   : (p.Flag("yarn") && p.Real("rope_scale") < 1.0
-                                                          ? F32(1.0 / p.Real("rope_scale"))
-                                                          : F32(p.Real("rope_factor")));
+  const float yarn_factor = p.Given("rope_factor")
+                                ? F32(p.Real("rope_factor"))
+                                : ((p.Flag("yarn") || llama3_rope) && p.Real("rope_scale") < 1.0
+                                       ? F32(1.0 / p.Real("rope_scale"))
+                                       : F32(p.Real("rope_factor")));
   const std::uint32_t yarn_ctx = p.Given("yarn_context")
                                      ? static_cast<std::uint32_t>(p.Int("yarn_context"))
                                      : in.stage.context;
   const auto enc_name = p.Name("kv_encoding");
-  const Encoding kv_enc = enc_name == "q8_0"   ? Encoding::kQ8_0
-                          : enc_name == "q4_0" ? Encoding::kQ4_0
-                                               : Encoding::kF16;
+  const Encoding kv_enc = enc_name == "q8_0" ? Encoding::kQ8_0 : Encoding::kF16;
   return {.kv_encoding = kv_enc,
           .width = in.stage.width,
           .heads = static_cast<std::uint64_t>(p.Int("heads")),
@@ -348,10 +347,10 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   if ((d.rope_axes[1] != 0 || d.rope_axes[2] != 0) && (!d.stateless || d.freqs)) {
     return std::unexpected("multi-axis rope requires stateless attention without rope_freqs");
   }
-  if (d.stateless && (d.kv_encoding == Encoding::kQ8_0 || d.kv_encoding == Encoding::kQ4_0)) {
+  if (d.stateless && d.kv_encoding == Encoding::kQ8_0) {
     return std::unexpected("stateless attention does not use quantized KV state");
   }
-  if ((d.kv_encoding == Encoding::kQ8_0 || d.kv_encoding == Encoding::kQ4_0) &&
+  if (d.kv_encoding == Encoding::kQ8_0 &&
       (d.kd != d.vd || (d.kd != 64 && d.kd != 256 && d.kd != 512) || d.explicit_scores ||
        (d.kd != 256 && d.softcap != 0.0F)))
     return std::unexpected(

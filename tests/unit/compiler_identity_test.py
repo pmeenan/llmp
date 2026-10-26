@@ -42,6 +42,49 @@ class CompilerIdentityTest(unittest.TestCase):
         self.assertEqual(got[4], args[4])
         self.assertEqual(got[-2:], ["$BUILD/file.o", "$SOURCE/file.cc"])
 
+    def test_xcompiler_prefix_map_commas_and_target_cache_invalidation(self):
+        self.assertEqual(
+            IDENTITY.split_xcompiler("-ffile-prefix-map=/owner/path,with,comma=llmp/source"),
+            ["-ffile-prefix-map=/owner/path,with,comma=llmp/source"])
+        self.assertEqual(
+            IDENTITY.split_xcompiler("-ffile-prefix-map=/a=b,-D__DATE__=\"override\""),
+            ["-ffile-prefix-map=/a=b", "-D__DATE__=\"override\""])
+        IDENTITY.supported_compile_options([
+            "/sdk/nvcc", "-Xcompiler=-ffile-prefix-map=/owner/path,with,comma=llmp/source",
+            "-c", "file.cu", "-o", "file.o"])
+        with self.assertRaises(IDENTITY.Refusal):
+            IDENTITY.supported_compile_options([
+                "/sdk/nvcc", "-Xcompiler=-ffile-prefix-map=/a=b,-D__DATE__=\"override\"",
+                "-c", "file.cu", "-o", "file.o"])
+        for bad in ("-Xcompiler=-ffile-prefix-map=/a=b,@rsp.txt",
+                    "-Xcompiler=-ffile-prefix-map=/a=b,extra.cu",
+                    "-Xcompiler=-ffile-prefix-map=/a"):
+            with self.assertRaises(IDENTITY.Refusal):
+                IDENTITY.supported_compile_options(["/sdk/nvcc", bad, "-c", "file.cu", "-o", "file.o"])
+        with tempfile.TemporaryDirectory() as directory:
+            build = Path(directory)
+            (build / "CMakeFiles").mkdir()
+            build_ninja = build / "build.ninja"
+            rules_ninja = build / "CMakeFiles/rules.ninja"
+            build_ninja.write_text("build a.o: CXX\n")
+            rules_ninja.write_text("rule CXX\n")
+            config = {"build": str(build), "ninja": "/sdk/ninja"}
+            calls = []
+            def fake_run(cmd, **kwargs):
+                calls.append(cmd)
+                text = "a.o: CXX\nall: phony\n" if len(calls) == 1 else "a.o: CXX\nb.o: CXX\nall: phony\n"
+                return subprocess.CompletedProcess(cmd, 0, stdout=text, stderr="")
+            with mock.patch.object(IDENTITY.subprocess, "run", side_effect=fake_run):
+                first, _ = IDENTITY.build_outputs(config)
+                second, _ = IDENTITY.build_outputs(config)
+                self.assertEqual(first, {str(build / "a.o")})
+                self.assertEqual(second, first)
+                self.assertEqual(len(calls), 1)
+                build_ninja.write_text("build a.o: CXX\nbuild b.o: CXX\n")
+                third, _ = IDENTITY.build_outputs(config)
+                self.assertEqual(third, {str(build / "a.o"), str(build / "b.o")})
+                self.assertEqual(len(calls), 2)
+
     def test_make_dependency_format(self):
         self.assertEqual(IDENTITY.depfile_paths("file.o: a.cc path\\ with\\ space.h \\\n other\\#name.h dollar$$.h\n"),
                          ["a.cc", "path with space.h", "other#name.h", "dollar$.h"])

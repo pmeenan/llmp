@@ -41,12 +41,7 @@ Shape S(std::uint64_t a, std::uint64_t b = 1, std::uint64_t c = 1, std::uint64_t
 using Nb = std::array<std::uint64_t, format::kMaxDims>;
 
 std::optional<std::uint64_t> VectorScratchBytes(std::uint64_t count, std::size_t element_size) {
-  constexpr std::uint64_t kVectorAllocationOverhead = 2 * sizeof(void*) + alignof(std::max_align_t);
-  if (count == 0) return std::uint64_t{0};
-  if (count >
-      (std::numeric_limits<std::uint64_t>::max() - kVectorAllocationOverhead) / element_size)
-    return std::nullopt;
-  return count * element_size + kVectorAllocationOverhead;
+  return VectorAdmissionBytes(count, element_size);
 }
 
 template <typename P>
@@ -850,10 +845,15 @@ Outputs DecomposeRmsNormMulRopeSections(D& d, const ParamBytes& params) {
   }
   const TensorDesc& x = d.t(d.s(0));
   std::uint64_t dims = 0;
+  bool tail_zero = true;
   for (std::size_t i = 0; i < p.dims.size(); ++i) {
-    dims += i < p.sections ? p.dims.at(i) : 0;
+    if (i < p.sections) {
+      dims += p.dims.at(i);
+    } else if (p.dims.at(i) != 0) {
+      tail_zero = false;
+    }
   }
-  if (!d.check(p.sections >= 1 && p.sections <= 3 &&
+  if (!d.check(p.sections >= 1 && p.sections <= 3 && tail_zero &&
                    (p.mode == RopeMode::kNormal || p.mode == RopeMode::kNeox) && dims == x.ne(0) &&
                    d.t(d.s(1)).shape().ne == ShapeOf({x.ne(0)}).ne,
                GraphError::kParams, "one to three sections covering the head and a [D] weight")) {
@@ -898,6 +898,10 @@ Outputs DecomposeSplitModulate(D& d, const ParamBytes& params) {
 
   if (!d.need(gated ? 3 : 2, gated ? 4 : 3)) return {};
   const auto p = Get<SplitModulateParams>(params);
+  if (!d.check(std::isfinite(p.eps) && p.eps >= 0.0f, GraphError::kParams,
+               "eps must be finite and not negative")) {
+    return {};
+  }
   const auto f32 = [&](TensorId t) {
     return d.t(t).format.encoding == format::Encoding::kF32 ? t
                                                             : b.Convert(t, format::Encoding::kF32);
@@ -954,10 +958,17 @@ Outputs DecomposeRopeTable(D& d, const ParamBytes& params) {
   const auto p = Get<RopeSectionsParams>(params);
   if (!d.need(std::size_t{p.sections}, std::size_t{p.sections})) return {};
   std::uint64_t dims = 0;
-  for (std::size_t i = 0; i < p.sections && i < p.dims.size(); ++i) dims += p.dims.at(i);
+  bool tail_zero = true;
+  for (std::size_t i = 0; i < p.dims.size(); ++i) {
+    if (i < p.sections) {
+      dims += p.dims.at(i);
+    } else if (p.dims.at(i) != 0) {
+      tail_zero = false;
+    }
+  }
   const std::uint64_t rows = d.t(d.s(0)).ne(0);
-  if (!d.check(p.sections >= 1 && p.sections <= 3 && p.mode == RopeMode::kNormal && dims != 0 &&
-                   dims % 2 == 0,
+  if (!d.check(p.eps == 0.0f && p.sections >= 1 && p.sections <= 3 && tail_zero &&
+                   p.mode == RopeMode::kNormal && dims != 0 && dims % 2 == 0,
                GraphError::kParams, "one to three normal sections of an even head"))
     return {};
   const TensorId pairs = b.Concat(b.Fill(ShapeOf({1, dims / 2, rows}), 1.0F),
@@ -1493,7 +1504,13 @@ Outputs DecomposeHcCombine(D& d, const ParamBytes& params) {
   if (!d.need(3, 3)) {
     return {};
   }
-  return One(HcCombineOf(d, d.s(0), d.s(1), d.s(2), Get<HcParams>(params).streams));
+  const auto p = Get<HcParams>(params);
+  if (!d.check(static_cast<std::uint8_t>(p.mix) <= 1 && static_cast<std::uint8_t>(p.fold) <= 1 &&
+                   std::isfinite(p.eps) && std::isfinite(p.scale),
+               GraphError::kParams, "known kinds, finite eps and scale")) {
+    return {};
+  }
+  return One(HcCombineOf(d, d.s(0), d.s(1), d.s(2), p.streams));
 }
 
 Outputs DecomposeGdnConv(D& d, const ParamBytes& params) {
@@ -1502,6 +1519,10 @@ Outputs DecomposeGdnConv(D& d, const ParamBytes& params) {
     return {};
   }
   const auto p = Get<GdnConvParams>(params);
+  if (!d.check(p.eps > 0.0f && std::isfinite(p.eps) && std::isfinite(p.scale), GraphError::kParams,
+               "positive finite eps and finite scale")) {
+    return {};
+  }
   const TensorDesc rt = d.t(d.s(0));
   const TensorDesc wt = d.t(d.s(2));
   const std::uint64_t c = rt.ne(0);
@@ -1637,12 +1658,10 @@ std::expected<Graph, VerifyError> ExpandOnce(const Graph& graph, bool composites
   if (!map_bytes) {
     return std::unexpected(VerifyError{.error = GraphError::kAdmission, .detail = {}});
   }
-  auto next_map_loan = AcquireStorageLoan(funder, *map_bytes);
-  if (funder && !next_map_loan) {
+  if (funder && !map_loan.GrowTo(funder, *map_bytes)) {
     return std::unexpected(VerifyError{.error = GraphError::kAdmission, .detail = {}});
   }
   map.assign(graph.tensor_count(), TensorId{});
-  if (next_map_loan) map_loan = std::move(*next_map_loan);
   more = false;
   std::array<TensorId, kMaxSources> sources{};
   std::array<TensorDesc, kMaxOutputs> requested{};

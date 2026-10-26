@@ -143,28 +143,20 @@ bool Builder::Admit(std::size_t nodes, std::size_t tensors, std::size_t producer
                          request.copied_name_bytes == copied_name_bytes_;
   if (unchanged) return true;
   std::uint64_t bytes = 0;
-  constexpr std::uint64_t kVectorAllocationOverhead = 2 * sizeof(void*) + alignof(std::max_align_t);
-  if (!AddBytes(bytes, request.node_capacity, sizeof(Node)) ||
-      !AddBytes(bytes, request.tensor_capacity, sizeof(TensorDesc)) ||
-      !AddBytes(bytes, request.producer_capacity, sizeof(NodeId)) ||
-      !AddBytes(bytes, request.input_capacity, sizeof(TensorId)) ||
-      !AddBytes(bytes, request.output_capacity, sizeof(TensorId)) ||
-      !AddBytes(bytes, request.keep_capacity, sizeof(TensorId)) ||
-      !AddBytes(bytes, request.name_capacity, sizeof(std::string)) ||
-      !AddBytes(bytes, request.node_capacity != 0, kVectorAllocationOverhead) ||
-      !AddBytes(bytes, request.tensor_capacity != 0, kVectorAllocationOverhead) ||
-      !AddBytes(bytes, request.producer_capacity != 0, kVectorAllocationOverhead) ||
-      !AddBytes(bytes, request.input_capacity != 0, kVectorAllocationOverhead) ||
-      !AddBytes(bytes, request.output_capacity != 0, kVectorAllocationOverhead) ||
-      !AddBytes(bytes, request.keep_capacity != 0, kVectorAllocationOverhead) ||
-      !AddBytes(bytes, request.name_capacity != 0, kVectorAllocationOverhead) ||
-      !AddBytes(bytes, request.copied_name_bytes, 1) ||
-      !AddBytes(bytes, request.owned_name_count, kVectorAllocationOverhead)) {
+  if (!AddVectorAdmissionBytes(request.node_capacity, sizeof(Node), bytes) ||
+      !AddVectorAdmissionBytes(request.tensor_capacity, sizeof(TensorDesc), bytes) ||
+      !AddVectorAdmissionBytes(request.producer_capacity, sizeof(NodeId), bytes) ||
+      !AddVectorAdmissionBytes(request.input_capacity, sizeof(TensorId), bytes) ||
+      !AddVectorAdmissionBytes(request.output_capacity, sizeof(TensorId), bytes) ||
+      !AddVectorAdmissionBytes(request.keep_capacity, sizeof(TensorId), bytes) ||
+      !AddVectorAdmissionBytes(request.name_capacity, sizeof(std::string), bytes) ||
+      !AddAdmissionBytes(bytes, request.copied_name_bytes) ||
+      !AddBytes(bytes, request.owned_name_count, kAdmissionHeapBlockOverhead)) {
     RefuseAdmission();
     return false;
   }
-  auto loan = AcquireStorageLoan(funder_, bytes);
-  if (!loan) {
+  if (bytes < graph_.storage_loan_.bytes() ||
+      !graph_.storage_loan_.Grow(bytes - graph_.storage_loan_.bytes())) {
     RefuseAdmission();
     return false;
   }
@@ -175,7 +167,6 @@ bool Builder::Admit(std::size_t nodes, std::size_t tensors, std::size_t producer
   graph_.outputs_.reserve(request.output_capacity);
   graph_.keep_.reserve(request.keep_capacity);
   graph_.names_.reserve(request.name_capacity);
-  graph_.storage_loan_ = std::move(*loan);
   copied_name_bytes_ = copied_name_bytes;
   return true;
 }

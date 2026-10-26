@@ -80,16 +80,24 @@ ComparisonBoundaryError Invalid(std::string_view detail,
   return {.code = ComparisonBoundaryError::kInvalid, .detail = std::move(*text)};
 }
 
+ComparisonBoundaryError InvalidStateProof(std::string_view detail,
+                                          ir::DiagnosticAdmission* diagnostic = nullptr) {
+  auto text = ir::FormatDiagnostic(diagnostic,
+                                   "state declaration failed its access/write proof: {}", detail);
+  if (!text) return {.code = ComparisonBoundaryError::kAdmission, .detail = {}};
+  return {.code = ComparisonBoundaryError::kInvalid, .detail = std::move(*text)};
+}
+
 ComparisonBoundaryError Admission(std::string_view) {
   return {.code = ComparisonBoundaryError::kAdmission, .detail = {}};
 }
 
 bool Add(std::uint64_t& total, std::uint64_t amount) {
-  return !__builtin_add_overflow(total, amount, &total);
+  return ir::AddAdmissionBytes(total, amount);
 }
 
 bool Product(std::uint64_t a, std::uint64_t b, std::uint64_t& out) {
-  return !__builtin_mul_overflow(a, b, &out);
+  return ir::MulAdmissionBytes(a, b, out);
 }
 
 constexpr std::uint64_t StateValidationDiagnosticBytes() {
@@ -99,6 +107,11 @@ constexpr std::uint64_t StateValidationDiagnosticBytes() {
                   sizeof("state read/write flags differ from graph access facts") - 1,
                   sizeof("state access declarations omit an original graph state leaf") - 1,
                   sizeof("a store into a leaf that is no state") - 1});
+  constexpr std::uint64_t kFlagMismatchText =
+      sizeof("state read/write flags differ: stage  layer  tensor  segment  declared / actual /") -
+      1 + 2 * (std::numeric_limits<std::uint16_t>::digits10 + 1) +
+      (std::numeric_limits<std::uint32_t>::digits10 + 1) +
+      (std::numeric_limits<std::uint8_t>::digits10 + 1) + 4 * (sizeof("false") - 1);
   constexpr std::uint64_t kBorrowedStateText = sizeof("a store into stage 's borrowed  (layer )") -
                                                1 + std::numeric_limits<std::uint16_t>::digits10 +
                                                1 + std::numeric_limits<std::uint16_t>::digits10 +
@@ -107,8 +120,26 @@ constexpr std::uint64_t StateValidationDiagnosticBytes() {
       sizeof("stage 's step stores into stage 's state, not a tap it writes") - 1 +
       2 * (std::numeric_limits<std::uint16_t>::digits10 + 1);
   constexpr std::uint64_t kTextBytes =
-      (std::max)({kStateAccessText, kBorrowedStateText, kCrossStageText});
-  return kTextBytes + 1 + 2 * sizeof(void*) + alignof(std::max_align_t);
+      (std::max)({kStateAccessText, kFlagMismatchText, kBorrowedStateText, kCrossStageText});
+  return kTextBytes + 1 + ir::kAdmissionHeapBlockOverhead;
+}
+
+std::expected<void, ComparisonBoundaryError> ValidateStateAccessAndWrites(
+    const ir::Graph& graph, std::span<const StepState> state,
+    std::span<const ir::TensorId> original_to_planned, std::uint16_t active_stage,
+    bool mapped_boundary, ir::DiagnosticAdmission* diagnostic) {
+  if (mapped_boundary && state.empty()) return {};
+  if (!mapped_boundary) {
+    if (auto checked = CheckStateAccess(graph, state); !checked)
+      return std::unexpected(InvalidStateProof(checked.error(), diagnostic));
+  }
+  if (auto checked = CheckStateWrites(graph, state, original_to_planned, active_stage); !checked)
+    return std::unexpected(InvalidStateProof(checked.error(), diagnostic));
+  if (mapped_boundary) {
+    if (auto checked = CheckMappedStateAccess(graph, state, original_to_planned); !checked)
+      return std::unexpected(InvalidStateProof(checked.error(), diagnostic));
+  }
+  return {};
 }
 
 bool Valid(const ir::Graph& graph, ir::TensorId id) {
@@ -400,14 +431,10 @@ std::expected<void, ComparisonBoundaryError> ValidateView(
       return std::unexpected(
           Invalid("graph contains an undeclared or duplicate state root", diagnostic));
   }
-  if (auto checked = CheckStateAccess(graph, view.state); !checked)
-    return std::unexpected(
-        Invalid(std::string("state declaration failed its access/write proof: ") + checked.error(),
-                diagnostic));
-  if (auto checked = CheckStateWrites(graph, view.state, {}, view.active_stage); !checked)
-    return std::unexpected(
-        Invalid(std::string("state declaration failed its access/write proof: ") + checked.error(),
-                diagnostic));
+  if (auto checked =
+          ValidateStateAccessAndWrites(graph, view.state, {}, view.active_stage, false, diagnostic);
+      !checked)
+    return checked;
 
   const auto external_count = [&](ir::TensorId root, std::optional<format::PartRole> part) {
     return std::ranges::count_if(view.external, [&](const ComparisonExternalBinding& candidate) {
@@ -1633,19 +1660,11 @@ std::expected<void, ComparisonBoundaryError> ValidateMappedComparisonBoundary(
   if (planned_state_roots != source.state().size())
     return std::unexpected(
         Invalid("planned graph changed the complete state root inventory", diagnostic));
-  if (!source.state_facts().empty())
-    if (auto checked = CheckStateWrites(planned, source.state_facts(), original_to_planned,
-                                        source.active_stage());
-        !checked)
-      return std::unexpected(Invalid(
-          std::string("state declaration failed its access/write proof: ") + checked.error(),
-          diagnostic));
-  if (!source.state_facts().empty())
-    if (auto checked = CheckMappedStateAccess(planned, source.state_facts(), original_to_planned);
-        !checked)
-      return std::unexpected(Invalid(
-          std::string("state declaration failed its access/write proof: ") + checked.error(),
-          diagnostic));
+  if (auto checked =
+          ValidateStateAccessAndWrites(planned, source.state_facts(), original_to_planned,
+                                       source.active_stage(), true, diagnostic);
+      !checked)
+    return checked;
   return {};
 }
 

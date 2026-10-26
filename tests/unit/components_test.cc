@@ -1068,6 +1068,20 @@ TEST(ComponentsTest, Llama3SmoothFrequencyScaledRopeMatchesReferenceAndRegimes) 
   both_flags.params.push_back(P("yarn", ParamValue(true)));
   std::ranges::sort(both_flags.params, {}, &Param::name);
   EXPECT_FALSE(MakeInstance(both_flags, kFacts, Site::kLayer, 0, 1).has_value());
+
+  // Accepts llama3_rope with rope_scale < 1.0 when rope_factor is omitted.
+  auto via_rope_scale = Attention(0, 0.0, true, "neox", "pre");
+  for (Param& p : via_rope_scale.params) {
+    if (p.name == "rope_base") p.value = R(500000.0);
+    if (p.name == "rope_scale") p.value = R(0.125);
+  }
+  via_rope_scale.params.push_back(P("llama3_rope", ParamValue(true)));
+  via_rope_scale.params.push_back(P("yarn_context", I(8192)));
+  via_rope_scale.params.push_back(P("low_freq_factor", R(1.0)));
+  via_rope_scale.params.push_back(P("high_freq_factor", R(4.0)));
+  std::ranges::sort(via_rope_scale.params, {}, &Param::name);
+  auto in_scale = MakeInstance(via_rope_scale, kFacts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(in_scale.has_value()) << in_scale.error();
 }
 
 TEST(ComponentsTest, ZeroCenteredDenseNormsMatchTheirReferencesWithoutChangingSourceWeights) {

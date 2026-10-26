@@ -152,8 +152,6 @@ __global__ void CopyI32ContKernel(const char* __restrict__ src, std::int32_t* __
   dst[index] = *reinterpret_cast<const std::int32_t*>(src + offset);
 }
 
-__device__ float ToF32(float v) { return v; }
-__device__ float ToF32(half v) { return __half2float(v); }
 template <typename T>
 __device__ T FromF32(float v);
 template <>
@@ -165,7 +163,7 @@ __device__ half FromF32<half>(float v) {
   return __float2half(v);
 }
 
-template <typename SrcT, typename DstT, bool kSetRows>
+template <typename DstT, bool kSetRows>
 __global__ void Llama3RopeKernel(const char* x_bytes, const std::int32_t* pos_data,
                                  const float* freq_factors, const std::int64_t* row_ids,
                                  char* dst_bytes, std::int64_t ne0, std::int64_t ne1,
@@ -179,9 +177,9 @@ __global__ void Llama3RopeKernel(const char* x_bytes, const std::int32_t* pos_da
   const std::int64_t rem = flat / ne1;
   const std::int64_t i2 = rem % ne2;
   const std::int64_t i3 = rem / ne2;
-  const auto* x_row = reinterpret_cast<const SrcT*>(x_bytes + static_cast<std::size_t>(i1) * x_nb1 +
-                                                    static_cast<std::size_t>(i2) * x_nb2 +
-                                                    static_cast<std::size_t>(i3) * x_nb3);
+  const auto* x_row = reinterpret_cast<const float*>(
+      x_bytes + static_cast<std::size_t>(i1) * x_nb1 + static_cast<std::size_t>(i2) * x_nb2 +
+      static_cast<std::size_t>(i3) * x_nb3);
   DstT* dst_row = nullptr;
   if constexpr (kSetRows) {
     dst_row = reinterpret_cast<DstT*>(dst_bytes + static_cast<std::size_t>(row_ids[i2]) * dst_nb1) +
@@ -194,7 +192,7 @@ __global__ void Llama3RopeKernel(const char* x_bytes, const std::int32_t* pos_da
   for (int c = static_cast<int>(threadIdx.x); c < static_cast<int>(ne0);
        c += static_cast<int>(blockDim.x)) {
     if (c < n_offs || c >= n_offs + n_dims) {
-      dst_row[c] = FromF32<DstT>(ToF32(x_row[c]));
+      dst_row[c] = FromF32<DstT>(x_row[c]);
     }
   }
   const int pairs = n_dims / 2;
@@ -221,8 +219,8 @@ __global__ void Llama3RopeKernel(const char* x_bytes, const std::int32_t* pos_da
     const float theta = (pos * scaled_freq) / ff;
     const float c_val = cosf(theta) * mscale;
     const float s_val = (inverse ? -sinf(theta) : sinf(theta)) * mscale;
-    const float x0 = ToF32(x_row[idx0]);
-    const float x1 = ToF32(x_row[idx1]);
+    const float x0 = x_row[idx0];
+    const float x1 = x_row[idx1];
     dst_row[idx0] = FromF32<DstT>(x0 * c_val - x1 * s_val);
     dst_row[idx1] = FromF32<DstT>(x0 * s_val + x1 * c_val);
   }
@@ -257,19 +255,13 @@ void LaunchLlama3Rope(ggml_backend_cuda_context& context, const ggml_tensor* rop
   cudaStream_t stream = context.stream();
   if (set_rows != nullptr) {
     const auto* ids = static_cast<const std::int64_t*>(set_rows->src[1]->data);
-    Llama3RopeKernel<float, half, true><<<blocks, 128, 0, stream>>>(
+    Llama3RopeKernel<half, true><<<blocks, 128, 0, stream>>>(
         static_cast<const char*>(x->data), pos, ff, ids, static_cast<char*>(set_rows->data),
         x->ne[0], x->ne[1], x->ne[2], x->nb[1], x->nb[2], x->nb[3], set_rows->nb[1], 0, 0, n_dims,
         n_offs, n_ctx_orig, freq_base, freq_scale, attn_factor, beta_fast, beta_slow, neox,
         inverse);
-  } else if (x->type == GGML_TYPE_F16) {
-    Llama3RopeKernel<half, half, false><<<blocks, 128, 0, stream>>>(
-        static_cast<const char*>(x->data), pos, ff, nullptr, static_cast<char*>(rope->data),
-        x->ne[0], x->ne[1], x->ne[2], x->nb[1], x->nb[2], x->nb[3], rope->nb[1], rope->nb[2],
-        rope->nb[3], n_dims, n_offs, n_ctx_orig, freq_base, freq_scale, attn_factor, beta_fast,
-        beta_slow, neox, inverse);
   } else {
-    Llama3RopeKernel<float, float, false><<<blocks, 128, 0, stream>>>(
+    Llama3RopeKernel<float, false><<<blocks, 128, 0, stream>>>(
         static_cast<const char*>(x->data), pos, ff, nullptr, static_cast<char*>(rope->data),
         x->ne[0], x->ne[1], x->ne[2], x->nb[1], x->nb[2], x->nb[3], rope->nb[1], rope->nb[2],
         rope->nb[3], n_dims, n_offs, n_ctx_orig, freq_base, freq_scale, attn_factor, beta_fast,

@@ -631,6 +631,127 @@ class StepProgram {
   std::shared_ptr<void> construction_{};
 };
 
+class ForwardingStepProgram : public StepProgram {
+ public:
+  explicit ForwardingStepProgram(std::unique_ptr<StepProgram> program = nullptr)
+      : program_(std::move(program)) {}
+
+  void ConstructionPaid() override {
+    if (program_) program_->ConstructionPaid();
+    StepProgram::ConstructionPaid();
+  }
+  std::expected<void, StepFailure> TryUpdateGeneratedInputs(
+      const planner::StepShape& shape) override {
+    return program_->TryUpdateGeneratedInputs(shape);
+  }
+  std::uint64_t scratch_bytes() const override { return program_ ? program_->scratch_bytes() : 0; }
+  std::uint64_t pool_bytes() const override { return program_ ? program_->pool_bytes() : 0; }
+  std::uint64_t private_pool_bytes() const override {
+    return program_ ? program_->private_pool_bytes() : 0;
+  }
+  std::uint64_t host_bytes() const override { return program_ ? program_->host_bytes() : 0; }
+  std::uint64_t launches() const override { return program_ ? program_->launches() : 0; }
+  std::optional<ComparisonRecipeSeal> comparison_recipe() const override {
+    return program_ ? program_->comparison_recipe() : std::nullopt;
+  }
+  std::optional<ComparisonPlanIdentity> comparison_plan_identity() const override {
+    return program_ ? program_->comparison_plan_identity() : std::nullopt;
+  }
+  ComparisonRemainderResult CompareComparisonRemainder(
+      const StepProgram& candidate,
+      const components::OwnedComparisonRegionBoundary& common_boundary,
+      ComparisonCertificatePhase phase) const override {
+    return program_->CompareComparisonRemainder(candidate, common_boundary, phase);
+  }
+  const StepProgram& comparison_program() const override {
+    return program_ ? program_->comparison_program() : *this;
+  }
+  ComparisonRegionResult ProjectComparisonRegion(
+      const components::OwnedComparisonRegionBoundary& boundary) const override {
+    return program_->ProjectComparisonRegion(boundary);
+  }
+  ComparisonRegionDescriptorResult ProjectComparisonRegionDescriptor(
+      const components::OwnedComparisonRegionBoundary& boundary) const override {
+    return program_->ProjectComparisonRegionDescriptor(boundary);
+  }
+  ComparisonRegionDescriptorResult ProjectComparisonRegionCertificate(
+      const components::OwnedComparisonRegionBoundary& boundary,
+      ComparisonCertificatePhase phase) const override {
+    return program_->ProjectComparisonRegionCertificate(boundary, phase);
+  }
+  bool ValidateComparisonProjection(const ComparisonRegionProjection& projection) const override {
+    return program_ && program_->ValidateComparisonProjection(projection);
+  }
+  std::expected<void, StepFailure> RunComparisonPrefix(
+      const ComparisonRegionProjection& projection, StepLaunch& launch,
+      providers::NativeStream stream) const override {
+    return program_->RunComparisonPrefix(projection, launch, stream);
+  }
+  std::expected<void, StepFailure> RunComparisonRegion(
+      const ComparisonRegionProjection& projection, StepLaunch& launch,
+      providers::NativeStream stream) const override {
+    return program_->RunComparisonRegion(projection, launch, stream);
+  }
+  void ReportPlan(const PlanReportSink& sink) const override {
+    if (program_) program_->ReportPlan(sink);
+  }
+  void StreamPlanReport(const PlanReportSink& sink) const override {
+    if (program_) program_->StreamPlanReport(sink);
+  }
+  PlanCoverage plan_coverage() const override {
+    return program_ ? program_->plan_coverage() : PlanCoverage{};
+  }
+  std::span<const InputSlot> inputs() const override {
+    return program_ ? program_->inputs() : std::span<const InputSlot>{};
+  }
+  std::span<const OutputSlot> outputs() const override {
+    return program_ ? program_->outputs() : std::span<const OutputSlot>{};
+  }
+  std::span<const TensorUse> tensors() const override {
+    return program_ ? program_->tensors() : std::span<const TensorUse>{};
+  }
+  const execution::BoundPlan* bound() const override {
+    return program_ ? program_->bound() : nullptr;
+  }
+  bool capturable() const override { return program_ && program_->capturable(); }
+  std::optional<std::span<const RoutedWeight>> weight_reads() const override {
+    return program_ ? program_->weight_reads() : std::nullopt;
+  }
+  RoutedProgram* routed() override { return program_ ? program_->routed() : nullptr; }
+  const RoutedProgram* routed() const override { return program_ ? program_->routed() : nullptr; }
+  std::expected<void, StepFailure> Bind(StepLaunch& launch) override {
+    return program_->Bind(launch);
+  }
+  std::expected<void, StepFailure> Position(std::span<const std::uint32_t> past) override {
+    return program_->Position(past);
+  }
+  std::expected<void, StepFailure> Run(StepLaunch& launch,
+                                       providers::NativeStream stream) const override {
+    return program_->Run(launch, stream);
+  }
+  bool warm() const override { return program_ && program_->warm(); }
+  std::expected<void, StepFailure> RunWarm(StepLaunch& launch,
+                                           providers::NativeStream stream) const override {
+    return program_->RunWarm(launch, stream);
+  }
+  std::expected<std::unique_ptr<Recorded>, StepFailure> Record(
+      StepLaunch& launch, providers::NativeStream stream,
+      const StepLaunch::Body& body) const override {
+    return program_->Record(launch, stream, body);
+  }
+
+ protected:
+  StepProgram* forwarded_program() { return program_.get(); }
+  const StepProgram* forwarded_program() const { return program_.get(); }
+  void set_forwarded_program(std::unique_ptr<StepProgram> program) {
+    program_ = std::move(program);
+  }
+  void ResetProgram() { program_.reset(); }
+
+ private:
+  std::unique_ptr<StepProgram> program_;
+};
+
 inline void UpdatePlanCoverage(PlanCoverage& kept, const PlanCoverage& observed) {
   kept.primitive_fallbacks = std::max(kept.primitive_fallbacks, observed.primitive_fallbacks);
   kept.available_fast_fallbacks =

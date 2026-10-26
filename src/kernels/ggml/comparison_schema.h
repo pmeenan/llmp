@@ -4,15 +4,95 @@
 #ifndef LLMP_KERNELS_GGML_COMPARISON_SCHEMA_H_
 #define LLMP_KERNELS_GGML_COMPARISON_SCHEMA_H_
 
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <span>
+#include <string_view>
 
+#include "base/sha256.h"
 #include "format/encoding.h"
 #include "ggml.h"
 #include "kernels/ggml/llmp_ops.h"
 
 namespace llmp::kernels::ggml {
+
+class CanonicalHash {
+ public:
+  explicit CanonicalHash(std::string_view domain) { Text(domain); }
+
+  void U8(std::uint8_t value) { Add(value); }
+  void U16(std::uint16_t value) { Add(value); }
+  void U32(std::uint32_t value) { Add(value); }
+  void U64(std::uint64_t value) { Add(value); }
+  void Text(std::string_view value) {
+    U64(value.size());
+    hash_.Update(value);
+  }
+  void Bytes(std::span<const std::byte> value) {
+    U64(value.size());
+    hash_.Update(value);
+  }
+  void Digest(const base::Sha256Digest& value) { hash_.Update(std::as_bytes(std::span(value))); }
+  base::Sha256Digest Finish() { return hash_.Finish(); }
+
+ private:
+  template <class T>
+  void Add(T value) {
+    std::array<std::byte, sizeof(T)> bytes{};
+    for (std::size_t i = 0; i < bytes.size(); ++i)
+      bytes[i] = static_cast<std::byte>((value >> (i * 8U)) & 0xffU);
+    hash_.Update(bytes);
+  }
+  base::Sha256 hash_;
+};
+
+inline bool ValidAddressRange(std::uintptr_t begin, std::uint64_t bytes) {
+  std::uintptr_t end = 0;
+  return begin != 0 && bytes != 0 &&
+         !__builtin_add_overflow(begin, static_cast<std::uintptr_t>(bytes), &end);
+}
+
+inline std::optional<bool> IntervalsOverlap(std::uintptr_t left, std::uint64_t left_bytes,
+                                            std::uintptr_t right, std::uint64_t right_bytes) {
+  std::uintptr_t left_end = 0, right_end = 0;
+  if (left == 0 || right == 0 || left_bytes == 0 || right_bytes == 0 ||
+      __builtin_add_overflow(left, static_cast<std::uintptr_t>(left_bytes), &left_end) ||
+      __builtin_add_overflow(right, static_cast<std::uintptr_t>(right_bytes), &right_end))
+    return std::nullopt;
+  return left < right_end && right < left_end;
+}
+
+inline bool IntervalsDisjoint(std::uintptr_t left, std::uint64_t left_bytes, std::uintptr_t right,
+                              std::uint64_t right_bytes) {
+  const auto overlap = IntervalsOverlap(left, left_bytes, right, right_bytes);
+  return overlap.has_value() && !*overlap;
+}
+
+inline bool HalfOpenIntervalsDisjoint(std::uint64_t left_offset, std::uint64_t left_bytes,
+                                      std::uint64_t right_offset, std::uint64_t right_bytes) {
+  std::uint64_t left_end = 0, right_end = 0;
+  return !__builtin_add_overflow(left_offset, left_bytes, &left_end) &&
+         !__builtin_add_overflow(right_offset, right_bytes, &right_end) &&
+         (left_end <= right_offset || right_end <= left_offset);
+}
+
+inline bool HasNoExtraSources(const ggml_tensor& tensor, std::size_t count) {
+  if (count > GGML_MAX_SRC) return false;
+  for (std::size_t i = count; i < GGML_MAX_SRC; ++i)
+    if (tensor.src[i] != nullptr) return false;
+  return true;
+}
+
+inline bool HasZeroOpParamsTail(const ggml_tensor& tensor, std::size_t first_word) {
+  constexpr std::size_t kWords = GGML_MAX_OP_PARAMS / sizeof(tensor.op_params[0]);
+  if (first_word > kWords) return false;
+  for (std::size_t i = first_word; i < kWords; ++i)
+    if (tensor.op_params[i] != 0) return false;
+  return true;
+}
 
 // Only the scalar tail of these pinned native constructors is described here.
 // This is a serialization schema, not permission to execute: complete-program
@@ -120,12 +200,8 @@ inline bool HasWholeNativeFillOrTopKSchema(const ggml_tensor& tensor) {
   if (tensor.op != GGML_OP_FILL && tensor.op != GGML_OP_TOP_K) return false;
   // Lower removes FILL's unused shape-only source. TOP_K always reads src0.
   if (tensor.op == GGML_OP_TOP_K && !tensor.src[0]) return false;
-  for (std::size_t i = 1; i < GGML_MAX_SRC; ++i)
-    if (tensor.src[i]) return false;
   const std::size_t words = tensor.op == GGML_OP_FILL ? 1 : 0;
-  for (std::size_t i = words; i < GGML_MAX_OP_PARAMS / sizeof(tensor.op_params[0]); ++i)
-    if (tensor.op_params[i] != 0) return false;
-  return true;
+  return HasNoExtraSources(tensor, 1) && HasZeroOpParamsTail(tensor, words);
 }
 
 // Whole-only admission for the existing native ReLU implementation. The
@@ -133,11 +209,7 @@ inline bool HasWholeNativeFillOrTopKSchema(const ggml_tensor& tensor) {
 inline bool HasWholeNativeReluSchema(const ggml_tensor& tensor) {
   if (tensor.op != GGML_OP_UNARY || tensor.op_params[0] != GGML_UNARY_OP_RELU || !tensor.src[0])
     return false;
-  for (std::size_t i = 1; i < GGML_MAX_SRC; ++i)
-    if (tensor.src[i]) return false;
-  for (std::size_t i = 1; i < GGML_MAX_OP_PARAMS / sizeof(tensor.op_params[0]); ++i)
-    if (tensor.op_params[i] != 0) return false;
-  return true;
+  return HasNoExtraSources(tensor, 1) && HasZeroOpParamsTail(tensor, 1);
 }
 
 template <class Hash>

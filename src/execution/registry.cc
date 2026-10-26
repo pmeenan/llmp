@@ -540,10 +540,10 @@ base::Sha256Digest RankDataDigest(const RankData& data) {
     Field(hash, r.device_model);
     Field(hash, r.implementation);
     Field(hash, std::format("stacked:{}", r.stacked));
-    Field(hash, std::format("params:{}:{}:{}:{}:{}:{}:{}", r.params.k_bits,
+    Field(hash, std::format("params:{}:{}:{}:{}:{}:{}:{}:{}:{}", r.params.k_bits,
                             static_cast<unsigned>(r.params.codebook), r.params.tensor_scale,
                             r.params.bits, r.params.group, static_cast<unsigned>(r.params.scale),
-                            r.params.zero_point));
+                            r.params.zero_point, r.params.block_rows, r.params.block_cols));
     Field(hash, std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}", r.arch, r.multiprocessors,
                             static_cast<unsigned>(r.op.op), static_cast<unsigned>(r.op.fused),
                             static_cast<unsigned>(r.encoding), static_cast<unsigned>(r.layout),

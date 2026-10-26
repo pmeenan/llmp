@@ -1889,6 +1889,7 @@ enum class CumulativeFailure {
 void CheckClosedExecutionGates(kernels::StepProgram& adopted, RecordingStepLaunch& launch,
                                ProgramObservation& observation, const planner::StepShape& shape) {
   EXPECT_EQ(adopted.bound(), nullptr);
+  EXPECT_FALSE(adopted.warm());
   EXPECT_FALSE(adopted.Run(launch, {}));
   EXPECT_FALSE(adopted.RunWarm(launch, {}));
   EXPECT_FALSE(adopted.Position({}));

@@ -51,15 +51,10 @@ struct PlacedSpan {
   std::int64_t last = 0;
 };
 
-constexpr std::uint64_t kVectorEnvelope = 2 * sizeof(void*) + alignof(std::max_align_t);
+constexpr std::uint64_t kVectorEnvelope = ir::kAdmissionHeapBlockOverhead;
 
 bool AddExact(std::uint64_t count, std::uint64_t stride, std::uint64_t& total) {
-  if (count == 0) return true;
-  if (stride == 0 || total > kMax - kVectorEnvelope ||
-      count > (kMax - total - kVectorEnvelope) / stride)
-    return false;
-  total += count * stride + kVectorEnvelope;
-  return true;
+  return ir::AddVectorAdmissionBytes(count, stride, total);
 }
 
 bool AddGeometric(std::uint64_t count, std::uint64_t stride, std::uint64_t& total) {

@@ -731,6 +731,27 @@ TEST_F(GgmlExtValidateTest, RopeTakesTheModelsModesOffsetsAndPositions) {
   Refused(
       kg::CheckRopeExt(Bound(ggml_rope_ext_back(c(), q, positions, New(GGML_TYPE_F32, 32), 64, 0,
                                                 65536, 10000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f))));
+  // MROPE/IMROPE rejects non-zero ext_factor (YaRN or Llama 3).
+  Refused(kg::CheckRopeExt(
+      Bound(ggml_rope_multi(c(), x, New(GGML_TYPE_I32, 20), nullptr, 64, sections.data(),
+                            GGML_ROPE_TYPE_IMROPE, 262144, 1e7f, 1.0f, 1.0f, 1.0f, 32.0f, 1.0f))));
+  Refused(kg::CheckRopeExt(
+      Bound(ggml_rope_multi(c(), x, New(GGML_TYPE_I32, 20), nullptr, 64, sections.data(),
+                            GGML_ROPE_TYPE_IMROPE, 262144, 1e7f, 1.0f, -1.0f, 1.0f, 32.0f, 1.0f))));
+  // Non-finite or non-positive scales/denominators are rejected.
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  Refused(kg::CheckRopeExt(Bound(ggml_rope_ext(c(), q, positions, nullptr, 64, 0, 65536, nan, 1.0f,
+                                               0.0f, 1.0f, 32.0f, 1.0f))));
+  Refused(kg::CheckRopeExt(Bound(ggml_rope_ext(c(), q, positions, nullptr, 64, 0, 65536, 0.0f, 1.0f,
+                                               0.0f, 1.0f, 32.0f, 1.0f))));
+  Refused(kg::CheckRopeExt(Bound(ggml_rope_ext(c(), q, positions, nullptr, 64, 0, 65536, 10000.0f,
+                                               0.0f, 0.0f, 1.0f, 32.0f, 1.0f))));
+  Refused(kg::CheckRopeExt(Bound(ggml_rope_ext(c(), q, positions, nullptr, 64, 0, 65536, 10000.0f,
+                                               1.0f, 0.0f, 0.0f, 32.0f, 1.0f))));
+  Refused(kg::CheckRopeExt(Bound(ggml_rope_ext(c(), q, positions, nullptr, 64, 0, 0, 10000.0f,
+                                               0.25f, 1.0f, 1.0f, 32.0f, 1.0f))));
+  Refused(kg::CheckRopeExt(Bound(ggml_rope_ext(c(), q, positions, nullptr, 64, 0, 65536, 10000.0f,
+                                               0.25f, 1.0f, 1.0f, 1.0f, 1.0f))));
 }
 
 TEST_F(GgmlExtValidateTest, LegacyProductsRequireReadablePaddingAndValidOperands) {

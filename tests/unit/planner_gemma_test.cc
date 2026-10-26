@@ -133,25 +133,27 @@ ex::Registry GemmaRegistry() {
       Fake("fake.q8_1", llmp::ir::Primitive(llmp::ir::Op::kPrepare),
            ex::Capability{.op = ir::Primitive(Op::kPrepare), .shape = {.max_rows = 8}}),
       Fake("fake.mul_mat.mmvq", llmp::ir::Primitive(llmp::ir::Op::kMatMul),
-           ex::Capability{
-               .op = ir::Primitive(Op::kMatMul),
-               .operands = kProductRules,
-               .shape = {.max_rows = 8},
-               .group = "fake.mul_mat",
-               .product_arithmetic =
-                   [](const ex::CapabilityQuery&) { return ir::ProductArithmetic::kBlock32Q8SumF32; }}),
+           ex::Capability{.op = ir::Primitive(Op::kMatMul),
+                          .operands = kProductRules,
+                          .shape = {.max_rows = 8},
+                          .group = "fake.mul_mat",
+                          .product_arithmetic =
+                              [](const ex::CapabilityQuery&) {
+                                return ir::ProductArithmetic::kBlock32Q8SumF32;
+                              }}),
       Fake("fake.mul_mat.mmq", llmp::ir::Primitive(llmp::ir::Op::kMatMul),
            ex::Capability{.op = ir::Primitive(Op::kMatMul),
                           .operands = kProductRules,
                           .shape = {.min_rows = 9},
                           .group = "fake.mul_mat"}),
       Fake("fake.mmvq.prepared", llmp::ir::Primitive(llmp::ir::Op::kMatMul),
-           ex::Capability{
-               .op = ir::Primitive(Op::kMatMul),
-               .operands = kPreparedRules,
-               .shape = {.max_rows = 8},
-               .product_arithmetic =
-                   [](const ex::CapabilityQuery&) { return ir::ProductArithmetic::kBlock32Q8SumF32; }}),
+           ex::Capability{.op = ir::Primitive(Op::kMatMul),
+                          .operands = kPreparedRules,
+                          .shape = {.max_rows = 8},
+                          .product_arithmetic =
+                              [](const ex::CapabilityQuery&) {
+                                return ir::ProductArithmetic::kBlock32Q8SumF32;
+                              }}),
       Fake("fake.rms_norm_mul.fused", llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMul),
            Any(ir::Fused(FusedKind::kRmsNormMul))),
       Fake("fake.rms_norm_mul_rope.fused", llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMulRope),

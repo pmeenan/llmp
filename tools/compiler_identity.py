@@ -79,11 +79,15 @@ def normalized_arguments(args, roots, source):
         elif arg in operands:
             result.append(arg)
             pending = True
-        elif arg.startswith(("-ffile-prefix-map=", "-Xcompiler=-ffile-prefix-map=")):
-            head, body = arg.split("-ffile-prefix-map=", 1)
+        elif any(arg.startswith(prefix + flag)
+                 for prefix in ("", "-Xcompiler=")
+                 for flag in ("-ffile-prefix-map=", "-fdebug-prefix-map=", "-fmacro-prefix-map=")):
+            flag = next(flag for flag in ("-ffile-prefix-map=", "-fdebug-prefix-map=", "-fmacro-prefix-map=")
+                        if flag in arg)
+            head, body = arg.split(flag, 1)
             require("=" in body, "malformed file prefix map")
             old, new = body.split("=", 1)
-            result.append(head + "-ffile-prefix-map=" + normalized_path(old, roots) + "=" + new)
+            result.append(head + flag + normalized_path(old, roots) + "=" + new)
         elif index == 0 or arg == source:
             result.append(normalized_path(arg, roots))
         else:
@@ -263,6 +267,23 @@ def build_outputs(config):
         return set(), {}
     build = Path(config["build"])
     graph = {p: snapshot(p) for p in (build / "build.ninja", build / "CMakeFiles/rules.ninja")}
+    cache_path = build / ".llmp_ninja_targets.cache"
+    cache_key = {
+        "ninja": config["ninja"],
+        "graph": {str(p): [r["sha256"], r["stat"][2], r["stat"][3]]
+                  for p, r in sorted(graph.items(), key=lambda item: str(item[0]))},
+    }
+    if cache_path.is_file():
+        try:
+            cached = json.loads(cache_path.read_text())
+        except (OSError, ValueError):
+            cached = None
+        if (isinstance(cached, dict) and cached.get("key") == cache_key and
+                isinstance(cached.get("outputs"), list) and
+                all(isinstance(item, str) for item in cached["outputs"])):
+            require(all(snapshot(p) == before for p, before in graph.items()),
+                    "build graph changed during output inventory")
+            return set(cached["outputs"]), graph
     result = subprocess.run([config["ninja"], "-C", str(build), "-t", "targets", "all"],
                             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
     outputs = set()
@@ -275,6 +296,7 @@ def build_outputs(config):
         if rule != "phony":
             outputs.add(str(absolute(name, build)))
     require(all(snapshot(p) == before for p, before in graph.items()), "build graph changed during output inventory")
+    write_if_changed(cache_path, canonical({"key": cache_key, "outputs": sorted(outputs)}) + b"\n")
     return outputs, graph
 
 
@@ -466,6 +488,18 @@ def constant_context(args, config, cwd, env):
             "environment": environment_identity(env, config["roots"])}
 
 
+def split_xcompiler(value):
+    parts = []
+    for part in value.split(","):
+        if (parts and parts[-1].startswith(("-ffile-prefix-map=", "-fdebug-prefix-map=", "-fmacro-prefix-map="))
+                and parts[-1].count("=") < 2
+                and not part.startswith(("-", "@"))):
+            parts[-1] += "," + part
+        else:
+            parts.append(part)
+    return parts
+
+
 def supported_compile_options(args):
     """Pinned object-compilation contract, not a permissive compiler frontend.
 
@@ -482,7 +516,8 @@ def supported_compile_options(args):
                 bool(re.fullmatch(r"-W[A-Za-z0-9=-]+", arg)) and arg not in ("-Wp", "-Wl", "-Wa") or
                 bool(re.fullmatch(r"(?:--target=|-march=)[A-Za-z0-9_+.-]+", arg)) or
                 bool(re.fullmatch(r"-fsanitize=(?:address|undefined|thread)(?:,(?:address|undefined|thread))*", arg)) or
-                arg.startswith("-ffile-prefix-map="))
+                (arg.startswith(("-ffile-prefix-map=", "-fdebug-prefix-map=", "-fmacro-prefix-map=")) and
+                 "=" in arg.split("=", 1)[1]))
     paths = {"-o", "-c", "-I", "-isystem", "-iquote", "-idirafter", "-include", "-imacros",
              "-isysroot", "-MF", "-MT"}
     index = 1
@@ -506,10 +541,8 @@ def supported_compile_options(args):
         allowed |= arg.startswith(("-D", "-U", "--define-macro=", "--undefine-macro=", "-I",
                                    "--gcc-install-dir=", "--sysroot=", "-resource-dir=", "-ccbin="))
         if arg.startswith("-Xcompiler="):
-            # NVCC splits forwarding at commas, including inside mapping paths.
-            # Every resulting host token must be independently supported.
             value = arg.split("=", 1)[1]
-            allowed = all(host_flag(part) for part in value.split(","))
+            allowed = all(host_flag(part) for part in split_xcompiler(value))
         if arg == "-Xptxas=-v":
             allowed = True
         require(allowed, f"compiler input option needs explicit provenance support: {arg}")
@@ -547,7 +580,7 @@ def compile_with_receipt(config_path, argv):
             # The supported build emits macro definitions as top-level -D.
             # Refuse host-only macro options, including split comma operands.
             require(not any(word.startswith(("-D", "-U", "--define-macro", "--undefine-macro"))
-                            for word in arg.split("=", 1)[1].split(",")),
+                            for word in split_xcompiler(arg.split("=", 1)[1])),
                     "forwarded macro definitions need an explicit host/device contract")
     for name, value in (("__DATE__", "Jan  1 1970"), ("__TIME__", "00:00:00"),
                         ("__TIMESTAMP__", "Thu Jan  1 00:00:00 1970")):

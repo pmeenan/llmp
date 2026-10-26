@@ -60,16 +60,10 @@ PlanError ErrorOf(const ir::VerifyError& error, PlanError ordinary) {
 // Comparison-only phase inventories use the real graph dimensions at the
 // point the corresponding containers are about to be created.  The envelope
 // is the pinned libstdc++ allocator allowance used by IR funding.
-constexpr std::uint64_t kVectorEnvelope = 2 * sizeof(void*) + alignof(std::max_align_t);
+constexpr std::uint64_t kVectorEnvelope = ir::kAdmissionHeapBlockOverhead;
 
 bool AddExact(std::uint64_t count, std::uint64_t stride, std::uint64_t& total) {
-  if (count != 0) {
-    if (stride == 0 || total > std::numeric_limits<std::uint64_t>::max() - kVectorEnvelope ||
-        count > (std::numeric_limits<std::uint64_t>::max() - total - kVectorEnvelope) / stride)
-      return false;
-    total += count * stride + kVectorEnvelope;
-  }
-  return true;
+  return ir::AddVectorAdmissionBytes(count, stride, total);
 }
 
 bool AddGeometric(std::uint64_t count, std::uint64_t stride, std::uint64_t& total) {
@@ -295,25 +289,15 @@ std::expected<PlanSeed, ir::VerifyError> CopyExpandImpl(
       if (track_origins) expanded_origin_sets.reserve(origin_capacity);
       return true;
     }
-    constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-    const auto add_vector = [&](std::uint64_t count, std::uint64_t size, std::uint64_t& total) {
-      if (count > (std::numeric_limits<std::uint64_t>::max() - total) / size) return false;
-      total += count * size;
-      if (count != 0) {
-        if (envelope > std::numeric_limits<std::uint64_t>::max() - total) return false;
-        total += envelope;
-      }
-      return true;
-    };
     std::uint64_t bytes = 0;
-    if (!add_vector(graph.tensor_count(), sizeof(TensorId), bytes) ||
-        !add_vector(from_capacity, sizeof(NodeId), bytes) ||
-        (track_origins && !add_vector(origin_capacity, sizeof(ComparisonOriginSetId), bytes)) ||
+    if (!ir::AddVectorAdmissionBytes(graph.tensor_count(), sizeof(TensorId), bytes) ||
+        !ir::AddVectorAdmissionBytes(from_capacity, sizeof(NodeId), bytes) ||
+        (track_origins &&
+         !ir::AddVectorAdmissionBytes(origin_capacity, sizeof(ComparisonOriginSetId), bytes)) ||
         (track_origins && repeats != nullptr &&
-         !add_vector(graph.nodes().size(), sizeof(NodeId), bytes)))
+         !ir::AddVectorAdmissionBytes(graph.nodes().size(), sizeof(NodeId), bytes)))
       return false;
-    auto next = ir::AcquireStorageLoan(funder, bytes);
-    if (!next) return false;
+    if (!metadata_loan.GrowTo(funder, bytes)) return false;
     map.reserve(graph.tensor_count());
     from.reserve(from_capacity);
     if (track_origins) expanded_origin_sets.reserve(origin_capacity);
@@ -321,7 +305,6 @@ std::expected<PlanSeed, ir::VerifyError> CopyExpandImpl(
       repeat_roots.reserve(graph.nodes().size());
       repeat_roots.resize(graph.nodes().size());
     }
-    metadata_loan = std::move(*next);
     return true;
   };
   if (track_origins && !funder)
@@ -334,16 +317,11 @@ std::expected<PlanSeed, ir::VerifyError> CopyExpandImpl(
       }))
     return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
   if (track_origins) {
-    constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
     const std::uint64_t count = graph.nodes().size();
     if (count != 0) {
-      if (count >
-          (std::numeric_limits<std::uint64_t>::max() - envelope) / sizeof(ComparisonOriginSetId))
+      const auto source_bytes = ir::VectorAdmissionBytes(count, sizeof(ComparisonOriginSetId));
+      if (!source_bytes || !source_origins_loan.GrowTo(funder, *source_bytes))
         return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-      auto next = ir::AcquireStorageLoan(funder, count * sizeof(ComparisonOriginSetId) + envelope);
-      if (!next)
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-      source_origins_loan = std::move(*next);
       source_origins.reserve(graph.nodes().size());
     }
     source_origins.assign(origin_sets.begin(), origin_sets.end());
@@ -1889,6 +1867,10 @@ void StreamNumericalProofs(const base::json::Stream& out, std::span<const Numeri
         out.Number(static_cast<std::uint8_t>(tensor_format.params.scale));
         out.Raw(",");
         out.Boolean(tensor_format.params.zero_point);
+        out.Raw(",");
+        out.Number(tensor_format.params.block_rows);
+        out.Raw(",");
+        out.Number(tensor_format.params.block_cols);
         out.Raw("]");
         out.Raw(R"(,"shape":[)");
         for (std::size_t k = 0; k < 4; ++k) {

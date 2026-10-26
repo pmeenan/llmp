@@ -16,6 +16,7 @@
 #include <utility>
 
 #include "ggml.h"
+#include "kernels/ggml/validate_ext.h"
 #include "kernels/ggml/validate_util.h"
 
 namespace llmp::kernels::ggml {
@@ -611,6 +612,22 @@ std::expected<void, KernelFailure> CheckRopeInput(const ggml_tensor* rope) {
   if (mode != GGML_ROPE_TYPE_NEOX || offset != 0) {
     return Rejected("NEOX RoPE without a rotation offset");
   }
+  const float freq_base = ParamF32(rope, 5);
+  const float freq_scale = ParamF32(rope, 6);
+  const float ext_factor = ParamF32(rope, 7);
+  const float attn_factor = ParamF32(rope, 8);
+  const float beta_fast = ParamF32(rope, 9);
+  const float beta_slow = ParamF32(rope, 10);
+  if (!std::isfinite(freq_base) || !std::isfinite(freq_scale) || !std::isfinite(ext_factor) ||
+      !std::isfinite(attn_factor) || !std::isfinite(beta_fast) || !std::isfinite(beta_slow) ||
+      freq_base <= 0.0f || freq_scale <= 0.0f || attn_factor <= 0.0f) {
+    return Rejected("RoPE requires finite parameters and positive frequency and attention scales");
+  }
+  if (ext_factor != 0.0f && (rope->op_params[4] <= 0 || beta_slow <= 0.0f ||
+                             beta_fast <= beta_slow || (ext_factor > 0.0f && freq_base == 1.0f))) {
+    return Rejected(
+        "RoPE frequency scaling requires positive original context and beta_fast > beta_slow > 0");
+  }
   if (AnyEmpty({rope, x, positions}) || !AllSane({x, positions})) {
     return Rejected("RoPE on an empty or unmeasurable tensor");
   }
@@ -807,6 +824,9 @@ std::expected<void, KernelFailure> CheckRopeFrequencyFactors(const ggml_tensor* 
 std::expected<void, KernelFailure> CheckRope(const ggml_tensor* rope) {
   if (auto checked = CheckRopeInput(rope); !checked) {
     return checked;
+  }
+  if (rope->op_params[11] != 0) {
+    return CheckRopeExt(rope);
   }
   const ggml_tensor* x = rope->src[0];
   if (!Bound(rope) || !Extent(rope) || rope->nb[0] != sizeof(float) || !ElementStrides(rope) ||

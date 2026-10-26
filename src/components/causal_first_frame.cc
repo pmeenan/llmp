@@ -63,10 +63,12 @@ std::expected<SpatialShape, std::string> Shape(const Instance& in, SpatialShape 
     return std::unexpected("first-frame convolution input geometry differs");
   const auto kw = static_cast<std::uint64_t>(in.params.Int("kernel_width"));
   const auto kh = static_cast<std::uint64_t>(in.params.Int("kernel_height"));
+  const auto kt = static_cast<std::uint64_t>(in.params.Int("kernel_depth"));
   const auto pad = static_cast<std::uint64_t>(in.params.Int("padding"));
   const auto stride = static_cast<std::uint64_t>(in.params.Int("stride"));
   std::uint64_t pw = 0, ph = 0;
-  if (__builtin_mul_overflow(pad, std::uint64_t{2}, &pw) ||
+  if (kw == 0 || kh == 0 || kt == 0 || stride == 0 ||
+      __builtin_mul_overflow(pad, std::uint64_t{2}, &pw) ||
       __builtin_mul_overflow(pad, std::uint64_t{2}, &ph) ||
       __builtin_add_overflow(s.width, pw, &pw) || __builtin_add_overflow(s.height, ph, &ph) ||
       pw < kw || ph < kh)

@@ -8,6 +8,7 @@
 
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/comparison.h"
+#include "kernels/ggml/comparison_schema.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops.h"
@@ -25,12 +26,29 @@ void Add(ComparisonExplicitAccesses& out, const ggml_tensor* t, bool read, bool 
                              .read = read,
                              .written = written};
 }
+Result UnaryReadWrite(const ggml_tensor* t, std::uint64_t alignment = 0) {
+  ComparisonExplicitAccesses out;
+  Add(out, t->src[0], true, false, alignment);
+  Add(out, t, false, true, alignment);
+  return out;
+}
+Result BinaryReadWrite(const ggml_tensor* t, std::uint64_t alignment = 0) {
+  ComparisonExplicitAccesses out;
+  Add(out, t->src[0], true, false, alignment);
+  Add(out, t->src[1], true, false, alignment);
+  Add(out, t, false, true, alignment);
+  return out;
+}
+Result FourSourceReadWrite(const ggml_tensor* t, std::uint64_t src_alignment,
+                           std::uint64_t dst_alignment) {
+  ComparisonExplicitAccesses out;
+  for (std::size_t i = 0; i < 4; ++i) Add(out, t->src[i], true, false, src_alignment);
+  Add(out, t, false, true, dst_alignment);
+  return out;
+}
 Result HcCombineAccess(Nodes n, ComparisonAccessScope) {
   const auto* combine = n[0];
-  if (!CheckHcCombine(combine) ||
-      std::ranges::any_of(std::span(combine->src).subspan(3),
-                          [](const auto* extra) { return extra != nullptr; }))
-    return {};
+  if (!CheckHcCombine(combine) || !HasNoExtraSources(*combine, 3)) return {};
   ComparisonExplicitAccesses out;
   Add(out, combine->src[0], true, false, 16);
   Add(out, combine->src[1], true, false, 16);
@@ -40,24 +58,13 @@ Result HcCombineAccess(Nodes n, ComparisonAccessScope) {
 }
 Result GdnGatesAccess(Nodes n, ComparisonAccessScope) {
   const auto* gates = n[0];
-  if (!CheckGdnGates(gates) ||
-      std::ranges::any_of(std::span(gates->src).subspan(4),
-                          [](const auto* extra) { return extra != nullptr; }))
-    return {};
-  ComparisonExplicitAccesses out;
-  for (std::size_t i = 0; i < 4; ++i) Add(out, gates->src[i], true, false, 4);
-  Add(out, gates, false, true, 4);
-  return out;
+  if (!CheckGdnGates(gates) || !HasNoExtraSources(*gates, 4)) return {};
+  return FourSourceReadWrite(gates, 4, 4);
 }
 Result HcPostAccess(Nodes n, ComparisonAccessScope) {
   const auto* post = n[0];
-  if (!CheckHcPost(post) || std::ranges::any_of(std::span(post->src).subspan(4),
-                                                [](const auto* extra) { return extra != nullptr; }))
-    return {};
-  ComparisonExplicitAccesses out;
-  for (std::size_t i = 0; i < 4; ++i) Add(out, post->src[i], true, false, 4);
-  Add(out, post, false, true, 4);
-  return out;
+  if (!CheckHcPost(post) || !HasNoExtraSources(*post, 4)) return {};
+  return FourSourceReadWrite(post, 4, 4);
 }
 Result HcPostNormAccess(Nodes n, ComparisonAccessScope scope) {
   const auto* post = n[0];
@@ -68,13 +75,10 @@ Result HcPostNormAccess(Nodes n, ComparisonAccessScope scope) {
   const auto* flat = norm->src[0];
   if (flat->op != GGML_OP_RESHAPE || !HasTypedDescriptorSchema(*flat) || flat->type != post->type ||
       flat->view_src != post || flat->view_offs != 0 || flat->src[0] != post ||
-      std::ranges::any_of(std::span(flat->src).subspan(1),
-                          [](const auto* extra) { return extra != nullptr; }))
+      !HasNoExtraSources(*flat, 1))
     return {};
-  ComparisonExplicitAccesses out;
-  for (std::size_t i = 0; i < 4; ++i) Add(out, post->src[i], true, false, 4);
-  Add(out, post, false, true, 16);
-  Add(out, norm, false, true, 16);
+  auto out = FourSourceReadWrite(post, 4, 16);
+  Add(*out, norm, false, true, 16);
   return out;
 }
 Result Binary(Nodes n, ComparisonAccessScope scope, ggml_op op) {
@@ -82,20 +86,13 @@ Result Binary(Nodes n, ComparisonAccessScope scope, ggml_op op) {
   if ((op == GGML_OP_ADD && scope == ComparisonAccessScope::kLocal && t->type != GGML_TYPE_F32) ||
       !CheckBinary(t, op))
     return {};
-  ComparisonExplicitAccesses out;
-  Add(out, t->src[0], true, false);
-  Add(out, t->src[1], true, false);
-  Add(out, t, false, true);
-  return out;
+  return BinaryReadWrite(t);
 }
 Result AddAccess(Nodes n, ComparisonAccessScope s) { return Binary(n, s, GGML_OP_ADD); }
 Result MulAccess(Nodes n, ComparisonAccessScope s) { return Binary(n, s, GGML_OP_MUL); }
 Result RmsAccess(Nodes n, ComparisonAccessScope) {
   if (!CheckRmsNorm(n[0])) return {};
-  ComparisonExplicitAccesses out;
-  Add(out, n[0]->src[0], true, false);
-  Add(out, n[0], false, true);
-  return out;
+  return UnaryReadWrite(n[0]);
 }
 Result RmsMulAccess(Nodes n, ComparisonAccessScope) {
   if (!CheckRmsNormMul(n[0], n[1])) return {};
@@ -109,20 +106,16 @@ Result RmsMulAccess(Nodes n, ComparisonAccessScope) {
 }
 Result RmsThenMulAccess(Nodes n, ComparisonAccessScope) {
   if (!CheckRmsNormThenMul(n[0], n[1])) return {};
-  ComparisonExplicitAccesses out;
-  Add(out, n[0]->src[0], true, false);
-  Add(out, n[0], false, true);
-  Add(out, n[1]->src[0], true, false);
-  Add(out, n[1]->src[1], true, false);
-  Add(out, n[1], false, true);
-  for (std::size_t i = 2; i < out.count; ++i) out.values[i].phase = 1;
+  auto out = UnaryReadWrite(n[0]);
+  Add(*out, n[1]->src[0], true, false);
+  Add(*out, n[1]->src[1], true, false);
+  Add(*out, n[1], false, true);
+  for (std::size_t i = 2; i < out->count; ++i) out->values[i].phase = 1;
   return out;
 }
 Result RopeExtAccess(Nodes n, ComparisonAccessScope scope) {
   const auto* t = n[0];
-  if (t->op != GGML_OP_ROPE || !CheckRopeExt(t) ||
-      std::ranges::any_of(std::span(t->src).subspan(3), [](const auto* src) { return src; }))
-    return {};
+  if (t->op != GGML_OP_ROPE || !CheckRopeExt(t) || !HasNoExtraSources(*t, 3)) return {};
   const auto real = [&](int word) { return std::bit_cast<float>(t->op_params[word]); };
   // Preserve the existing checked frequency-NEOX class. The additional class
   // is plain forward NORMAL/NEOX rotation, including a nonzero section offset.
@@ -141,10 +134,9 @@ Result RopeExtAccess(Nodes n, ComparisonAccessScope scope) {
 }
 Result GammaConvertAccess(Nodes n, ComparisonAccessScope) {
   const auto* t = n[0];
-  if (std::ranges::any_of(std::span(t->src).subspan(2), [](const auto* src) { return src; }) ||
-      !CheckConvert(t) || t->src[0]->type != GGML_TYPE_BF16 || t->type != GGML_TYPE_F32 ||
-      t->src[1]->type != GGML_TYPE_F32 || t->view_src != t->src[1] || t->view_offs != 0 ||
-      !std::ranges::equal(t->nb, t->src[1]->nb))
+  if (!HasNoExtraSources(*t, 2) || !CheckConvert(t) || t->src[0]->type != GGML_TYPE_BF16 ||
+      t->type != GGML_TYPE_F32 || t->src[1]->type != GGML_TYPE_F32 || t->view_src != t->src[1] ||
+      t->view_offs != 0 || !std::ranges::equal(t->nb, t->src[1]->nb))
     return {};
   ComparisonExplicitAccesses out;
   Add(out, t->src[0], true, false, 2);
@@ -153,23 +145,17 @@ Result GammaConvertAccess(Nodes n, ComparisonAccessScope) {
 }
 Result ContAccess(Nodes n, ComparisonAccessScope scope) {
   const auto* t = n[0];
-  if (std::ranges::any_of(std::span(t->src).subspan(1), [](const auto* src) { return src; }) ||
-      !CheckCont(t) ||
+  if (!HasNoExtraSources(*t, 1) || !CheckCont(t) ||
       (scope == ComparisonAccessScope::kLocal && t->type != GGML_TYPE_I32 &&
        t->type != GGML_TYPE_F32))
     return {};
-  ComparisonExplicitAccesses out;
-  Add(out, t->src[0], true, false);
-  Add(out, t, false, true);
-  return out;
+  return UnaryReadWrite(t);
 }
 Result NormRopeSectionsAccess(Nodes n, ComparisonAccessScope) {
   const auto* t = n[0];
   const auto checked = CheckNormRopeSections(t);
   if (!checked || t->type != GGML_TYPE_F32 || t->src[0]->type != GGML_TYPE_F32 ||
-      checked->sections < 1 ||
-      std::ranges::any_of(
-          std::span(t->src).subspan(2 + checked->sections), [](const auto* src) { return src; }))
+      checked->sections < 1 || !HasNoExtraSources(*t, 2 + checked->sections))
     return {};
   ComparisonExplicitAccesses out;
   Add(out, t->src[0], true, false);
@@ -181,60 +167,33 @@ Result NormRopeSectionsAccess(Nodes n, ComparisonAccessScope) {
 }
 Result SpatialChannelNormAccess(Nodes n, ComparisonAccessScope) {
   const auto* t = n[0];
-  if (!CheckSpatialChannelNorm(t) ||
-      std::ranges::any_of(std::span(t->src).subspan(2), [](const auto* src) { return src; }))
-    return {};
-  ComparisonExplicitAccesses out;
-  Add(out, t->src[0], true, false, 4);
-  Add(out, t->src[1], true, false, 4);
-  Add(out, t, false, true, 4);
-  return out;
+  if (!CheckSpatialChannelNorm(t) || !HasNoExtraSources(*t, 2)) return {};
+  return BinaryReadWrite(t, 4);
 }
 Result L2NormAccess(Nodes n, ComparisonAccessScope) {
   const auto* t = n[0];
-  if (!CheckL2Norm(t) ||
-      std::ranges::any_of(std::span(t->src).subspan(1), [](const auto* src) { return src; }))
-    return {};
-  ComparisonExplicitAccesses out;
-  Add(out, t->src[0], true, false, 4);
-  Add(out, t, false, true, 4);
-  return out;
+  if (!CheckL2Norm(t) || !HasNoExtraSources(*t, 1)) return {};
+  return UnaryReadWrite(t, 4);
 }
 Result LayerNormAccess(Nodes n, ComparisonAccessScope) {
   if (!CheckLayerNorm(n[0])) return {};
-  ComparisonExplicitAccesses out;
-  Add(out, n[0]->src[0], true, false);
-  Add(out, n[0], false, true);
-  return out;
+  return UnaryReadWrite(n[0]);
 }
 Result ScaleAccess(Nodes n, ComparisonAccessScope) {
   if (!CheckScale(n[0])) return {};
-  ComparisonExplicitAccesses out;
-  Add(out, n[0]->src[0], true, false);
-  Add(out, n[0], false, true);
-  return out;
+  return UnaryReadWrite(n[0]);
 }
 Result UnaryAccess(Nodes n, ComparisonAccessScope) {
   if (!CheckUnary(n[0])) return {};
-  ComparisonExplicitAccesses out;
-  Add(out, n[0]->src[0], true, false);
-  Add(out, n[0], false, true);
-  return out;
+  return UnaryReadWrite(n[0]);
 }
 Result RepeatAccess(Nodes n, ComparisonAccessScope) {
   if (n[0]->type != GGML_TYPE_F32 || !CheckRepeat(n[0])) return {};
-  ComparisonExplicitAccesses out;
-  Add(out, n[0]->src[0], true, false);
-  Add(out, n[0], false, true);
-  return out;
+  return UnaryReadWrite(n[0]);
 }
 Result ConcatAccess(Nodes n, ComparisonAccessScope) {
   if (n[0]->type != GGML_TYPE_F32 || !CheckConcat(n[0])) return {};
-  ComparisonExplicitAccesses out;
-  Add(out, n[0]->src[0], true, false);
-  Add(out, n[0]->src[1], true, false);
-  Add(out, n[0], false, true);
-  return out;
+  return BinaryReadWrite(n[0]);
 }
 bool Aligned(const ggml_tensor* t, std::uint64_t alignment) {
   return reinterpret_cast<std::uintptr_t>(t->data) % alignment == 0;

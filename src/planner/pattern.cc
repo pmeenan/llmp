@@ -844,8 +844,10 @@ std::optional<Match> QkAttentionMatch(const MatchContext& c, NodeId anchor) {
     std::array<const ir::TensorDesc*, ir::kMaxSources> src{};
     for (std::size_t i = 2; i < qr.nsrc; ++i) src[i - 2] = &c.tensor(qr.src[i]);
     const std::array<const ir::TensorDesc*, 1> o{&table};
+    ir::RopeSectionsParams table_rope = rope;
+    table_rope.eps = 0.0F;
     if (!HasCandidateNoAllocation(c, ir::Fused(FusedKind::kRopeTable),
-                                  std::span(src).first(qr.nsrc - 2), o, ir::ToBytes(rope)))
+                                  std::span(src).first(qr.nsrc - 2), o, ir::ToBytes(table_rope)))
       return std::nullopt;
   }
   {
@@ -938,9 +940,13 @@ void QkAttentionRewrite(RewriteContext& c, const Match& m, std::size_t index) {
     table_key.dims[active] = rope.dims.at(active);
   }
   auto& table = c.shared()[table_key];
-  if (!table.valid())
+  if (!table.valid()) {
+    ir::RopeSectionsParams table_rope = rope;
+    table_rope.eps = 0.0F;
     table = b.Fused(FusedKind::kRopeTable,
-                    std::span<const TensorId>(positions).first(table_key.position_count), rope)[0];
+                    std::span<const TensorId>(positions).first(table_key.position_count),
+                    table_rope)[0];
+  }
   const TensorId q = c.local().at(inputs + 0);
   const TensorId k = c.local().at(inputs + 1);
   const TensorId v = c.local().at(inputs + 2);
@@ -3612,24 +3618,17 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
     from.resize(b.node_count(), NodeId{i});
     if (track_origins) {
       if (b.node_count() > made_origins.capacity()) {
-        constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
         const std::uint64_t requested = b.node_count();
         const std::uint64_t current = made_origins.capacity();
         const std::uint64_t capacity =
             current == 0 || current > std::numeric_limits<std::uint64_t>::max() / 2
                 ? requested
                 : std::max(requested, current * 2);
-        if (capacity >
-            (std::numeric_limits<std::uint64_t>::max() - envelope) / sizeof(std::uint32_t))
-          return std::unexpected(
-              ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-        auto next =
-            ir::AcquireStorageLoan(origin_funder, capacity * sizeof(std::uint32_t) + envelope);
-        if (!next)
+        const auto origin_bytes = ir::VectorAdmissionBytes(capacity, sizeof(std::uint32_t));
+        if (!origin_bytes || !made_origins_loan.GrowTo(origin_funder, *origin_bytes))
           return std::unexpected(
               ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
         made_origins.reserve(static_cast<std::size_t>(capacity));
-        made_origins_loan = std::move(*next);
       }
       made_origins.resize(b.node_count(),
                           f == ~std::size_t{0} ? origin_sets[i] : found[f].origin_set);
@@ -3820,8 +3819,17 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatternTable(
   if (auto forwarded = next_view.Forward(graph, first->graph, first->tensors); !forwarded)
     return std::unexpected(std::move(forwarded.error()));
   std::vector<NodeId> next_preserve;
-  for (std::uint32_t i = 0; i < first->from.size(); ++i) {
-    if (std::ranges::contains(preserve, first->from[i])) next_preserve.push_back(NodeId{i});
+  if (!preserve.empty()) {
+    if (metadata_admission != nullptr) {
+      const auto preserve_bytes = ir::VectorAdmissionBytes(first->from.size(), sizeof(NodeId));
+      if (!preserve_bytes ||
+          !metadata_admission->Require(PlannerMetadataPhase::kRewriteCompose, *preserve_bytes))
+        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+    }
+    next_preserve.reserve(first->from.size());
+    for (std::uint32_t i = 0; i < first->from.size(); ++i) {
+      if (std::ranges::contains(preserve, first->from[i])) next_preserve.push_back(NodeId{i});
+    }
   }
   ir::StorageLoan next_maps_loan;
   std::vector<TensorId> next_source_to_graph;
@@ -3829,20 +3837,11 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatternTable(
   std::span<const TensorId> second_source_to_graph = first->tensors;
   std::span<const NodeId> second_graph_node_to_source = first->from;
   if (comparison_capture != nullptr) {
-    constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-    const std::uint64_t tensor_count = source_to_graph.size();
-    const std::uint64_t node_count = first->from.size();
-    if ((tensor_count != 0 &&
-         tensor_count >
-             (std::numeric_limits<std::uint64_t>::max() - envelope) / sizeof(TensorId)) ||
-        (node_count != 0 &&
-         node_count > (std::numeric_limits<std::uint64_t>::max() - envelope) / sizeof(NodeId)))
+    std::uint64_t bytes = 0;
+    if (!ir::AddVectorAdmissionBytes(source_to_graph.size(), sizeof(TensorId), bytes) ||
+        !ir::AddVectorAdmissionBytes(first->from.size(), sizeof(NodeId), bytes))
       return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    std::uint64_t bytes = tensor_count * sizeof(TensorId) + (tensor_count == 0 ? 0 : envelope);
-    const std::uint64_t node_bytes = node_count * sizeof(NodeId) + (node_count == 0 ? 0 : envelope);
-    if (node_bytes > std::numeric_limits<std::uint64_t>::max() - bytes)
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    auto loan = ir::AcquireStorageLoan(graph.storage_funder(), bytes + node_bytes);
+    auto loan = ir::AcquireStorageLoan(graph.storage_funder(), bytes);
     if (!loan)
       return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
     next_maps_loan = std::move(*loan);
@@ -3876,6 +3875,48 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatternTable(
   if (!second) {
     return second;
   }
+  const std::size_t first_node_count = first->graph.nodes().size();
+  {
+    const ir::Graph released = std::move(first->graph);
+    (void)released;
+  }
+  first->origin_sets = OwnedRewriteOrigins{};
+  next_source_to_graph.clear();
+  next_source_to_graph.shrink_to_fit();
+  next_graph_node_to_source.clear();
+  next_graph_node_to_source.shrink_to_fit();
+  next_maps_loan.Reset();
+  if (metadata_admission != nullptr) {
+    constexpr std::uint64_t kWordBits = std::numeric_limits<unsigned long>::digits;
+    std::uint64_t compose_bytes = 0;
+    std::uint64_t total_dropped = first->dropped.size();
+    std::uint64_t total_missing = first->missing_numerical.size();
+    std::uint64_t total_applied = first->applied.size();
+    std::uint64_t bit_words = 0;
+    if (!ir::AddAdmissionBytes(total_dropped, second->dropped.size()) ||
+        !ir::AddAdmissionBytes(total_missing, second->missing_numerical.size()) ||
+        !ir::AddAdmissionBytes(total_applied, second->applied.size()) ||
+        first_node_count > std::numeric_limits<std::uint64_t>::max() - (kWordBits - 1))
+      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+    bit_words = (static_cast<std::uint64_t>(first_node_count) + kWordBits - 1) / kWordBits;
+    if (!ir::AddVectorAdmissionBytes(next_preserve.capacity(), sizeof(NodeId), compose_bytes) ||
+        !ir::AddVectorAdmissionBytes(total_dropped, sizeof(DroppedRewrite), compose_bytes) ||
+        !ir::AddVectorAdmissionBytes(total_missing, sizeof(MissingNumericalQualification),
+                                     compose_bytes) ||
+        !ir::AddVectorAdmissionBytes(first->tensors.size(), sizeof(TensorId), compose_bytes) ||
+        !ir::AddVectorAdmissionBytes(second->from.size(), sizeof(NodeId), compose_bytes) ||
+        !ir::AddVectorAdmissionBytes(bit_words, sizeof(unsigned long), compose_bytes) ||
+        !ir::AddVectorAdmissionBytes(total_applied, sizeof(Applied), compose_bytes))
+      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+    for (std::size_t i = 0; i < first->applied.size(); ++i) {
+      if (!ir::AddVectorAdmissionBytes(second->from.size(), sizeof(NodeId), compose_bytes))
+        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+    }
+    if (auto paid =
+            metadata_admission->Require(PlannerMetadataPhase::kRewriteCompose, compose_bytes);
+        !paid)
+      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+  }
   // The maps composed: the primitive graph's tensors and nodes through
   // round 0's graph into round 1's; round 0's nodes it made, as round 1
   // copied them.
@@ -3887,10 +3928,12 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatternTable(
                 .missing_numerical = std::move(first->missing_numerical),
                 .dropped = std::move(first->dropped)};
   // Round 1's anchors as the primitive nodes they stood for.
+  out.dropped.reserve(out.dropped.size() + second->dropped.size());
   for (auto& d : second->dropped) {
     d.anchor = first->from.at(d.anchor.v);
     out.dropped.push_back(std::move(d));
   }
+  out.missing_numerical.reserve(out.missing_numerical.size() + second->missing_numerical.size());
   for (const auto& missing : second->missing_numerical)
     if (!std::ranges::contains(out.missing_numerical, missing))
       out.missing_numerical.push_back(missing);
@@ -3904,12 +3947,14 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatternTable(
     out.from[i] = first->from.at(second->from[i].v);
   }
   // A round-0 node round 1 did not rewrite is one node of round 1's graph.
-  std::vector<bool> rewritten(first->graph.nodes().size(), false);
+  std::vector<bool> rewritten(first_node_count, false);
   for (const Applied& a : second->applied) {
     for (const NodeId r : a.replaced) rewritten.at(r.v) = true;
   }
+  out.applied.reserve(first->applied.size() + second->applied.size());
   for (Applied& a : first->applied) {
     std::vector<NodeId> made;
+    made.reserve(second->from.size());
     for (std::uint32_t j = 0; j < second->from.size(); ++j) {
       const NodeId mid = second->from[j];
       if (!rewritten.at(mid.v) && std::ranges::contains(a.made, mid)) made.push_back(NodeId{j});

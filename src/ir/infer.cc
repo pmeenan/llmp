@@ -930,6 +930,10 @@ Out InferBinary(const Ctx& c) {
 
 Out InferScale(const Ctx& c) {
   LLMP_TRY(FloatSrc(c, 0));
+  const auto p = c.params<ScaleParams>();
+  if (!Finite(p.scale) || !Finite(p.bias)) {
+    return Fail(GraphError::kParams, c, "scale and bias must be finite");
+  }
   return FloatResult(c.src(0)->shape(), FloatOf(*c.src(0)));
 }
 Out InferUnary(const Ctx& c) {
@@ -1430,7 +1434,25 @@ Checked ValidateGdnStep(const Ctx& c) {
 }
 Checked ValidateScaledUnary(const Ctx& c) { return Zero(c, 5, 3); }
 Checked ValidateProduct(const Ctx& c) { return CheckProduct(c, *c.src(0)); }
-Checked ValidateHcCombine(const Ctx& c) { return Zero(c, 2, 2); }
+Checked ValidateHcCombine(const Ctx& c) {
+  LLMP_TRY(Zero(c, 2, 2));
+  const auto p = c.params<HcParams>();
+  if (static_cast<std::uint8_t>(p.mix) > 1 || static_cast<std::uint8_t>(p.fold) > 1 ||
+      !Finite(p.eps) || !Finite(p.scale)) {
+    return Fail(GraphError::kParams, c, "known kinds, finite eps and scale");
+  }
+  return {};
+}
+Checked ValidateGdnConv(const Ctx& c) {
+  const auto p = c.params<GdnConvParams>();
+  if (!(p.eps > 0.0f) || !Finite(p.eps) || !Finite(p.scale)) {
+    return Fail(GraphError::kParams, c, "positive finite eps and finite scale");
+  }
+  return {};
+}
+Checked ValidateSplitModulate(const Ctx& c) {
+  return NormEps(c, c.params<SplitModulateParams>().eps);
+}
 Checked ValidateFlag1Reserved2(const Ctx& c) {
   LLMP_TRY(Bool(c, 1));
   return Zero(c, 2, 2);

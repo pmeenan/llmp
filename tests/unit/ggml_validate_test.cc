@@ -898,6 +898,37 @@ TEST_F(GgmlOpsValidateTest, RopeTakesNeoxOverF32AndMayRunInPlace) {
   ggml_tensor* shifted = QwenRope(context(), x, positions);
   TensorArena::Bind(shifted, reinterpret_cast<std::uintptr_t>(x->data) + x->nb[1]);
   Rejected(CheckRope(shifted));
+  // Proportional RoPE delegates to CheckRopeExt when op_params[11] != 0.
+  ggml_tensor* proportional = Bound(QwenRope(context(), x, positions));
+  proportional->op_params[11] = 33;
+  EXPECT_TRUE(CheckRope(proportional).has_value());
+  proportional->op_params[11] = 32;
+  Rejected(CheckRope(proportional));
+  proportional->op_params[11] = static_cast<int>(kHead) + 3;
+  Rejected(CheckRope(proportional));
+  // Invalid float parameters and YaRN/Llama 3 bounds.
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  Rejected(CheckRope(
+      Bound(ggml_rope_ext(context(), x, positions, nullptr, static_cast<int>(kHead),
+                          GGML_ROPE_TYPE_NEOX, 32768, nan, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f))));
+  Rejected(CheckRope(
+      Bound(ggml_rope_ext(context(), x, positions, nullptr, static_cast<int>(kHead),
+                          GGML_ROPE_TYPE_NEOX, 32768, 0.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f))));
+  Rejected(CheckRope(
+      Bound(ggml_rope_ext(context(), x, positions, nullptr, static_cast<int>(kHead),
+                          GGML_ROPE_TYPE_NEOX, 32768, 10000.0f, 0.0f, 0.0f, 1.0f, 32.0f, 1.0f))));
+  Rejected(CheckRope(
+      Bound(ggml_rope_ext(context(), x, positions, nullptr, static_cast<int>(kHead),
+                          GGML_ROPE_TYPE_NEOX, 32768, 10000.0f, 1.0f, 0.0f, 0.0f, 32.0f, 1.0f))));
+  Rejected(CheckRope(
+      Bound(ggml_rope_ext(context(), x, positions, nullptr, static_cast<int>(kHead),
+                          GGML_ROPE_TYPE_NEOX, 0, 10000.0f, 0.25f, 1.0f, 1.0f, 32.0f, 1.0f))));
+  Rejected(CheckRope(
+      Bound(ggml_rope_ext(context(), x, positions, nullptr, static_cast<int>(kHead),
+                          GGML_ROPE_TYPE_NEOX, 32768, 10000.0f, 0.25f, 1.0f, 1.0f, 1.0f, 1.0f))));
+  Rejected(CheckRope(
+      Bound(ggml_rope_ext(context(), x, positions, nullptr, static_cast<int>(kHead),
+                          GGML_ROPE_TYPE_NEOX, 32768, 10000.0f, 0.25f, -1.0f, 1.0f, 32.0f, 0.0f))));
 }
 
 TEST_F(GgmlOpsValidateTest, TheFusedRopeWritesOnlyAFlatteningViewIntoF16) {

@@ -94,6 +94,26 @@ TEST(GgmlMeasuredRanksTest, DeviceRanksRequireEveryMeasuredFactAndUnbatchedOpera
     misses();
     operands[0].params.tensor_scale = !operands[0].params.tensor_scale;
     misses();
+    ++operands[0].params.block_rows;
+    misses();
+    ++operands[0].params.block_cols;
+    misses();
+    auto block_rows_record = record;
+    ++block_rows_record.params.block_rows;
+    const auto block_rows_registry =
+        Registry::Create({Capable(std::string(record.implementation), {.op = record.op}),
+                          Capable("fake.alternative", {.op = record.op, .priority = 100})},
+                         ex::RankData{{block_rows_record}})
+            .value();
+    EXPECT_NE(block_rows_registry.RankDigest(), registry.RankDigest());
+    auto block_cols_record = record;
+    ++block_cols_record.params.block_cols;
+    const auto block_cols_registry =
+        Registry::Create({Capable(std::string(record.implementation), {.op = record.op}),
+                          Capable("fake.alternative", {.op = record.op, .priority = 100})},
+                         ex::RankData{{block_cols_record}})
+            .value();
+    EXPECT_NE(block_cols_registry.RankDigest(), registry.RankDigest());
     ++operands[0].stacked;
     misses();
     --query.rows;

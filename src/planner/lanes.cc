@@ -22,16 +22,10 @@
 namespace llmp::planner {
 namespace {
 
-constexpr std::uint64_t kVectorEnvelope = 2 * sizeof(void*) + alignof(std::max_align_t);
+constexpr std::uint64_t kVectorEnvelope = ir::kAdmissionHeapBlockOverhead;
 
 bool AddExact(std::uint64_t count, std::uint64_t stride, std::uint64_t& total) {
-  if (count == 0) return true;
-  const auto max = std::numeric_limits<std::uint64_t>::max();
-  if (stride == 0 || total > max - kVectorEnvelope ||
-      count > (max - total - kVectorEnvelope) / stride)
-    return false;
-  total += count * stride + kVectorEnvelope;
-  return true;
+  return ir::AddVectorAdmissionBytes(count, stride, total);
 }
 
 bool AddGrowing(std::uint64_t elements, std::uint64_t allocations, std::uint64_t stride,

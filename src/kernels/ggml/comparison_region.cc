@@ -95,8 +95,7 @@ std::optional<std::size_t> AuxiliarySourceOrdinal(const ggml_tensor* node, const
       parent->ne[0] != node->ne[0] || parent->ne[1] != node->ne[2] || parent->ne[2] != 1 ||
       parent->ne[3] != 1 || !ggml_is_contiguous(parent) || !ggml_is_contiguous(view) ||
       ggml_nbytes(parent) != ggml_nbytes(view) || parent->data != view->data ||
-      !HasExactFlattenedStorageView(view, parent) ||
-      std::ranges::any_of(std::span(view->src).subspan(1), [](const auto* extra) { return extra; }))
+      !HasExactFlattenedStorageView(view, parent) || !HasNoExtraSources(*view, 1))
     return {};
   return 1;
 }
@@ -110,34 +109,7 @@ bool HasIdentity(const base::Sha256Digest& digest) {
   return std::ranges::any_of(digest, [](std::uint8_t value) { return value != 0; });
 }
 
-class LocalHash {
- public:
-  explicit LocalHash(std::string_view domain) { Text(domain); }
-  void U8(std::uint8_t value) { Add(value); }
-  void U16(std::uint16_t value) { Add(value); }
-  void U32(std::uint32_t value) { Add(value); }
-  void U64(std::uint64_t value) { Add(value); }
-  void Text(std::string_view value) {
-    U64(value.size());
-    hash_.Update(value);
-  }
-  void Bytes(std::span<const std::byte> value) {
-    U64(value.size());
-    hash_.Update(value);
-  }
-  void Digest(const base::Sha256Digest& value) { hash_.Update(std::as_bytes(std::span(value))); }
-  base::Sha256Digest Finish() { return hash_.Finish(); }
-
- private:
-  template <class T>
-  void Add(T value) {
-    std::array<std::byte, sizeof(T)> bytes{};
-    for (std::size_t i = 0; i < bytes.size(); ++i)
-      bytes[i] = static_cast<std::byte>((value >> (i * 8U)) & 0xffU);
-    hash_.Update(bytes);
-  }
-  base::Sha256 hash_;
-};
+using LocalHash = CanonicalHash;
 
 // Narrow unquantized MMVF products. Dispatch/scratch are independently
 // authenticated against the current launch before a local certificate closes.
@@ -772,8 +744,7 @@ std::optional<GdnGatesStorage> CheckedGdnGatesStorage(const LoweredStep& lowered
         ggml_nbytes(view) != plane ||
         reinterpret_cast<std::uintptr_t>(view->data) !=
             reinterpret_cast<std::uintptr_t>(parent->data) + i * plane ||
-        std::ranges::any_of(std::span(view->src).subspan(1),
-                            [](const auto* extra) { return extra; }))
+        !HasNoExtraSources(*view, 1))
       return {};
     storage.outputs[i] = &*found;
   }
@@ -822,8 +793,6 @@ const ComparisonBindingRange* BindingForPhysicalRoot(const LoweredStep& lowered,
   return &*found;
 }
 
-std::optional<bool> IntervalsOverlap(std::uintptr_t left, std::uint64_t left_bytes,
-                                     std::uintptr_t right, std::uint64_t right_bytes);
 bool ReadyTokenValueKind(components::InputKind kind);
 
 bool ResolveRegionAccess(const LoweredStep& lowered, LoweredStep::ComparisonOrigins& relation,
@@ -1017,22 +986,6 @@ bool ResolveRegionAccess(const LoweredStep& lowered, LoweredStep::ComparisonOrig
   result.read = spec.read;
   result.written = spec.written;
   return true;
-}
-
-std::optional<bool> IntervalsOverlap(std::uintptr_t left, std::uint64_t left_bytes,
-                                     std::uintptr_t right, std::uint64_t right_bytes) {
-  std::uintptr_t left_end = 0, right_end = 0;
-  if (left == 0 || right == 0 || left_bytes == 0 || right_bytes == 0 ||
-      __builtin_add_overflow(left, static_cast<std::uintptr_t>(left_bytes), &left_end) ||
-      __builtin_add_overflow(right, static_cast<std::uintptr_t>(right_bytes), &right_end))
-    return {};
-  return left < right_end && right < left_end;
-}
-
-bool ValidAddressRange(std::uintptr_t begin, std::uint64_t bytes) {
-  std::uintptr_t end = 0;
-  return begin != 0 && bytes != 0 &&
-         !__builtin_add_overflow(begin, static_cast<std::uintptr_t>(bytes), &end);
 }
 
 bool IsValueRole(ir::Role role) {
@@ -3290,8 +3243,7 @@ ComparisonRegionAnalysis AnalyzeComparisonRegion(
           if (current->op != GGML_OP_RESHAPE || current->view_offs != current->src[0]->view_offs ||
               !ggml_is_contiguous(current) || !ggml_is_contiguous(current->src[0]) ||
               ggml_nelements(current) != ggml_nelements(current->src[0]) ||
-              std::ranges::any_of(std::span(current->src).subspan(1),
-                                  [](const auto* extra) { return extra != nullptr; }))
+              !HasNoExtraSources(*current, 1))
             return false;
         }
         if (!visit(*record)) return false;

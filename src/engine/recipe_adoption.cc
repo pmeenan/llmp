@@ -281,7 +281,7 @@ std::optional<execution::RecipeComparisonKey> ProveWholePair(
                                              alternative);
 }
 
-class AdoptedRecipeProgram final : public kernels::StepProgram {
+class AdoptedRecipeProgram final : public kernels::ForwardingStepProgram {
  public:
   static std::unique_ptr<AdoptedRecipeProgram> Prepare(
       std::shared_ptr<const ir::StorageFunder> funder, std::size_t certificate_capacity,
@@ -300,6 +300,11 @@ class AdoptedRecipeProgram final : public kernels::StepProgram {
     const auto resources = incumbent.RetainedResources();
     if (resources && !pending->HoldResources(resources)) return {};
     return pending;
+  }
+  ~AdoptedRecipeProgram() override {
+    proofs_.clear();
+    proofs_.shrink_to_fit();
+    ResetProgram();
   }
 
   bool AddProof(LocalPairProof&& proof) {
@@ -335,57 +340,38 @@ class AdoptedRecipeProgram final : public kernels::StepProgram {
   }
   void InstallFinal(std::unique_ptr<kernels::StepProgram> program,
                     kernels::ComparisonPlanIdentity identity) {
-    program_ = std::move(program);
+    set_forwarded_program(std::move(program));
     identity_ = identity;
     ready_ = false;
   }
   void ConstructionPaid() override {
     if (paid_) return;
     paid_ = true;
-    if (program_) program_->ConstructionPaid();
     for (auto& proof : proofs_) {
       proof.boundary.ConstructionPaid();
       proof.retained_payment.Reset();
     }
     loan_.Reset();
     funder_.reset();
-    kernels::StepProgram::ConstructionPaid();
+    kernels::ForwardingStepProgram::ConstructionPaid();
   }
-  std::uint64_t scratch_bytes() const override { return program_->scratch_bytes(); }
-  std::uint64_t pool_bytes() const override { return program_->pool_bytes(); }
-  std::uint64_t private_pool_bytes() const override { return program_->private_pool_bytes(); }
   std::uint64_t host_bytes() const override {
-    std::uint64_t bytes = program_ ? program_->host_bytes() : 0;
+    std::uint64_t bytes = kernels::ForwardingStepProgram::host_bytes();
     if (!AddBytes(bytes, retained_bytes_, bytes)) return std::numeric_limits<std::uint64_t>::max();
     return bytes;
   }
-  std::uint64_t launches() const override { return program_->launches(); }
-  std::span<const kernels::InputSlot> inputs() const override {
-    return program_ ? program_->inputs() : std::span<const kernels::InputSlot>{};
-  }
-  std::span<const kernels::OutputSlot> outputs() const override {
-    return program_ ? program_->outputs() : std::span<const kernels::OutputSlot>{};
-  }
-  std::span<const kernels::TensorUse> tensors() const override {
-    return program_ ? program_->tensors() : std::span<const kernels::TensorUse>{};
-  }
   const execution::BoundPlan* bound() const override {
-    return ready_ && program_ ? program_->bound() : nullptr;
-  }
-  std::optional<kernels::ComparisonRecipeSeal> comparison_recipe() const override {
-    return program_ ? program_->comparison_recipe() : std::nullopt;
+    return ready_ ? kernels::ForwardingStepProgram::bound() : nullptr;
   }
   std::optional<kernels::ComparisonPlanIdentity> comparison_plan_identity() const override {
-    if (!program_) return std::nullopt;
-    const auto identity = program_->comparison_plan_identity();
+    const auto identity = kernels::ForwardingStepProgram::comparison_plan_identity();
     return identity && identity->source_graph_identity == identity_.source_graph_identity &&
                    identity->planned_graph_identity == identity_.planned_graph_identity
                ? identity
                : std::nullopt;
   }
-  bool capturable() const override { return !ordinary_only_ && program_ && program_->capturable(); }
-  std::optional<std::span<const kernels::RoutedWeight>> weight_reads() const override {
-    return program_ ? program_->weight_reads() : std::nullopt;
+  bool capturable() const override {
+    return !ordinary_only_ && kernels::ForwardingStepProgram::capturable();
   }
   kernels::ComparisonRemainderResult CompareComparisonRemainder(
       const kernels::StepProgram& candidate,
@@ -438,30 +424,31 @@ class AdoptedRecipeProgram final : public kernels::StepProgram {
         kernels::StepFailure{.detail = "runtime recipe wrapper has no comparison executor"});
   }
   kernels::RoutedProgram* routed() override {
-    return ready_ && program_ ? program_->routed() : nullptr;
+    return ready_ ? kernels::ForwardingStepProgram::routed() : nullptr;
   }
   const kernels::RoutedProgram* routed() const override {
-    return ready_ && program_ ? program_->routed() : nullptr;
+    return ready_ ? kernels::ForwardingStepProgram::routed() : nullptr;
   }
   std::expected<void, kernels::StepFailure> Bind(kernels::StepLaunch& launch) override {
     ready_ = false;
-    if (!program_)
+    auto* inner = forwarded_program();
+    if (!inner)
       return std::unexpected(kernels::StepFailure{.detail = "recipe program is not installed"});
-    auto bound = program_->Bind(launch);
+    auto bound = inner->Bind(launch);
     if (!bound) return bound;
-    const auto identity = program_->comparison_plan_identity();
+    const auto identity = inner->comparison_plan_identity();
     if (!identity || identity->source_graph_identity != identity_.source_graph_identity ||
         identity->planned_graph_identity != identity_.planned_graph_identity)
       return std::unexpected(
           kernels::StepFailure{.detail = "recipe adoption plan identity changed at Bind"});
     if (whole_proof_) {
-      const auto actual = program_->comparison_recipe();
+      const auto actual = inner->comparison_recipe();
       if (!actual || !SameWholeProgramRecipe(*whole_proof_, *actual))
         return std::unexpected(
             kernels::StepFailure{.detail = "whole program recipe changed at Bind"});
     }
     for (const auto& certificate : proofs_) {
-      const auto proof = program_->ProjectComparisonRegionCertificate(
+      const auto proof = inner->ProjectComparisonRegionCertificate(
           certificate.boundary, kernels::ComparisonCertificatePhase::kBound);
       if (proof.status != kernels::ComparisonRegionStatus::kClosed ||
           !proof.required_members.empty() ||
@@ -469,8 +456,8 @@ class AdoptedRecipeProgram final : public kernels::StepProgram {
           !SamePersistent(certificate.chosen, proof.seal))
         return std::unexpected(
             kernels::StepFailure{.detail = "recipe adoption certificate changed at Bind"});
-      const auto remainder = program_->CompareComparisonRemainder(
-          *program_, certificate.boundary, kernels::ComparisonCertificatePhase::kBound);
+      const auto remainder = inner->CompareComparisonRemainder(
+          *inner, certificate.boundary, kernels::ComparisonCertificatePhase::kBound);
       if (remainder.status != kernels::ComparisonRemainderStatus::kSame ||
           !remainder.required_members.empty())
         return std::unexpected(
@@ -482,26 +469,26 @@ class AdoptedRecipeProgram final : public kernels::StepProgram {
   std::expected<void, kernels::StepFailure> Position(std::span<const std::uint32_t> past) override {
     if (!ready_)
       return std::unexpected(kernels::StepFailure{.detail = "recipe program is not bound"});
-    return program_->Position(past);
+    return kernels::ForwardingStepProgram::Position(past);
   }
   std::expected<void, kernels::StepFailure> TryUpdateGeneratedInputs(
       const planner::StepShape& shape) override {
     if (!ready_)
       return std::unexpected(kernels::StepFailure{.detail = "recipe program is not bound"});
-    return program_->TryUpdateGeneratedInputs(shape);
+    return kernels::ForwardingStepProgram::TryUpdateGeneratedInputs(shape);
   }
   std::expected<void, kernels::StepFailure> Run(kernels::StepLaunch& launch,
                                                 providers::NativeStream stream) const override {
     if (!ready_)
       return std::unexpected(kernels::StepFailure{.detail = "recipe program is not bound"});
-    return program_->Run(launch, stream);
+    return kernels::ForwardingStepProgram::Run(launch, stream);
   }
-  bool warm() const override { return program_->warm(); }
+  bool warm() const override { return ready_ && kernels::ForwardingStepProgram::warm(); }
   std::expected<void, kernels::StepFailure> RunWarm(kernels::StepLaunch& launch,
                                                     providers::NativeStream stream) const override {
     if (!ready_)
       return std::unexpected(kernels::StepFailure{.detail = "recipe program is not bound"});
-    return program_->RunWarm(launch, stream);
+    return kernels::ForwardingStepProgram::RunWarm(launch, stream);
   }
   std::expected<std::unique_ptr<kernels::Recorded>, kernels::StepFailure> Record(
       kernels::StepLaunch& launch, providers::NativeStream stream,
@@ -511,16 +498,7 @@ class AdoptedRecipeProgram final : public kernels::StepProgram {
           .detail = "ordinary whole-program ranking does not authorize captured execution"});
     if (!ready_)
       return std::unexpected(kernels::StepFailure{.detail = "recipe program is not bound"});
-    return program_->Record(launch, stream, body);
-  }
-  void ReportPlan(const kernels::PlanReportSink& sink) const override {
-    program_->ReportPlan(sink);
-  }
-  void StreamPlanReport(const kernels::PlanReportSink& sink) const override {
-    program_->StreamPlanReport(sink);
-  }
-  kernels::PlanCoverage plan_coverage() const override {
-    return program_ ? program_->plan_coverage() : kernels::PlanCoverage{};
+    return kernels::ForwardingStepProgram::Record(launch, stream, body);
   }
 
  private:
@@ -532,7 +510,6 @@ class AdoptedRecipeProgram final : public kernels::StepProgram {
   ir::StorageLoan loan_;
   std::shared_ptr<const ir::StorageFunder> funder_;
   std::uint64_t retained_bytes_;
-  std::unique_ptr<kernels::StepProgram> program_;
   std::vector<LocalPairProof> proofs_;
   std::optional<kernels::ComparisonRecipeSeal> whole_proof_;
   bool ordinary_only_ = false;
@@ -598,20 +575,6 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildCumulativ
                                ? ComparisonSourceBindings::Create(funder, token->step, active_stage)
                                : ComparisonSourceBindings::Create(funder, io, active_stage);
     if (!source_bindings) return std::unexpected("comparison source inventory unavailable");
-    {
-      auto original_graph = io.graph.Clone(funder);
-      if (!original_graph) return std::unexpected("comparison source clone unavailable");
-      auto baseline_plan = planner::Plan(std::move(*original_graph), *backend.registry,
-                                         backend.device, policy, prepared);
-      if (!baseline_plan) return std::unexpected("comparison baseline plan unavailable");
-      auto baseline_ranges = source_bindings->Resolve(*baseline_plan, addresses, backend.written);
-      if (!baseline_ranges) return std::unexpected("comparison source ranges unavailable");
-    }
-    auto source_view = source_bindings->boundary_view();
-    if (!source_view) return std::unexpected("comparison source view unavailable");
-    auto source_boundary_result = components::MakeComparisonBoundary(*source_view, funder);
-    if (!source_boundary_result) return std::unexpected("comparison source boundary unavailable");
-    auto source_boundary = std::move(*source_boundary_result);
 
     const auto& rows = backend.registry->ranks().recipe_comparisons;
     std::uint64_t filter_bytes = 0;
@@ -625,16 +588,24 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildCumulativ
     for (const auto& row : rows) filter.push_back(row.key.discovery_operation);
     std::ranges::sort(filter);
     filter.erase(std::unique(filter.begin(), filter.end()), filter.end());
+    auto discovered = planner::DiscoverComparisonPlan(
+        io.graph, filter, false, funder, *backend.registry, backend.device, policy, prepared);
+    if (!discovered) return std::unexpected("comparison discovery unavailable");
+    auto discovery = std::move(discovered->discovery);
+    auto current_ranges =
+        source_bindings->Resolve(discovered->incumbent.plan, addresses, backend.written);
+    if (!current_ranges) return std::unexpected("comparison incumbent ranges unavailable");
+    auto source_view = source_bindings->boundary_view();
+    if (!source_view) return std::unexpected("comparison source view unavailable");
+    auto source_boundary_result = components::MakeComparisonBoundary(*source_view, funder);
+    if (!source_boundary_result) return std::unexpected("comparison source boundary unavailable");
+    auto source_boundary = std::move(*source_boundary_result);
     planner::ComparisonPlanningEnvironment environment(*source_view, *backend.registry,
                                                        backend.device, policy, prepared,
                                                        token ? &token->shape : nullptr);
     auto ledger_result = planner::ComparisonDecisionLedger::Create(environment, funder);
     if (!ledger_result) return std::unexpected("comparison ledger unavailable");
     auto ledger = std::move(*ledger_result);
-    auto discovered = planner::DiscoverComparisonPlan(
-        *source_view, filter, false, funder, *backend.registry, backend.device, policy, prepared);
-    if (!discovered) return std::unexpected("comparison discovery unavailable");
-    auto discovery = std::move(discovered->discovery);
     const auto tickets = discovery.tickets();
     const planner::ComparisonDiscoveryTicket* seed_ticket = nullptr;
     for (const auto& ticket : tickets) {
@@ -653,9 +624,8 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildCumulativ
     base::Sha256Digest current_planned_graph{};
     {
       auto current_plan = std::move(discovered->incumbent);
+      auto incumbent_ranges = std::move(*current_ranges);
       current_planned_graph = current_plan.plan.graph.Digest();
-      auto current_ranges = source_bindings->Resolve(current_plan.plan, addresses, backend.written);
-      if (!current_ranges) return std::unexpected("comparison incumbent ranges unavailable");
       const auto discovered_tensor_map = discovery.source_to_planned();
       const auto discovered_node_origins = discovery.planned_node_origins();
       if (discovery.source_identity() != io.graph.identity() ||
@@ -684,7 +654,7 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildCumulativ
       const kernels::ComparisonRequest comparison{
           .mode = kernels::ComparisonRunMode::kFull,
           .scope = kernels::ComparisonProofScope::kWholeProgramNative,
-          .bindings = current_ranges->ranges(),
+          .bindings = incumbent_ranges.ranges(),
           .state = state,
           .active_stage = active_stage,
           .expected_boundary = &source_boundary};
@@ -715,10 +685,29 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildCumulativ
     // incumbent remains the only program returned to the normal runner.
     auto pending_owner = AdoptedRecipeProgram::Prepare(funder, tickets.size(), **current_program);
     if (!pending_owner) return std::move(*current_program);
+    const auto selection_digest = backend.registry->SelectionDigest();
     for (const auto& ticket : tickets) {
       if (ticket.member_offsets.size() < 2 ||
           (!ticket.boundary_representable && ticket.kind != planner::ComparisonSiteKind::kRewrite))
         continue;
+      if (!ticket.boundary_representable) {
+        const auto left = (*current_program)->comparison_recipe();
+        if (!left || left->state != kernels::ComparisonProofState::kDescriptorVerified ||
+            left->missing != kernels::ComparisonMissing::kNone ||
+            left->planned_graph != current_planned_graph)
+          continue;
+        const bool has_candidate_row = std::ranges::any_of(rows, [&](const auto& row) {
+          return row.key.discovery_operation == ticket.registered_operation &&
+                 row.key.selection_environment == selection_digest &&
+                 row.key.policy == left->policy && row.key.device == left->backend_device &&
+                 row.key.incumbent.planned_region == left->planned_graph &&
+                 row.key.incumbent.physical_recipe == left->physical_recipe &&
+                 row.key.incumbent.backend_recipe == left->backend_recipe &&
+                 row.key.incumbent.backend_build == left->backend_build &&
+                 row.key.incumbent.backend_selection == left->backend_selection;
+        });
+        if (!has_candidate_row) continue;
+      }
       const auto group_count = ticket.member_offsets.size() - 1;
       std::uint64_t selector_bytes = 0;
       if (ticket.member_offsets.size() >

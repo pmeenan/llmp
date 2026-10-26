@@ -1626,7 +1626,7 @@ std::expected<void, ComparisonPairFailure> ComparisonPair::BindPrograms(
   return {};
 }
 
-class ComparisonPair::SelectedRecipeProgram final : public kernels::StepProgram {
+class ComparisonPair::SelectedRecipeProgram final : public kernels::ForwardingStepProgram {
  public:
   SelectedRecipeProgram(ir::StorageLoan owner_loan,
                         components::OwnedComparisonRegionBoundary&& boundary,
@@ -1635,62 +1635,59 @@ class ComparisonPair::SelectedRecipeProgram final : public kernels::StepProgram 
                         kernels::ComparisonPlanIdentity plan_identity,
                         ComparisonRecipePreparation preparation,
                         std::optional<kernels::ComparisonRegionRecipeSeal> certificate_seal)
-      : owner_loan_(std::move(owner_loan)),
+      : kernels::ForwardingStepProgram(std::move(program)),
+        owner_loan_(std::move(owner_loan)),
         boundary_(std::move(boundary)),
-        program_(std::move(program)),
         descriptor_seal_(descriptor_seal),
         plan_identity_(plan_identity),
         preparation_(preparation),
         certificate_seal_(std::move(certificate_seal)),
         retained_metadata_bytes_(owner_loan_.bytes()) {
-    const auto resources = program_->RetainedResources();
+    const auto resources = forwarded_program()->RetainedResources();
     resources_adopted_ = !resources || HoldResources(resources);
   }
+  ~SelectedRecipeProgram() override { ResetProgram(); }
 
   bool resources_adopted() const { return resources_adopted_; }
 
   void ConstructionPaid() override {
-    program_->ConstructionPaid();
+    kernels::ForwardingStepProgram::ConstructionPaid();
     boundary_.ConstructionPaid();
     owner_loan_.Reset();
-    kernels::StepProgram::ConstructionPaid();
   }
-  std::uint64_t scratch_bytes() const override { return program_->scratch_bytes(); }
-  std::uint64_t pool_bytes() const override { return program_->pool_bytes(); }
-  std::uint64_t private_pool_bytes() const override { return program_->private_pool_bytes(); }
   std::uint64_t host_bytes() const override {
-    return program_->host_bytes() + retained_metadata_bytes_;
+    return kernels::ForwardingStepProgram::host_bytes() + retained_metadata_bytes_;
   }
-  std::uint64_t launches() const override { return program_->launches(); }
-  std::span<const kernels::InputSlot> inputs() const override { return program_->inputs(); }
-  std::span<const kernels::OutputSlot> outputs() const override { return program_->outputs(); }
-  std::span<const kernels::TensorUse> tensors() const override { return program_->tensors(); }
   const execution::BoundPlan* bound() const override {
-    return promoted_ ? program_->bound() : nullptr;
-  }
-  std::optional<kernels::ComparisonRecipeSeal> comparison_recipe() const override {
-    return program_->comparison_recipe();
+    return promoted_ ? kernels::ForwardingStepProgram::bound() : nullptr;
   }
   std::optional<kernels::ComparisonPlanIdentity> comparison_plan_identity() const override {
-    const auto identity = program_->comparison_plan_identity();
+    const auto identity = kernels::ForwardingStepProgram::comparison_plan_identity();
     if (!identity || identity->source_graph_identity != plan_identity_.source_graph_identity ||
         identity->planned_graph_identity != plan_identity_.planned_graph_identity)
       return {};
     return identity;
   }
+  kernels::ComparisonRemainderResult CompareComparisonRemainder(
+      const kernels::StepProgram& candidate,
+      const components::OwnedComparisonRegionBoundary& common_boundary,
+      kernels::ComparisonCertificatePhase phase) const override {
+    return kernels::StepProgram::CompareComparisonRemainder(candidate, common_boundary, phase);
+  }
+  const kernels::StepProgram& comparison_program() const override { return *this; }
   kernels::ComparisonRegionResult ProjectComparisonRegion(
       const components::OwnedComparisonRegionBoundary& boundary) const override {
     if (!promoted_)
       return {.status = kernels::ComparisonRegionStatus::kUnproved,
               .reason = "selected recipe is not bound and revalidated"};
-    return program_->ProjectComparisonRegion(boundary);
+    return kernels::ForwardingStepProgram::ProjectComparisonRegion(boundary);
   }
   kernels::ComparisonRegionDescriptorResult ProjectComparisonRegionDescriptor(
       const components::OwnedComparisonRegionBoundary& boundary) const override {
     if (promoted_)
       return {.status = kernels::ComparisonRegionStatus::kUnproved,
               .reason = "selected recipe is already bound"};
-    return program_->ProjectComparisonRegionDescriptor(boundary);
+    return kernels::ForwardingStepProgram::ProjectComparisonRegionDescriptor(boundary);
   }
   kernels::ComparisonRegionDescriptorResult ProjectComparisonRegionCertificate(
       const components::OwnedComparisonRegionBoundary& boundary,
@@ -1699,46 +1696,37 @@ class ComparisonPair::SelectedRecipeProgram final : public kernels::StepProgram 
         !promoted_ || phase != kernels::ComparisonCertificatePhase::kBound)
       return {.status = kernels::ComparisonRegionStatus::kUnproved,
               .reason = "selected recipe has no current ready-boundary certificate"};
-    return program_->ProjectComparisonRegionCertificate(boundary, phase);
+    return kernels::ForwardingStepProgram::ProjectComparisonRegionCertificate(boundary, phase);
   }
   bool ValidateComparisonProjection(
       const kernels::ComparisonRegionProjection& projection) const override {
-    return promoted_ && program_->ValidateComparisonProjection(projection);
+    return promoted_ && kernels::ForwardingStepProgram::ValidateComparisonProjection(projection);
   }
   std::expected<void, kernels::StepFailure> RunComparisonPrefix(
       const kernels::ComparisonRegionProjection& projection, kernels::StepLaunch& launch,
       providers::NativeStream stream) const override {
     if (!promoted_)
       return std::unexpected(kernels::StepFailure{.detail = "selected recipe is not bound"});
-    return program_->RunComparisonPrefix(projection, launch, stream);
+    return kernels::ForwardingStepProgram::RunComparisonPrefix(projection, launch, stream);
   }
   std::expected<void, kernels::StepFailure> RunComparisonRegion(
       const kernels::ComparisonRegionProjection& projection, kernels::StepLaunch& launch,
       providers::NativeStream stream) const override {
     if (!promoted_)
       return std::unexpected(kernels::StepFailure{.detail = "selected recipe is not bound"});
-    return program_->RunComparisonRegion(projection, launch, stream);
+    return kernels::ForwardingStepProgram::RunComparisonRegion(projection, launch, stream);
   }
-  void ReportPlan(const kernels::PlanReportSink& sink) const override {
-    program_->ReportPlan(sink);
+  kernels::RoutedProgram* routed() override {
+    return promoted_ ? kernels::ForwardingStepProgram::routed() : nullptr;
   }
-  void StreamPlanReport(const kernels::PlanReportSink& sink) const override {
-    program_->StreamPlanReport(sink);
-  }
-  kernels::PlanCoverage plan_coverage() const override { return program_->plan_coverage(); }
-  bool capturable() const override { return program_->capturable(); }
-  std::optional<std::span<const kernels::RoutedWeight>> weight_reads() const override {
-    return program_->weight_reads();
-  }
-  kernels::RoutedProgram* routed() override { return promoted_ ? program_->routed() : nullptr; }
   const kernels::RoutedProgram* routed() const override {
-    return promoted_ ? program_->routed() : nullptr;
+    return promoted_ ? kernels::ForwardingStepProgram::routed() : nullptr;
   }
   std::expected<void, kernels::StepFailure> Bind(kernels::StepLaunch& launch) override {
     promoted_ = false;
-    auto bound = program_->Bind(launch);
+    auto bound = kernels::ForwardingStepProgram::Bind(launch);
     if (!bound) return std::unexpected(std::move(bound.error()));
-    const auto identity = program_->comparison_plan_identity();
+    const auto identity = forwarded_program()->comparison_plan_identity();
     if (!identity || identity->source_graph_identity != plan_identity_.source_graph_identity ||
         identity->planned_graph_identity != plan_identity_.planned_graph_identity ||
         !boundary_.source_identity() ||
@@ -1746,7 +1734,7 @@ class ComparisonPair::SelectedRecipeProgram final : public kernels::StepProgram 
       return std::unexpected(
           kernels::StepFailure{.detail = "selected recipe live plan identity changed"});
     if (preparation_ == ComparisonRecipePreparation::kStatelessReadyBoundaryOperands) {
-      const auto certificate = program_->ProjectComparisonRegionCertificate(
+      const auto certificate = forwarded_program()->ProjectComparisonRegionCertificate(
           boundary_, kernels::ComparisonCertificatePhase::kBound);
       if (!certificate_seal_ || certificate.status != kernels::ComparisonRegionStatus::kClosed ||
           certificate.seal.state != kernels::ComparisonProofState::kBoundVerified ||
@@ -1755,50 +1743,52 @@ class ComparisonPair::SelectedRecipeProgram final : public kernels::StepProgram 
         return std::unexpected(kernels::StepFailure{
             .detail = "selected recipe applicability certificate changed before Bind"});
     }
-    auto projection = program_->ProjectComparisonRegion(boundary_);
+    auto projection = forwarded_program()->ProjectComparisonRegion(boundary_);
     if (projection.status != kernels::ComparisonRegionStatus::kClosed || !projection.projection ||
         projection.projection->seal().state != kernels::ComparisonProofState::kBoundVerified ||
         projection.projection->seal().missing != kernels::ComparisonMissing::kNone ||
         !SamePersistentSeal(descriptor_seal_, projection.projection->seal()) ||
         (certificate_seal_ &&
          !SamePersistentSeal(*certificate_seal_, projection.projection->seal())) ||
-        !program_->ValidateComparisonProjection(*projection.projection) ||
+        !forwarded_program()->ValidateComparisonProjection(*projection.projection) ||
         !MatchesBoundaryPorts(boundary_, projection.value_ports))
       return std::unexpected(
           kernels::StepFailure{.detail = "selected recipe changed before bound promotion"});
     promoted_ = true;
     return {};
   }
+  bool warm() const noexcept override {
+    return promoted_ && kernels::ForwardingStepProgram::warm();
+  }
   std::expected<void, kernels::StepFailure> TryUpdateGeneratedInputs(
       const planner::StepShape& shape) override {
     if (!promoted_)
       return std::unexpected(kernels::StepFailure{.detail = "selected recipe is not bound"});
-    return program_->TryUpdateGeneratedInputs(shape);
+    return kernels::ForwardingStepProgram::TryUpdateGeneratedInputs(shape);
   }
   std::expected<void, kernels::StepFailure> Position(std::span<const std::uint32_t> past) override {
     if (!promoted_)
       return std::unexpected(kernels::StepFailure{.detail = "selected recipe is not bound"});
-    return program_->Position(past);
+    return kernels::ForwardingStepProgram::Position(past);
   }
   std::expected<void, kernels::StepFailure> Run(kernels::StepLaunch& launch,
                                                 providers::NativeStream stream) const override {
     if (!promoted_)
       return std::unexpected(kernels::StepFailure{.detail = "selected recipe is not bound"});
-    return program_->Run(launch, stream);
+    return kernels::ForwardingStepProgram::Run(launch, stream);
   }
-  bool warm() const override { return program_->warm(); }
   std::expected<void, kernels::StepFailure> RunWarm(kernels::StepLaunch& launch,
                                                     providers::NativeStream stream) const override {
     if (!promoted_)
       return std::unexpected(kernels::StepFailure{.detail = "selected recipe is not bound"});
-    return program_->RunWarm(launch, stream);
+    return kernels::ForwardingStepProgram::RunWarm(launch, stream);
   }
   std::expected<std::unique_ptr<kernels::Recorded>, kernels::StepFailure> Record(
       kernels::StepLaunch& launch, providers::NativeStream stream,
       const kernels::StepLaunch::Body& body) const override {
     if (!promoted_)
       return std::unexpected(kernels::StepFailure{.detail = "selected recipe is not bound"});
-    return program_->Record(launch, stream, body);
+    return kernels::ForwardingStepProgram::Record(launch, stream, body);
   }
 
  private:
@@ -1807,7 +1797,6 @@ class ComparisonPair::SelectedRecipeProgram final : public kernels::StepProgram 
   // selection, because lowering has snapshotted their required facts.
   ir::StorageLoan owner_loan_;
   components::OwnedComparisonRegionBoundary boundary_;
-  std::unique_ptr<kernels::StepProgram> program_;
   kernels::ComparisonRegionRecipeSeal descriptor_seal_{};
   kernels::ComparisonPlanIdentity plan_identity_{};
   ComparisonRecipePreparation preparation_ =

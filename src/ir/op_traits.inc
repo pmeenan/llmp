@@ -250,7 +250,7 @@ LLMP_FUSED(kHcCombine, "hc_combine", sizeof(HcParams), 3, 3, InferFused, Validat
   // causal depthwise convolution of the rows after the history (tap j of
   // channel c at c · (K - 1) + j) and SiLU, [C, T]; its first qk_channels
   // channels, heads of `head`, L2-normed as rms_norm(x, eps) · scale.
-LLMP_FUSED(kGdnConv, "gdn_conv", sizeof(GdnConvParams), 3, 3, InferFused, ValidateNone, kFixed, kWhole, true, DecomposeGdnConv, kDecomposition, 0, -1, -1)
+LLMP_FUSED(kGdnConv, "gdn_conv", sizeof(GdnConvParams), 3, 3, InferFused, ValidateGdnConv, kFixed, kWhole, true, DecomposeGdnConv, kDecomposition, 0, -1, -1)
   // (rows [C, T], history? [(K - 1) · C]): GdnHistoryParams: the
   // convolution's next history, [taps · C, 1]: the last `taps` of the
   // history (when given) followed by the rows, each channel's taps
@@ -361,7 +361,7 @@ LLMP_FUSED(kLayerNormModulateSplit, "layer_norm_modulate_split", sizeof(SplitMod
   // (carry [C, R], branch [C, R], g [C]) or (carry [C, R], branch [C, R],
   // a [C], b [C]): SplitModulateParams (eps unused): carry + branch · tanh(g),
   // where g is unsplit (3 sources) or row r is a where r < split, else b.
-LLMP_FUSED(kGatedResidualSplit, "gated_residual_split", sizeof(SplitModulateParams), 3, 4, InferFused, ValidateNone, kFixed, kWhole, true, DecomposeSplitModulate<true>, kDecomposition, 0, -1, -1)
+LLMP_FUSED(kGatedResidualSplit, "gated_residual_split", sizeof(SplitModulateParams), 3, 4, InferFused, ValidateSplitModulate, kFixed, kWhole, true, DecomposeSplitModulate<true>, kDecomposition, 0, -1, -1)
   // (carry [C, R], branch [C, R], g [C], m [C]) or (carry [C, R], branch
   // [C, R], ga [C], gb [C], ma [C], mb [C]): SplitModulateParams:
   // x = kGatedResidualSplit, then kLayerNormModulateSplit(x) (eps):

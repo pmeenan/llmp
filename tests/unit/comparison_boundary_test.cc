@@ -966,6 +966,21 @@ TEST(ComparisonBoundaryTest, RegionBoundaryIncludesDeclaredStateReadEvenWhenProd
   auto refused = components::MakeComparisonRegionBoundary({wrong_source, offsets, members}, funder);
   EXPECT_FALSE(refused);
   EXPECT_EQ(refused.error().code, components::ComparisonBoundaryError::kInvalid);
+  EXPECT_NE(refused.error().detail.find("state read/write flags differ:"), std::string::npos);
+
+  struct RefusingDiagnostic final : ir::DiagnosticAdmission {
+    bool TryChargeDiagnostic(std::uint64_t bytes) override {
+      last_bytes = bytes;
+      return false;
+    }
+    std::uint64_t last_bytes = 0;
+  } refusing_diagnostic;
+  auto refused_diagnostic = components::MakeComparisonRegionBoundary(
+      {wrong_source, offsets, members}, funder, &refusing_diagnostic);
+  ASSERT_FALSE(refused_diagnostic);
+  EXPECT_EQ(refused_diagnostic.error().code, components::ComparisonBoundaryError::kAdmission);
+  EXPECT_TRUE(refused_diagnostic.error().detail.empty());
+  EXPECT_GT(refusing_diagnostic.last_bytes, refused.error().detail.size());
 
   auto denying = std::make_shared<Funder>();
   denying->fail_at = 1;

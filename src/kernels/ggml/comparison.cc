@@ -40,32 +40,6 @@ namespace {
 // fields, including epsilon, begin at this pin's kEpsOffset of 32.
 constexpr std::size_t kCustomSemanticOffset = 32;
 
-class CanonicalHash {
- public:
-  explicit CanonicalHash(std::string_view domain) { Text(domain); }
-
-  void U8(std::uint8_t value) { Add(value); }
-  void U16(std::uint16_t value) { Add(value); }
-  void U32(std::uint32_t value) { Add(value); }
-  void U64(std::uint64_t value) { Add(value); }
-  void Text(std::string_view value) {
-    U64(value.size());
-    hash_.Update(value);
-  }
-  void Digest(const base::Sha256Digest& value) { hash_.Update(std::as_bytes(std::span(value))); }
-  base::Sha256Digest Finish() { return hash_.Finish(); }
-
- private:
-  template <class T>
-  void Add(T value) {
-    std::array<std::byte, sizeof(T)> bytes{};
-    for (std::size_t i = 0; i < bytes.size(); ++i)
-      bytes[i] = static_cast<std::byte>((value >> (i * 8U)) & 0xffU);
-    hash_.Update(bytes);
-  }
-  base::Sha256 hash_;
-};
-
 void HashPhysicalBindings(CanonicalHash& hash, const LowerInput& input) {
   std::vector<const ComparisonBindingRange*> sorted;
   sorted.reserve(input.comparison->bindings.size());
@@ -195,12 +169,7 @@ void HashRopeQuantStoreLaunch(CanonicalHash& hash, const RopeQuantStoreLaunchRec
 bool HasSchema(const ggml_tensor& tensor) {
   // Typed cases below mirror the pinned GGML constructors and the specific
   // Llmp custom helper needed by Batch 1. No opaque parameter bytes are sealed.
-  const bool has_sources =
-      std::ranges::any_of(tensor.src, [](const ggml_tensor* source) { return source != nullptr; });
-  const auto all_zero = [&](std::size_t first) {
-    return std::ranges::all_of(std::span(tensor.op_params).subspan(first),
-                               [](std::int32_t field) { return field == 0; });
-  };
+  const bool has_sources = !HasNoExtraSources(tensor, 0);
   if (tensor.op == GGML_OP_VIEW) {
     const auto* source = tensor.src[0];
     if (!source || !tensor.view_src || sizeof(tensor.view_offs) > sizeof(tensor.op_params))
@@ -213,14 +182,11 @@ bool HasSchema(const ggml_tensor& tensor) {
     if (encoded_offset > std::numeric_limits<std::size_t>::max() - source_offset) return false;
     const auto* expected_root = source->view_src ? source->view_src : source;
     return tensor.view_src == expected_root && source_offset + encoded_offset == tensor.view_offs &&
-           all_zero(kOffsetWords);
+           HasZeroOpParamsTail(tensor, kOffsetWords);
   }
   if (tensor.op == GGML_OP_PERMUTE) {
     const auto* source = tensor.src[0];
-    if (!source || tensor.type != source->type ||
-        std::ranges::any_of(std::span(tensor.src).subspan(1),
-                            [](const auto* extra) { return extra != nullptr; }))
-      return false;
+    if (!source || tensor.type != source->type || !HasNoExtraSources(tensor, 1)) return false;
     std::array<bool, GGML_MAX_DIMS> seen{};
     for (std::size_t i = 0; i < GGML_MAX_DIMS; ++i) {
       const auto axis = tensor.op_params[i];
@@ -231,35 +197,35 @@ bool HasSchema(const ggml_tensor& tensor) {
            tensor.nb[axis] != source->nb[i]))
         return false;
     }
-    return all_zero(GGML_MAX_DIMS);
+    return HasZeroOpParamsTail(tensor, GGML_MAX_DIMS);
   }
   if ((tensor.op == GGML_OP_NONE && !has_sources) || tensor.op == GGML_OP_RESHAPE ||
       tensor.op == GGML_OP_TRANSPOSE || tensor.op == GGML_OP_CONT || tensor.op == GGML_OP_ADD ||
       tensor.op == GGML_OP_MUL || tensor.op == GGML_OP_REPEAT || tensor.op == GGML_OP_CPY ||
       tensor.op == GGML_OP_GET_ROWS || tensor.op == GGML_OP_SET_ROWS ||
       tensor.op == GGML_OP_DSV4_HC_POST)
-    return all_zero(0);
+    return HasZeroOpParamsTail(tensor, 0);
   if (tensor.op == GGML_OP_MUL_MAT)
     return (tensor.op_params[0] == GGML_PREC_DEFAULT || tensor.op_params[0] == GGML_PREC_F32) &&
-           tensor.op_params[1] == GGML_HINT_NONE && all_zero(2);
+           tensor.op_params[1] == GGML_HINT_NONE && HasZeroOpParamsTail(tensor, 2);
   if (tensor.op == GGML_OP_RMS_NORM || tensor.op == GGML_OP_NORM || tensor.op == GGML_OP_L2_NORM)
-    return all_zero(1);
-  if (tensor.op == GGML_OP_SCALE) return all_zero(2);
+    return HasZeroOpParamsTail(tensor, 1);
+  if (tensor.op == GGML_OP_SCALE) return HasZeroOpParamsTail(tensor, 2);
   if (tensor.op == GGML_OP_CONCAT)
-    return tensor.op_params[0] >= 0 && tensor.op_params[0] < 4 && all_zero(1);
-  if (tensor.op == GGML_OP_ROPE) return all_zero(16);
+    return tensor.op_params[0] >= 0 && tensor.op_params[0] < 4 && HasZeroOpParamsTail(tensor, 1);
+  if (tensor.op == GGML_OP_ROPE) return HasZeroOpParamsTail(tensor, 16);
   if (tensor.op == GGML_OP_UNARY) {
     const auto unary = tensor.op_params[0];
     return (unary == GGML_UNARY_OP_SILU || unary == GGML_UNARY_OP_SIGMOID ||
             unary == GGML_UNARY_OP_TANH || unary == GGML_UNARY_OP_SOFTPLUS) &&
-           all_zero(1);
+           HasZeroOpParamsTail(tensor, 1);
   }
   if (tensor.op == GGML_OP_GLU) {
     if (tensor.op_params[1] != 0) return false;
     if (ggml_get_glu_op(&tensor) != GGML_GLU_OP_SWIGLU &&
         ggml_get_glu_op(&tensor) != GGML_GLU_OP_GEGLU)
       return false;
-    return all_zero(2);
+    return HasZeroOpParamsTail(tensor, 2);
   }
   if (tensor.op == GGML_OP_CUSTOM && (LlmpOpOf(&tensor) == LlmpOp::kLayerNormModulateSplit ||
                                       LlmpOpOf(&tensor) == LlmpOp::kGatedResidualSplit)) {
@@ -362,28 +328,25 @@ bool HasWholeNativeSchema(const ggml_tensor& tensor) {
   if (HasSchema(tensor) || HasWholeNativeFillOrTopKSchema(tensor) ||
       HasWholeNativeReluSchema(tensor))
     return true;
-  const auto zero_tail = [&](std::size_t first) {
-    for (std::size_t i = first; i < std::size(tensor.op_params); ++i)
-      if (tensor.op_params[i] != 0) return false;
-    return true;
-  };
   // These parameter records are the pinned native constructors' scalar
   // semantics. Actual execution still requires the registered native checker.
   if (tensor.op == GGML_OP_SSM_CONV || tensor.op == GGML_OP_SUM_ROWS || tensor.op == GGML_OP_DIV ||
       tensor.op == GGML_OP_MUL_MAT_ID || tensor.op == GGML_OP_LIGHTNING_INDEXER)
-    return zero_tail(0);
-  if (tensor.op == GGML_OP_SOFT_MAX || tensor.op == GGML_OP_CLAMP) return zero_tail(2);
+    return HasZeroOpParamsTail(tensor, 0);
+  if (tensor.op == GGML_OP_SOFT_MAX || tensor.op == GGML_OP_CLAMP)
+    return HasZeroOpParamsTail(tensor, 2);
   if (tensor.op == GGML_OP_ARGSORT)
     return (tensor.op_params[0] == GGML_SORT_ORDER_ASC ||
             tensor.op_params[0] == GGML_SORT_ORDER_DESC) &&
-           zero_tail(1);
-  if (tensor.op == GGML_OP_GATED_DELTA_NET) return zero_tail(1);
-  if (tensor.op == GGML_OP_ROPE_BACK) return zero_tail(16);
-  if (tensor.op == GGML_OP_FLASH_ATTN_EXT) return zero_tail(7);
-  if (tensor.op == GGML_OP_DSV4_HC_COMB || tensor.op == GGML_OP_DSV4_HC_PRE) return zero_tail(2);
+           HasZeroOpParamsTail(tensor, 1);
+  if (tensor.op == GGML_OP_GATED_DELTA_NET) return HasZeroOpParamsTail(tensor, 1);
+  if (tensor.op == GGML_OP_ROPE_BACK) return HasZeroOpParamsTail(tensor, 16);
+  if (tensor.op == GGML_OP_FLASH_ATTN_EXT) return HasZeroOpParamsTail(tensor, 7);
+  if (tensor.op == GGML_OP_DSV4_HC_COMB || tensor.op == GGML_OP_DSV4_HC_PRE)
+    return HasZeroOpParamsTail(tensor, 2);
   if (tensor.op == GGML_OP_MUL_MAT && tensor.op_params[1] == GGML_HINT_SRC0_IS_HADAMARD)
     return (tensor.op_params[0] == GGML_PREC_DEFAULT || tensor.op_params[0] == GGML_PREC_F32) &&
-           zero_tail(2);
+           HasZeroOpParamsTail(tensor, 2);
   return HasWholeNativeCustomScalarSchema(tensor);
 }
 
@@ -500,10 +463,7 @@ bool HasSharedQ8PreparationClosure(const LowerInput& input, const LoweredStep& l
     }
     if (outputs[0]->root == outputs[1]->root) return false;
     const auto disjoint = [](const PhysicalRoot& a, const PhysicalRoot& b) {
-      std::uint64_t a_end = 0, b_end = 0;
-      return !__builtin_add_overflow(a.offset, a.bytes, &a_end) &&
-             !__builtin_add_overflow(b.offset, b.bytes, &b_end) &&
-             (a_end <= b.offset || b_end <= a.offset);
+      return HalfOpenIntervalsDisjoint(a.offset, a.bytes, b.offset, b.bytes);
     };
     const auto p0_root_it =
         std::ranges::find(lowered.physical_roots, outputs[0]->root, &PhysicalRoot::root);
@@ -655,10 +615,7 @@ bool HasSharedQ8PreparationClosure(const LowerInput& input, const LoweredStep& l
     output_roots[i] = &*output_root;
   }
   const auto disjoint = [](const PhysicalRoot& a, const PhysicalRoot& b) {
-    std::uint64_t a_end = 0, b_end = 0;
-    return !__builtin_add_overflow(a.offset, a.bytes, &a_end) &&
-           !__builtin_add_overflow(b.offset, b.bytes, &b_end) &&
-           (a_end <= b.offset || b_end <= a.offset);
+    return HalfOpenIntervalsDisjoint(a.offset, a.bytes, b.offset, b.bytes);
   };
   if (!disjoint(*prep_root, *output_roots[0]) || !disjoint(*prep_root, *output_roots[1]) ||
       !disjoint(*output_roots[0], *output_roots[1]))
@@ -1292,14 +1249,9 @@ bool ComparisonPoolDisjoint(const LoweredStep& lowered, const Q8MainPoolDescript
   if (bytes == 0) return true;
   if (pool.faulted || pool.lanes != 0 || bytes > pool.bytes || pool.base % 256 != 0) return false;
   const auto base = static_cast<std::uintptr_t>(pool.base);
-  std::uintptr_t end = 0;
-  if (base == 0 || __builtin_add_overflow(base, static_cast<std::uintptr_t>(bytes), &end))
-    return false;
+  if (!ValidAddressRange(base, bytes)) return false;
   const auto overlaps = [&](std::uintptr_t other, std::uint64_t other_bytes) {
-    std::uintptr_t other_end = 0;
-    return other == 0 || other_bytes == 0 ||
-           __builtin_add_overflow(other, static_cast<std::uintptr_t>(other_bytes), &other_end) ||
-           (base < other_end && other < end);
+    return !IntervalsDisjoint(base, bytes, other, other_bytes);
   };
   for (const auto& root : lowered.physical_roots) {
     const auto descriptor =
@@ -1452,15 +1404,12 @@ void HashComparisonBf16Facts(CanonicalHash& hash, const ComparisonRemainderCallF
 
 bool ComparisonLibraryWorkspaceDisjoint(const LoweredStep& lowered,
                                         const ComparisonRemainderCallFacts& facts) {
-  const auto begin = facts.library_workspace_base;
-  std::uint64_t end = 0;
-  if (!begin || !facts.library_workspace_bytes ||
-      __builtin_add_overflow(begin, facts.library_workspace_bytes, &end))
+  const auto begin = static_cast<std::uintptr_t>(facts.library_workspace_base);
+  if (!facts.library_workspace_base || !ValidAddressRange(begin, facts.library_workspace_bytes))
     return false;
   const auto clear = [&](std::uint64_t address, std::uint64_t bytes) {
-    std::uint64_t limit = 0;
-    return address && bytes && !__builtin_add_overflow(address, bytes, &limit) &&
-           (limit <= begin || end <= address);
+    return IntervalsDisjoint(begin, facts.library_workspace_bytes,
+                             static_cast<std::uintptr_t>(address), bytes);
   };
   if (facts.pool_faulted || facts.pool_lanes != 0 ||
       (facts.pool_bytes != 0 && !clear(facts.pool_base, facts.pool_bytes)))
@@ -2021,14 +1970,14 @@ bool CheckComparisonTopKIndices(const LowerInput& input, const LoweredStep& lowe
   // their nominal output lives elsewhere. This single-use proof needs no
   // intervening reader and grants no general per-operation access authority.
   const auto begin = reinterpret_cast<std::uintptr_t>(ids->data);
+  const auto ids_bytes = static_cast<std::uint64_t>(ggml_nbytes(ids));
   std::uintptr_t end = 0;
-  if (__builtin_add_overflow(begin, ggml_nbytes(ids), &end)) return false;
+  if (__builtin_add_overflow(begin, ids_bytes, &end)) return false;
   const auto disjoint = [&](const ggml_tensor* tensor) {
     if (!tensor || !tensor->data) return true;
     const auto other = reinterpret_cast<std::uintptr_t>(tensor->data);
-    std::uintptr_t other_end = 0;
-    return !__builtin_add_overflow(other, ggml_nbytes(tensor), &other_end) &&
-           !(begin < other_end && other < end);
+    return HalfOpenIntervalsDisjoint(begin, ids_bytes, other,
+                                     static_cast<std::uint64_t>(ggml_nbytes(tensor)));
   };
   for (std::size_t i = producer + 1; i < consumer; ++i) {
     for (const auto* node : lowered.plan.steps[i].nodes) {

@@ -2494,6 +2494,7 @@ TEST(PlannerPatternTest, GroupedVecQRequiresTheActualProductQualification) {
             ASSERT_TRUE(observed.has_value());
             EXPECT_EQ(observed->find("weight_operand")->find("shape")->at(1).int64(), 16);
             EXPECT_EQ(observed->find("weight_operand")->find("shape")->at(2).int64(), 3);
+            EXPECT_EQ(observed->find("weight_operand")->find("encoding_params")->size(), 9U);
             EXPECT_EQ(observed->find("weight_leaf")->find("shape")->at(1).int64(), 48);
             saw_pattern = true;
           }

@@ -61,7 +61,7 @@ consteval std::size_t DecimalChars() {
 template <class... T>
 void NumberField(base::Sha256& hash, T... values) {
   static_assert(sizeof...(T) > 0);
-  static_assert(sizeof...(T) <= 11);
+  static_assert(sizeof...(T) <= 13);
   constexpr std::size_t capacity = (DecimalChars<T>() + ...) + sizeof...(T) - 1;
   std::array<char, capacity> text{};
   char* at = text.data();
@@ -183,7 +183,8 @@ std::optional<base::Sha256Digest> FusionQueryKey(const CapabilityQuery& q) {
     NumberField(hash, o.operand, o.stacked, static_cast<unsigned>(o.encoding),
                 static_cast<unsigned>(o.layout), o.params.k_bits,
                 static_cast<unsigned>(o.params.codebook), o.params.tensor_scale, o.params.bits,
-                o.params.group, static_cast<unsigned>(o.params.scale), o.params.zero_point);
+                o.params.group, static_cast<unsigned>(o.params.scale), o.params.zero_point,
+                o.params.block_rows, o.params.block_cols);
     NumberField(hash, *o.rank);
     for (auto n : o.ne) NumberField(hash, n);
     for (auto n : o.memory->nb) NumberField(hash, n);

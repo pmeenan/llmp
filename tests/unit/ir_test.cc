@@ -1388,6 +1388,67 @@ TEST(IrTest, NewHyperConnectionAndGdnFusionsExpandStridedSources) {
   EXPECT_FALSE(b.ok());
 }
 
+TEST(IrTest, ScaleAndFusedOperationsRejectInvalidParameters) {
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float inf = std::numeric_limits<float>::infinity();
+  for (const auto [scale, bias] :
+       {std::pair{nan, 0.0F}, std::pair{inf, 0.0F}, std::pair{1.0F, nan}, std::pair{1.0F, -inf}}) {
+    Builder b;
+    b.Scale(b.Input(F32({4, 2})), scale, bias);
+    EXPECT_EQ(ErrorOf(b), GraphError::kParams);
+  }
+  for (const auto [eps, scale] :
+       {std::pair{0.0F, 1.0F}, std::pair{-1e-6F, 1.0F}, std::pair{nan, 1.0F}, std::pair{inf, 1.0F},
+        std::pair{1e-6F, nan}, std::pair{1e-6F, inf}}) {
+    Builder b;
+    const auto rows = b.Input(F32({4, 2}));
+    const auto hist = b.Input(F32({12}));
+    const auto w = b.Input(F32({4, 4}));
+    b.Fused(FusedKind::kGdnConv, std::array{rows, hist, w},
+            GdnConvParams{.eps = eps, .scale = scale, .qk_channels = 2, .head = 2});
+    EXPECT_EQ(ErrorOf(b), GraphError::kParams);
+  }
+  for (const float eps : {-1e-6F, nan, inf}) {
+    Builder b;
+    const auto carry = b.Input(F32({4, 2}));
+    const auto branch = b.Input(F32({4, 2}));
+    const auto gate = b.Input(F32({4}));
+    b.Fused(FusedKind::kGatedResidualSplit, std::array{carry, branch, gate},
+            SplitModulateParams{.eps = eps, .split = 0});
+    EXPECT_EQ(ErrorOf(b), GraphError::kParams);
+  }
+  for (const HcParams& bad :
+       {HcParams{.mix = static_cast<HcMixKind>(2), .streams = 2},
+        HcParams{.fold = static_cast<HcFold>(2), .streams = 2}, HcParams{.streams = 2, .eps = nan},
+        HcParams{.streams = 2, .scale = inf}}) {
+    Builder b;
+    const auto x = b.Input(F32({4, 2, 3}));
+    const auto out = b.Input(F32({4, 3}));
+    const auto logits = b.Input(F32({2, 3}));
+    b.Fused(FusedKind::kHcCombine, std::array{x, out, logits}, bad);
+    EXPECT_EQ(ErrorOf(b), GraphError::kParams);
+  }
+  for (const RopeSectionsParams& bad :
+       {RopeSectionsParams{.eps = 1e-6F, .sections = 1, .dims = {4, 0, 0}},
+        RopeSectionsParams{.eps = 0.0F, .sections = 1, .dims = {4, 2, 0}},
+        RopeSectionsParams{.eps = 0.0F, .sections = 2, .dims = {2, 2, 2}}}) {
+    Builder b;
+    std::vector<TensorId> pos(bad.sections);
+    for (auto& id : pos) id = b.Input(I32({3}));
+    b.Fused(FusedKind::kRopeTable, pos, bad);
+    EXPECT_EQ(ErrorOf(b), GraphError::kParams);
+  }
+  for (const RopeSectionsParams& bad :
+       {RopeSectionsParams{.eps = 1e-6F, .sections = 1, .dims = {4, 2, 0}},
+        RopeSectionsParams{.eps = 1e-6F, .sections = 2, .dims = {2, 2, 2}}}) {
+    Builder b;
+    std::vector<TensorId> sources{b.Input(F32({4, 2, 3})), b.Input(F32({4}))};
+    for (std::uint8_t i = 0; i < bad.sections; ++i) sources.push_back(b.Input(I32({3})));
+    b.Fused(FusedKind::kRmsNormMulRopeSections, sources, bad);
+    EXPECT_EQ(ErrorOf(b), GraphError::kParams);
+  }
+}
+
 // grouped_stores names a batch of store nodes (planner/pattern.h); no node
 // is one.
 TEST(IrTest, GroupedStoresIsNoNode) {

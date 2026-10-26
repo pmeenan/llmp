@@ -47,110 +47,30 @@ struct ReportPayment {
 };
 // The report follows exactly the returned program's lifetime and host charge.
 // It forwards source-specific diagnostics without retaining the compiler graph.
-class ReportedProgram final : public kernels::StepProgram {
+class ReportedProgram final : public kernels::ForwardingStepProgram {
  public:
   ReportedProgram(std::unique_ptr<kernels::StepProgram> program,
                   planner::PlanReportInventory inventory, kernels::PlanCoverage coverage,
                   ReportPayment payment)
-      : payment_(std::move(payment)),
-        program_(std::move(program)),
+      : kernels::ForwardingStepProgram(std::move(program)),
+        payment_(std::move(payment)),
         inventory_(std::move(inventory)),
         coverage_(coverage) {}
+  ~ReportedProgram() override { ResetProgram(); }
   void ConstructionPaid() override {
     if (construction_transferred_) return;
     construction_transferred_ = true;
-    program_->ConstructionPaid();
     payment_.Release();
-    kernels::StepProgram::ConstructionPaid();
+    kernels::ForwardingStepProgram::ConstructionPaid();
   }
-  std::uint64_t scratch_bytes() const override { return program_->scratch_bytes(); }
-  std::uint64_t pool_bytes() const override { return program_->pool_bytes(); }
-  std::uint64_t private_pool_bytes() const override { return program_->private_pool_bytes(); }
   std::uint64_t host_bytes() const override {
-    return program_->host_bytes() + sizeof(*this) + inventory_.storage_bytes() +
-           kRetainedReportAllocations * kReportAllocationMetadataBytes;
-  }
-  std::uint64_t launches() const override { return program_->launches(); }
-  std::span<const kernels::InputSlot> inputs() const override { return program_->inputs(); }
-  std::span<const kernels::OutputSlot> outputs() const override { return program_->outputs(); }
-  std::span<const kernels::TensorUse> tensors() const override { return program_->tensors(); }
-  const execution::BoundPlan* bound() const override { return program_->bound(); }
-  std::optional<kernels::ComparisonRecipeSeal> comparison_recipe() const override {
-    return program_->comparison_recipe();
-  }
-  std::optional<kernels::ComparisonPlanIdentity> comparison_plan_identity() const override {
-    return program_->comparison_plan_identity();
-  }
-  kernels::ComparisonRemainderResult CompareComparisonRemainder(
-      const kernels::StepProgram& candidate,
-      const components::OwnedComparisonRegionBoundary& common_boundary,
-      kernels::ComparisonCertificatePhase phase) const override {
-    return program_->CompareComparisonRemainder(candidate, common_boundary, phase);
-  }
-  const kernels::StepProgram& comparison_program() const override {
-    return program_->comparison_program();
-  }
-  kernels::ComparisonRegionResult ProjectComparisonRegion(
-      const components::OwnedComparisonRegionBoundary& boundary) const override {
-    return program_->ProjectComparisonRegion(boundary);
-  }
-  kernels::ComparisonRegionDescriptorResult ProjectComparisonRegionDescriptor(
-      const components::OwnedComparisonRegionBoundary& boundary) const override {
-    return program_->ProjectComparisonRegionDescriptor(boundary);
-  }
-  kernels::ComparisonRegionDescriptorResult ProjectComparisonRegionCertificate(
-      const components::OwnedComparisonRegionBoundary& boundary,
-      kernels::ComparisonCertificatePhase phase) const override {
-    return program_->ProjectComparisonRegionCertificate(boundary, phase);
-  }
-  bool ValidateComparisonProjection(
-      const kernels::ComparisonRegionProjection& projection) const override {
-    return program_->ValidateComparisonProjection(projection);
-  }
-  std::expected<void, kernels::StepFailure> RunComparisonPrefix(
-      const kernels::ComparisonRegionProjection& projection, kernels::StepLaunch& launch,
-      providers::NativeStream stream) const override {
-    return program_->RunComparisonPrefix(projection, launch, stream);
-  }
-  std::expected<void, kernels::StepFailure> RunComparisonRegion(
-      const kernels::ComparisonRegionProjection& projection, kernels::StepLaunch& launch,
-      providers::NativeStream stream) const override {
-    return program_->RunComparisonRegion(projection, launch, stream);
-  }
-  bool capturable() const override { return program_->capturable(); }
-  std::optional<std::span<const kernels::RoutedWeight>> weight_reads() const override {
-    return program_->weight_reads();
-  }
-  kernels::RoutedProgram* routed() override { return program_->routed(); }
-  const kernels::RoutedProgram* routed() const override { return program_->routed(); }
-  std::expected<void, kernels::StepFailure> Bind(kernels::StepLaunch& launch) override {
-    return program_->Bind(launch);
-  }
-  std::expected<void, kernels::StepFailure> Position(std::span<const std::uint32_t> past) override {
-    return program_->Position(past);
-  }
-  std::expected<void, kernels::StepFailure> TryUpdateGeneratedInputs(
-      const planner::StepShape& shape) override {
-    return program_->TryUpdateGeneratedInputs(shape);
-  }
-  std::expected<void, kernels::StepFailure> Run(kernels::StepLaunch& launch,
-                                                providers::NativeStream stream) const override {
-    return program_->Run(launch, stream);
-  }
-  bool warm() const override { return program_->warm(); }
-  std::expected<void, kernels::StepFailure> RunWarm(kernels::StepLaunch& launch,
-                                                    providers::NativeStream stream) const override {
-    return program_->RunWarm(launch, stream);
-  }
-  std::expected<std::unique_ptr<kernels::Recorded>, kernels::StepFailure> Record(
-      kernels::StepLaunch& launch, providers::NativeStream stream,
-      const kernels::StepLaunch::Body& body) const override {
-    return program_->Record(launch, stream, body);
+    return kernels::ForwardingStepProgram::host_bytes() + sizeof(*this) +
+           inventory_.storage_bytes() + kRetainedReportAllocations * kReportAllocationMetadataBytes;
   }
   void StreamPlanReport(const kernels::PlanReportSink& sink) const override {
     if (!sink) return;
     inventory_.Stream(sink);
-    program_->StreamPlanReport(sink);
+    kernels::ForwardingStepProgram::StreamPlanReport(sink);
   }
   // Convenience for callers that explicitly own assembly storage. Serving uses
   // ReportPlanRecords, which frames fragments without allocating a JSON string.
@@ -164,7 +84,7 @@ class ReportedProgram final : public kernels::StepProgram {
     });
   }
   kernels::PlanCoverage plan_coverage() const override {
-    auto out = program_->plan_coverage();
+    auto out = kernels::ForwardingStepProgram::plan_coverage();
     out.primitive_fallbacks += coverage_.primitive_fallbacks;
     out.available_fast_fallbacks += coverage_.available_fast_fallbacks;
     out.decode_expansion_rules += coverage_.decode_expansion_rules;
@@ -176,7 +96,6 @@ class ReportedProgram final : public kernels::StepProgram {
  private:
   // Payment dies last on a failed/uninstalled program, after all report bytes.
   ReportPayment payment_;
-  std::unique_ptr<kernels::StepProgram> program_;
   planner::PlanReportInventory inventory_;
   kernels::PlanCoverage coverage_;
   bool construction_transferred_ = false;

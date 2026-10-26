@@ -282,15 +282,13 @@ namespace {
 // visitor. State is refused through definition-owned preflight and instance contracts.
 std::expected<std::uint64_t, std::string> MetadataBound(
     const spec::ModelSpec& spec, std::span<const std::span<const BoundTensor>> tensors,
-    std::span<const SpatialOwner> owners, SpatialBuildOptions options) {
+    std::span<const SpatialOwner> owners, const SpatialBuildOptions& options) {
   if (spec.pipeline != spec::PipelineKind::kImage || spec.stages.size() != 1 ||
       tensors.size() > 16 || owners.empty() || owners.size() > kOwners)
     return std::unexpected("spatial compilation needs one image stage and 1..16 owners");
   const auto& stage = spec.stages.front();
   if (!stage.scalar_bindings.empty())
     return std::unexpected("spatial compilation requires resolved stage scalar bindings");
-  if (options.links.empty()) options.links = stage.links;
-  if (options.exports.empty()) options.exports = stage.exports;
   if (stage.name.size() > 256 || stage.layers.empty() || stage.layers.size() > kComponents ||
       stage.embedding || !stage.side.empty() || stage.stream.mixing || stage.stream.streams != 1 ||
       stage.heads.output || stage.heads.final_norm || !stage.heads.mtp.empty() ||
@@ -572,10 +570,12 @@ std::expected<void, std::string> RunSpatialStreamReference(SpatialRefIO& io, boo
 std::expected<SpatialGraph, std::string> BuildSpatialStep(
     const spec::ModelSpec& spec, std::span<const std::span<const BoundTensor>> tensors,
     std::span<const SpatialOwner> owners, SpatialPayment payment, SpatialBuildOptions options) {
+  if (!spec.stages.empty()) {
+    if (options.links.empty()) options.links = spec.stages.front().links;
+    if (options.exports.empty()) options.exports = spec.stages.front().exports;
+  }
   auto metadata = MetadataBound(spec, tensors, owners, options);
   if (!metadata) return std::unexpected(metadata.error());
-  if (options.links.empty()) options.links = spec.stages.front().links;
-  if (options.exports.empty()) options.exports = spec.stages.front().exports;
   if (!payment.charge || !payment.release || !payment.charge(*metadata))
     return std::unexpected("spatial compiler metadata was not funded");
   auto hold = std::make_shared<PaymentOwner>(std::move(payment), *metadata);

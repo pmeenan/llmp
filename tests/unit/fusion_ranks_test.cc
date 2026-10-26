@@ -144,11 +144,12 @@ std::optional<llmp::base::Sha256Digest> LegacyFusionQueryKey(const ex::Capabilit
   for (const auto* operand : operands) {
     const auto& o = *operand;
     LegacyField(hash,
-                std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}", o.operand, o.stacked,
+                std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}", o.operand, o.stacked,
                             static_cast<unsigned>(o.encoding), static_cast<unsigned>(o.layout),
                             o.params.k_bits, static_cast<unsigned>(o.params.codebook),
                             o.params.tensor_scale, o.params.bits, o.params.group,
-                            static_cast<unsigned>(o.params.scale), o.params.zero_point));
+                            static_cast<unsigned>(o.params.scale), o.params.zero_point,
+                            o.params.block_rows, o.params.block_cols));
     LegacyField(hash, std::format("{}", *o.rank));
     for (auto n : o.ne) LegacyField(hash, std::format("{}", n));
     for (auto n : o.memory->nb) LegacyField(hash, std::format("{}", n));
@@ -397,6 +398,8 @@ TEST(FusionRanksTest, AllocationFreeKeyIsByteIdenticalToLegacyFormatter) {
   operands[0].params.group = std::numeric_limits<std::uint32_t>::max();
   operands[0].params.tensor_scale = true;
   operands[0].params.zero_point = true;
+  operands[0].params.block_rows = std::numeric_limits<std::uint32_t>::max();
+  operands[0].params.block_cols = std::numeric_limits<std::uint32_t>::max();
   operands[0].ne.fill(std::numeric_limits<std::uint64_t>::max());
   operands[0].memory->nb.fill(std::numeric_limits<std::uint64_t>::max());
   operands[0].memory->view_offset = std::numeric_limits<std::uint64_t>::max();
@@ -435,6 +438,12 @@ TEST(FusionRanksTest, KeyCoversEveryOperandParameterDeviceAndSelectionFact) {
     misses();
     operand = original;
     operand.params.tensor_scale = true;
+    misses();
+    operand = original;
+    ++operand.params.block_rows;
+    misses();
+    operand = original;
+    ++operand.params.block_cols;
     misses();
     operand = original;
     ++*operand.rank;

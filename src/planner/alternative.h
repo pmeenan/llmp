@@ -525,6 +525,7 @@ enum class PlannerMetadataPhase : std::uint8_t {
   kMatchDetail,
   kRetry,
   kRewrite,
+  kRewriteCompose,
   kAdopt,
   kOwnerSplit,
   kForward,
@@ -812,6 +813,10 @@ class ComparisonDecisionLedger {
 
 // Creates a normal plan plus its opt-in committed-ticket trace. An empty
 // filter is a fast-path no-trace request unless harness_all is explicit.
+std::expected<DiscoveredComparisonPlan, OwnedComparisonFailure> DiscoverComparisonPlan(
+    const ir::Graph& source_graph, std::span<const ir::OpKey> operation_filter, bool harness_all,
+    std::shared_ptr<const ir::StorageFunder> funder, const execution::Registry& registry,
+    const DeviceFacts& device, const Policy& policy, const PlanOptions& options = {});
 std::expected<DiscoveredComparisonPlan, OwnedComparisonFailure> DiscoverComparisonPlan(
     const components::ComparisonBoundaryView& source, std::span<const ir::OpKey> operation_filter,
     bool harness_all, std::shared_ptr<const ir::StorageFunder> funder,

@@ -833,11 +833,28 @@ std::expected<void, KernelFailure> CheckRopeExt(const ggml_tensor* node) {
   const std::int32_t mode = node->op_params[2];
   const std::int32_t offset = node->op_params[15];
   const bool multi = mode == GGML_ROPE_TYPE_MROPE || mode == GGML_ROPE_TYPE_IMROPE;
+  const float freq_base = ParamF32(node, 5);
+  const float freq_scale = ParamF32(node, 6);
+  const float ext_factor = ParamF32(node, 7);
+  const float attn_factor = ParamF32(node, 8);
+  const float beta_fast = ParamF32(node, 9);
+  const float beta_slow = ParamF32(node, 10);
+  if (!std::isfinite(freq_base) || !std::isfinite(freq_scale) || !std::isfinite(ext_factor) ||
+      !std::isfinite(attn_factor) || !std::isfinite(beta_fast) || !std::isfinite(beta_slow) ||
+      freq_base <= 0.0f || freq_scale <= 0.0f || attn_factor <= 0.0f) {
+    return Rejected("RoPE requires finite parameters and positive frequency and attention scales");
+  }
+  if (multi && ext_factor != 0.0f) {
+    return Rejected("RopeExt MROPE/IMROPE does not support YaRN ext_factor");
+  }
+  if (ext_factor != 0.0f && (node->op_params[4] <= 0 || beta_slow <= 0.0f ||
+                             beta_fast <= beta_slow || (ext_factor > 0.0f && freq_base == 1.0f))) {
+    return Rejected(
+        "RoPE frequency scaling requires positive original context and beta_fast > beta_slow > 0");
+  }
   if (!multi && node->op_params[11] != 0) {
-    float extension = 0;
-    std::memcpy(&extension, node->op_params + 7, sizeof(extension));
     const auto active = static_cast<std::int64_t>(node->op_params[11]) - 1;
-    if (active < 0 || active % 2 != 0 || active > n_dims || extension != 0.0F)
+    if (active < 0 || active % 2 != 0 || active > n_dims || ext_factor != 0.0F)
       return Rejected("invalid proportional RoPE dimensions or frequency scaling");
   }
   if (mode != 0 && mode != GGML_ROPE_TYPE_NEOX && !multi) {

@@ -57,16 +57,9 @@ std::expected<std::vector<Applied>, PlanFailure> CopyAppliedHistory(
     std::span<const Applied> history, std::span<const ir::NodeId> to_source,
     std::size_t current_nodes, std::size_t source_nodes, ir::StorageLoan& loan,
     ir::DiagnosticAdmission* diagnostic) {
-  constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
   std::uint64_t bytes = 0;
   const auto add = [&](std::uint64_t count, std::uint64_t stride) {
-    if (count == 0) return true;
-    std::uint64_t payload = 0;
-    if (__builtin_mul_overflow(count, stride, &payload) ||
-        __builtin_add_overflow(payload, envelope, &payload) ||
-        __builtin_add_overflow(bytes, payload, &bytes))
-      return false;
-    return true;
+    return ir::AddVectorAdmissionBytes(count, stride, bytes);
   };
   const auto mapped = [&](ir::NodeId id) {
     if (!id.valid()) return ir::NodeId{};
@@ -118,51 +111,19 @@ std::unexpected<PlanFailure> LedgerFailure(PlanError error, const char* detail,
 
 bool CapacityBytes(std::uint64_t entries, std::uint64_t children, std::uint64_t source_node_count,
                    std::uint64_t& bytes) {
-  constexpr std::uint64_t kVectorEnvelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-  constexpr std::uint64_t kEntryStride = sizeof(ComparisonOriginEntry) + sizeof(std::uint8_t);
-  if (entries > std::numeric_limits<std::uint64_t>::max() / kEntryStride) return false;
-  bytes = entries * kEntryStride;
-  if (entries != 0) {
-    if (2 * kVectorEnvelope > std::numeric_limits<std::uint64_t>::max() - bytes) return false;
-    bytes += 2 * kVectorEnvelope;
-  }
-  if (children > std::numeric_limits<std::uint64_t>::max() / sizeof(ComparisonOriginSetId))
-    return false;
-  const auto child_bytes = children * sizeof(ComparisonOriginSetId);
-  if (child_bytes > std::numeric_limits<std::uint64_t>::max() - bytes) return false;
-  bytes += child_bytes;
-  if (children != 0) {
-    if (kVectorEnvelope > std::numeric_limits<std::uint64_t>::max() - bytes) return false;
-    bytes += kVectorEnvelope;
-  }
-  if (source_node_count > std::numeric_limits<std::uint64_t>::max() - bytes) return false;
-  bytes += source_node_count;
-  if (source_node_count != 0) {
-    if (kVectorEnvelope > std::numeric_limits<std::uint64_t>::max() - bytes) return false;
-    bytes += kVectorEnvelope;
-  }
-  return true;
+  bytes = 0;
+  return ir::AddVectorAdmissionBytes(entries, sizeof(ComparisonOriginEntry), bytes) &&
+         ir::AddVectorAdmissionBytes(entries, sizeof(std::uint8_t), bytes) &&
+         ir::AddVectorAdmissionBytes(children, sizeof(ComparisonOriginSetId), bytes) &&
+         ir::AddVectorAdmissionBytes(source_node_count, sizeof(std::uint8_t), bytes);
 }
 
 bool AddBytes(std::uint64_t count, std::uint64_t element, std::uint64_t& total) {
-  constexpr std::uint64_t kEnvelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-  if (count > (std::numeric_limits<std::uint64_t>::max() - total) / element) return false;
-  total += count * element;
-  if (count != 0) {
-    if (kEnvelope > std::numeric_limits<std::uint64_t>::max() - total) return false;
-    total += kEnvelope;
-  }
-  return true;
+  return ir::AddVectorAdmissionBytes(count, element, total);
 }
 
 bool AddText(std::string_view text, std::uint64_t& total) {
-  constexpr std::uint64_t kEnvelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-  const std::uint64_t bytes = static_cast<std::uint64_t>(text.size()) + 1;
-  if (total > std::numeric_limits<std::uint64_t>::max() - kEnvelope ||
-      bytes > std::numeric_limits<std::uint64_t>::max() - total - kEnvelope)
-    return false;
-  total += bytes + kEnvelope;
-  return true;
+  return ir::AddStringAdmissionBytes(text.size(), total);
 }
 
 bool AddOriginSets(std::span<const ComparisonOriginSet> sets, std::uint64_t& total) {
@@ -510,13 +471,42 @@ bool InSet(std::span<const ir::NodeId> nodes, ir::NodeId node) {
   return std::ranges::find(nodes, node) != nodes.end();
 }
 
-// State effects are observable even without an SSA consumer or declared result.
-bool ObservedSiteOutput(const ir::Graph& graph, std::span<const ir::NodeId> members,
-                        ir::TensorId tensor) {
+std::uint8_t NodeOwnerSegment(const ir::Graph& graph, const ir::Node& node) {
+  return node.nout == 0 ? ir::kJoinedSegment : graph.tensor(node.outputs()[0]).segment;
+}
+
+std::optional<std::uint64_t> BitVectorStorageBytes(std::uint64_t bits) {
+  constexpr std::uint64_t kBitWordBits = std::numeric_limits<unsigned long>::digits;
+  std::uint64_t words = bits;
+  if (!ir::AddAdmissionBytes(words, kBitWordBits - 1)) return std::nullopt;
+  words /= kBitWordBits;
+  std::uint64_t bytes = 0;
+  if (!ir::AddVectorAdmissionBytes(words, sizeof(unsigned long), bytes)) return std::nullopt;
+  return bytes;
+}
+
+std::unexpected<OwnedComparisonFailure> WrapOwnedFailure(PlannerMetadataAdmission& metadata,
+                                                         PlanFailure&& failure) {
+  return std::unexpected(OwnedComparisonFailure(std::move(metadata), std::move(failure)));
+}
+
+std::unexpected<OwnedComparisonFailure> MakeOwnedFailure(PlannerMetadataAdmission& metadata,
+                                                         PlanError error, const char* detail) {
+  PlanFailure failure{.error = error, .detail = {}};
+  if (error != PlanError::kAdmission) {
+    auto text = ir::FormatDiagnostic(&metadata, "{}", std::string_view(detail));
+    if (!text)
+      failure.error = PlanError::kAdmission;
+    else
+      failure.detail = std::move(*text);
+  }
+  return WrapOwnedFailure(metadata, std::move(failure));
+}
+
+bool HasConsumerOrGraphExitOutside(const ir::Graph& graph, std::span<const ir::NodeId> members,
+                                   ir::TensorId tensor) {
   if (std::ranges::find(graph.outputs(), tensor) != graph.outputs().end() ||
-      std::ranges::find(graph.keep(), tensor) != graph.keep().end() ||
-      graph.tensor(tensor).role == ir::Role::kState ||
-      std::holds_alternative<ir::StateRef>(graph.tensor(tensor).binding))
+      std::ranges::find(graph.keep(), tensor) != graph.keep().end())
     return true;
   for (std::uint32_t consumer = 0; consumer < graph.nodes().size(); ++consumer) {
     if (InSet(members, ir::NodeId{consumer})) continue;
@@ -524,6 +514,14 @@ bool ObservedSiteOutput(const ir::Graph& graph, std::span<const ir::NodeId> memb
     if (std::ranges::find(candidate.sources(), tensor) != candidate.sources().end()) return true;
   }
   return false;
+}
+
+// State effects are observable even without an SSA consumer or declared result.
+bool ObservedSiteOutput(const ir::Graph& graph, std::span<const ir::NodeId> members,
+                        ir::TensorId tensor) {
+  return graph.tensor(tensor).role == ir::Role::kState ||
+         std::holds_alternative<ir::StateRef>(graph.tensor(tensor).binding) ||
+         HasConsumerOrGraphExitOutside(graph, members, tensor);
 }
 
 std::optional<ir::TensorId> UniqueSourceForCheckpointTensor(const ir::Graph& source,
@@ -609,16 +607,13 @@ std::expected<void, PlanFailure> DeriveCompleteSiteIdentity(const ir::Graph& sou
 
   for (const auto member : matched_nodes) {
     const auto& node = checkpoint.graph.node(member);
-    const auto segment =
-        node.nout == 0 ? ir::kJoinedSegment : checkpoint.graph.tensor(node.outputs()[0]).segment;
+    const auto segment = NodeOwnerSegment(checkpoint.graph, node);
     for (const auto origin :
          site.selector.member_origins[site.complete_member_owner_segments.size()]) {
       if (!origin.valid() || origin.v >= source.nodes().size())
         return fail(PlanError::kStaleComparisonSite, "a site owner origin is out of range");
       const auto& source_node = source.node(origin);
-      const auto source_segment = source_node.nout == 0
-                                      ? ir::kJoinedSegment
-                                      : source.tensor(source_node.outputs()[0]).segment;
+      const auto source_segment = NodeOwnerSegment(source, source_node);
       // Owner facts describe this checkpoint member, not every ancestor of
       // a prior rewrite. Its exact current owner is replayed with its ports.
       if (site.selector.member_origins[site.complete_member_owner_segments.size()].size() == 1 &&
@@ -713,26 +708,20 @@ std::expected<void, PlanFailure> DeriveCompleteSourceNodeIdentity(
                 "the source-node site does not name one authenticated graph node");
 
   const auto& node = source.node(source_node_id);
-  const auto segment =
-      node.nout == 0 ? ir::kJoinedSegment : source.tensor(node.outputs()[0]).segment;
+  const auto segment = NodeOwnerSegment(source, node);
   if (!site.selector.member_owner_segments.empty() &&
       (site.selector.member_owner_segments.size() != 1 ||
        site.selector.member_owner_segments[0] != segment))
     return fail(PlanError::kStaleComparisonSite,
                 "the source-node owner differs from the selected site");
 
+  const std::array single_member{source_node_id};
   std::uint64_t port_count = 0;
   for (const auto tensor : node.sources())
     if (tensor.valid()) ++port_count;
   for (std::size_t ordinal = 0; ordinal < node.nout; ++ordinal) {
     const auto tensor = node.outputs()[ordinal];
-    bool outside = std::ranges::contains(source.outputs(), tensor) ||
-                   std::ranges::contains(source.keep(), tensor);
-    for (std::uint32_t consumer = 0; !outside && consumer < source.nodes().size(); ++consumer) {
-      if (consumer == source_node_id.v) continue;
-      outside = std::ranges::contains(source.node(ir::NodeId{consumer}).sources(), tensor);
-    }
-    if (outside) ++port_count;
+    if (HasConsumerOrGraphExitOutside(source, single_member, tensor)) ++port_count;
   }
   std::uint64_t added = 0;
   if (!AddBytes(1, sizeof(std::uint8_t), added) ||
@@ -765,13 +754,7 @@ std::expected<void, PlanFailure> DeriveCompleteSourceNodeIdentity(
   }
   for (std::size_t ordinal = 0; ordinal < node.nout; ++ordinal) {
     const auto tensor = node.outputs()[ordinal];
-    bool outside = std::ranges::contains(source.outputs(), tensor) ||
-                   std::ranges::contains(source.keep(), tensor);
-    for (std::uint32_t consumer = 0; !outside && consumer < source.nodes().size(); ++consumer) {
-      if (consumer == source_node_id.v) continue;
-      outside = std::ranges::contains(source.node(ir::NodeId{consumer}).sources(), tensor);
-    }
-    if (!outside) continue;
+    if (!HasConsumerOrGraphExitOutside(source, single_member, tensor)) continue;
     auto added_port = add_port(ComparisonSitePortKind::kOutput, ordinal, tensor);
     if (!added_port) return added_port;
   }
@@ -855,8 +838,7 @@ bool SitePortsMatchCurrent(std::span<const std::uint8_t> expected_owner_segments
     const auto node_id = members[i];
     if (!node_id.valid() || node_id.v >= graph.nodes().size()) return false;
     const auto& node = graph.node(node_id);
-    const std::uint8_t segment =
-        node.nout == 0 ? ir::kJoinedSegment : graph.tensor(node.out[0]).segment;
+    const std::uint8_t segment = NodeOwnerSegment(graph, node);
     if (segment != expected_owner_segments[i]) return false;
   }
   if (!require_complete_boundary) {
@@ -944,9 +926,7 @@ bool FusedRegionMatchesCurrent(ComparisonSiteKind kind,
   for (const auto node_id : matched_nodes) {
     if (!node_id.valid() || node_id.v >= graph.nodes().size() || node_id.v >= node_origins.size())
       return false;
-    const auto segment = graph.node(node_id).nout == 0
-                             ? ir::kJoinedSegment
-                             : graph.tensor(graph.node(node_id).outputs()[0]).segment;
+    const auto segment = NodeOwnerSegment(graph, graph.node(node_id));
     if (segment != owner_segments[0]) return false;
     for (const auto origin : member_origins.front())
       if (!origins.Contains(node_origins[node_id.v], origin)) return false;
@@ -980,14 +960,9 @@ bool FusedRegionMatchesCurrent(ComparisonSiteKind kind,
     const auto& node = graph.node(member);
     for (std::size_t ordinal = 0; ordinal < node.nout; ++ordinal) {
       const auto tensor = node.outputs()[ordinal];
-      bool outside = std::ranges::find(graph.outputs(), tensor) != graph.outputs().end() ||
-                     std::ranges::find(graph.keep(), tensor) != graph.keep().end();
-      for (std::uint32_t consumer = 0; !outside && consumer < graph.nodes().size(); ++consumer) {
-        if (InSet(matched_nodes, ir::NodeId{consumer})) continue;
-        const auto& candidate = graph.node(ir::NodeId{consumer});
-        outside = std::ranges::find(candidate.sources(), tensor) != candidate.sources().end();
-      }
-      if (outside && !match_port(ComparisonSitePortKind::kOutput, tensor)) return false;
+      if (HasConsumerOrGraphExitOutside(graph, matched_nodes, tensor) &&
+          !match_port(ComparisonSitePortKind::kOutput, tensor))
+        return false;
     }
   }
   return expected == boundary_ports.size();
@@ -1065,11 +1040,11 @@ std::optional<std::uint64_t> MappingBytes(std::uint64_t tensors, std::uint64_t n
   return bytes;
 }
 
-bool SelectedNodeThroughSeed(const StepPlan& plan, std::span<const ir::NodeId> seed_to_source,
-                             ir::NodeId source_node, ir::OpKey key) {
+bool SelectedNodeThroughMap(const StepPlan& plan, std::span<const ir::NodeId> node_to_source,
+                            ir::NodeId source_node, ir::OpKey key) {
   for (std::uint32_t i = 0; i < plan.graph.nodes().size(); ++i) {
-    if (i >= plan.from.size() || !plan.from[i].valid() || plan.from[i].v >= seed_to_source.size() ||
-        seed_to_source[plan.from[i].v] != source_node || plan.graph.node(ir::NodeId{i}).key != key)
+    if (i >= plan.from.size() || !plan.from[i].valid() || plan.from[i].v >= node_to_source.size() ||
+        node_to_source[plan.from[i].v] != source_node || plan.graph.node(ir::NodeId{i}).key != key)
       continue;
     for (const auto& step : plan.steps)
       if (std::ranges::contains(step.nodes, ir::NodeId{i})) return true;
@@ -1077,18 +1052,29 @@ bool SelectedNodeThroughSeed(const StepPlan& plan, std::span<const ir::NodeId> s
   return false;
 }
 
-bool SelectedOriginalThroughAlternative(const StepPlan& plan,
-                                        std::span<const ir::NodeId> alternative_to_source,
-                                        ir::NodeId source_node, ir::OpKey key) {
-  for (std::uint32_t i = 0; i < plan.graph.nodes().size(); ++i) {
-    if (i >= plan.from.size() || !plan.from[i].valid() ||
-        plan.from[i].v >= alternative_to_source.size() ||
-        alternative_to_source[plan.from[i].v] != source_node || plan.graph.node({i}).key != key)
-      continue;
-    for (const auto& step : plan.steps)
-      if (std::ranges::contains(step.nodes, ir::NodeId{i})) return true;
+const char* RemapPlanNodeAttributions(StepPlan& plan, std::span<const ir::NodeId> node_to_source,
+                                      bool reject_elided, const char* from_out_of_range,
+                                      const char* from_elided, const char* replaced_out_of_range,
+                                      const char* replaced_elided, const char* proof_out_of_range,
+                                      const char* proof_elided) {
+  for (auto& node : plan.from) {
+    if (!node.valid() || node.v >= node_to_source.size()) return from_out_of_range;
+    node = node_to_source[node.v];
+    if (reject_elided && !node.valid()) return from_elided;
   }
-  return false;
+  for (auto& applied : plan.applied) {
+    for (auto& node : applied.replaced) {
+      if (!node.valid() || node.v >= node_to_source.size()) return replaced_out_of_range;
+      node = node_to_source[node.v];
+      if (reject_elided && !node.valid()) return replaced_elided;
+    }
+    for (auto& proof : applied.numerical_proofs) {
+      if (!proof.site.valid() || proof.site.v >= node_to_source.size()) return proof_out_of_range;
+      proof.site = node_to_source[proof.site.v];
+      if (reject_elided && !proof.site.valid()) return proof_elided;
+    }
+  }
+  return nullptr;
 }
 
 bool SelectedBatch(const StepPlan& plan, const ComparisonSiteSelector& selector,
@@ -1283,9 +1269,7 @@ std::expected<ValidatedSiteNode, PlanFailure> RequiredSiteNode(
     for (std::size_t i = 0; i < requested.member_owner_segments.size(); ++i) {
       if (requested.member_origins[i].size() != 1) continue;
       const auto& member_node = graph.node(requested.member_origins[i][0]);
-      const std::uint8_t segment =
-          member_node.nout == 0 ? ir::kJoinedSegment : graph.tensor(member_node.out[0]).segment;
-      if (segment != requested.member_owner_segments[i])
+      if (NodeOwnerSegment(graph, member_node) != requested.member_owner_segments[i])
         return failure(PlanError::kStaleComparisonSite,
                        "a requested owner segment differs from its source member");
     }
@@ -1317,9 +1301,7 @@ std::expected<ValidatedSiteNode, PlanFailure> RequiredSiteNode(
                      "a requested site boundary port does not match its batch member");
     for (std::size_t i = 0; i < requested.member_owner_segments.size(); ++i) {
       const auto& member_node = graph.node(requested.member_origins[i][0]);
-      const std::uint8_t segment =
-          member_node.nout == 0 ? ir::kJoinedSegment : graph.tensor(member_node.out[0]).segment;
-      if (segment != requested.member_owner_segments[i])
+      if (NodeOwnerSegment(graph, member_node) != requested.member_owner_segments[i])
         return failure(PlanError::kStaleComparisonSite,
                        "a requested owner segment differs from its source member");
     }
@@ -1358,9 +1340,7 @@ std::expected<ValidatedSiteNode, PlanFailure> RequiredSiteNode(
     return failure(PlanError::kStaleComparisonSite,
                    "a requested site boundary port does not match the source node");
   if (!requested.member_owner_segments.empty()) {
-    const std::uint8_t segment =
-        node.nout == 0 ? ir::kJoinedSegment : graph.tensor(node.out[0]).segment;
-    if (segment != requested.member_owner_segments[0])
+    if (NodeOwnerSegment(graph, node) != requested.member_owner_segments[0])
       return failure(PlanError::kStaleComparisonSite,
                      "the requested owner segment differs from the source node");
   }
@@ -1697,8 +1677,7 @@ std::expected<void, PlanFailure> ComparisonOriginDag::Reserve(std::uint64_t entr
   if (!CapacityBytes(next_entries, next_children, source_node_count_, bytes))
     return Failure(PlanError::kAdmission, "comparison lineage capacity overflows byte count",
                    diagnostic);
-  const auto funder = loan_.funder();
-  auto next = ir::AcquireStorageLoan(funder, bytes);
+  auto next = ir::AcquireStorageLoan(loan_.funder(), bytes);
   if (!next)
     return Failure(PlanError::kAdmission, "comparison lineage growth was refused", diagnostic);
   entries_.reserve(static_cast<std::size_t>(next_entries));
@@ -1706,10 +1685,9 @@ std::expected<void, PlanFailure> ComparisonOriginDag::Reserve(std::uint64_t entr
   reachable_.reserve(static_cast<std::size_t>(next_entries));
   source_membership_.reserve(source_node_count_);
   source_membership_.resize(source_node_count_);
-  // The pinned libstdc++ reserve implementation allocates exactly the
-  // requested capacity; CapacityBytes charges those arrays plus allocator
-  // envelopes before this point.
-  // Both new arrays are installed before the old loan is refunded.
+  // The pinned libstdc++ reserve implementation allocates the new capacity
+  // before freeing the old buffer; AcquireStorageLoan charges the new buffers
+  // while the old loan is still held, then releases the old loan here.
   loan_ = std::move(*next);
   return {};
 }
@@ -2656,22 +2634,21 @@ bool PlannerMetadataAdmission::TryChargeDiagnostic(std::uint64_t bytes) {
 }
 
 std::expected<DiscoveredComparisonPlan, OwnedComparisonFailure> DiscoverComparisonPlan(
-    const components::ComparisonBoundaryView& source, std::span<const ir::OpKey> operation_filter,
-    bool harness_all, std::shared_ptr<const ir::StorageFunder> funder,
-    const execution::Registry& registry, const DeviceFacts& device, const Policy& policy,
-    const PlanOptions& options) {
+    const ir::Graph& source_graph, std::span<const ir::OpKey> operation_filter, bool harness_all,
+    std::shared_ptr<const ir::StorageFunder> funder, const execution::Registry& registry,
+    const DeviceFacts& device, const Policy& policy, const PlanOptions& options) {
   PlannerMetadataAdmission metadata(funder);
   const auto wrap_failure =
       [&metadata](PlanFailure&& failure) -> std::unexpected<OwnedComparisonFailure> {
-    return std::unexpected(OwnedComparisonFailure(std::move(metadata), std::move(failure)));
+    return WrapOwnedFailure(metadata, std::move(failure));
   };
   if (!funder || metadata.refused())
     return wrap_failure(PlanFailure{.error = PlanError::kAdmission, .detail = {}});
-  auto discovery_result = ComparisonDiscoverySession::Create(
-      source.io.graph, funder, operation_filter, harness_all, &metadata);
+  auto discovery_result = ComparisonDiscoverySession::Create(source_graph, funder, operation_filter,
+                                                             harness_all, &metadata);
   if (!discovery_result) return wrap_failure(std::move(discovery_result.error()));
   ComparisonDiscoverySession discovery = std::move(*discovery_result);
-  auto graph = source.io.graph.Clone(funder, &metadata);
+  auto graph = source_graph.Clone(funder, &metadata);
   if (!graph)
     return wrap_failure(PlanFailure{.error = graph.error().error == ir::GraphError::kAdmission
                                                  ? PlanError::kAdmission
@@ -2699,6 +2676,15 @@ std::expected<DiscoveredComparisonPlan, OwnedComparisonFailure> DiscoverComparis
   return DiscoveredComparisonPlan(std::move(discovery), std::move(incumbent));
 }
 
+std::expected<DiscoveredComparisonPlan, OwnedComparisonFailure> DiscoverComparisonPlan(
+    const components::ComparisonBoundaryView& source, std::span<const ir::OpKey> operation_filter,
+    bool harness_all, std::shared_ptr<const ir::StorageFunder> funder,
+    const execution::Registry& registry, const DeviceFacts& device, const Policy& policy,
+    const PlanOptions& options) {
+  return DiscoverComparisonPlan(source.io.graph, operation_filter, harness_all, std::move(funder),
+                                registry, device, policy, options);
+}
+
 static std::expected<ComparisonInventory, OwnedComparisonFailure> BoundComparisonCore(
     const components::ComparisonBoundaryView& source, const ComparisonSiteSelector& requested,
     std::shared_ptr<const ir::StorageFunder> funder, const execution::Registry& registry,
@@ -2709,19 +2695,10 @@ static std::expected<ComparisonInventory, OwnedComparisonFailure> BoundCompariso
   PlannerMetadataAdmission metadata(funder);
   const auto fail = [&metadata](PlanError error,
                                 const char* detail) -> std::unexpected<OwnedComparisonFailure> {
-    PlanFailure failure{.error = error, .detail = {}};
-    if (error != PlanError::kAdmission) {
-      auto text = ir::FormatDiagnostic(&metadata, "{}", std::string_view(detail));
-      if (!text) {
-        failure.error = PlanError::kAdmission;
-      } else {
-        failure.detail = std::move(*text);
-      }
-    }
-    return std::unexpected(OwnedComparisonFailure(std::move(metadata), std::move(failure)));
+    return MakeOwnedFailure(metadata, error, detail);
   };
   const auto wrap = [&metadata](PlanFailure&& failure) -> std::unexpected<OwnedComparisonFailure> {
-    return std::unexpected(OwnedComparisonFailure(std::move(metadata), std::move(failure)));
+    return WrapOwnedFailure(metadata, std::move(failure));
   };
   if (whole_checkpoint != HasCheckpointMatch(requested) ||
       (whole_checkpoint && requested.kind != ComparisonSiteKind::kRewrite))
@@ -2829,17 +2806,9 @@ static std::expected<ComparisonInventory, OwnedComparisonFailure> BoundCompariso
                             .detail = std::move(incumbent_graph.error().detail)});
   auto planning_origins = checkpoint->origins.Clone(funder, &metadata);
   if (!planning_origins) return wrap(std::move(planning_origins.error()));
-  constexpr std::uint64_t kBitWordBits = std::numeric_limits<unsigned long>::digits;
-  constexpr std::uint64_t kVectorEnvelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-  if (source_nodes > std::numeric_limits<std::uint64_t>::max() - (kBitWordBits - 1))
-    return fail(PlanError::kAdmission, "committed expansion map overflows");
-  const auto expand_words = (source_nodes + kBitWordBits - 1) / kBitWordBits;
-  if (expand_words >
-      (std::numeric_limits<std::uint64_t>::max() - kVectorEnvelope) / sizeof(unsigned long))
-    return fail(PlanError::kAdmission, "committed expansion map overflows");
-  const auto expand_bytes =
-      expand_words * sizeof(unsigned long) + (source_nodes == 0 ? 0 : kVectorEnvelope);
-  auto expand_loan = ir::AcquireStorageLoan(funder, expand_bytes);
+  const auto expand_bytes = BitVectorStorageBytes(source_nodes);
+  if (!expand_bytes) return fail(PlanError::kAdmission, "committed expansion map overflows");
+  auto expand_loan = ir::AcquireStorageLoan(funder, *expand_bytes);
   if (!expand_loan) return fail(PlanError::kAdmission, "committed expansion map was refused");
   std::vector<bool> expand(source_nodes, false);
   if (decisions != nullptr) {
@@ -3081,8 +3050,8 @@ static std::expected<ComparisonInventory, OwnedComparisonFailure> BoundCompariso
       return fail(PlanError::kMissingComparisonSite,
                   "the accepted batch is not selected in the incumbent plan");
   } else if (requested.kind != ComparisonSiteKind::kRewrite &&
-             !SelectedNodeThroughSeed(*incumbent_plan, seed->seed_to_input, source_node->node,
-                                      source_node_desc.key)) {
+             !SelectedNodeThroughMap(*incumbent_plan, seed->seed_to_input, source_node->node,
+                                     source_node_desc.key)) {
     return fail(PlanError::kMissingComparisonSite,
                 "the incumbent plan does not select the requested source node");
   }
@@ -3099,30 +3068,12 @@ static std::expected<ComparisonInventory, OwnedComparisonFailure> BoundCompariso
       final_node_count * sizeof(ir::NodeId) + (final_node_count == 0 ? 0 : map_envelope);
   if (auto paid = metadata.Require(PlannerMetadataPhase::kAdopt, published_map_bytes); !paid)
     return wrap(std::move(paid.error()));
-  for (auto& node : incumbent_plan->from) {
-    if (!node.valid() || node.v >= seed->seed_to_input.size())
-      return fail(PlanError::kStaleComparisonSite, "incumbent source node map is out of range");
-    node = seed->seed_to_input[node.v];
-    if (!node.valid())
-      return fail(PlanError::kStaleComparisonSite, "incumbent source node was elided");
-  }
-  for (auto& applied : incumbent_plan->applied)
-    for (auto& node : applied.replaced) {
-      if (!node.valid() || node.v >= seed->seed_to_input.size())
-        return fail(PlanError::kStaleComparisonSite, "incumbent rewrite node map is out of range");
-      node = seed->seed_to_input[node.v];
-      if (!node.valid())
-        return fail(PlanError::kStaleComparisonSite, "incumbent rewrite node was elided");
-    }
-  for (auto& applied : incumbent_plan->applied)
-    for (auto& proof : applied.numerical_proofs) {
-      if (!proof.site.valid() || proof.site.v >= seed->seed_to_input.size())
-        return fail(PlanError::kStaleComparisonSite,
-                    "incumbent numerical node map is out of range");
-      proof.site = seed->seed_to_input[proof.site.v];
-      if (!proof.site.valid())
-        return fail(PlanError::kStaleComparisonSite, "incumbent numerical site was elided");
-    }
+  if (const char* remap_error = RemapPlanNodeAttributions(
+          *incumbent_plan, seed->seed_to_input, true, "incumbent source node map is out of range",
+          "incumbent source node was elided", "incumbent rewrite node map is out of range",
+          "incumbent rewrite node was elided", "incumbent numerical node map is out of range",
+          "incumbent numerical site was elided"))
+    return fail(PlanError::kStaleComparisonSite, remap_error);
   incumbent_plan->whole_checkpoint = site.whole_checkpoint;
   incumbent_plan->tensors = std::move(source_to_planned);
   incumbent_plan->primitive_digest = source.io.graph.Digest();
@@ -3220,18 +3171,10 @@ std::expected<GraphAlternative, OwnedComparisonFailure> MakeAlternativeCore(
   PlannerMetadataAdmission metadata(funder);
   const auto fail = [&metadata](PlanError error,
                                 const char* detail) -> std::unexpected<OwnedComparisonFailure> {
-    PlanFailure failure{.error = error, .detail = {}};
-    if (error != PlanError::kAdmission) {
-      auto text = ir::FormatDiagnostic(&metadata, "{}", std::string_view(detail));
-      if (!text)
-        failure.error = PlanError::kAdmission;
-      else
-        failure.detail = std::move(*text);
-    }
-    return std::unexpected(OwnedComparisonFailure(std::move(metadata), std::move(failure)));
+    return MakeOwnedFailure(metadata, error, detail);
   };
   const auto wrap = [&metadata](PlanFailure&& failure) -> std::unexpected<OwnedComparisonFailure> {
-    return std::unexpected(OwnedComparisonFailure(std::move(metadata), std::move(failure)));
+    return WrapOwnedFailure(metadata, std::move(failure));
   };
   if (!funder || metadata.refused())
     return fail(PlanError::kAdmission, "alternative graph has no paid owner");
@@ -3289,17 +3232,9 @@ std::expected<GraphAlternative, OwnedComparisonFailure> MakeAlternativeCore(
                             .detail = std::move(graph.error().detail)});
   auto origins = checkpoint.origins.Clone(funder, &metadata);
   if (!origins) return wrap(std::move(origins.error()));
-  constexpr std::uint64_t kEnvelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-  const std::uint64_t bits = checkpoint.graph.nodes().size();
-  constexpr std::uint64_t kBitWordBits = std::numeric_limits<unsigned long>::digits;
-  if (bits > std::numeric_limits<std::uint64_t>::max() - (kBitWordBits - 1))
-    return fail(PlanError::kAdmission, "alternative selection map size overflows");
-  const std::uint64_t words = (bits + kBitWordBits - 1) / kBitWordBits;
-  if (words > (std::numeric_limits<std::uint64_t>::max() - kEnvelope) / sizeof(unsigned long))
-    return fail(PlanError::kAdmission, "alternative selection map size overflows");
-  // Pinned libstdc++ vector<bool> stores rounded unsigned-long words.
-  const std::uint64_t expand_bytes = words * sizeof(unsigned long) + (bits == 0 ? 0 : kEnvelope);
-  auto expand_loan = ir::AcquireStorageLoan(funder, expand_bytes);
+  const auto expand_bytes = BitVectorStorageBytes(checkpoint.graph.nodes().size());
+  if (!expand_bytes) return fail(PlanError::kAdmission, "alternative selection map size overflows");
+  auto expand_loan = ir::AcquireStorageLoan(funder, *expand_bytes);
   if (!expand_loan) return fail(PlanError::kAdmission, "alternative selection map was refused");
   std::vector<bool> expand(checkpoint.graph.nodes().size(), false);
   std::size_t expanded_members = 0;
@@ -3427,18 +3362,10 @@ std::expected<OwnedComparisonPlan, OwnedComparisonFailure> PlanAlternativeCore(
   PlannerMetadataAdmission metadata(metadata_owner);
   const auto fail = [&metadata](PlanError error,
                                 const char* detail) -> std::unexpected<OwnedComparisonFailure> {
-    PlanFailure failure{.error = error, .detail = {}};
-    if (error != PlanError::kAdmission) {
-      auto text = ir::FormatDiagnostic(&metadata, "{}", std::string_view(detail));
-      if (!text)
-        failure.error = PlanError::kAdmission;
-      else
-        failure.detail = std::move(*text);
-    }
-    return std::unexpected(OwnedComparisonFailure(std::move(metadata), std::move(failure)));
+    return MakeOwnedFailure(metadata, error, detail);
   };
   const auto wrap = [&metadata](PlanFailure&& failure) -> std::unexpected<OwnedComparisonFailure> {
-    return std::unexpected(OwnedComparisonFailure(std::move(metadata), std::move(failure)));
+    return WrapOwnedFailure(metadata, std::move(failure));
   };
   if (source_boundary.source_identity() == 0 ||
       alternative.site.selector.source_graph_identity != source_boundary.source_identity())
@@ -3532,8 +3459,7 @@ std::expected<OwnedComparisonPlan, OwnedComparisonFailure> PlanAlternativeCore(
                     "the alternative contains a duplicate competing rewrite record");
   }
   const auto selected_alternative_source = [&](ir::NodeId original, ir::OpKey key) {
-    return SelectedOriginalThroughAlternative(*planned, alternative.alternative_to_source, original,
-                                              key);
+    return SelectedNodeThroughMap(*planned, alternative.alternative_to_source, original, key);
   };
   bool own_fusion_remains = false;
   if (alternative.site.selector.kind == ComparisonSiteKind::kFusedNode ||
@@ -3603,23 +3529,11 @@ std::expected<OwnedComparisonPlan, OwnedComparisonFailure> PlanAlternativeCore(
       if (surviving.valid()) made.push_back(surviving);
     }
   }
-  for (auto& source : planned->from) {
-    if (!source.valid() || source.v >= alternative.alternative_to_source.size())
-      return fail(PlanError::kStaleComparisonSite, "the planned node map is out of range");
-    source = alternative.alternative_to_source[source.v];
-  }
-  for (auto& applied : planned->applied) {
-    for (auto& source : applied.replaced) {
-      if (!source.valid() || source.v >= alternative.alternative_to_source.size())
-        return fail(PlanError::kStaleComparisonSite, "a rewrite preimage map is out of range");
-      source = alternative.alternative_to_source[source.v];
-    }
-    for (auto& proof : applied.numerical_proofs) {
-      if (!proof.site.valid() || proof.site.v >= alternative.alternative_to_source.size())
-        return fail(PlanError::kStaleComparisonSite, "a numerical proof site map is out of range");
-      proof.site = alternative.alternative_to_source[proof.site.v];
-    }
-  }
+  if (const char* remap_error = RemapPlanNodeAttributions(
+          *planned, alternative.alternative_to_source, false,
+          "the planned node map is out of range", nullptr, "a rewrite preimage map is out of range",
+          nullptr, "a numerical proof site map is out of range", nullptr))
+    return fail(PlanError::kStaleComparisonSite, remap_error);
   if (!inherited->empty()) {
     constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
     std::uint64_t count = 0, bytes = 0;

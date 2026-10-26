@@ -2413,4 +2413,76 @@ TEST(EngineLlmPartsTest, UninstalledPartsDestroyConfigBorrowersBeforeTheirSource
   EXPECT_TRUE(owner_lived);
 }
 
+TEST_F(EngineLlmTest, CertainSpanTruncatesBeforeStopTokenAndPreservesBranchStateInvariants) {
+  Start(false, false);
+  Open({&BranchAt(0)});
+  const auto prompt = Prompt(20, 3);
+  std::vector<float> head;
+  ASSERT_TRUE(BranchAt(0).Prefill(prompt, head));
+
+  llmp::tokenizer::TokenizerSpec spec;
+  spec.pre_tokenizer = llmp::tokenizer::PreTokenizer::kRawBpe;
+  constexpr std::string_view hex = "0123456789ABCDEF";
+  for (unsigned b = 0; b < 256; ++b) {
+    std::string value = "<0x00>";
+    value[3] = hex[b >> 4U];
+    value[4] = hex[b & 15U];
+    spec.tokens.push_back(std::move(value));
+    spec.kinds.push_back(llmp::tokenizer::TokenKind::kByte);
+  }
+  for (char ch = 'a'; ch <= 'z'; ++ch) {
+    spec.tokens.emplace_back(1, ch);
+    spec.kinds.push_back(llmp::tokenizer::TokenKind::kNormal);
+  }
+  spec.tokens.emplace_back("▁");
+  spec.kinds.push_back(llmp::tokenizer::TokenKind::kNormal);
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(spec));
+  ASSERT_TRUE(tokenizer) << tokenizer.error().ToString();
+
+  const llmp::base::json::Limits limits{
+      .max_bytes = 65536, .max_depth = 32, .max_values = 65536, .max_string_bytes = 65536};
+  const std::vector<llmp::chat::ToolDefinition> defs{
+      {.name = "lookup", .description = "find", .parameters_json = R"({"type":"object"})"}};
+  auto request = llmp::chat::ToolRequest::Create(defs, {}, true, limits);
+  ASSERT_TRUE(request) << request.error();
+  auto tool_sampling =
+      std::make_shared<llmp::chat::ToolSampling>(*tokenizer, llmp::chat::QwenToolCalls(), *request,
+                                                 limits, false, std::span<const std::int32_t>{});
+
+  const auto chain = Chain(prompt, 5);
+  const std::array<std::int32_t, 1> extra_stops{chain[2]};
+  rt::GenerateOptions options;
+  options.max_tokens = 10;
+  options.stop = true;
+  options.extra_stops = extra_stops;
+  options.tool_sampling = tool_sampling;
+  rt::Generation out;
+  auto generation = BranchAt(0).BeginGeneration(head, options, out);
+  ASSERT_TRUE(generation) << Failed(generation).value_or("");
+  ASSERT_EQ(out.tokens, (std::vector<std::int32_t>{chain[0]}));
+
+  // Queue a multi-token certain span containing a stop token (chain[2]) followed by chain[3].
+  tool_sampling->Certain({chain[1], chain[2], chain[3]});
+  const std::array<rt::Llm::GenerationSession*, 1> one{generation->get()};
+  ASSERT_TRUE(llm_->RunGenerationWave(one));
+  EXPECT_TRUE((*generation)->done());
+  EXPECT_TRUE(out.stopped);
+  EXPECT_EQ(out.tokens, (std::vector<std::int32_t>{chain[0], chain[1], chain[2]}));
+  // Unconsumed certain tokens after the stop token remain preserved on tool_sampling.
+  ASSERT_EQ(tool_sampling->certain().size(), 1U);
+  EXPECT_EQ(tool_sampling->certain()[0], chain[3]);
+  ASSERT_TRUE((*generation)->Finish());
+
+  // Branch history and KV slot positions hold prompt + {chain[0], chain[1]}, while chain[2]
+  // is the final anchor not yet committed into KV.
+  EXPECT_EQ(BranchAt(0).history().size(), prompt.size() + 2);
+  EXPECT_EQ(llm_->runner().slots().positions(0), prompt.size() + 2);
+  Close();
+
+  const auto continued = Continue(0, out, {});
+  const Turned next = Turn(0, continued, 4);
+  EXPECT_EQ(next.reused, prompt.size() + 2);
+  EXPECT_EQ(next.out.tokens, Chain(continued, 4));
+}
+
 }  // namespace
