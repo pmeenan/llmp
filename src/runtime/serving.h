@@ -459,6 +459,9 @@ struct ChatRenderOptions {
   RequestMemory* memory = nullptr;
   std::uint64_t* memory_needed = nullptr;
   bool* reasoning = nullptr;  // only the renderer-owned generation suffix
+  // The generation suffix neither opens nor closes the template's reasoning:
+  // the model may open it itself (its tool format's reasoning_begin).
+  bool* may_reason = nullptr;
 };
 enum class ChatRenderFailure : std::uint8_t { kOther, kTooLong, kCancelled, kMemory };
 

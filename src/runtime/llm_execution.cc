@@ -548,15 +548,20 @@ en::DecodingPolicy Llm::Policy() {
         if (*keep) {
           if (tentative) {
             auto plan = tentative->Plan(verified[m + 1]);
-            if (!plan) return Error(plan.error());
+            if (!plan) {
+              (*branch)->tool_sampling_->Refuse();  // the request's refusal (B5)
+              return Error(plan.error());
+            }
             if (plan->tokens.size() != 1 || plan->tokens.front() != verified[m + 1]) {
               token = verified[m + 1];
               if (want_rows_.at(slot)) kept_rows.push_back(std::move(*row));
               next = token;
               break;
             }
-            if (auto accepted = tentative->Accept(verified[m + 1]); !accepted)
+            if (auto accepted = tentative->Accept(verified[m + 1]); !accepted) {
+              (*branch)->tool_sampling_->Refuse();
               return Error(accepted.error());
+            }
           }
           // Stop at the first accepted natural terminator. Later verified rows
           // are paid native work, but do not extend this generation's lexical

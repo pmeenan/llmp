@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "runtime/service_request.h"
 
+#include <limits>
+
 #include "base/report.h"
 #include "base/work_pulse.h"
 #include "platform/sockets.h"
+#include "tokenizer/unicode.h"
 
 namespace llmp::runtime::service_detail {
 void Say(std::FILE* log, std::string_view text) {
@@ -35,6 +38,53 @@ std::optional<api::Error> FundHistory(MemoryCharge& charge, RequestMemory& memor
   // native state in the middle of work.
   charge.Force(memory, more);
   return api::MemoryRefusal(memory, held, "the request token history");
+}
+
+std::optional<api::Error> FundToolOutput(ChatTools& tools, std::size_t open) {
+  constexpr std::uint64_t kStep = std::uint64_t{256} << 10U;  // fewer, larger growths
+  if (tools.memory == nullptr) return std::nullopt;           // an unfunded direct owner (tests)
+  const auto bound = chat::ToolOutputBytes(tools.format, open);
+  if (!bound)
+    return Failure(500, "the generated tool call exceeds addressable memory",
+                   "tool_output_invalid");
+  const std::uint64_t most = std::numeric_limits<std::uint64_t>::max();
+  const std::uint64_t share = *bound > most - kStep ? *bound : (*bound + kStep - 1) / kStep * kStep;
+  // The output's share is held beside the fixed part, never inside it.
+  const std::uint64_t need = share > most - tools.fixed ? most : tools.fixed + share;
+  if (need <= tools.charge.bytes()) return std::nullopt;
+  const std::uint64_t more = need - tools.charge.bytes();
+  // Mid-unit: never grown by reclaim here (granted). Past the grant, the
+  // request pool's capacity is the real limit (D-102).
+  if (tools.charge.Add(*tools.memory, more, true)) return std::nullopt;
+  if (tools.memory->used() <= tools.memory->capacity() &&
+      more <= tools.memory->capacity() - tools.memory->used()) {
+    tools.charge.Force(*tools.memory, more);
+    return std::nullopt;
+  }
+  return api::MemoryRefusal(*tools.memory, need, "the generated tool call");
+}
+
+// Client tool names reach the model's output grammar and, in named mode, a
+// forced span: each must be text the tokenizer encodes as itself.
+std::optional<api::Error> AdmitToolNames(const chat::ToolRequest& request,
+                                         const tokenizer::Tokenizer& tokenizer) {
+  const auto refuse = [](std::string message) {
+    return Failure(400, std::move(message), "invalid_tool_name", "tools");
+  };
+  for (const auto name : request.ExposedNames()) {
+    std::vector<char32_t> code_points;
+    if (!tokenizer::unicode::DecodeUtf8(name, code_points))
+      return refuse("tool names must be UTF-8");
+    if (tokenizer.normalization() == tokenizer::Normalization::kNfc) {
+      auto normalized = code_points;
+      tokenizer::unicode::ToNfc(normalized);
+      if (normalized != code_points) return refuse("tool names must be NFC for this model");
+    }
+    auto control = tokenizer.ContainsControlText(name);
+    if (!control) return Failure(503, "tool name validation was cancelled", "request_ended");
+    if (*control) return refuse("tool names cannot contain the model's control-token text");
+  }
+  return std::nullopt;
 }
 
 std::uint64_t RandomSeed() {
@@ -71,12 +121,10 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
   const std::uint32_t usable = model.usable_context();
   std::uint64_t text = 0;
   std::uint64_t storage = request.messages.size() * sizeof(chat::Message);
-  std::uint64_t projection = storage;
   bool structured = false;
   for (const api::Message& message : request.messages) {
     const std::uint64_t reasoning = message.reasoning ? message.reasoning->capacity() : 0;
     storage += message.content.StorageBytes() + reasoning;
-    projection += message.content.ProjectionBytes() + reasoning;
     structured = structured || message.content.parts() != nullptr;
     text += message.content.PayloadBytes() + (message.reasoning ? message.reasoning->size() : 0);
   }
@@ -94,6 +142,8 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
       return std::unexpected(api::MemoryRefusal(memory, scratch, "validating tool names"));
     if (auto valid = request.tools->request.ValidateNames(*model.tool_format()); !valid)
       return std::unexpected(Failure(400, valid.error(), "invalid_tool_name", "tools"));
+    if (auto refused = AdmitToolNames(request.tools->request, model.tokenizer()))
+      return std::unexpected(std::move(*refused));
     const auto bytes = request.tools->request.TemplateBytes();
     if (bytes > model.render_bytes() || text > model.render_bytes() - bytes)
       return std::unexpected(ContextExceeded(usable));
@@ -104,11 +154,10 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
     return std::unexpected(ContextExceeded(usable));
   }
   const RenderCharge render = model.RenderChargeFor(text, request.messages.size());
-  const std::uint64_t copied = storage + (structured ? projection : 0);
   MemoryCharge charge;
-  if (!charge.Add(memory, copied + render.bytes)) {
+  if (!charge.Add(memory, storage + render.bytes)) {
     return std::unexpected(
-        api::MemoryRefusal(memory, copied + render.bytes, "rendering the conversation"));
+        api::MemoryRefusal(memory, storage + render.bytes, "rendering the conversation"));
   }
   chat::Conversation conversation;
   conversation.messages.reserve(request.messages.size());
@@ -130,6 +179,15 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
   model.Defaults(conversation);
   conversation.max_render_bytes = static_cast<std::size_t>(render.output);
   conversation.max_live_bytes = static_cast<std::size_t>(render.live);
+  // The projection a structured conversation needs, charged at its bound and
+  // checked against it (chat::ProjectContent).
+  MemoryCharge projected;
+  if (structured || chat::HasStructuredContent(conversation)) {
+    const std::uint64_t bound = chat::ProjectionStorageBytes(conversation);
+    if (bound > std::numeric_limits<std::size_t>::max() || !projected.Add(memory, bound))
+      return std::unexpected(api::MemoryRefusal(memory, bound, "projecting the conversation"));
+    conversation.max_projection_bytes = static_cast<std::size_t>(bound);
+  }
   ChatPrompt result;
   // Each check beats the driver's pulse (a long rendering or tokenization
   // is progress, not a hang), and stops it when a confirmed hang's rung 1
@@ -146,7 +204,8 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
                                     .cancelled = &cancelled,
                                     .memory = &memory,
                                     .memory_needed = &needed,
-                                    .reasoning = &result.reasoning},
+                                    .reasoning = &result.reasoning,
+                                    .may_reason = &result.may_reason},
                                    &failure);
   if (!rendered && failure == ChatRenderFailure::kTooLong) {
     return std::unexpected(ContextExceeded(usable));
@@ -224,41 +283,48 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
         format.arguments == chat::ToolArguments::kJsonEnvelope && !format.bare_envelope)
       return std::unexpected(Failure(400, "this format has no verified tool-name constraint",
                                      "tool_choice_unsupported", "tool_choice"));
+    // Raw generated bytes are bounded by the token allowance; this is a
+    // consistency bound only. Memory follows the output's actual bytes
+    // (FundToolOutput), never max_tokens.
     std::size_t generated = 0;
     if (__builtin_mul_overflow(std::size_t{result.max_tokens},
-                               model.tokenizer().longest_token_bytes(), &generated))
+                               model.tokenizer().longest_token_bytes(), &generated) ||
+        generated > std::numeric_limits<std::size_t>::max() / 16)
       return std::unexpected(
           Failure(400, "generated tool output exceeds addressable bytes", {}, "max_tokens"));
-    const auto bound = chat::ToolOutputBytes(format, generated);
-    std::size_t bytes = 0, ids = 0;
-    if (!bound || __builtin_mul_overflow(*bound, std::size_t{4}, &bytes) ||
-        __builtin_mul_overflow(std::size_t{result.max_tokens}, std::size_t{32}, &ids) ||
-        __builtin_add_overflow(bytes, ids, &bytes) ||
-        __builtin_add_overflow(bytes, model.tokenizer().size() * sizeof(float), &bytes))
-      return std::unexpected(
-          Failure(400, "tool output storage exceeds addressable bytes", {}, "max_tokens"));
+    // The constrained row's scratch, the forced-span planner and the empty
+    // output state; nothing here scales with max_tokens.
     const auto planner = model.tokenizer().ForcedSpanBytes(
         model.tokenizer().longest_token_bytes() + request.tools->request.NameBytes() * 6 +
-        format.block_begin.size() + format.call_begin.size() + format.name_end.size());
-    if (__builtin_add_overflow(bytes, planner, &bytes))
+        format.block_begin.size() + format.call_begin.size() + format.name_end.size() +
+        format.name_key.size() + 8);
+    const auto open = chat::ToolOutputBytes(format, 0);
+    std::uint64_t bytes = 0;
+    if (!open ||
+        __builtin_add_overflow(std::uint64_t{model.tokenizer().size()} * sizeof(float),
+                               std::uint64_t{*open}, &bytes) ||
+        __builtin_add_overflow(bytes, planner, &bytes) ||
+        __builtin_add_overflow(bytes, sizeof(ChatTools) + sizeof(ChatOutput::State), &bytes))
       return std::unexpected(Failure(400, "tool planning exceeds addressable bytes", {}, "tools"));
     MemoryCharge paid;
-    if (!paid.Add(memory, bytes + sizeof(ChatTools) + sizeof(ChatOutput::State)))
+    if (!paid.Add(memory, bytes))
       return std::unexpected(api::MemoryRefusal(memory, bytes, "the generated tool-call state"));
     auto owner = std::make_shared<ChatTools>();
     owner->charge = std::move(paid);
+    owner->memory = &memory;
+    owner->fixed = bytes - *open;
     owner->options = request.tools;
     owner->format = format;
     owner->limits = {.max_bytes = generated,
-                     .max_depth = generated,
-                     .max_values = generated,
-                     .max_string_bytes = bytes};
+                     .max_depth = api::kMaxJsonDepth,
+                     .max_values = generated + 64,
+                     .max_string_bytes = generated};
     const auto stops = model.StopTokens();
     std::vector<std::int32_t> terminals(stops.begin(), stops.end());
     const auto extra = model.ChatStops();
-    owner->sampling =
-        std::make_shared<chat::ToolSampling>(model.tokenizer(), format, request.tools->request,
-                                             owner->limits, result.reasoning, terminals, extra);
+    owner->sampling = std::make_shared<chat::ToolSampling>(
+        model.tokenizer(), format, request.tools->request, owner->limits, result.reasoning,
+        terminals, extra, result.may_reason);
     owner->sampling->Budget(result.max_tokens, usable - prompt);
     result.tools = std::move(owner);
   }
@@ -277,6 +343,8 @@ chat::ToolInterpreter::Flow ChatOutput::Send(chat::ToolEvent event) {
     go = Text(text->text);
   else if (const auto* call = std::get_if<chat::ToolUsePart>(&event))
     go = exchange_.ToolCall(*call);
+  else if (std::holds_alternative<chat::ToolReasoningBegin>(event))
+    state_->thinking = true;  // the model opened reasoning itself
   else {
     state_->thinking = false;
     go = exchange_.Reasoning({});
@@ -284,6 +352,7 @@ chat::ToolInterpreter::Flow ChatOutput::Send(chat::ToolEvent event) {
   // The sink accepted the event even when the resulting buffered output pauses
   // it. This outcome must not poison the parser like a stop/disconnect does.
   if (exchange_.Yielding() || exchange_.Paused()) return chat::ToolInterpreter::Flow::kPause;
+  if (!go) state_->sink_cancelled = true;
   return go ? chat::ToolInterpreter::Flow::kContinue : chat::ToolInterpreter::Flow::kCancel;
 }
 
@@ -313,7 +382,8 @@ bool ChatOutput::Drain() {
   if (state_->error || exchange_.Stopped()) return false;
   const auto sink = [this](chat::ToolEvent event) { return Send(std::move(event)); };
   const auto checked = [&](chat::ToolStatus status) {
-    if (!status && !exchange_.Stopped() && !exchange_.Yielding() && !exchange_.Paused())
+    if (!status && !state_->sink_cancelled && !exchange_.Stopped() && !exchange_.Yielding() &&
+        !exchange_.Paused())
       state_->error =
           Failure(500, "the generated tool call could not be interpreted: " + status.error(),
                   "tool_output_invalid");
@@ -337,6 +407,11 @@ bool ChatOutput::Drain() {
         continue;
       if (auto decoded = state_->decoder.Push(token, piece); !decoded) {
         state_->error = Failure(500, "generated token could not be decoded", "tool_output_invalid");
+        return false;
+      }
+      if (auto refused =
+              FundToolOutput(*state_->tools, state_->parser->buffered() + piece.size())) {
+        state_->error = std::move(refused);
         return false;
       }
       if (!checked(state_->parser->Push(piece, sink)) || state_->parser->paused()) return false;
@@ -377,11 +452,18 @@ bool ChatOutput::Finish(bool stopped) {
     state_->decoder.Finish(rest);
   }
   if (state_->parser) {
+    if (!rest.empty()) {
+      if (auto refused = FundToolOutput(*state_->tools, state_->parser->buffered() + rest.size())) {
+        state_->error = std::move(refused);
+        state_->finished = true;
+        return false;
+      }
+    }
     auto status = rest.empty() ? chat::ToolStatus{} : state_->parser->Push(rest, sink);
     if (status && !state_->parser->paused())
       status = state_->parser->Finish(stopped ? chat::ToolFinish::kStop : chat::ToolFinish::kLength,
                                       sink);
-    if (!status && !exchange_.Stopped())
+    if (!status && !state_->sink_cancelled && !exchange_.Stopped())
       state_->error =
           Failure(500, "the generated tool call could not be interpreted: " + status.error(),
                   "tool_output_invalid");

@@ -136,6 +136,33 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Tool calls (M3.5 review B1, B2, B5–B8, B11, B12). The output parser, the
+  sampler and the speculative judge now run one incremental grammar on the
+  same decoded bytes, so they cannot disagree: unconstrained auto mode no
+  longer refuses tokens the parser would accept (ill-formed UTF-8, Gemma
+  object-notation quoting), a constrained call that closes but cannot be
+  converted is refused at once instead of running on to its token allowance,
+  and any tool-grammar refusal fails only its request, never the runtime. Deeply nested generated JSON is bounded at 64
+  levels and no JSON parser or serializer recurses per level, so model output
+  can no longer exhaust the driver's stack. Tool-output memory follows the
+  bytes actually generated instead of about 1,200 × max_tokens × the longest
+  token, so requests without `max_tokens` are no longer refused or reclaim
+  other models' memory for it. Llama's bare JSON calls are recognized only
+  at the start of the answer (prose JSON is text), with names checked as
+  they are written; reasoning the model opens itself (Gemma 4 thinking) is
+  reasoning, not content, and required choice waits for it. Forced tool names
+  are always text to the tokenizer, and names with control-token text, not
+  UTF-8 or not NFC under an NFC tokenizer are refused (400). A cancelled,
+  timed-out or stopped tool reply reports its own status, not 500
+  `tool_output_invalid`. Also: `strict: true` is accepted and ignored (as
+  vLLM); `tools: []` with `auto` means no tools; replies with only calls send
+  `content: null`; a required or named call cut short by the token allowance
+  ends with `length` instead of 500; arguments sent as a JSON string are accepted; `anyOf` and
+  `oneOf` schemas convert values; a parameter left open before `</invoke>`
+  ends its call; templates see each function object as sent and a legacy
+  tool result's `name`; result association and name checks are linear in the
+  request ([tool calls](docs/tool-calls.md)).
+
 - Each step shape is planned once and lowered once again. U6's exact-site
   recipe comparison ran on every GGML plan miss (a second discovery plan,
   then a replan and a full relowering per fused site) against a table no

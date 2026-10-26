@@ -1519,11 +1519,12 @@ the reasoning), `stream`, `stream_options.include_usage`. Known fields
 that would change the answer are accepted only at their "off" value, and
 otherwise refused with a 400 naming them: `n` 1, `presence_penalty` and
 `frequency_penalty` 0, `repetition_penalty` 1, `logprobs` false,
-`top_logprobs` 0, strict tool schemas false, `response_format` text, `logit_bias`
+`top_logprobs` 0, `response_format` text, `logit_bias`
 empty, `modalities` ["text"], `audio` null, `store` false; OpenRouter's
 `transforms` and `plugins` are refused whatever their value (D-046).
 Known metadata is ignored: `user`, `safety_identifier`,
-`prompt_cache_key`, `metadata`, `service_tier`, a
+`prompt_cache_key`, `metadata`, `service_tier`, a tool definition's `strict`
+(as vLLM: arguments are not schema-validated), a
 non-tool message's `name`, a text part's `cache_control`, and an assistant's null
 `refusal` and `audio`, and empty `annotations` (echoes of a response). **Any other field is ignored with a
 200**, at the top, in a message, a text part or `stream_options`; its

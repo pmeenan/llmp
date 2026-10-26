@@ -46,10 +46,10 @@ class Regex {
   // Optional stable_prefix: complete split pieces whose decisions did not
   // consult EOF on any attempted ordered path. Appending input cannot change
   // those pieces; a failed earlier alternative is included in this proof.
+  // An unmatched gap is open until a match ends it.
   std::expected<void, Error> Split(std::span<const char32_t> text,
                                    std::vector<std::uint32_t>& lengths, RegexBudget& budget,
-                                   std::size_t* stable_prefix = nullptr,
-                                   bool* append_may_shrink = nullptr) const;
+                                   std::size_t* stable_prefix = nullptr) const;
 
  private:
   enum class Op : std::uint8_t {
@@ -97,8 +97,7 @@ class Regex {
   std::expected<bool, Error> TestClass(std::uint32_t index, char32_t cp, RegexBudget& budget,
                                        std::vector<ClassFrame>& stack) const;
   std::expected<std::size_t, Error> Match(std::span<const char32_t> text, std::size_t start,
-                                          RegexBudget& budget, bool* consulted_end = nullptr,
-                                          bool* append_may_shrink = nullptr) const;
+                                          RegexBudget& budget, bool* consulted_end = nullptr) const;
 };
 
 }  // namespace llmp::tokenizer

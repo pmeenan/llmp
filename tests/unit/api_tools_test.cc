@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -56,8 +57,11 @@ TEST(ApiTools, DefaultsAndNamedDefinitionFilteringAreOwned) {
 }
 
 TEST(ApiTools, EmptyAndNoneRequestsNeedNoToolTemplate) {
-  for (const auto fields : {R"("tools":[])", R"("tool_choice":"none")",
-                            R"("parallel_tool_calls":false)", R"("functions":[])"}) {
+  // `auto` with nothing declared is no tools too.
+  for (const auto fields :
+       {R"("tools":[])", R"("tool_choice":"none")", R"("parallel_tool_calls":false)",
+        R"("functions":[])", R"("tools":[],"tool_choice":"auto")", R"("tool_choice":"auto")",
+        R"("functions":[],"function_call":"auto")"}) {
     auto parsed = api::ParseChatRequest(ToolBody(fields));
     ASSERT_TRUE(parsed) << fields << Failed(parsed, &api::Error::message).value_or("");
     ASSERT_NE(parsed->tools, nullptr);
@@ -89,19 +93,64 @@ TEST(ApiTools, LegacyInputsNormalizeAndConflictingRepresentationsFail) {
   }
 }
 
-TEST(ApiTools, InvalidDefinitionsAndUnimplementedStrictFailExplicitly) {
+TEST(ApiTools, InvalidDefinitionsFailExplicitly) {
   for (const auto fields :
-       {R"("tools":[{"type":"function","function":{"name":"f","strict":true}}])",
+       {R"("tools":[{"type":"function","function":{"name":"f","strict":"yes"}}])",
         R"("functions":[{"name":"f","parameters":[]}])",
         R"("functions":[{"name":"f"},{"name":"f"}])",
         R"("functions":[{"name":"f"}],"function_call":{"name":"absent"})",
-        R"("tool_choice":"required")", R"("parallel_tool_calls":3)",
-        R"("tools":[{"type":"custom","function":{"name":"f"}}])"}) {
+        R"("tool_choice":"required")", R"("tools":[],"tool_choice":"required")",
+        R"("tools":[],"tool_choice":{"type":"function","function":{"name":"f"}})",
+        R"("parallel_tool_calls":3)", R"("tools":[{"type":"custom","function":{"name":"f"}}])"}) {
     auto parsed = api::ParseChatRequest(ToolBody(fields));
     ASSERT_FALSE(parsed) << fields;
     EXPECT_EQ(parsed.error().status, 400);
     EXPECT_FALSE(parsed.error().param.empty());
   }
+}
+
+// `strict: true` is accepted, as `strict: false` is: a strict definition is
+// not refused.
+TEST(ApiTools, StrictDefinitionsAreAccepted) {
+  for (
+      const auto fields :
+      {R"("tools":[{"type":"function","function":{"name":"f","strict":true,"parameters":{"type":"object","properties":{"x":{"type":"string"}}}}}])",
+       R"("functions":[{"name":"f","strict":true}])"}) {
+    auto parsed = api::ParseChatRequest(ToolBody(fields));
+    ASSERT_TRUE(parsed) << fields << ": " << Failed(parsed, &api::Error::message).value_or("");
+    ASSERT_NE(parsed->tools, nullptr);
+    EXPECT_EQ(parsed->tools->request.choice().kind, chat::ToolChoiceKind::kAuto);
+    EXPECT_TRUE(parsed->tools->request.Declared("f"));
+  }
+}
+
+// Both representations of many definitions compare by name in linear time,
+// in any order; one missing or different definition is still a conflict.
+TEST(ApiTools, ManyEquivalentToolsAndFunctionsCompareByName) {
+  constexpr std::size_t kDefinitionsCount = 10'000;
+  // The functions in reverse order; the one at `differ` (if any) described
+  // differently.
+  const auto lists = [](std::size_t differ) {
+    std::string tools = R"("tools":[)";
+    std::string functions = R"("functions":[)";
+    for (std::size_t i = 0; i < kDefinitionsCount; ++i) {
+      const std::size_t j = kDefinitionsCount - 1 - i;
+      if (i != 0) {
+        tools += ',';
+        functions += ',';
+      }
+      tools += R"({"type":"function","function":{"name":"f)" + std::to_string(i) + R"("}})";
+      functions += R"({"name":"f)" + std::to_string(j) + '"' +
+                   (j == differ ? R"(,"description":"other")" : "") + '}';
+    }
+    return tools + "]," + functions + "]";
+  };
+  auto same = api::ParseChatRequest(ToolBody(lists(kDefinitionsCount)));
+  ASSERT_TRUE(same) << Failed(same, &api::Error::message).value_or("");
+  EXPECT_EQ(same->tools->request.TemplateTools().size(), kDefinitionsCount);
+  auto conflict = api::ParseChatRequest(ToolBody(lists(kDefinitionsCount / 2)));
+  ASSERT_FALSE(conflict);
+  EXPECT_NE(conflict.error().message.find("conflict"), std::string::npos);
 }
 
 TEST(ApiTools, AssistantCallsAndLegacyResultEvidenceSurviveInputDestruction) {
@@ -262,6 +311,28 @@ TEST(ApiTools, CallsSeparateStopMatchingAndNonStreamingUsesNormalizedArguments) 
   const auto call = choice.find("message")->find("tool_calls")->at(0);
   EXPECT_EQ(call.find("id")->string(), "call_1");
   EXPECT_EQ(call.find("function")->find("arguments")->string(), calls[0].input_json);
+  // A reply of tool calls alone has null content, as OpenAI sends it; text
+  // replies keep their (possibly empty) string.
+  for (const bool with_calls : {true, false}) {
+    const auto reply = api::CompletionJson(
+        "chat_2", 0, "m", "", {}, with_calls ? api::Finish::kToolCalls : api::Finish::kStop, {},
+        with_calls ? std::span<const chat::ToolUsePart>(calls)
+                   : std::span<const chat::ToolUsePart>());
+    EXPECT_LE(reply.size(),
+              *api::CompletionJsonBytes("chat_2", "m", "", {},
+                                        with_calls ? std::span<const chat::ToolUsePart>(calls)
+                                                   : std::span<const chat::ToolUsePart>()));
+    auto doc = json::Parse(reply);
+    ASSERT_TRUE(doc) << reply;
+    const auto content = doc->root().find("choices")->at(0).find("message")->find("content");
+    ASSERT_TRUE(content);
+    if (with_calls) {
+      EXPECT_TRUE(content->is_null()) << reply;
+    } else {
+      ASSERT_TRUE(content->is_string()) << reply;
+      EXPECT_EQ(content->string(), "");
+    }
+  }
   api::OutputText stopped(std::vector<std::string>{"abc"});
   EXPECT_EQ(stopped.Content("xabc").content, "x");
   EXPECT_TRUE(stopped.stopped());

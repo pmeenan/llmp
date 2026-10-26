@@ -36,13 +36,15 @@ c::ToolRequest Request(c::ToolChoice choice = {}, bool parallel = true) {
 struct Output {
   std::string text;
   std::vector<c::ToolUsePart> calls;
-  std::size_t reasoning_ends = 0;
+  std::size_t reasoning_ends = 0, reasoning_begins = 0;
   c::ToolInterpreter::Sink Sink() {
     return [this](c::ToolEvent event) {
       if (auto* text_part = std::get_if<c::TextPart>(&event))
         text += text_part->text;
       else if (auto* call = std::get_if<c::ToolUsePart>(&event))
         calls.push_back(std::move(*call));
+      else if (std::holds_alternative<c::ToolReasoningBegin>(event))
+        ++reasoning_begins;
       else
         ++reasoning_ends;
       return true;
@@ -73,10 +75,10 @@ TEST(ToolCalls, NormalizedDefinitionsOwnTheirJsonAndNamedChoiceFiltersOnlyDefini
   EXPECT_EQ(trigger.bound, "</think>");
   EXPECT_TRUE(trigger.ends_reasoning);
 }
-TEST(ToolCalls, ContractsRefuseStrictDuplicatesAndInvalidRequiredChoices) {
+TEST(ToolCalls, ContractsAcceptStrictButRefuseDuplicatesAndInvalidRequiredChoices) {
   auto definitions = Definitions();
-  definitions[0].strict = true;
-  EXPECT_FALSE(c::ToolRequest::Create(definitions, {}, true, Limits()));
+  definitions[0].strict = true;  // accepted and ignored, as vLLM does
+  EXPECT_TRUE(c::ToolRequest::Create(definitions, {}, true, Limits()));
   definitions[0].strict = false;
   definitions.push_back(definitions[0]);
   EXPECT_FALSE(c::ToolRequest::Create(definitions, {}, true, Limits()));
@@ -148,10 +150,13 @@ TEST(ToolCalls, ObjectNamesObeyTheSameLexicalBoundaryAndJsonNamesRemainEscaped) 
   j::AppendQuoted(name, text);
   text += ",\"parameters\":{}}";
   for (std::size_t split = 0; split <= text.size(); ++split) {
+    SCOPED_TRACE(split);
     c::ToolInterpreter parser(c::JsonToolCalls(), *request, Limits());
     Output out;
-    ASSERT_TRUE(parser.Push(text.substr(0, split), out.Sink()));
-    ASSERT_TRUE(parser.Push(text.substr(split), out.Sink()));
+    auto first = parser.Push(text.substr(0, split), out.Sink());
+    ASSERT_TRUE(first) << first.error();
+    auto rest = parser.Push(text.substr(split), out.Sink());
+    ASSERT_TRUE(rest) << rest.error();
     ASSERT_TRUE(parser.Finish(c::ToolFinish::kStop, out.Sink()));
     ASSERT_EQ(out.calls.size(), 1U);
     EXPECT_EQ(out.calls[0].name, name);
@@ -248,8 +253,7 @@ TEST(ToolCalls, TaggedAlternativesMixOnlyAtStructuralBoundariesAndKeepValuesOpaq
   for (const char ch : text) ASSERT_TRUE(bytes.Push(std::string_view(&ch, 1), out.Sink()));
   ASSERT_TRUE(bytes.Finish(c::ToolFinish::kStop, out.Sink()));
   ASSERT_EQ(out.calls.size(), 1U);
-  for (const std::string malformed : {"<function=lookup><parameter name=\"s\">unclosed</invoke>",
-                                      "<function=lookup><unsupported=s>x</unsupported></function>",
+  for (const std::string malformed : {"<function=lookup><unsupported=s>x</unsupported></function>",
                                       "<function=lookup><parameter name=\"s\">x</parameter>"
                                       "<parameter=s>y</parameter></invoke>"}) {
     c::ToolInterpreter parser(c::QwenToolCalls(), Request(), Limits());
@@ -426,11 +430,22 @@ TEST(ToolCalls, LengthDropsOnlyIncompleteCallNaturalCompletionFails) {
     EXPECT_EQ(out.text, "kept ");
     ASSERT_EQ(out.calls.size(), 1U);
   }
-  c::ToolInterpreter required(c::QwenToolCalls(), Request({c::ToolChoiceKind::kRequired, {}}),
-                              Limits());
-  Output out;
-  ASSERT_TRUE(required.Push("<function=lookup>", out.Sink()));
-  EXPECT_FALSE(required.Finish(c::ToolFinish::kLength, out.Sink()));
+  // A required call the token allowance cuts short ends by length (no call, no
+  // error); a natural end without the call fails.
+  for (const auto finish : {c::ToolFinish::kStop, c::ToolFinish::kLength}) {
+    c::ToolInterpreter required(c::QwenToolCalls(), Request({c::ToolChoiceKind::kRequired, {}}),
+                                Limits());
+    Output out;
+    ASSERT_TRUE(required.Push("<function=lookup>", out.Sink()));
+    EXPECT_FALSE(required.CanStop());
+    EXPECT_EQ(required.Finish(finish, out.Sink()).has_value(), finish == c::ToolFinish::kLength);
+    EXPECT_TRUE(out.calls.empty());
+  }
+  c::ToolInterpreter nothing(c::QwenToolCalls(), Request({c::ToolChoiceKind::kNamed, "lookup"}),
+                             Limits());
+  Output none;
+  EXPECT_FALSE(nothing.CanStop());
+  EXPECT_TRUE(nothing.Finish(c::ToolFinish::kLength, none.Sink()));
 }
 TEST(ToolCalls, FullyClosedMalformedCallsAreErrorsNotSilentlyDropped) {
   for (const auto text :
@@ -705,7 +720,6 @@ TEST(ToolCalls, CompleteCandidateCannotHideWrongSecondNameOrQuotedDelimiter) {
   const auto request = Request({c::ToolChoiceKind::kNamed, "lookup"});
   for (std::size_t split = 0; split <= std::string("<function=lookup>").size(); ++split) {
     c::ToolInterpreter parser(c::QwenToolCalls(), request, Limits());
-    parser.SyntaxOnly();
     const std::string header = "<function=lookup>";
     ASSERT_TRUE(parser.Push(header.substr(0, split), [](c::ToolEvent) { return true; }));
     EXPECT_TRUE(
@@ -713,7 +727,6 @@ TEST(ToolCalls, CompleteCandidateCannotHideWrongSecondNameOrQuotedDelimiter) {
     EXPECT_FALSE(parser.Allows(header.substr(split) + "</function><function=other></function>"));
   }
   c::ToolInterpreter parser(c::QwenToolCalls(), request, Limits());
-  parser.SyntaxOnly();
   EXPECT_FALSE(parser.Allows("<tool_call><function=other>"));
   EXPECT_TRUE(
       parser.Allows("<tool_call><function=lookup><parameter=obj>{\"x\":\"</"
@@ -843,9 +856,12 @@ TEST(ToolSampling, OnlyActualTerminalsAreBlockedUntilAnOpenCallCompletes) {
     const auto masked = sampling.Mask(row, scratch);
     EXPECT_FALSE(std::isfinite(masked[static_cast<std::size_t>(eos)]));
     EXPECT_TRUE(std::isfinite(masked[static_cast<std::size_t>(other)]));
-    EXPECT_FALSE(sampling.Plan(eos));
+    // Unconstrained auto masks the terminal but never refuses a token itself.
+    const bool refuses = choice.kind != c::ToolChoiceKind::kAuto;
+    EXPECT_EQ(sampling.Plan(eos).has_value(), !refuses);
     auto rejected = sampling;
-    EXPECT_FALSE(rejected.Accept(eos));
+    EXPECT_EQ(rejected.Accept(eos).has_value(), !refuses);
+    EXPECT_EQ(rejected.refused(), refuses);
     for (const unsigned char ch : std::string("</parameter></invoke>"))
       ASSERT_TRUE(sampling.Accept(ch));
     EXPECT_TRUE(std::isfinite(sampling.Mask(row, scratch)[static_cast<std::size_t>(eos)]));
@@ -941,8 +957,8 @@ TEST(ToolSampling, BareJsonAutoOrdinaryOpenBraceCanEndButRecognizedPartialCallCa
     EXPECT_EQ(parser.CanStop(), ordinary);
     std::vector<float> row(tokenizer->size(), 0), scratch;
     EXPECT_EQ(std::isfinite(sampling.Mask(row, scratch)[static_cast<std::size_t>(eos)]), ordinary);
-    EXPECT_EQ(sampling.Plan(eos).has_value(), ordinary);
-    EXPECT_EQ(sampling.Accept(eos).has_value(), ordinary);
+    EXPECT_TRUE(sampling.Plan(eos));  // auto: masked, never refused
+    EXPECT_FALSE(sampling.refused());
     EXPECT_EQ(parser.Finish(c::ToolFinish::kStop, output.Sink()).has_value(), ordinary);
     if (ordinary) EXPECT_EQ(output.text, text);
   }
@@ -951,17 +967,30 @@ TEST(ToolSampling, BareJsonAutoOrdinaryOpenBraceCanEndButRecognizedPartialCallCa
 
 namespace {
 TEST(ToolCalls, BareJsonEnvelopeKeepsKeyOrderEscapesAndOrdinaryJsonAcrossEverySplit) {
-  const std::string text =
-      R"(before {"answer":42} {"parameters":{"s":"} { \"name\": \"other\""}, "na\u006de":"unknown"} after)";
-  for (std::size_t split = 0; split <= text.size(); ++split) {
-    c::ToolInterpreter parser(c::JsonToolCalls(), Request(), Limits());
-    Output output;
-    ASSERT_TRUE(parser.Push(std::string_view(text).substr(0, split), output.Sink()));
-    ASSERT_TRUE(parser.Push(std::string_view(text).substr(split), output.Sink()));
-    ASSERT_TRUE(parser.Finish(c::ToolFinish::kStop, output.Sink()));
-    ASSERT_EQ(output.calls.size(), 1U);
-    EXPECT_EQ(output.calls[0].name, "unknown");
-    EXPECT_EQ(output.text, "before {\"answer\":42}  after");
+  // Only a leading object (after whitespace), or one right after a call, is
+  // a candidate (B7). JSON in prose stays text whatever its keys.
+  const std::string call =
+      R"({"parameters":{"s":"} { \"name\": \"other\""}, "na\u006de":"unknown"})";
+  const std::string leading = " \n" + call + " " + call + " after {\"name\":\"lookup\"}";
+  const std::string prose = "before {\"answer\":42} " + call + " after";
+  for (const bool is_prose : {false, true}) {
+    const auto& text = is_prose ? prose : leading;
+    for (std::size_t split = 0; split <= text.size(); ++split) {
+      c::ToolInterpreter parser(c::JsonToolCalls(), Request(), Limits());
+      Output output;
+      ASSERT_TRUE(parser.Push(std::string_view(text).substr(0, split), output.Sink()));
+      ASSERT_TRUE(parser.Push(std::string_view(text).substr(split), output.Sink()));
+      ASSERT_TRUE(parser.Finish(c::ToolFinish::kStop, output.Sink()));
+      if (is_prose) {
+        EXPECT_TRUE(output.calls.empty());
+        EXPECT_EQ(output.text, prose);
+        continue;
+      }
+      ASSERT_EQ(output.calls.size(), 2U);
+      EXPECT_EQ(output.calls[0].name, "unknown");
+      EXPECT_EQ(output.calls[1].name, "unknown");
+      EXPECT_EQ(output.text, " \n  after {\"name\":\"lookup\"}");
+    }
   }
 }
 TEST(ToolCalls, BareJsonNameConstraintChecksEveryCompleteTokenIncludingSecondCall) {
@@ -970,7 +999,6 @@ TEST(ToolCalls, BareJsonNameConstraintChecksEveryCompleteTokenIncludingSecondCal
   const std::string bad = R"({"parameters":{},"name":"other"})";
   for (std::size_t split = 0; split <= bad.size(); ++split) {
     c::ToolInterpreter parser(c::JsonToolCalls(), request, Limits());
-    parser.SyntaxOnly();
     if (!parser.Allows(std::string_view(bad).substr(0, split))) continue;
     ASSERT_TRUE(
         parser.Push(std::string_view(bad).substr(0, split), [](c::ToolEvent) { return true; }));
@@ -994,9 +1022,18 @@ TEST(ToolCalls, BareJsonIncompleteAnswerIsRetainedButTruncatedCallIsDropped) {
     EXPECT_TRUE(tool.text.empty());
     EXPECT_TRUE(tool.calls.empty());
   }
+  // Auto: a leading object that does not parse as a call is answer text (B7);
+  // required and named refuse it.
+  const std::string malformed_text = R"({"name":"lookup","parameters":nope})";
   c::ToolInterpreter malformed(c::JsonToolCalls(), Request(), Limits());
   Output output;
-  EXPECT_FALSE(malformed.Push(R"({"name":"lookup","parameters":nope})", output.Sink()));
+  ASSERT_TRUE(malformed.Push(malformed_text, output.Sink()));
+  ASSERT_TRUE(malformed.Finish(c::ToolFinish::kStop, output.Sink()));
+  EXPECT_TRUE(output.calls.empty());
+  EXPECT_EQ(output.text, malformed_text);
+  c::ToolInterpreter required(c::JsonToolCalls(), Request({c::ToolChoiceKind::kRequired, {}}),
+                              Limits());
+  EXPECT_FALSE(required.Push(malformed_text, output.Sink()));
 }
 }  // namespace
 
@@ -1064,6 +1101,7 @@ std::optional<std::size_t> Outside(std::string_view text, std::string_view needl
 
 struct EnvelopeInfo {
   bool name = false, arguments = false, allowed = false;
+  bool stopped = false;  // not an object with string keys: answer text (B7)
 };
 // Scan top-level envelope keys without copying argument payloads. Both the
 // output interpreter and vocabulary probes use this same lexical projection;
@@ -1074,7 +1112,11 @@ EnvelopeInfo OriginalEnvelope(std::string_view text, const c::ToolCallFormat& fo
   std::size_t at = 0;
   while (at < text.size()) {
     while (at < text.size() && (Space(text[at]) || text[at] == ',')) ++at;
-    if (at == text.size() || text[at] != '"') break;
+    if (at == text.size()) break;
+    if (text[at] != '"') {
+      info.stopped = true;
+      break;
+    }
     const auto key_start = at++;
     bool escaped = false;
     while (at < text.size()) {
@@ -1096,7 +1138,11 @@ EnvelopeInfo OriginalEnvelope(std::string_view text, const c::ToolCallFormat& fo
       if (parsed && parsed->root().is_string()) key = parsed->root().string();
     }
     while (at < text.size() && Space(text[at])) ++at;
-    if (at == text.size() || text[at++] != ':') break;
+    if (at == text.size()) break;
+    if (text[at++] != ':') {
+      info.stopped = true;
+      break;
+    }
     while (at < text.size() && Space(text[at])) ++at;
     if (at == text.size()) break;
     const auto value = at;
@@ -1110,7 +1156,9 @@ EnvelopeInfo OriginalEnvelope(std::string_view text, const c::ToolCallFormat& fo
       // containing its closing quote can be chosen/kept. Other fields may come
       // first, and whitespace/key order are ordinary JSON semantics.
       auto encoded = Strip(text.substr(value, at - value));
-      if (!encoded.empty() && encoded.front() == '"' && encoded.back() == '"' &&
+      // (One fix to the frozen projection: a string still open, even one
+      // whose last byte is a quote, is an open name, not a complete invalid one.)
+      if (!scan.quoted && encoded.size() >= 2 && encoded.front() == '"' && encoded.back() == '"' &&
           encoded.size() <= 6 * request.NameBytes() + 2) {
         const auto bytes = static_cast<std::string>(encoded);
         auto parsed = j::Parse(bytes, {.max_bytes = bytes.size(),
@@ -1153,26 +1201,31 @@ TEST(ToolCalls, IncrementalEnvelopeMatchesOriginalAtEveryHostilePrefix) {
   for (const auto& body : bodies) {
     c::ToolInterpreter incremental(c::JsonToolCalls(), auto_request, Limits());
     c::ToolInterpreter named(c::JsonToolCalls(), named_request, Limits());
-    incremental.SyntaxOnly();
-    named.SyntaxOnly();
     const auto sink = [](c::ToolEvent) { return true; };
     ASSERT_TRUE(incremental.Push("{", sink));
     ASSERT_TRUE(named.Push("{", sink));
+    bool named_open = true;
     for (std::size_t size = 0; size <= body.size(); ++size) {
       const auto prefix = std::string_view(body).substr(0, size);
       const auto ordinary = OriginalEnvelope(prefix, c::JsonToolCalls(), auto_request);
-      const bool can_stop = !(ordinary.name && ordinary.arguments) && !ordinary.allowed;
+      // A body that stops being an object is answer text at once (B7).
+      const bool can_stop =
+          ordinary.stopped || (!(ordinary.name && ordinary.arguments) && !ordinary.allowed);
       EXPECT_EQ(incremental.CanStop(), can_stop) << prefix;
-      EXPECT_EQ(incremental.CanStop(), can_stop) << prefix;
-      const auto restricted = OriginalEnvelope(prefix, c::JsonToolCalls(), named_request);
-      EXPECT_EQ(named.Allows({}), !restricted.name || restricted.allowed) << prefix;
       if (size == body.size()) break;
       const auto next = std::string_view(body).substr(size, 1);
-      const auto future = OriginalEnvelope(std::string_view(body).substr(0, size + 1),
-                                           c::JsonToolCalls(), named_request);
-      EXPECT_EQ(named.Allows(next), !future.name || future.allowed) << prefix << next;
+      if (named_open) {
+        // The named grammar is at least the frozen projection's (it also
+        // checks the open name as a prefix), and the parser agrees with it.
+        const auto future = OriginalEnvelope(std::string_view(body).substr(0, size + 1),
+                                             c::JsonToolCalls(), named_request);
+        const bool allowed = named.Allows(next);
+        if (!(!future.name || future.allowed)) EXPECT_FALSE(allowed) << prefix << next;
+        auto copy = named;
+        EXPECT_EQ(copy.Push(next, sink).has_value(), allowed) << prefix << next;
+        named_open = allowed && named.Push(next, sink).has_value();
+      }
       ASSERT_TRUE(incremental.Push(next, sink));
-      ASSERT_TRUE(named.Push(next, sink));
     }
   }
 }
@@ -1216,8 +1269,8 @@ TEST(ToolCalls, PausedBareEnvelopeRetainsWholePendingAndFirstBodyProjections) {
         return c::ToolInterpreter::Flow::kPause;
       }));
       ASSERT_TRUE(parser.paused());
-      const auto info = OriginalEnvelope(std::string_view(input).substr(1), format, Request());
-      EXPECT_EQ(parser.CanStop(), !(info.name && info.arguments) && !info.allowed);
+      // CanStop is Finish(kStop)'s own decision: every buffered call completes.
+      EXPECT_TRUE(parser.CanStop());
       EXPECT_TRUE(parser.Allows({}));
       auto speculative = parser;
       EXPECT_TRUE(speculative.Allows(" more"));

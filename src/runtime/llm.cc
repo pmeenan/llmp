@@ -355,8 +355,8 @@ std::expected<std::vector<std::int32_t>, std::string> Llm::RenderChat(
     }
     return Error(rendered.error().ToString());
   }
-  if (options.reasoning != nullptr) {
-    *options.reasoning = false;
+  if (options.reasoning != nullptr || options.may_reason != nullptr) {
+    bool reasoning = false, may_reason = false;
     const auto* format = template_->tool_calls();
     if (format != nullptr && !format->reasoning_begin.empty()) {
       for (const auto& boundary : rendered->boundaries) {
@@ -364,10 +364,15 @@ std::expected<std::vector<std::int32_t>, std::string> Llm::RenderChat(
         const auto suffix = std::string_view(rendered->text).substr(boundary.offset);
         const auto begin = suffix.rfind(format->reasoning_begin);
         const auto end = suffix.rfind(format->reasoning_end);
-        *options.reasoning =
+        reasoning =
             begin != std::string_view::npos && (end == std::string_view::npos || begin > end);
+        // Gemma 4's thinking turn renders no channel: the model opens it.
+        may_reason = begin == std::string_view::npos && end == std::string_view::npos &&
+                     !format->reasoning_end.empty();
       }
     }
+    if (options.reasoning != nullptr) *options.reasoning = reasoning;
+    if (options.may_reason != nullptr) *options.may_reason = may_reason;
   }
   // The whole-fragment working set and bounded output are charged together.
   MemoryCharge charge;
@@ -458,7 +463,7 @@ std::expected<std::span<const float>, std::string> Llm::ConstrainedRow(
   if (branch.tool_sampling_ && std::ranges::none_of(filtered, finite)) {
     // Verification uses a tentative lexical cursor; the request itself owns
     // this refusal. Invalid native rows never acquire this classification.
-    branch.tool_sampling_->RefuseCandidates();
+    branch.tool_sampling_->Refuse();
   }
   return filtered;
 }

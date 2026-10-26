@@ -425,7 +425,19 @@ void CheckChatTokens(const tok::Tokenizer& t, std::string_view fixture_name,
     }
     std::deque<json::Document> arguments;
     const auto rendered = tmpl->render(ConversationFrom(c, &arguments));
-    ASSERT_TRUE(rendered.has_value());
+    // Upstream fixtures render tool results that follow no assistant call;
+    // the shared history contract refuses them, as OpenAI's API does
+    // (docs/tool-calls.md), so their reference IDs are not compared.
+    const std::string_view name = Get(c, "name").string();
+    if (name == "orphan-tool" || name == "tool-first" || name == "tool-after-user" ||
+        name == "tool-runs-interleaved" || name == "g3-system-ws") {
+      ASSERT_FALSE(rendered) << fixture_name << " " << name;
+      EXPECT_EQ(rendered.error().rule, chat::Rule::kUnsupported) << fixture_name << " " << name;
+      EXPECT_NE(rendered.error().reason.find("tool"), std::string_view::npos) << name;
+      continue;
+    }
+    ASSERT_TRUE(rendered.has_value())
+        << fixture_name << " " << Get(c, "name").string() << ": " << rendered.error().ToString();
     std::vector<TokenId> ids;
     const auto r = t.EncodeMarked(rendered->text, rendered->specials, {}, ids);
     ASSERT_TRUE(r.has_value()) << r.error().ToString();

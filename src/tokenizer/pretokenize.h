@@ -37,8 +37,7 @@ class SplitPlan {
   std::uint64_t WorkingBytes(std::size_t input_bytes) const;
   std::expected<void, Error> Split(std::span<const char32_t> text,
                                    std::vector<std::uint32_t>& lengths, RegexBudget& budget,
-                                   std::size_t* stable_prefix = nullptr,
-                                   bool* append_may_shrink = nullptr) const;
+                                   std::size_t* stable_prefix = nullptr) const;
 
  private:
   std::vector<Regex> stages_;

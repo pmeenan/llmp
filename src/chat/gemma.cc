@@ -824,16 +824,11 @@ std::expected<Rendered, Error> RenderGemma4Variant(const Conversation& c,
         } else {
           // A missing occurrence is harmless when every eligible call has the
           // same name: that is the only association detail this template uses.
-          for (std::size_t ci = 0; ci < m.tool_calls.size(); ++ci) {
-            bool claimed = false;
-            for (std::size_t r = i + 1; r < n && messages[r].role == Role::kTool; ++r)
-              claimed = claimed || messages[r].resolved_tool_call == ci;
-            if (claimed) continue;
-            if (!name.empty() && name != m.tool_calls[ci].name)
-              return Fail(Rule::kInvalid, "tool result association is ambiguous", k);
-            name = m.tool_calls[ci].name;
-          }
-          if (name.empty()) return Fail(Rule::kInvalid, "tool result association is ambiguous", k);
+          // Projection found that name, if the unclaimed calls share one.
+          const auto implied = messages[k].implied_name_call;
+          if (!implied || *implied >= m.tool_calls.size() || m.tool_calls[*implied].name.empty())
+            return Fail(Rule::kInvalid, "tool result association is ambiguous", k);
+          name = m.tool_calls[*implied].name;
         }
         w.Special(kToolResponse);
         w.Text("response:");

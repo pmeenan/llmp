@@ -542,7 +542,12 @@ api::CooperativeBackend::Retirement NodeBackend::Retire(api::CooperativeBackend:
       frame.generation_session->Cancel();
     }
     if (auto finished = frame.generation_session->Finish(); !finished && !frame.error) {
-      frame.error = Failure(500, "the generation failed: " + finished.error());
+      frame.error =
+          frame.options.tool_sampling && frame.options.tool_sampling->refused()
+              ? Failure(500,
+                        "the generation was refused by its tool constraint: " + finished.error(),
+                        "tool_output_invalid")
+              : Failure(500, "the generation failed: " + finished.error());
     }
   }
   const auto peers =

@@ -72,34 +72,35 @@ std::vector<std::pair<std::string, jinja::Input>> Variables(const Conversation& 
     const auto key = [&](std::string_view name) {
       return std::to_string(group) + ":" + std::string(name);
     };
+    // A tool result's function name: its call's, else the client's, else the
+    // one name its group's unclaimed calls share (ProjectContent resolved all
+    // three; they never disagree). Repeated same-name calls share it; no
+    // arbitrary occurrence is recorded in the conversation.
+    std::string_view result_name;
+    if (m.role == Role::kTool) {
+      result_name = m.tool_result_name;
+      if (calls_owner != nullptr) {
+        const auto& owned = calls_owner->tool_calls;
+        if (m.resolved_tool_call && *m.resolved_tool_call < owned.size())
+          result_name = owned[*m.resolved_tool_call].name;
+        if (result_name.empty() && m.implied_name_call && *m.implied_name_call < owned.size())
+          result_name = owned[*m.implied_name_call].name;
+      }
+    }
     std::vector<std::pair<std::string, Input>> fields;
     fields.emplace_back("role", Input::String(RoleName(m.role)));
     fields.emplace_back("content",
                         m.content.text() ? Input::String(*m.content.text()) : Input::None());
     if (name_only && m.role == Role::kTool && calls_owner != nullptr) {
-      std::string_view name = m.tool_result_name;
-      if (m.resolved_tool_call && *m.resolved_tool_call < calls_owner->tool_calls.size())
-        name = calls_owner->tool_calls[*m.resolved_tool_call].name;
-      if (name.empty()) {
-        // Only a unique remaining NAME is inferred. Repeated same-name calls
-        // share a key; no arbitrary occurrence is recorded in the conversation.
-        for (std::size_t ci = 0; ci < calls_owner->tool_calls.size(); ++ci) {
-          bool claimed = false;
-          for (std::size_t ri = group + 1;
-               ri < c.messages.size() && c.messages[ri].role == Role::kTool; ++ri)
-            claimed = claimed || c.messages[ri].resolved_tool_call == ci;
-          if (claimed) continue;
-          const auto candidate = calls_owner->tool_calls[ci].name;
-          if (!name.empty() && name != candidate) {
-            name = {};
-            break;
-          }
-          name = candidate;
-        }
-      }
-      if (!name.empty()) fields.emplace_back("tool_call_id", Input::String(key(name)));
-    } else if (!m.tool_call_id.empty()) {
-      fields.emplace_back("tool_call_id", Input::String(m.tool_call_id));
+      if (!result_name.empty())
+        fields.emplace_back("tool_call_id", Input::String(key(result_name)));
+    } else {
+      if (!m.tool_call_id.empty())
+        fields.emplace_back("tool_call_id", Input::String(m.tool_call_id));
+      // The function's name only as the client sent it (a legacy function
+      // message's): transformers passes the message as given (D-067).
+      if (!m.tool_result_name.empty())
+        fields.emplace_back("name", Input::String(m.tool_result_name));
     }
     if (m.reasoning_content) {
       fields.emplace_back("reasoning_content", Input::String(*m.reasoning_content));
@@ -432,8 +433,10 @@ enum class Verdict : std::uint8_t { kSame, kBothRefuse, kSkip, kDiffer };
 
 Verdict Probe(const Template& native, const jinja::Template& program, const TokenFacts& tokens,
               const Conversation& c, jinja::Usage& spent) {
+  // A conversation the native boundary cannot project says nothing of the
+  // template: no evidence either way.
   auto projected = ProjectContent(c, native.supports_tools);
-  if (!projected) return Verdict::kBothRefuse;
+  if (!projected) return Verdict::kSkip;
   const auto& resolved = *projected;
   const auto mine = native.render(resolved);
   if (!mine && mine.error().rule == Rule::kUnsupported) {

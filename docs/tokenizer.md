@@ -232,15 +232,35 @@ explicit capability refusals. The plan never rewrites published history.
 and context allowances cut only at canonical token boundaries. A terminal
 boundary is an actual grammar boundary, not an output-token allowance.
 
+Forced bytes continue a stream: their encoding (`EncodeOptions::continuation`)
+adds no SentencePiece dummy `▁` to any fragment, so mid-stream text reproduces
+exactly; only a span declared to start the stream (`remove_space_prefix`) keeps
+the dummy prefix. With `marked`, the planner encodes as `EncodeMarked` does:
+exactly the given spans are control tokens, in the planned text (the selected
+token's bytes, then the forced bytes, so a span may begin inside the selected
+token and heal it; a selected control token is a span of its own), and control
+text elsewhere, such as a client's tool name, stays text; user-defined tokens
+still match. The canonical encoding, block trace, following-byte check and
+held tail's cover (its spans shifted) all follow that one policy.
+`ControlSpans` finds the control tokens a `kParse` encoding of a marker would,
+to build spans; `ContainsControlText` reports control-token text anywhere in a
+string, for refusing names at intake. Unmarked planning keeps `kParse`.
+
 Boundary cover is proved only for a closed real block represented by one
 canonical token. An open block has zero cover: a future higher-priority merge
-can split a token encoded in isolation. Following-byte promotion requires
+can split a token encoded in isolation. A text ending in a possible longer
+special token (an open trie prefix the policy allows) commits only blocks whose
+partition the closed trace up to that prefix reproduces, since the atom would
+close the fragment there, which is not an append. Bytes that finish a character
+whose lead byte is already published have no canonical encoding from there:
+the planner holds them and the cover is zero, so ordinary sampling along the
+forced bytes completes the character. Following-byte promotion requires
 EOF-independent stability, identical prefix partitions and canonical IDs for
 every allowed continuation. A finite known-suffix first-ID match is only a
 consistency check; it never permits injecting an unstable token. The caller
 may keep an unchanged ordinary sampled token through a held tail as a distinct
-choice. Feeding proven spans in one causal unit, sampling constraints,
-speculative acceptance and public tool calls are separate runtime work.
+choice. Feeding proven spans in one causal unit, the sampling constraint and
+speculative acceptance are the runtime's ([tool calls](tool-calls.md)).
 
 Parser storage derives from the source and paid construction memory. There
 are no separate small expression, group, stage or wrapper-count policy limits.
@@ -546,8 +566,9 @@ and `string-arguments-not-object`, which both refuse).
 
 **Generated tool output.** The protocol-neutral [tool-call foundation](tool-calls.md)
 attaches a declarative output grammar to verified native templates and consumes
-only generated text. This is not yet wired into the public chat route; required
-trigger forcing and route qualification remain outstanding.
+only generated text. It serves the Chat Completions route, with required and
+named triggers forced through the canonical span planner above; real-model
+qualification remains outstanding.
 
 **Structured content.** `chat::Content` owns either nullable scalar text or
 ordered text, tool-use, tool-result and image parts. Intake keeps text-part

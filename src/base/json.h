@@ -15,8 +15,9 @@
 //
 // Limits bound what a hostile document can make the parser build: the
 // input size, nesting depth, value count and unescaped string bytes, each
-// checked while parsing. The document owns everything it returns, so it
-// does not borrow the input.
+// checked while parsing. The parser does not recurse, so no depth can
+// exhaust the calling thread's stack. The document owns everything it
+// returns, so it does not borrow the input.
 
 #ifndef LLMP_BASE_JSON_H_
 #define LLMP_BASE_JSON_H_
@@ -136,6 +137,11 @@ std::optional<std::size_t> FirstInvalidUtf8(std::string_view bytes);
 
 // Appends RFC 8259's minimal escaping of a UTF-8 string, with its quotes.
 void AppendQuoted(std::string_view text, std::string& out);
+
+// Appends a value as minimal RFC 8259 text: strings through AppendQuoted,
+// numbers as written (never rounded), no whitespace. Iterative: any nesting
+// depth is safe on any thread's stack.
+void AppendValue(Value value, std::string& out);
 
 }  // namespace llmp::base::json
 

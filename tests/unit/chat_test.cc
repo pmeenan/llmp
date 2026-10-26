@@ -17,6 +17,7 @@
 #include <deque>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -798,7 +799,7 @@ TEST(StructuredContent, ProjectionBoundsEveryCopiedLegacyFieldAndSharesJsonOwner
   ASSERT_TRUE(document);
   auto owner = std::make_shared<const json::Document>(std::move(*document));
   chat::Conversation base;
-  base.max_live_bytes = 4096;
+  base.max_projection_bytes = 4096;
   base.messages = {
       {.role = chat::Role::kUser,
        .content = std::vector<chat::MessagePart>{chat::TextPart{"hello"}}},
@@ -850,10 +851,58 @@ TEST(StructuredContent, ProjectionHonorsBoundsBeforeBuildingOutput) {
   ASSERT_FALSE(rendered);
   EXPECT_TRUE(Failed(rendered, &chat::Error::bound));
   c.max_render_bytes = 1024;
-  c.max_live_bytes = 1;
+  c.max_projection_bytes = 1;
   rendered = chat::RenderQwen38(c);
   ASSERT_FALSE(rendered);
   EXPECT_TRUE(Failed(rendered, &chat::Error::bound));
+}
+
+// The projection's storage is checked against what its caller funded for it
+// (serving charges ProjectionStorageBytes), not the interpreter's live-value
+// bound, which a native rendering never uses.
+TEST(StructuredContent, ProjectionChecksItsFundedStorageNotTheInterpreterBound) {
+  chat::Conversation c;
+  c.messages.push_back(
+      {.role = chat::Role::kUser,
+       .content = std::vector<chat::MessagePart>{chat::TextPart{"abc"}, chat::TextPart{"def"}}});
+  c.max_live_bytes = 1;
+  ASSERT_TRUE(chat::RenderQwen38(c));
+  const auto funded = chat::ProjectionStorageBytes(c);
+  ASSERT_GT(funded, 0U);
+  c.max_projection_bytes = static_cast<std::size_t>(funded);
+  EXPECT_TRUE(chat::ProjectContent(c));
+  c.max_projection_bytes = static_cast<std::size_t>(funded - 1);
+  auto refused = chat::ProjectContent(c);
+  ASSERT_FALSE(refused);
+  EXPECT_TRUE(refused.error().bound);
+}
+
+// A tool call's arguments are reparsed with the chat route's own limits
+// (bounded by their text, 64 deep), not the parser's defaults: arguments
+// past its default 64 MiB that intake accepted still project.
+TEST(StructuredContent, ToolArgumentsReparseWithTheIntakeLimits) {
+  const auto with_arguments = [](std::string arguments) {
+    chat::Conversation c;
+    c.max_render_bytes = std::size_t{256} << 20U;
+    c.messages.push_back({.role = chat::Role::kUser, .content = "go"});
+    c.messages.push_back({.role = chat::Role::kAssistant,
+                          .content = std::vector<chat::MessagePart>{
+                              chat::ToolUsePart{"a", "f", std::move(arguments)}}});
+    return chat::ProjectContent(c);
+  };
+  const std::size_t large = (std::size_t{64} << 20U) + 16;
+  auto projected = with_arguments("{\"text\":\"" + std::string(large, 'x') + "\"}");
+  ASSERT_TRUE(projected) << Failed(projected, &chat::Error::ToString).value_or("");
+  EXPECT_EQ(projected->messages[1].tool_calls[0].arguments.find("text")->string().size(), large);
+  const auto nested = [](std::size_t depth) {
+    std::string text = "{\"a\":";
+    for (std::size_t i = 1; i < depth; ++i) text += "[";
+    text += "0";
+    for (std::size_t i = 1; i < depth; ++i) text += "]";
+    return text + "}";
+  };
+  EXPECT_TRUE(with_arguments(nested(64)));
+  EXPECT_FALSE(with_arguments(nested(65)));
 }
 
 chat::Conversation ToolHistory(std::vector<chat::ToolUsePart> calls,
@@ -999,6 +1048,135 @@ TEST(ToolHistory, DirectLegacyRendererUsesLocalAssociationRatherThanLastEmptyId)
   EXPECT_TRUE(projected->messages[2].tool_call_id.empty());
 }
 
+// A large parallel group (20,000 calls) associates in time linear in its
+// calls and results: unnamed results by order, known IDs reordered as whole
+// messages, names resolved to their calls, and the one name the unclaimed
+// calls share. Each case was quadratic or cubic in the group before.
+TEST(ToolHistory, LargeParallelGroupsAssociateInLinearTime) {
+  constexpr std::size_t kCalls = 20'000;
+  const auto id = [](std::size_t i) { return "id" + std::to_string(i); };
+  const auto name = [](std::size_t i) { return "f" + std::to_string(i); };
+  {
+    SCOPED_TRACE("unnamed results without IDs");
+    std::vector<chat::ToolUsePart> calls;
+    std::vector<chat::ToolResultPart> results;
+    for (std::size_t i = 0; i < kCalls; ++i) {
+      calls.push_back({"", name(i), "{}"});
+      results.push_back({"", std::to_string(i)});
+    }
+    auto projected = chat::ProjectContent(ToolHistory(std::move(calls), std::move(results)));
+    ASSERT_TRUE(projected) << Failed(projected, &chat::Error::ToString).value_or("");
+    for (std::size_t i = 0; i < kCalls; ++i)
+      ASSERT_EQ(projected->messages[2 + i].resolved_tool_call, i);
+  }
+  {
+    SCOPED_TRACE("known IDs in reverse");
+    std::vector<chat::ToolUsePart> calls;
+    std::vector<chat::ToolResultPart> results;
+    for (std::size_t i = 0; i < kCalls; ++i) {
+      calls.push_back({id(i), name(i), "{}"});
+      results.push_back({id(kCalls - 1 - i), std::to_string(kCalls - 1 - i)});
+    }
+    auto projected = chat::ProjectContent(ToolHistory(std::move(calls), std::move(results)));
+    ASSERT_TRUE(projected) << Failed(projected, &chat::Error::ToString).value_or("");
+    for (std::size_t i = 0; i < kCalls; ++i) {
+      const auto& m = projected->messages[2 + i];
+      ASSERT_EQ(m.tool_call_id, id(i));
+      ASSERT_EQ(m.resolved_tool_call, i);
+      ASSERT_EQ(m.content.text(), std::to_string(i));
+    }
+  }
+  {
+    SCOPED_TRACE("names without IDs in reverse");
+    std::vector<chat::ToolUsePart> calls;
+    std::vector<chat::ToolResultPart> results;
+    for (std::size_t i = 0; i < kCalls; ++i) {
+      calls.push_back({"", name(i), "{}"});
+      results.push_back({"", "r", false, name(kCalls - 1 - i)});
+    }
+    auto projected = chat::ProjectContent(ToolHistory(std::move(calls), std::move(results)));
+    ASSERT_TRUE(projected) << Failed(projected, &chat::Error::ToString).value_or("");
+    for (std::size_t r = 0; r < kCalls; ++r)
+      ASSERT_EQ(projected->messages[2 + r].resolved_tool_call, kCalls - 1 - r);
+  }
+  {
+    SCOPED_TRACE("half the results of same-name calls");
+    std::vector<chat::ToolUsePart> calls(kCalls, chat::ToolUsePart{"", "f", "{}"});
+    std::vector<chat::ToolResultPart> results(kCalls / 2, chat::ToolResultPart{"", "r"});
+    const auto c = ToolHistory(std::move(calls), std::move(results));
+    auto projected = chat::ProjectContent(c);
+    ASSERT_TRUE(projected) << Failed(projected, &chat::Error::ToString).value_or("");
+    for (std::size_t r = 0; r < kCalls / 2; ++r) {
+      const auto& m = projected->messages[2 + r];
+      ASSERT_FALSE(m.resolved_tool_call);  // no occurrence is invented
+      ASSERT_TRUE(m.implied_name_call);
+      ASSERT_EQ(projected->messages[1].tool_calls[*m.implied_name_call].name, "f");
+    }
+    auto text = chat::RenderGemma4(c);
+    ASSERT_TRUE(text) << Failed(text, &chat::Error::ToString).value_or("");
+    std::size_t responses = 0;
+    for (auto at = text->text.find("response:f{value:"); at != std::string::npos;
+         at = text->text.find("response:f{value:", at + 1))
+      ++responses;
+    EXPECT_EQ(responses, kCalls / 2);
+  }
+  {
+    SCOPED_TRACE("distinct IDs within one message");
+    std::vector<chat::ToolUsePart> calls;
+    for (std::size_t i = 0; i < kCalls; ++i) calls.push_back({id(i), name(i), "{}"});
+    EXPECT_TRUE(chat::ProjectContent(ToolHistory(calls, {})));
+    calls.push_back({id(kCalls / 2), "g", "{}"});
+    auto repeated = chat::ProjectContent(ToolHistory(std::move(calls), {}));
+    ASSERT_FALSE(repeated);
+    EXPECT_EQ(repeated.error().reason, "tool use IDs must be distinct within a message");
+  }
+}
+
+// The one name a group's unclaimed calls share is recorded only when they
+// share one: several names, or none left, imply nothing.
+TEST(ToolHistory, ImpliedNameIsTheUnclaimedCallsSharedName) {
+  const auto implied = [](const chat::Conversation& c) -> std::optional<std::string> {
+    auto projected = chat::ProjectContent(c);
+    if (!projected) return std::nullopt;
+    const auto& m = projected->messages.back();
+    if (!m.implied_name_call) return std::string("-");
+    return projected->messages[1].tool_calls[*m.implied_name_call].name;
+  };
+  // The known-ID result claims `a`; the rest are all `f`.
+  EXPECT_EQ(implied(ToolHistory({{"a", "g", "{}"}, {"b", "f", "{}"}, {"c", "f", "{}"}},
+                                {{"a", "x"}, {"", "y"}})),
+            "f");
+  EXPECT_EQ(implied(ToolHistory({{"a", "f", "{}"}, {"b", "g", "{}"}}, {{"", "y"}})), "-");
+  // A complete group claims every call.
+  EXPECT_EQ(implied(ToolHistory({{"a", "f", "{}"}, {"b", "f", "{}"}}, {{"", "x"}, {"", "y"}})),
+            "-");
+}
+
+// An interpreted template reads a tool result's function name as `name`, as
+// an OpenAI client's tool message carries it: the client's, its call's, or
+// the one name the unclaimed calls share; none when that is ambiguous.
+TEST(ToolHistory, InterpretedTemplatesReadOnlyTheClientsResultName) {
+  // Interpreted templates see a tool message as the client sent it, as
+  // transformers does (D-067): a legacy function result's name, never one
+  // inferred from its call.
+  auto t = chat::ChatTemplate::ForText(
+      "{% for m in messages %}{% if m.role == 'tool' %}[{{ m.name | default('?') }}]"
+      "{% endif %}{% endfor %}",
+      {});
+  ASSERT_TRUE(t) << t.error();
+  ASSERT_EQ(t->how(), chat::ChatTemplate::How::kInterpreted);
+  const auto render = [&](const chat::Conversation& c) {
+    auto r = t->Render(c);
+    return r ? r->text : r.error().ToString();
+  };
+  EXPECT_EQ(
+      render(ToolHistory({{"a", "first", "{}"}, {"b", "second", "{}"}}, {{"b", "B"}, {"a", "A"}})),
+      "[?][?]");
+  EXPECT_EQ(render(ToolHistory({{"", "f", "{}"}, {"", "g", "{}"}}, {{"", "G", false, "g"}})),
+            "[g]");
+  EXPECT_EQ(render(ToolHistory({{"", "f", "{}"}, {"", "f", "{}"}}, {{"", "x"}})), "[?]");
+}
+
 TEST(ToolHistory, LegacyNameStorageIsCountedBeforeProjection) {
   chat::Content content(
       std::vector<chat::MessagePart>{chat::ToolResultPart{"", "x", false, std::string(8192, 'n')}});
@@ -1009,7 +1187,7 @@ TEST(ToolHistory, LegacyNameStorageIsCountedBeforeProjection) {
   auto projected = chat::ProjectContent(c);
   ASSERT_TRUE(projected);
   projected->messages.back().tool_result_name.assign(8192, 'n');
-  projected->max_live_bytes = 4096;
+  projected->max_projection_bytes = 4096;
   auto refused = chat::ProjectContent(*projected);
   ASSERT_FALSE(refused);
   EXPECT_TRUE(refused.error().bound);

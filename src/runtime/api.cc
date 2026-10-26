@@ -17,6 +17,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -27,6 +28,10 @@ namespace llmp::runtime::api {
 namespace {
 
 namespace json = base::json;
+
+// One entry of an unordered index of names (a node with its cached hash and a
+// bucket, with allocator rounding).
+constexpr std::uint64_t kNameIndexEntryBytes = 64;
 
 std::unexpected<Error> Bad(std::string message, std::string param = {}, std::string code = {}) {
   return std::unexpected(Error{.status = 400,
@@ -130,29 +135,9 @@ std::expected<chat::Content, Error> Content(const json::Value& content, const st
   return chat::Content(std::move(text));
 }
 
-// Preserve JSON number spellings, including values outside machine floating point.
-void AppendJson(json::Value v, std::string& out) {
-  if (v.is_string())
-    json::AppendQuoted(v.string(), out);
-  else if (v.is_number())
-    out += v.number();
-  else if (v.is_bool())
-    out += v.boolean() ? "true" : "false";
-  else if (v.is_null())
-    out += "null";
-  else {
-    out += v.is_object() ? '{' : '[';
-    for (std::size_t i = 0; i < v.size(); ++i) {
-      if (i) out += ',';
-      if (v.is_object()) {
-        json::AppendQuoted(v.key(i), out);
-        out += ':';
-      }
-      AppendJson(v.is_object() ? v.member(i) : v.at(i), out);
-    }
-    out += v.is_object() ? '}' : ']';
-  }
-}
+// Minimal JSON text that preserves number spellings, including values outside
+// machine floating point; iterative (any nesting is safe on any stack).
+void AppendJson(json::Value v, std::string& out) { json::AppendValue(v, out); }
 
 bool SameJson(json::Value a, json::Value b) {
   if (a.kind() != b.kind()) return false;
@@ -406,6 +391,11 @@ std::expected<std::vector<chat::ToolDefinition>, Error> ParseDefinitions(json::V
       return Bad(where + ".name must be nonempty", field);
     chat::ToolDefinition parsed;
     parsed.name = std::string(name->string());
+    // The template receives the function object as the client sent it.
+    AppendJson(definition, parsed.function_json);
+    if (memory != nullptr && !charge.Add(*memory, parsed.function_json.capacity()))
+      return std::unexpected(
+          MemoryRefusal(*memory, parsed.function_json.capacity(), "tool definitions"));
     for (std::size_t k = 0; k < definition.size(); ++k) {
       auto key = definition.key(k);
       auto value = definition.member(k);
@@ -451,10 +441,19 @@ std::expected<std::shared_ptr<const ToolOptions>, Error> ParseTools(json::Value 
     if (!legacy) return std::unexpected(legacy.error());
     if (definitions.size() != legacy->size())
       return Bad("tools and functions conflict", "functions");
+    // Each definition's legacy twin, by name (the first of a repeated name).
+    MemoryCharge index_charge;
+    const std::uint64_t index_bytes = legacy->size() * kNameIndexEntryBytes;
+    if (memory != nullptr && !index_charge.Add(*memory, index_bytes))
+      return std::unexpected(MemoryRefusal(*memory, index_bytes, "tool definition comparison"));
+    std::unordered_map<std::string_view, std::size_t> by_name;
+    by_name.reserve(legacy->size());
+    for (std::size_t i = 0; i < legacy->size(); ++i) by_name.try_emplace((*legacy)[i].name, i);
     for (const auto& definition : definitions) {
-      const auto other = std::ranges::find(*legacy, definition.name, &chat::ToolDefinition::name);
-      if (other == legacy->end() || definition.description != other->description ||
-          definition.strict != other->strict)
+      const auto found = by_name.find(definition.name);
+      if (found == by_name.end()) return Bad("tools and functions conflict", "functions");
+      const auto other = legacy->begin() + static_cast<std::ptrdiff_t>(found->second);
+      if (definition.description != other->description || definition.strict != other->strict)
         return Bad("tools and functions conflict", "functions");
       MemoryCharge comparison;
       const auto bytes = json::ParseWorkingBytes(definition.parameters_json) +
@@ -480,6 +479,10 @@ std::expected<std::shared_ptr<const ToolOptions>, Error> ParseTools(json::Value 
     if (choice.kind != parsed->kind || choice.name != parsed->name)
       return Bad("tool_choice and function_call conflict", "function_call");
   }
+  // `auto` with nothing declared is no tools, as when nothing is sent (a
+  // required or named choice still needs its definitions).
+  if (definitions.empty() && choice.kind == chat::ToolChoiceKind::kAuto)
+    choice.kind = chat::ToolChoiceKind::kNone;
   if (present(parallel) && !parallel->is_bool())
     return Bad("parallel_tool_calls must be a boolean", "parallel_tool_calls");
   const auto bound = chat::ToolRequestBytes(definitions);
@@ -1091,7 +1094,12 @@ std::string CompletionJson(std::string_view id, std::int64_t created, std::strin
   out += std::format(",\"object\":\"chat.completion\",\"created\":{},\"model\":", created);
   json::AppendQuoted(model, out);
   out += ",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":";
-  json::AppendQuoted(content, out);
+  // A reply of tool calls alone has no content (null, as OpenAI sends it);
+  // the fixed allowance in CompletionJsonBytes covers the two extra bytes.
+  if (content.empty() && !calls.empty())
+    out += "null";
+  else
+    json::AppendQuoted(content, out);
   if (reasoning) {
     out += ",\"reasoning\":";
     json::AppendQuoted(*reasoning, out);

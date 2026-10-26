@@ -315,8 +315,10 @@ Status Llm::GenerationSession::ApplyCertain(std::vector<float> row,
   auto tentative = constraint;
   const auto known = constraint.certain().first(certain_rows_);
   for (const auto token : known) {
-    if (auto accepted = tentative.Accept(token); !accepted)
+    if (auto accepted = tentative.Accept(token); !accepted) {
+      constraint.Refuse();  // the request's refusal, not the copy's
       return FailAfterAnchor(accepted.error());
+    }
   }
   tentative.Budget(left_ - certain_rows_, model_.context_ - position_ - certain_rows_ - 1);
   const bool more = constraint.certain().size() > certain_rows_;

@@ -5,30 +5,43 @@
 
 The M3.5 implementation connects the protocol-neutral interpreter to Chat
 Completions intake, shared rendering, common generation and route events.
-Real-model and OpenCode qualification remain pending; this implementation
-checkpoint does not qualify every served model. Strict tool arguments remain
-M7's constrained-output work.
+A bounded qualification passed on 2026-10-22 (six native Qwen API
+transactions and one OpenCode task; [D-097's amendment](decisions.md) and
+[the results](experiments/m35-tools/RESULTS.md)); full served-model and client
+qualification remains open. `strict: true` is accepted and ignored, as vLLM
+does: arguments are not validated against their schema (M7's constrained
+output).
 
 `ToolRequest` owns normalized definitions and their JSON documents. Its neutral
 choice is auto, none, required or named, with a parallel-call flag. Named
 selection supplies only that definition to the template; the complete request
-still knows its declarations. Strict definitions, duplicate names and missing
-required/named declarations fail before generation. Active names must round-trip
-exactly through the selected format: delimiter collisions and stripped names
-fail before rendering or native work. JSON envelopes retain escaped names;
-`none` bypasses this check. Non-strict schemas guide
-conversion, not argument validation: an unconvertible scalar stays a string.
+still knows its declarations. The template receives each client function
+object as sent (no field the client omitted is printed). Duplicate names and
+missing required/named declarations fail before generation; both name lookups
+and result association are hash-based, linear in the request. Active names must
+round-trip exactly through the selected format: delimiter collisions and
+stripped names fail before rendering or native work. They must also be text to
+the model's tokenizer: names that are not UTF-8, not NFC under an NFC tokenizer,
+or that contain a control token's text are refused (400 `invalid_tool_name`).
+JSON envelopes retain escaped names; `none` bypasses these checks. Schemas guide
+conversion, not argument validation: `type` (a name or list) and, minimally,
+the alternatives of `anyOf`/`oneOf` choose JSON for admitted non-string values;
+an unconvertible scalar stays a string.
 Implicit tagged values use structured scanning only for a leading container
 kind admitted by their property schema. Missing or non-container schemas keep
 raw strings raw; an explicit JSON encoding always uses JSON syntax.
 
 `ToolInterpreter` consumes **generated output only**, never rendered prompt
-text. It emits owned text, reasoning-end and complete-call events. A completed
+text. It emits owned text, reasoning-begin, reasoning-end and complete-call
+events. Output that starts with the format's reasoning opener (Gemma 4's
+`<|channel>thought`, `<think>`) opens reasoning the template did not prefill,
+as the non-tools path does; anywhere else it is text. A completed
 call carries its entire validated JSON argument object in one event, ready for
 U5's existing route encoder to serialize as one argument fragment. Failed or
 unfinished calls never publish partial arguments. A natural end with an
 unfinished call fails; an output-limit end drops that unfinished call. A
-required/named request still fails if it completed no qualifying call.
+required/named request fails at a natural end without a qualifying call; an
+output-limit end without one ends the reply by length (no calls, no error).
 
 Each verified native template registration supplies syntax data: optional
 outer wrappers, call delimiters, name position, argument encoding, parameter
@@ -41,15 +54,43 @@ The source-verified Llama 3.3 template hash
 `e10ca381b1ccc5cf9db52e371f3b6651576caee0a630b452e2816b2d404d4b65`
 (`nvidia/Llama-3.3-70B-Instruct-NVFP4@f792b707`) independently binds a bare
 JSON object envelope with `name` and `parameters`, even when rendering is
-interpreted. Ordinary non-call JSON remains answer text. An interpreted
-template with unknown output syntax exposes no grammar. A
+interpreted. Only an object at the start of the answer (after whitespace) or
+right after a call is a candidate, as in vLLM and llama.cpp; JSON in prose is
+answer text and is not withheld. In auto mode a candidate that is not a call
+(no name or arguments, or not valid JSON) is answer text; required and named
+modes refuse it. Arguments given as a JSON string that holds an object are
+accepted. An interpreted template with unknown output syntax exposes no grammar. A
 synthetic key/value-tag grammar tests extensibility without claiming support
 for an unverified GLM template.
 
-Required/named choices mask terminal tokens during reasoning and force the
-opening after the declared reasoning end, or immediately outside reasoning.
-Every candidate's complete decoded bytes pass the same lexical/name rules
-before both sampling and speculative acceptance. Original native rows are
+**One grammar.** The sampler's cursor is a `ToolInterpreter` fed exactly the
+bytes the output parser receives (each token decoded by the same stream
+decoder: hidden control tokens dropped, ill-formed UTF-8 replaced). Its probe
+(`Allows`) runs the parser's own code on a copied cursor over the buffered
+bytes plus the candidate, and `CanStop` is `Finish`'s own decision, so the
+sampler, the speculative judge and the parser cannot disagree. Object notation
+is one byte-stepped grammar used both to check sampled prefixes and to convert
+complete calls (strings use the declared quote only; keys are quoted or bare).
+The cursor is incremental: probes scan only new bytes, apart from the bounded
+name checks and the full call check when a candidate closes a call. Malformed
+text between tagged parameters is refused at once. One refusal is left to the
+parser: a call that closes but cannot be converted (invalid explicit JSON, a
+repeated parameter or key, a second call with parallel calls disabled). Its
+body is fixed by then, so masking the closing token could only run a
+constrained reply on to its token allowance; the probe allows the close and
+the request is refused at once (500 `tool_output_invalid`, the error starting
+`the closed tool call is invalid:`).
+
+In unconstrained auto mode (parallel calls allowed) no token is refused: only
+terminals are masked while a call is open, and the output parser alone judges
+the reply. Required/named choices mask terminal tokens during reasoning and
+force the opening after the declared reasoning end, or immediately outside
+reasoning. When the template leaves reasoning to the model (the generation
+prompt neither opens nor closes it, as Gemma 4's thinking turn), the model may
+open reasoning first; the opener is forced after it ends. Every candidate's
+decoded bytes pass the same grammar before both sampling and speculative
+acceptance; a bare JSON name is checked as a prefix of an allowed name while
+it is written. Original native rows are
 validated first, so masks cannot hide NaN or positive infinity; negative
 infinity remains legal padding. Names are constrained on
 subsequent calls too; no argument payload is copied per vocabulary candidate.
@@ -62,7 +103,10 @@ Speculative judging ends at the first accepted natural terminator, before
 later verified rows could reopen or reject the already completed tool stream.
 
 The [canonical span planner](tokenizer.md) finds an exact cover before the selecting token is
-published. Proven stable IDs run with that selecting anchor in one common
+published. Forced spans use marked encoding: the format markers' control tokens
+are specials, and the client's name between them is always text. A plan cut
+by the remaining token allowance publishes the selected token unchanged and
+the reply ends by length. Proven stable IDs run with that selecting anchor in one common
 causal unit, including ordinary models and target-written drafter state. An
 unstable final block remains ordinary target sampling: unchanged selected IDs
 advance the held grammar, with no injected unstable IDs or claim of canonical
@@ -71,16 +115,20 @@ accepting a proposal whose cover changes its ID or introduces a certain span;
 already public anchors are never replaced. Usage and optional scoring follow
 actual published IDs and their real causal rows.
 
-The caller derives `json::Limits` from its admitted request/output resource
-budget and prepays `ToolRequestBytes` and `ToolOutputBytes`. These overflow-
-checked peak bounds include JSON tables and temporary escaping/conversion;
-the sink separately owns and funds retained events after delivery. The parser
-limits total raw generated bytes to the admitted bound, not an arbitrary call
-count, duration or per-call quota. Normalized definitions and converted argument
-JSON use checked expanded byte bounds shared with the prepayment calculation;
-escaping never grants more raw input bytes. The other JSON limits still apply
-to the internal documents, including normalization's added envelope values,
-keys and depth. JSON nesting uses the existing parser stack bound. The streaming scanner keeps its lexical position across fragments and
+The caller prepays `ToolRequestBytes` for the request. Tool output is funded
+as it grows, never from `max_tokens`: `ToolOutputBytes(open)` bounds what the
+parser, the sampler's cursor with its speculative copies and one call's
+conversion hold for an open call (or held text) of `open` raw bytes, and
+serving grows the request's charge to it before each token's bytes reach the
+parser (within the grant, else past it while the request pool's capacity holds,
+else a memory refusal for that request alone). A request with `max_tokens`
+omitted therefore reserves nothing for output it has not produced. The sink
+separately owns and funds retained events after delivery. The parser limits
+total raw generated bytes to the token allowance, not an arbitrary call count,
+duration or per-call quota. Generated JSON nests at most `api::kMaxJsonDepth`
+(64) levels: a deeper value is a request-local refusal (or, for a schema-typed
+tagged value, stays its raw string), and no parser or serializer recurses per
+level, so no output can exhaust the driver's stack. The streaming scanner keeps its lexical position across fragments and
 withholds partial UTF-8 and marker prefixes before emitting text. Bare-envelope
 name/argument recognition also retains fixed, copyable metadata: probes of an
 unfinished call advance over appended bytes and any held delimiter suffix,
@@ -90,6 +138,15 @@ probes; bounded keys and names use the existing JSON checks. `ToolOutputBytes`
 funds both cursor snapshots through the actual interpreter size. This removes
 whole-prefix rescanning structurally; no measured parser or model speedup is
 claimed.
+
+A tool result must follow an assistant message with tool calls (its own
+group of results directly after it); a result after a user message, first in
+the conversation or after an assistant without calls is refused with 400
+before rendering, as OpenAI's API validates history, even where an upstream
+template would render it. The frozen upstream fixtures that render such
+orphan results (`orphan-tool`, `tool-first`, `tool-after-user`,
+`tool-runs-interleaved`, `g3-system-ws`) keep their source bytes and are
+asserted as refusals.
 
 Parallel result groups are reordered by IDs into their assistant's call order.
 Their text and error flag move together. Missing IDs preserve supplied order,
@@ -112,7 +169,10 @@ executed, and this foundation makes no stronger prompt-isolation claim.
 The malformed-call cases follow the pinned Flare assessment: closed malformed
 calls fail, optional Qwen outer tags are tolerated, the next parameter/call
 boundary can close an unclosed parameter, and exactly one wrapping newline is
-trimmed at each side where declared. Unknown names survive auto mode. See
+trimmed at each side where declared. A call whose last parameter is never
+closed ends at the first `</invoke>` alias inside that value when the output
+ends there (a natural end is then allowed); a value closed later keeps the
+alias as its text. Unknown names survive auto mode. See
 [Flare's pinned API semantics](https://github.com/NVIDIA/flare-local-inference/blob/e7b8c016474f3b58d390910a7368f58a792b4744/docs/api.md#conversation-and-tool-semantics)
 and [the project assessment](flare-assessment.md#5-tool-calls-and-the-messages-profile).
 No upstream parser implementation is copied; the shared interpreter implements
@@ -149,6 +209,12 @@ both response modes, with stable request-owned IDs and one validated argument
 fragment per call. Clients execute tools. Result messages return through the
 same shared conversation adapter used by native and interpreted rendering.
 
+A tool request that names no tools with `auto` (`tools: []`) is a request
+without tools. Non-streaming replies with calls and no text send
+`content: null`. Interpreted templates receive a tool result's `name` when
+the client sent one (a legacy function result), as transformers does; native
+renderers resolve the name they need from the association.
+
 An accepted-and-paused output callback retains the parser's unread input tail
 and token batch. Serial yield and cooperative pause transfer the same paid
 output state; neither replays an accepted call nor prematurely finishes a
@@ -158,5 +224,10 @@ Explicit stop strings match contiguous answer segments, excluding reasoning and
 arguments, and cannot join a partial match across a call. Natural completion
 with calls uses `tool_calls`; token exhaustion retains `length` and drops a
 truncated final call. Required/named mode still refuses if no call completed.
-An empty constrained candidate set is a request failure after native retirement,
-not evidence that the model's execution failed.
+Any refusal by the request's tool grammar (an empty constrained candidate set,
+a token or forced span outside the grammar) fails that request alone after
+native retirement, on the serial path as in a cohort (500
+`tool_output_invalid`); it is not evidence that the model's execution failed.
+When the exchange itself ends the reply (the client gone, a deadline, the
+runtime stopping), the reply carries the exchange's own status, not a tool
+error.

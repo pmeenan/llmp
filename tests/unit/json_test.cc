@@ -6,13 +6,20 @@
 #include "base/json.h"
 
 #include <gtest/gtest.h>
+#include <pthread.h>
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <expected>
+#include <format>
+#include <limits>
 #include <optional>
 #include <random>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "expected_error.h"
 #include "tokenizer_fixtures.h"
@@ -25,6 +32,118 @@ using llmp::test_support::Get;
 
 std::optional<std::uint64_t> FailOffset(std::string_view text, const json::Limits& limits = {}) {
   return Failed(json::Parse(text, limits), &json::Error::offset);
+}
+
+// The reason and offset a parse fails with, or nothing when it succeeds.
+std::optional<std::pair<std::string_view, std::uint64_t>> Failure(std::string_view text,
+                                                                  const json::Limits& limits = {}) {
+  const auto result = json::Parse(text, limits);
+  if (result) {
+    return std::nullopt;
+  }
+  return std::pair{result.error().reason, result.error().offset};
+}
+
+using Parsed = std::expected<json::Document, json::Error>;
+
+// Parses on a thread with a 256 KiB stack: far less than a parser that
+// recursed per nesting level would need for the deep documents below.
+Parsed ParseOnSmallStack(std::string_view text, const json::Limits& limits) {
+  struct Call {
+    std::string_view text;
+    const json::Limits* limits;
+    std::optional<Parsed> result;
+  } call{.text = text, .limits = &limits, .result = std::nullopt};
+  pthread_attr_t attr{};
+  EXPECT_EQ(pthread_attr_init(&attr), 0);
+  EXPECT_EQ(pthread_attr_setstacksize(&attr, std::size_t{256} << 10U), 0);
+  pthread_t thread{};
+  const int created = pthread_create(
+      &thread, &attr,
+      [](void* p) -> void* {
+        auto* c = static_cast<Call*>(p);
+        c->result = json::Parse(c->text, *c->limits);
+        return nullptr;
+      },
+      &call);
+  pthread_attr_destroy(&attr);
+  EXPECT_EQ(created, 0);
+  if (created != 0) {
+    return std::unexpected(json::Error{"thread not created", 0});
+  }
+  EXPECT_EQ(pthread_join(thread, nullptr), 0);
+  if (!call.result) {
+    return std::unexpected(json::Error{"thread did not parse", 0});
+  }
+  return std::move(*call.result);
+}
+
+json::Limits Unbounded(std::size_t bytes) {
+  json::Limits limits;
+  limits.max_bytes = bytes;
+  limits.max_depth = std::numeric_limits<std::size_t>::max();
+  limits.max_values = bytes + 1;
+  limits.max_string_bytes = bytes;
+  return limits;
+}
+
+// Writes a document back as JSON with no space, without recursing.
+std::string Serialize(json::Value root) {
+  struct Frame {
+    json::Value value;
+    std::size_t next;
+  };
+  std::string out;
+  std::vector<Frame> open;
+  auto begin = [&](json::Value v) {
+    switch (v.kind()) {
+      case json::Kind::kNull:
+        out += "null";
+        break;
+      case json::Kind::kFalse:
+        out += "false";
+        break;
+      case json::Kind::kTrue:
+        out += "true";
+        break;
+      case json::Kind::kNumber:
+        out += v.number();
+        break;
+      case json::Kind::kString:
+        json::AppendQuoted(v.string(), out);
+        break;
+      case json::Kind::kArray:
+        out += '[';
+        open.push_back({.value = v, .next = 0});
+        break;
+      case json::Kind::kObject:
+        out += '{';
+        open.push_back({.value = v, .next = 0});
+        break;
+    }
+  };
+  begin(root);
+  while (!open.empty()) {
+    const json::Value v = open.back().value;
+    const std::size_t i = open.back().next;
+    if (i == v.size()) {
+      out += v.is_object() ? '}' : ']';
+      open.pop_back();
+      continue;
+    }
+    ++open.back().next;
+    if (i > 0) {
+      out += ',';
+    }
+    if (v.is_object()) {
+      json::AppendQuoted(v.key(i), out);
+      out += ':';
+      begin(v.member(i));
+    } else {
+      begin(v.at(i));
+    }
+  }
+  return out;
 }
 
 TEST(Json, ParsesEveryKind) {
@@ -132,6 +251,115 @@ TEST(Json, EnforcesItsLimits) {
 TEST(Json, DeepNestingIsBoundedNotRecursedWithoutLimit) {
   const std::string deep(100000, '[');
   EXPECT_TRUE(FailOffset(deep));
+}
+
+// Every refusal's reason and offset, which callers report.
+TEST(Json, RefusalsGiveTheirReasonAndOffset) {
+  using F = std::pair<std::string_view, std::uint64_t>;
+  EXPECT_EQ(Failure(""), F("value expected", 0));
+  EXPECT_EQ(Failure("["), F("value expected", 1));
+  EXPECT_EQ(Failure("[1,]"), F("invalid number", 3));
+  EXPECT_EQ(Failure("[1"), F("',' or ']' expected", 2));
+  EXPECT_EQ(Failure("[1 2]"), F("',' or ']' expected", 3));
+  EXPECT_EQ(Failure("[tru]"), F("invalid literal", 1));
+  EXPECT_EQ(Failure("{"), F("member name expected", 1));
+  EXPECT_EQ(Failure("{1}"), F("member name expected", 1));
+  EXPECT_EQ(Failure(R"({"a" 1})"), F("':' expected", 5));
+  EXPECT_EQ(Failure(R"({"a":)"), F("value expected", 5));
+  EXPECT_EQ(Failure(R"({"a":1 "b":2})"), F("',' or '}' expected", 7));
+  EXPECT_EQ(Failure("[[1]]x"), F("text after the value", 5));
+  EXPECT_EQ(Failure("[1]]"), F("text after the value", 3));
+  EXPECT_EQ(Failure(R"([{"a":1,"a":2}])"), F("duplicate member name", 14));
+  EXPECT_EQ(Failure(R"({"a":[],"a":{}})"), F("duplicate member name", 15));
+  json::Limits limits;
+  limits.max_depth = 3;
+  EXPECT_EQ(Failure("[[[[1]]]]", limits), F("nesting too deep", 3));
+  limits.max_depth = 0;
+  EXPECT_EQ(Failure("[]", limits), F("nesting too deep", 0));
+  EXPECT_FALSE(Failure("1", limits));
+  limits = {};
+  limits.max_values = 4;
+  EXPECT_EQ(Failure("[1, 2, 3, 4]", limits), F("too many values", 10));
+  limits = {};
+  limits.max_string_bytes = 4;
+  EXPECT_EQ(Failure(R"(["ab", "cde"])", limits), F("too many string bytes", 12));
+  limits.max_string_bytes = 1;
+  EXPECT_EQ(Failure(R"({"ab": 1})", limits), F("too many string bytes", 5));
+}
+
+// A caller may allow any depth: the parser does not recurse, so a million
+// open brackets fail cleanly on a small stack.
+TEST(Json, UnterminatedDeepNestingFailsOnASmallStack) {
+  const std::string deep(1'000'000, '[');
+  const auto result = ParseOnSmallStack(deep, Unbounded(deep.size()));
+  EXPECT_EQ(Failed(result, &json::Error::reason), "value expected");
+  EXPECT_EQ(Failed(result, &json::Error::offset), deep.size());
+}
+
+TEST(Json, BalancedDeepNestingParsesOnASmallStack) {
+  constexpr std::size_t kDepth = 1'000'000;
+  const std::string deep = std::string(kDepth, '[') + std::string(kDepth, ']');
+  const auto doc = ParseOnSmallStack(deep, Unbounded(deep.size()));
+  ASSERT_TRUE(doc.has_value()) << doc.error().ToString();
+  json::Value v = doc->root();
+  for (std::size_t level = 1; level < kDepth; ++level) {
+    ASSERT_TRUE(v.is_array()) << level;
+    ASSERT_EQ(v.size(), 1U) << level;
+    v = v.at(0);
+  }
+  EXPECT_TRUE(v.is_array());
+  EXPECT_EQ(v.size(), 0U);
+
+  // Exactly max_depth levels parse; one more is refused at its bracket.
+  json::Limits limits = Unbounded(deep.size());
+  limits.max_depth = kDepth;
+  EXPECT_TRUE(ParseOnSmallStack(deep, limits).has_value());
+  limits.max_depth = kDepth - 1;
+  const auto refused = ParseOnSmallStack(deep, limits);
+  EXPECT_EQ(Failed(refused, &json::Error::reason), "nesting too deep");
+  EXPECT_EQ(Failed(refused, &json::Error::offset), kDepth - 1);
+
+  // The default depth refuses the 65th bracket at its offset.
+  EXPECT_EQ(Failure(deep), std::pair(std::string_view("nesting too deep"), std::uint64_t{64}));
+}
+
+// Objects and arrays nested deeply, each with members before and after the
+// nested one, keep their layout: the document writes back as its text.
+TEST(Json, DeepMixedNestingRoundTrips) {
+  constexpr std::size_t kLevels = 200'000;
+  std::string text;
+  for (std::size_t i = 0; i < kLevels; ++i) {
+    text += i % 2 == 0 ? std::format(R"({{"n":{},"d":)", i) : std::format(R"([true,"{}",)", i);
+  }
+  text += "-1.5e3";
+  for (std::size_t i = kLevels; i-- > 0;) {
+    text += i % 2 == 0 ? R"(,"e":[]})" : ",null]";
+  }
+  const auto doc = ParseOnSmallStack(text, Unbounded(text.size()));
+  ASSERT_TRUE(doc.has_value()) << doc.error().ToString();
+  EXPECT_EQ(Serialize(doc->root()), text);
+  json::Value v = doc->root();
+  for (std::size_t i = 0; i < kLevels; ++i) {
+    if (i % 2 == 0) {
+      ASSERT_TRUE(v.is_object()) << i;
+      ASSERT_EQ(v.size(), 3U) << i;
+      EXPECT_EQ(Get(v, "n").int64(), static_cast<std::int64_t>(i));
+      v = Get(v, "d");
+    } else {
+      ASSERT_TRUE(v.is_array()) << i;
+      ASSERT_EQ(v.size(), 4U) << i;
+      EXPECT_EQ(v.at(1).string(), std::to_string(i));
+      v = v.at(2);
+    }
+  }
+  EXPECT_EQ(v.float64(), -1500.0);
+
+  // A repeated member name deep inside is refused where its object closes.
+  const std::string dup =
+      std::string(kLevels, '[') + R"({"a":1,"a":2})" + std::string(kLevels, ']');
+  const auto refused = ParseOnSmallStack(dup, Unbounded(dup.size()));
+  EXPECT_EQ(Failed(refused, &json::Error::reason), "duplicate member name");
+  EXPECT_EQ(Failed(refused, &json::Error::offset), kLevels + 13);
 }
 
 TEST(Json, ConvertsNumbers) {

@@ -36,6 +36,14 @@ namespace {
 constexpr std::size_t kMaxSpecialBytes = 256;
 constexpr std::uint32_t kNone = std::numeric_limits<std::uint32_t>::max();
 
+// Leading UTF-8 continuation bytes: the rest of a character whose lead byte
+// precedes the text. Four or more can never be well formed.
+std::size_t ContinuationBytes(std::string_view text) {
+  std::size_t n = 0;
+  while (n < text.size() && n < 4 && (static_cast<unsigned char>(text[n]) & 0xC0U) == 0x80U) ++n;
+  return n;
+}
+
 bool AsciiSpace(char c) {
   return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
 }
@@ -143,8 +151,10 @@ struct Tokenizer::Impl {
   // Roots 0/1 extract added tokens before/after normalization; root 2
   // protects native SentencePiece model symbols during normalization.
   // Edges are keyed by (node << 8 | byte); terminal[node] is the token ID.
+  // user_defined_below[node]: a user-defined token ends strictly below it.
   std::unordered_map<std::uint64_t, std::uint32_t, MixHash> edges;
   std::vector<TokenId> terminal;
+  std::vector<bool> user_defined_below;
   std::array<std::array<bool, 256>, 3> special_first{};
   bool unused_model_tokens = false;
   PreTokenizer pre_tokenizer = PreTokenizer::kByteBpe;
@@ -194,8 +204,10 @@ struct Tokenizer::Impl {
   }
 
   // True only for a trie prefix that reaches the available end and may
-  // continue. Unlike a matched atom, such a prefix is not a cut vertex yet.
-  bool OpenSpecial(std::string_view text, std::size_t at, unsigned phase) const {
+  // continue into a token `special` allows. Unlike a matched atom, such a
+  // prefix is not a cut vertex yet.
+  bool OpenSpecial(std::string_view text, std::size_t at, unsigned phase,
+                   SpecialTokens special) const {
     std::uint32_t node = phase;
     for (std::size_t p = at; p < text.size(); ++p) {
       if (p - at >= kMaxSpecialBytes) return false;
@@ -205,23 +217,54 @@ struct Tokenizer::Impl {
       node = found->second;
     }
     if (text.size() - at >= kMaxSpecialBytes) return false;
-    // Disallowed descendants may make this conservative, never optimistic.
+    if (special == SpecialTokens::kUserDefinedOnly) return user_defined_below[node];
+    // Every edge leads to some token, and kParse allows them all.
     for (unsigned byte = 0; byte < 256; ++byte)
       if (edges.contains((static_cast<std::uint64_t>(node) << 8U) | byte)) return true;
     return false;
   }
 
+  // Marked spans in order, inside text, each exactly a special token's text
+  // (EncodeMarked's rule).
+  std::expected<void, Error> CheckSpans(std::string_view text,
+                                        std::span<const SpecialSpan> spans) const {
+    std::size_t at = 0;
+    for (std::size_t i = 0; i < spans.size(); ++i) {
+      if (i != 0 && (i & 0xFFFFU) == 0 && !base::Pulse())
+        return std::unexpected(
+            Error{Rule::kCancelled, "forced span planning was asked to stop", i});
+      const SpecialSpan& s = spans[i];
+      if (s.offset < at || s.length == 0 || s.offset > text.size() ||
+          text.size() - s.offset < s.length)
+        return std::unexpected(
+            Error{Rule::kSpecialToken, "spans out of order or outside the text", i});
+      const auto found = by_text.find(text.substr(s.offset, s.length));
+      if (found == by_text.end() || !Special(found->second))
+        return std::unexpected(Error{Rule::kSpecialToken, "a span is not a special token", i});
+      at = s.offset + s.length;
+    }
+    return {};
+  }
+
+  bool Special(TokenId id) const {
+    const auto kind = kinds[static_cast<std::size_t>(id)];
+    return kind == TokenKind::kControl || kind == TokenKind::kUserDefined;
+  }
+
   struct Blocks {
     std::vector<std::size_t> ends;
     std::size_t stable = 0;
-    bool append_may_shrink = false;
   };
 
   // Uses the encoder's matchers, compiled SplitPlan, and raw newline rule.
   // Offsets are in the ORIGINAL bytes, only after exact reproduction has been
   // established by the caller. A normalized nonidentity fragment is refused.
-  std::expected<Blocks, Error> TraceBlocks(std::string_view text, SpecialTokens special,
-                                           bool final_boundary) const {
+  // Marked spans (checked by the caller) are atoms wherever they are, and
+  // `special` then matches only user-defined tokens between them, as
+  // EncodeMarked encodes: no match or strip crosses into a span.
+  std::expected<Blocks, Error> TraceBlocks(std::string_view text,
+                                           std::span<const SpecialSpan> spans,
+                                           SpecialTokens special, bool final_boundary) const {
     Blocks out;
     out.ends.reserve(text.size());
     std::size_t uncertain = text.size();
@@ -258,10 +301,7 @@ struct Tokenizer::Impl {
       lengths.reserve(cps.size());
       std::size_t stable = 0;
       if (pre_tokenizer == PreTokenizer::kByteBpe) {
-        bool shrink = false;
-        if (auto split = split_plan.Split(cps, lengths, budget, &stable, &shrink); !split)
-          return split;
-        if (!closed) out.append_may_shrink = out.append_may_shrink || shrink;
+        if (auto split = split_plan.Split(cps, lengths, budget, &stable); !split) return split;
       } else if (pre_tokenizer == PreTokenizer::kRawBpe && raw_bpe_split_newlines) {
         for (std::size_t p = 0; p < cps.size();) {
           std::size_t next = p + 1;
@@ -339,7 +379,7 @@ struct Tokenizer::Impl {
           if (!pulse())
             return std::unexpected(
                 Error{Rule::kCancelled, "forced span planning was asked to stop"});
-          if (!closed && last == cps.size() && OpenSpecial(mapped, p, phase))
+          if (!closed && last == cps.size() && OpenSpecial(mapped, p, phase, policy))
             uncertain = std::min(uncertain, source[p]);
           std::size_t size = 0;
           const auto id = MatchSpecial(mapped, p, policy, &size, phase);
@@ -360,28 +400,60 @@ struct Tokenizer::Impl {
       return {};
     };
     std::size_t start = 0;
+    std::size_t next = 0;  // the next marked span
+    // Where a longer top-level atom may still begin. Only the text after the
+    // last marked span can hold one.
+    std::vector<std::size_t> open_atoms;
     for (std::size_t p = 0; p < text.size();) {
       if ((p & 0xffffU) == 0 && !base::Pulse())
         return std::unexpected(Error{Rule::kCancelled, "forced span planning was asked to stop"});
-      if (!final_boundary && OpenSpecial(text, p, 0)) uncertain = std::min(uncertain, p);
+      const auto limit = next < spans.size() ? spans[next].offset : text.size();
       std::size_t length = 0;
-      const auto id = MatchSpecial(text, p, special, &length);
-      if (id < 0) {
-        ++p;
-        continue;
+      TokenId id = -1;
+      if (p == limit) {
+        length = spans[next].length;
+        id = by_text.find(text.substr(p, length))->second;
+        ++next;
+      } else {
+        const auto segment = text.substr(0, limit);
+        if (!final_boundary && limit == text.size() && OpenSpecial(segment, p, 0, special))
+          open_atoms.push_back(p);
+        id = MatchSpecial(segment, p, special, &length);
+        if (id < 0) {
+          ++p;
+          continue;
+        }
       }
       if (auto traced = fragment(start, p, true); !traced) return std::unexpected(traced.error());
       p += length;
       piece(p, true);
       if (!rstrip.empty() && rstrip[static_cast<std::size_t>(id)]) {
         // Any stripped bytes would violate the exact reproduction check.
-        while (p < text.size() && AsciiSpace(text[p])) ++p;
+        const auto end = next < spans.size() ? spans[next].offset : text.size();
+        while (p < end && AsciiSpace(text[p])) ++p;
       }
       start = p;
     }
     if (auto traced = fragment(start, text.size(), final_boundary); !traced)
       return std::unexpected(traced.error());
     out.stable = std::min(out.stable, uncertain);
+    // If an atom does begin at q, the fragment before it closes at q. That is
+    // not an append, so the fragment's own split may differ there (spaces
+    // before "<" split differently at the end of text). Commit only blocks
+    // whose partition the closed trace of text[0, q) reproduces exactly.
+    for (const auto q : open_atoms) {
+      std::size_t proven = 0;
+      if (q != 0) {
+        auto retraced = TraceBlocks(text.substr(0, q), spans, special, true);
+        if (!retraced) return std::unexpected(retraced.error());
+        for (std::size_t i = 0; i < out.ends.size() && i < retraced->ends.size() &&
+                                out.ends[i] == retraced->ends[i] && out.ends[i] <= out.stable;
+             ++i)
+          proven = out.ends[i];
+      }
+      out.stable = std::min(out.stable, proven);
+      if (out.stable == 0) break;
+    }
     // A possible longer atom may begin within an earlier pretoken block.
     // Commit only whole blocks ending before that earliest uncertain byte.
     auto cut = std::upper_bound(out.ends.begin(), out.ends.end(), out.stable);
@@ -502,7 +574,7 @@ struct Tokenizer::Impl {
         at += length;
         if (!started && remove_extra_whitespaces && piece == " ") continue;
         if (!started) {
-          if (add_space_prefix) bytes = "▁";
+          if (add_space_prefix && !options.continuation) bytes = "▁";
           started = true;
         }
         while (previous_space && piece.starts_with(' ')) piece.remove_prefix(1);
@@ -522,7 +594,7 @@ struct Tokenizer::Impl {
         }
       }
     } else {
-      if (add_space_prefix) bytes = "▁";
+      if (add_space_prefix && !options.continuation) bytes = "▁";
       for (std::size_t i = 0; i < text.size(); ++i) {
         if ((i & 0xFFFFU) == 0 && !base::Pulse())
           return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop", i});
@@ -1127,6 +1199,7 @@ std::expected<Tokenizer, Error> Tokenizer::Create(TokenizerSpec spec) {
   impl->decoded.resize(n);
   impl->by_text.reserve(n);
   impl->terminal.resize(3, -1);
+  impl->user_defined_below.resize(3, false);
   std::vector<char32_t> cps;
   for (std::size_t id = 0; id < n; ++id) {
     const std::string& text = impl->tokens[id];
@@ -1218,11 +1291,15 @@ std::expected<Tokenizer, Error> Tokenizer::Create(TokenizerSpec spec) {
     const auto insert = [&](unsigned phase, std::string_view value) {
       std::uint32_t node = phase;
       for (const char c : value) {
+        if (kind == TokenKind::kUserDefined) impl->user_defined_below[node] = true;
         const std::uint64_t key =
             (static_cast<std::uint64_t>(node) << 8U) | static_cast<unsigned char>(c);
         const auto [it, added] =
             impl->edges.emplace(key, static_cast<std::uint32_t>(impl->terminal.size()));
-        if (added) impl->terminal.push_back(-1);
+        if (added) {
+          impl->terminal.push_back(-1);
+          impl->user_defined_below.push_back(false);
+        }
         node = it->second;
       }
       if (impl->terminal[node] >= 0 && impl->terminal[node] != static_cast<TokenId>(id))
@@ -1442,14 +1519,78 @@ std::expected<void, Error> Tokenizer::EncodeMarked(std::string_view text,
   return impl_->End(options, out, base);
 }
 
+std::expected<std::vector<SpecialSpan>, Error> Tokenizer::ControlSpans(
+    std::string_view text) const {
+  std::vector<SpecialSpan> out;
+  std::size_t work = 0;
+  for (std::size_t p = 0; p < text.size();) {
+    if ((++work & 0xFFFFU) == 0 && !base::Pulse())
+      return std::unexpected(Error{Rule::kCancelled, "the span search was asked to stop", p});
+    std::size_t length = 0;
+    const auto id = impl_->MatchSpecial(text, p, SpecialTokens::kParse, &length);
+    if (id < 0) {
+      ++p;
+      continue;
+    }
+    if (Kind(id) == TokenKind::kControl) out.push_back({.offset = p, .length = length});
+    p += length;
+    if (!impl_->rstrip.empty() && impl_->rstrip[static_cast<std::size_t>(id)]) {
+      while (p < text.size() && AsciiSpace(text[p])) {
+        if ((++work & 0xFFFFU) == 0 && !base::Pulse())
+          return std::unexpected(Error{Rule::kCancelled, "the span search was asked to stop", p});
+        ++p;
+      }
+    }
+  }
+  return out;
+}
+
+std::expected<bool, Error> Tokenizer::ContainsControlText(std::string_view text) const {
+  std::size_t work = 0;
+  const auto search = [&](std::string_view bytes, unsigned phase) -> std::expected<bool, Error> {
+    for (std::size_t p = 0; p < bytes.size(); ++p) {
+      if (!impl_->special_first[phase][static_cast<unsigned char>(bytes[p])]) continue;
+      std::uint32_t node = phase;
+      for (std::size_t q = p; q < bytes.size() && q - p < kMaxSpecialBytes; ++q) {
+        if ((++work & 0xFFFFU) == 0 && !base::Pulse())
+          return std::unexpected(
+              Error{Rule::kCancelled, "the control search was asked to stop", p});
+        const auto edge = impl_->edges.find((static_cast<std::uint64_t>(node) << 8U) |
+                                            static_cast<unsigned char>(bytes[q]));
+        if (edge == impl_->edges.end()) break;
+        node = edge->second;
+        const auto id = impl_->terminal[node];
+        if (id >= 0 && Kind(id) == TokenKind::kControl) return true;
+      }
+    }
+    return false;
+  };
+  auto found = search(text, 0);
+  if (!found || *found || impl_->normalized_tokens.empty()) return found;
+  // Normalized added tokens match the text with its spaces as ▁.
+  std::string normalized;
+  normalized.reserve(text.size());
+  for (const char c : text) {
+    if ((++work & 0xFFFFU) == 0 && !base::Pulse())
+      return std::unexpected(Error{Rule::kCancelled, "the control search was asked to stop"});
+    if (c == ' ')
+      normalized += "▁";
+    else
+      normalized.push_back(c);
+  }
+  return search(normalized, 1);
+}
+
 std::uint64_t Tokenizer::ForcedSpanBytes(std::size_t input_bytes) const {
   const auto most = std::numeric_limits<std::uint64_t>::max();
   if (input_bytes > most - 4) return most;
   const auto n = static_cast<std::uint64_t>(input_bytes) + 4;
-  // Original/decoded/extended strings, canonical and committed IDs, two trace
-  // vectors and raw source-offset maps coexist with one encoding/regex pass.
+  // Original/decoded/extended strings, canonical and committed IDs, three
+  // trace vectors (one an open atom prefix's closed retrace), raw
+  // source-offset maps and two copies of marked spans (at most one per byte)
+  // coexist with one encoding/regex pass.
   const auto working = Times(WorkingBytes(static_cast<std::size_t>(n)), 4);
-  const auto owned = Times(n, 96);
+  const auto owned = Times(n, 160);
   return working > most - owned ? most : working + owned;
 }
 
@@ -1471,33 +1612,57 @@ bool Tokenizer::CoversForced(TokenId candidate, std::size_t cover,
   return !bytes.empty() && bytes.size() >= cover;
 }
 
+namespace {
+// The planner's encoding: forced bytes continue a stream, so SentencePiece
+// adds no dummy prefix, unless the span is declared to start the stream.
+EncodeOptions ForcedEncoding(const ForcedSpanOptions& options, std::size_t max_tokens) {
+  auto encode = options.encode;
+  encode.continuation = encode.continuation || !options.decode.remove_space_prefix;
+  encode.max_tokens = max_tokens;
+  return encode;
+}
+}  // namespace
+
 std::expected<std::size_t, Error> Tokenizer::ForcedCoverBytes(
     std::string_view forced, const ForcedSpanOptions& options) const {
   if (options.encode.add_bos_eos)
     return std::unexpected(
         Error{Rule::kUnsupported, "forced spans cannot insert postprocessor tokens"});
+  if (!options.marked && !options.specials.empty())
+    return std::unexpected(Error{Rule::kUnsupported, "special spans require marked planning"});
   if (forced.size() > options.encode.max_bytes)
     return std::unexpected(Error{Rule::kInputTooLarge, "forced span exceeds max_bytes"});
-  const auto complete = unicode::CompleteUtf8Prefix(forced);
-  if (auto valid = unicode::ValidateUtf8(forced.substr(0, complete)); !valid)
-    return std::unexpected(valid.error());
-  if (forced.empty() || complete != forced.size()) return 0;
-  auto encode = options.encode;
-  encode.max_tokens = static_cast<std::size_t>(OutputTokensBound(forced.size()));
+  const auto orphan = ContinuationBytes(forced);
+  if (orphan > 3) return std::unexpected(Error{Rule::kInvalidUtf8, "ill-formed UTF-8", 3});
+  const auto complete = orphan + unicode::CompleteUtf8Prefix(forced.substr(orphan));
+  if (auto valid = unicode::ValidateUtf8(forced.substr(orphan, complete - orphan)); !valid)
+    return std::unexpected(
+        Error{valid.error().rule, valid.error().reason, valid.error().item + orphan});
+  if (auto spans = impl_->CheckSpans(forced.substr(0, complete), options.specials); !spans)
+    return std::unexpected(spans.error());
+  // Bytes that finish an already published character have no canonical
+  // encoding of their own, so they prove no cover.
+  if (orphan != 0 || forced.empty() || complete != forced.size()) return 0;
+  const auto encode =
+      ForcedEncoding(options, static_cast<std::size_t>(OutputTokensBound(forced.size())));
   if (auto valid = impl_->Preflight(forced, encode); !valid) return std::unexpected(valid.error());
   std::vector<char32_t> cps;
   if (auto valid = unicode::DecodeUtf8(forced, cps); !valid) return std::unexpected(valid.error());
   // Whitespace lookahead can split a formerly single block into a shorter
   // prefix plus a space attached to the next word. Do not impose that cover.
   if (unicode::IsWhiteSpace(cps.back())) return 0;
-  auto blocks = impl_->TraceBlocks(forced, options.encode.special, options.terminal);
+  const auto special = options.marked ? SpecialTokens::kUserDefinedOnly : options.encode.special;
+  auto blocks = impl_->TraceBlocks(forced, options.specials, special, options.terminal);
   if (!blocks) return std::unexpected(blocks.error());
   // A token for an open block alone is not a cover proof: a higher-priority
   // crossing merge can turn ab + c into a / bc. Failed earlier regex branches
   // can likewise introduce a shorter boundary after more input arrives.
   if (blocks->ends.size() != 1 || blocks->stable != forced.size()) return 0;
   std::vector<TokenId> ids;
-  if (auto encoded = Encode(forced, encode, ids); !encoded) return std::unexpected(encoded.error());
+  if (auto encoded = options.marked ? EncodeMarked(forced, options.specials, encode, ids)
+                                    : Encode(forced, encode, ids);
+      !encoded)
+    return std::unexpected(encoded.error());
   std::string reproduced;
   if (auto decoded = Decode(ids, options.decode, reproduced); !decoded)
     return std::unexpected(decoded.error());
@@ -1513,6 +1678,8 @@ std::expected<ForcedSpanPlan, Error> Tokenizer::PlanForcedSpan(
   if (options.encode.add_bos_eos)
     return std::unexpected(
         Error{Rule::kUnsupported, "forced spans cannot insert postprocessor tokens"});
+  if (!options.marked && !options.specials.empty())
+    return std::unexpected(Error{Rule::kUnsupported, "special spans require marked planning"});
   ForcedSpanPlan out;
   std::string text;
   if (selected) {
@@ -1526,18 +1693,56 @@ std::expected<ForcedSpanPlan, Error> Tokenizer::PlanForcedSpan(
       forced.size() > options.encode.max_bytes - text.size())
     return std::unexpected(Error{Rule::kInputTooLarge, "forced span exceeds max_bytes"});
   text += forced;
-  const auto complete = unicode::CompleteUtf8Prefix(text);
+  // Valid spans are disjoint and nonempty: at most one per planned byte.
+  if (options.specials.size() > text.size())
+    return std::unexpected(Error{Rule::kSpecialToken, "more spans than planned bytes"});
+  // A selected control token is a marked span of its own bytes.
+  std::vector<SpecialSpan> own;
+  std::span<const SpecialSpan> spans = options.specials;
+  if (options.marked && selected && Kind(*selected) == TokenKind::kControl) {
+    auto rest = options.specials;
+    if (!rest.empty() && rest.front().offset == 0 && rest.front().length == selected_bytes)
+      rest = rest.subspan(1);
+    else if (!rest.empty() && rest.front().offset < selected_bytes)
+      return std::unexpected(
+          Error{Rule::kSpecialToken, "a span overlaps the selected control token", 0});
+    own.reserve(rest.size() + 1);
+    own.push_back({.offset = 0, .length = selected_bytes});
+    own.insert(own.end(), rest.begin(), rest.end());
+    spans = own;
+  }
+  const auto orphan = ContinuationBytes(text);
+  if (orphan > 3) return std::unexpected(Error{Rule::kInvalidUtf8, "ill-formed UTF-8", 3});
+  const auto complete = orphan + unicode::CompleteUtf8Prefix(std::string_view(text).substr(orphan));
   if (options.terminal && complete != text.size())
     return std::unexpected(
         Error{Rule::kInvalidUtf8, "terminal forced span ends inside UTF-8", complete});
   const auto available = std::string_view(text).substr(0, complete);
-  if (auto valid = unicode::ValidateUtf8(available); !valid) return std::unexpected(valid.error());
-  auto encode = options.encode;
+  if (auto valid = unicode::ValidateUtf8(available.substr(orphan)); !valid)
+    return std::unexpected(
+        Error{valid.error().rule, valid.error().reason, valid.error().item + orphan});
+  if (auto checked = impl_->CheckSpans(available, spans); !checked)
+    return std::unexpected(checked.error());
+  if (orphan != 0) {
+    // The text finishes a character whose lead byte is already published, so
+    // it has no canonical encoding from here. Hold all of it: an unchanged
+    // sampler choice on the forced bytes continues the character.
+    out.selected_covered = !selected;
+    out.selected_matches_canonical_prefix = selected.has_value();
+    out.held = std::move(text);
+    return out;
+  }
+  const auto special = options.marked ? SpecialTokens::kUserDefinedOnly : options.encode.special;
   // Canonicalization is funded by input bytes. Publication is independently
   // clipped to the actual token/context allowance, never inside a token.
-  encode.max_tokens = static_cast<std::size_t>(OutputTokensBound(available.size()));
+  const auto encode =
+      ForcedEncoding(options, static_cast<std::size_t>(OutputTokensBound(available.size())));
+  const auto encode_text = [&](std::string_view bytes, const EncodeOptions& with,
+                               std::vector<TokenId>& ids) {
+    return options.marked ? EncodeMarked(bytes, spans, with, ids) : Encode(bytes, with, ids);
+  };
   std::vector<TokenId> canonical;
-  if (auto encoded = Encode(available, encode, canonical); !encoded)
+  if (auto encoded = encode_text(available, encode, canonical); !encoded)
     return std::unexpected(encoded.error());
   std::string reproduced;
   if (auto decoded = Decode(canonical, options.decode, reproduced); !decoded)
@@ -1546,7 +1751,7 @@ std::expected<ForcedSpanPlan, Error> Tokenizer::PlanForcedSpan(
     return std::unexpected(
         Error{Rule::kUnsupported, "canonical forced span does not reproduce its bytes"});
   auto blocks =
-      impl_->TraceBlocks(available, encode.special, options.terminal && complete == text.size());
+      impl_->TraceBlocks(available, spans, special, options.terminal && complete == text.size());
   if (!blocks) return std::unexpected(blocks.error());
   std::size_t cut = blocks->stable;
   if (complete == text.size() && !options.terminal && options.following_known &&
@@ -1558,7 +1763,7 @@ std::expected<ForcedSpanPlan, Error> Tokenizer::PlanForcedSpan(
     for (const auto byte : options.following_bytes) {
       std::string extended(available);
       extended.push_back(static_cast<char>(byte));
-      auto future = impl_->TraceBlocks(extended, encode.special, false);
+      auto future = impl_->TraceBlocks(extended, spans, special, false);
       if (!future) return std::unexpected(future.error());
       proven = std::min(proven, future->stable);
       while (proven != 0) {
@@ -1583,7 +1788,7 @@ std::expected<ForcedSpanPlan, Error> Tokenizer::PlanForcedSpan(
       future_encode.max_bytes = extended.size();
       future_encode.max_tokens = static_cast<std::size_t>(OutputTokensBound(extended.size()));
       std::vector<TokenId> future_ids;
-      if (auto encoded = Encode(extended, future_encode, future_ids); !encoded)
+      if (auto encoded = encode_text(extended, future_encode, future_ids); !encoded)
         return std::unexpected(encoded.error());
       std::string future_text;
       if (auto decoded = Decode(future_ids, options.decode, future_text); !decoded)
@@ -1649,6 +1854,19 @@ std::expected<ForcedSpanPlan, Error> Tokenizer::PlanForcedSpan(
     auto cover_options = options;
     // A held tail begins after the original first token's dummy-space policy.
     if (bytes != 0) cover_options.decode.remove_space_prefix = false;
+    // The held tail keeps its own spans; committed ones end at token boundaries.
+    std::vector<SpecialSpan> held_spans;
+    if (options.marked) {
+      held_spans.reserve(spans.size());
+      for (const auto& span : spans) {
+        if (span.offset + span.length <= bytes) continue;
+        if (span.offset < bytes)
+          return std::unexpected(
+              Error{Rule::kSpecialToken, "a committed token boundary splits a span"});
+        held_spans.push_back({.offset = span.offset - bytes, .length = span.length});
+      }
+      cover_options.specials = held_spans;
+    }
     auto cover = ForcedCoverBytes(out.held, cover_options);
     if (!cover) return std::unexpected(cover.error());
     out.cover_bytes = *cover;

@@ -137,6 +137,9 @@ struct EncodeOptions {
   bool add_bos_eos = false;  // apply the complete declared source postprocessor
   std::size_t max_bytes = std::size_t{4} << 20U;
   std::size_t max_tokens = std::size_t{1} << 22U;
+  // The text continues a stream: SentencePiece adds no dummy ▁ prefix to any
+  // of its fragments, so the bytes encode as written. Other modes ignore it.
+  bool continuation = false;
 };
 
 // A control token a renderer placed: `length` bytes at `offset` of the
@@ -153,9 +156,22 @@ struct DecodeOptions {
 
 // Planning never accepts published IDs: selected is still a local sampling
 // candidate. All returned tokens replace that candidate and include its bytes.
+// Forced text is a continuation: SentencePiece adds no dummy prefix unless
+// decode.remove_space_prefix says the span starts the stream.
 struct ForcedSpanOptions {
   EncodeOptions encode{.special = SpecialTokens::kParse};
   DecodeOptions decode{.control_tokens = true};
+  // Marked: exactly `specials` are control tokens, as EncodeMarked places
+  // them, and control-token text elsewhere is text (encode.special is then
+  // ignored; user-defined tokens still match). Offsets are in the planned
+  // text: for PlanForcedSpan the selected token's decoded bytes followed by
+  // `forced`, so a span may begin inside the selected token's bytes; a
+  // selected control token is itself a span (a supplied identical span is
+  // merged, any other overlap with it is refused). For ForcedCoverBytes they
+  // are in `forced`. Spans are in order, do not overlap and are each exactly
+  // a special token's text.
+  bool marked = false;
+  std::span<const SpecialSpan> specials;
   // Complete allowed NEXT-BYTE set, not Unicode representatives. High-byte
   // possibilities conservatively retain an open tail; byte-cover accepts them.
   std::span<const std::uint8_t> following_bytes;
@@ -235,6 +251,15 @@ class Tokenizer {
   std::expected<void, Error> EncodeMarked(std::string_view text, std::span<const SpecialSpan> spans,
                                           const EncodeOptions& options, std::vector<TokenId>& out,
                                           std::vector<std::size_t>* span_tokens = nullptr) const;
+  // The control tokens SpecialTokens::kParse encoding finds in text, in order:
+  // leftmost-longest matches, where a longer user-defined match hides a
+  // control one, as EncodeMarked's spans. Fails only when cancelled.
+  std::expected<std::vector<SpecialSpan>, Error> ControlSpans(std::string_view text) const;
+  // True when some substring of text is the text of a control token the
+  // matcher knows (in its normalized spelling for normalized added tokens),
+  // wherever it starts. O(text bytes * longest special token); fails only
+  // when cancelled.
+  std::expected<bool, Error> ContainsControlText(std::string_view text) const;
 
   // Peak working + result ownership, before either planner/cover operation.
   // input_bytes includes the selected token's decoded bytes and forced bytes.

@@ -10,10 +10,16 @@
 #include <expected>
 #include <format>
 #include <limits>
+#include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/sha256.h"
@@ -30,6 +36,22 @@ std::uint64_t AddBytes(std::uint64_t a, std::uint64_t b) {
 std::uint64_t MultiplyBytes(std::uint64_t count, std::uint64_t bytes) {
   constexpr auto most = std::numeric_limits<std::uint64_t>::max();
   return bytes != 0 && count > most / bytes ? most : count * bytes;
+}
+
+// One entry of an unordered index of views (a node with its cached hash and
+// a bucket, with allocator rounding): ProjectContent's association tables.
+constexpr std::uint64_t kIndexEntryBytes = 64;
+constexpr std::size_t kNoIndex = std::numeric_limits<std::size_t>::max();  // no call or offset
+
+// The chat route's limits for a tool call's arguments (runtime/api.cc
+// ParseCall): bounded by the text itself, nested at most 64 deep
+// (runtime::api::kMaxJsonDepth). Projection reparses what intake accepted.
+base::json::Limits ToolArgumentLimits(std::string_view text) {
+  constexpr std::size_t kMaxDepth = 64;  // runtime::api::kMaxJsonDepth
+  return {.max_bytes = text.size(),
+          .max_depth = kMaxDepth,
+          .max_values = text.size() + 1,
+          .max_string_bytes = text.size() + 1};
 }
 
 std::uint64_t PartBytes(const MessagePart& part, bool storage) {
@@ -52,6 +74,8 @@ std::uint64_t PartBytes(const MessagePart& part, bool storage) {
       part);
 }
 
+}  // namespace
+
 std::uint64_t ProjectionStorageBytes(const Conversation& conversation) {
   auto bytes = AddBytes(MultiplyBytes(conversation.messages.capacity(), sizeof(Message)),
                         MultiplyBytes(conversation.tools.capacity(), sizeof(base::json::Value)));
@@ -70,9 +94,11 @@ std::uint64_t ProjectionStorageBytes(const Conversation& conversation) {
     bytes = AddBytes(bytes, sizeof(ToolResultPart) * 3 + sizeof(std::size_t) * 4);
     if (message.role == Role::kTool)
       bytes = AddBytes(bytes, MultiplyBytes(3, message.content.PayloadBytes()));
-    bytes = AddBytes(bytes,
-                     MultiplyBytes(message.tool_calls.capacity(),
-                                   sizeof(ToolCall) + sizeof(ToolUsePart) + sizeof(std::size_t)));
+    // Each call's copy, its identity for ordering, and its entries in the
+    // group's ID and name indexes.
+    bytes = AddBytes(bytes, MultiplyBytes(message.tool_calls.capacity(),
+                                          sizeof(ToolCall) + sizeof(ToolUsePart) +
+                                              sizeof(std::size_t) * 2 + kIndexEntryBytes * 2));
     for (const ToolCall& call : message.tool_calls) {
       bytes = AddBytes(bytes, AddBytes(call.name.capacity(), MultiplyBytes(3, call.id.capacity())));
       // Legacy JSON values remain views and their owners remain shared. Only
@@ -81,7 +107,6 @@ std::uint64_t ProjectionStorageBytes(const Conversation& conversation) {
   }
   return bytes;
 }
-}  // namespace
 
 std::uint64_t Content::PayloadBytes() const {
   if (const auto* p = parts()) {
@@ -116,8 +141,10 @@ std::uint64_t Content::ProjectionBytes() const {
                                             sizeof(std::size_t) * 4 + 32));
   for (const auto& part : *p) {
     if (const auto* use = std::get_if<ToolUsePart>(&part)) {
+      // Its parsed arguments, and its entries in the message's distinct-ID
+      // set and the group's ID and name indexes.
       bytes = AddBytes(bytes, AddBytes(base::json::ParseWorkingBytes(use->input_json),
-                                       sizeof(base::json::Document)));
+                                       sizeof(base::json::Document) + kIndexEntryBytes * 3));
     }
   }
   return bytes;
@@ -131,8 +158,9 @@ bool HasStructuredContent(const Conversation& conversation) {
 
 std::expected<Conversation, Error> ProjectContent(const Conversation& conversation,
                                                   bool supports_tools) {
-  // Bound the projection before copying or parsing. Serving separately funds
-  // its allocation from request memory; direct callers retain this render bound.
+  // Bound the projection before copying or parsing. Serving funds its storage
+  // from request memory (max_projection_bytes); direct callers retain the
+  // render bound.
   std::uint64_t payload = 0;
   for (const Message& m : conversation.messages) {
     payload = AddBytes(payload, m.content.PayloadBytes());
@@ -143,12 +171,13 @@ std::expected<Conversation, Error> ProjectContent(const Conversation& conversati
     }
   }
   const std::uint64_t storage = ProjectionStorageBytes(conversation);
-  if (conversation.max_live_bytes != 0 && storage > conversation.max_live_bytes) {
+  if (conversation.max_projection_bytes != 0 && storage > conversation.max_projection_bytes) {
     return std::unexpected(Error{.rule = Rule::kUnsupported,
-                                 .reason = "message projection exceeds the live memory bound",
+                                 .reason = "message projection exceeds its funded storage",
                                  .bound = true});
   }
   Conversation out = conversation;
+  std::unordered_set<std::string_view> ids;  // one message's tool-use IDs, viewing its parts
   for (std::size_t i = 0; i < out.messages.size(); ++i) {
     Message& m = out.messages[i];
     const auto* parts = conversation.messages[i].content.parts();
@@ -164,10 +193,11 @@ std::expected<Conversation, Error> ProjectContent(const Conversation& conversati
     if (!m.tool_calls.empty()) {
       return fail("structured content and legacy tool calls cannot be mixed");
     }
-    m.tool_calls.reserve(
-        static_cast<std::size_t>(std::ranges::count_if(*parts, [](const MessagePart& part) {
-          return std::holds_alternative<ToolUsePart>(part);
-        })));
+    const auto uses = static_cast<std::size_t>(std::ranges::count_if(
+        *parts, [](const MessagePart& part) { return std::holds_alternative<ToolUsePart>(part); }));
+    m.tool_calls.reserve(uses);
+    ids.clear();
+    if (uses > 1) ids.reserve(uses);
     for (const MessagePart& part : *parts) {
       if (const auto* t = std::get_if<TextPart>(&part)) {
         if (calls) {
@@ -182,12 +212,10 @@ std::expected<Conversation, Error> ProjectContent(const Conversation& conversati
         if (m.role != Role::kAssistant || use->name.empty()) {
           return fail("tool use requires an assistant and a name");
         }
-        if (std::ranges::any_of(m.tool_calls, [&](const ToolCall& call) {
-              return !use->id.empty() && call.id == use->id;
-            })) {
+        if (!use->id.empty() && !ids.insert(use->id).second) {
           return fail("tool use IDs must be distinct within a message");
         }
-        auto document = base::json::Parse(use->input_json);
+        auto document = base::json::Parse(use->input_json, ToolArgumentLimits(use->input_json));
         if (!document || !document->root().is_object()) {
           return fail("tool input must be a JSON object");
         }
@@ -216,8 +244,9 @@ std::expected<Conversation, Error> ProjectContent(const Conversation& conversati
     }
     m.content = calls && !has_text ? Content(std::nullopt) : Content(std::move(text));
   }
-  // Resolve one contiguous group at a time. Known IDs constrain association
-  // first; remaining missing-ID results retain their supplied relative order.
+  // Resolve one contiguous group at a time, in time linear in its calls and
+  // results. Known IDs constrain association first; remaining missing-ID
+  // results retain their supplied relative order.
   for (std::size_t first = 0; first < out.messages.size();) {
     if (out.messages[first].role != Role::kTool) {
       ++first;
@@ -232,13 +261,15 @@ std::expected<Conversation, Error> ProjectContent(const Conversation& conversati
     if (first == 0 || out.messages[first - 1].role != Role::kAssistant ||
         out.messages[first - 1].tool_calls.empty())
       return fail("a tool result requires preceding assistant tool calls");
+    // The calls stay in place while the group's results move.
     const auto& calls = out.messages[first - 1].tool_calls;
-    if (end - first > calls.size()) return fail("more tool results than preceding calls");
+    const std::size_t count = end - first;
+    if (count > calls.size()) return fail("more tool results than preceding calls");
     std::vector<ToolUsePart> identities;
     identities.reserve(calls.size());
     for (const auto& call : calls) identities.push_back({call.id, {}, {}});
     std::vector<ToolResultPart> results;
-    results.reserve(end - first);
+    results.reserve(count);
     for (std::size_t i = first; i < end; ++i) {
       const auto& m = out.messages[i];
       results.push_back({m.tool_call_id, {}, m.tool_result_is_error, {}});
@@ -246,55 +277,103 @@ std::expected<Conversation, Error> ProjectContent(const Conversation& conversati
     // The shared order helper owns duplicate/unknown-ID validation. Empty text
     // avoids copying payload merely to discover the order of existing messages.
     auto ordered = OrderToolResults(identities, results);
-    if (!ordered) return fail("tool results contain duplicate or unknown IDs");
+    if (!ordered || ordered->size() != count)
+      return fail("tool results contain duplicate or unknown IDs");
+    std::unordered_map<std::string_view, std::size_t> by_id;  // calls by their (distinct) IDs
+    by_id.reserve(calls.size());
+    for (std::size_t c = 0; c < calls.size(); ++c)
+      if (!calls[c].id.empty()) by_id.try_emplace(calls[c].id, c);
+    const auto call_of = [&by_id](std::string_view id) {
+      const auto found = by_id.find(id);
+      return found == by_id.end() ? kNoIndex : found->second;
+    };
     const bool all_ids =
         std::ranges::all_of(identities, [](const auto& c) { return !c.id.empty(); }) &&
         std::ranges::all_of(results, [](const auto& r) { return !r.tool_use_id.empty(); });
     if (all_ids) {
-      for (std::size_t offset = 0; offset < ordered->size(); ++offset) {
-        const auto found =
-            std::ranges::find(out.messages.begin() + static_cast<std::ptrdiff_t>(first + offset),
-                              out.messages.begin() + static_cast<std::ptrdiff_t>(end),
-                              (*ordered)[offset].tool_use_id, &Message::tool_call_id);
-        std::iter_swap(out.messages.begin() + static_cast<std::ptrdiff_t>(first + offset), found);
+      // Every result moves to its offset in the helper's order: one
+      // permutation of the group's whole messages, applied in place.
+      std::vector<std::size_t> supplied(calls.size(), kNoIndex);  // a call's result's offset
+      for (std::size_t r = 0; r < count; ++r) {
+        const std::size_t c = call_of(results[r].tool_use_id);
+        if (c == kNoIndex || supplied[c] != kNoIndex)
+          return fail("tool results contain duplicate or unknown IDs");
+        supplied[c] = r;
+      }
+      std::vector<std::size_t> target(count, kNoIndex);
+      for (std::size_t offset = 0; offset < count; ++offset) {
+        const std::size_t c = call_of((*ordered)[offset].tool_use_id);
+        if (c == kNoIndex || supplied[c] == kNoIndex || target[supplied[c]] != kNoIndex)
+          return fail("tool results contain duplicate or unknown IDs");
+        target[supplied[c]] = offset;
+      }
+      for (std::size_t r = 0; r < count; ++r) {
+        while (target[r] != r) {
+          const std::size_t to = target[r];
+          std::swap(out.messages[first + r], out.messages[first + to]);
+          std::swap(target[r], target[to]);
+        }
       }
     }
     std::vector<bool> used(calls.size(), false);
     for (std::size_t i = first; i < end; ++i) {
       auto& m = out.messages[i];
       m.resolved_tool_call.reset();
+      m.implied_name_call.reset();
       if (!m.tool_call_id.empty()) {
-        const auto match = std::ranges::find(calls, m.tool_call_id, &ToolCall::id);
-        const auto index = static_cast<std::size_t>(match - calls.begin());
-        if (!m.tool_result_name.empty() && m.tool_result_name != match->name)
+        const std::size_t index = call_of(m.tool_call_id);
+        if (index == kNoIndex) return fail("tool results contain duplicate or unknown IDs");
+        if (!m.tool_result_name.empty() && m.tool_result_name != calls[index].name)
           return fail("tool result name contradicts its call ID");
         m.resolved_tool_call = index;
         used[index] = true;
       }
     }
+    // Calls by name: each name's calls in call order (a list through
+    // next_named, from `next`), how many no result has claimed, and how many
+    // unresolved results give the name.
+    struct Named {
+      std::size_t next = kNoIndex;
+      std::size_t unused = 0;
+      std::size_t supplied = 0;
+    };
+    std::unordered_map<std::string_view, Named> by_name;
+    std::vector<std::size_t> next_named(calls.size(), kNoIndex);
+    by_name.reserve(calls.size());
+    for (std::size_t c = calls.size(); c-- > 0;) {
+      Named& named = by_name[calls[c].name];
+      next_named[c] = named.next;
+      named.next = c;
+      named.unused += used[c] ? 0 : 1;
+    }
+    const auto named_by = [&by_name](const Message& m) -> Named* {
+      const auto found = by_name.find(m.tool_result_name);
+      return found == by_name.end() ? nullptr : &found->second;
+    };
     // Names are evidence even when no IDs were supplied (legacy function
-    // messages). Resolve singleton candidates, including those made unique by
-    // an earlier known-ID match; never silently replace contradictory evidence.
-    bool progress = true;
-    while (progress) {
-      progress = false;
-      for (std::size_t i = first; i < end; ++i) {
-        auto& m = out.messages[i];
-        if (m.resolved_tool_call || m.tool_result_name.empty()) continue;
-        std::optional<std::size_t> match;
-        std::size_t count = 0;
-        for (std::size_t c = 0; c < calls.size(); ++c) {
-          if (!used[c] && calls[c].name == m.tool_result_name) {
-            match = c;
-            ++count;
-          }
-        }
-        if (count == 0) return fail("tool result name has no unmatched preceding call");
-        if (count == 1) {
-          m.resolved_tool_call = *match;
-          used[*match] = true;
-          progress = true;
-        }
+    // messages). A name with one unmatched call resolves to it, including one
+    // made unique by an earlier known-ID match; a name with no unmatched call,
+    // or one call that several results give, never silently resolves.
+    for (std::size_t i = first; i < end; ++i) {
+      const auto& m = out.messages[i];
+      if (m.resolved_tool_call || m.tool_result_name.empty()) continue;
+      Named* named = named_by(m);
+      if (named == nullptr) return fail("tool result name has no unmatched preceding call");
+      ++named->supplied;
+    }
+    for (std::size_t i = first; i < end; ++i) {
+      auto& m = out.messages[i];
+      if (m.resolved_tool_call || m.tool_result_name.empty()) continue;
+      Named& named = *named_by(m);
+      if (named.unused == 0 || (named.unused == 1 && named.supplied > 1))
+        return fail("tool result name has no unmatched preceding call");
+      if (named.unused == 1) {
+        std::size_t c = named.next;
+        while (used[c]) c = next_named[c];
+        m.resolved_tool_call = c;
+        used[c] = true;
+        named.unused = 0;
+        named.supplied = 0;
       }
     }
     // Repeated function names may identify the required rendering name without
@@ -302,14 +381,8 @@ std::expected<Conversation, Error> ProjectContent(const Conversation& conversati
     for (std::size_t i = first; i < end; ++i) {
       const auto& m = out.messages[i];
       if (m.resolved_tool_call || m.tool_result_name.empty()) continue;
-      std::size_t available = 0, supplied = 0;
-      for (std::size_t c = 0; c < calls.size(); ++c)
-        if (!used[c] && calls[c].name == m.tool_result_name) ++available;
-      for (std::size_t r = first; r < end; ++r)
-        if (!out.messages[r].resolved_tool_call &&
-            out.messages[r].tool_result_name == m.tool_result_name)
-          ++supplied;
-      if (supplied > available) return fail("too many results for the named tool calls");
+      const Named& named = *named_by(m);
+      if (named.supplied > named.unused) return fail("too many results for the named tool calls");
     }
     const auto remaining = static_cast<std::size_t>(std::ranges::count(used, false));
     const auto unresolved = static_cast<std::size_t>(
@@ -323,24 +396,40 @@ std::expected<Conversation, Error> ProjectContent(const Conversation& conversati
       for (std::size_t i = first; i < end; ++i) {
         auto& m = out.messages[i];
         if (m.resolved_tool_call || m.tool_result_name.empty()) continue;
-        for (std::size_t c = 0; c < calls.size(); ++c) {
-          if (!used[c] && calls[c].name == m.tool_result_name) {
-            m.resolved_tool_call = c;
-            used[c] = true;
-            break;
-          }
-        }
+        Named& named = *named_by(m);
+        while (named.next != kNoIndex && used[named.next]) named.next = next_named[named.next];
+        if (named.next == kNoIndex) continue;
+        m.resolved_tool_call = named.next;
+        used[named.next] = true;
       }
       std::size_t next = 0;
       for (std::size_t i = first; i < end; ++i) {
         auto& m = out.messages[i];
         if (m.resolved_tool_call) continue;
-        while (used[next]) ++next;
-        m.resolved_tool_call = next++;
+        while (next < calls.size() && used[next]) ++next;
+        if (next == calls.size()) break;
+        m.resolved_tool_call = next;
+        used[next++] = true;
       }
     }
+    // The one name the calls no result claims share, if they share one: what
+    // a renderer that needs only a result's function name may use
+    // (Message::implied_name_call). An empty name is no evidence.
+    std::optional<std::size_t> implied;
+    std::string_view implied_name;
+    for (std::size_t c = 0; c < calls.size(); ++c) {
+      if (used[c]) continue;
+      if (!implied_name.empty() && implied_name != calls[c].name) {
+        implied_name = {};
+        break;
+      }
+      implied_name = calls[c].name;
+      implied = c;
+    }
+    if (implied_name.empty()) implied.reset();
     for (std::size_t i = first; i < end; ++i) {
       auto& m = out.messages[i];
+      m.implied_name_call = implied;
       if (m.tool_result_is_error && !m.tool_result_normalized)
         m.content = Content("[tool error] " + m.content.text().value_or(""));
       m.tool_result_normalized = true;

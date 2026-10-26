@@ -41,14 +41,24 @@ std::optional<execution::SamplingParams> SamplingOf(const api::ChatRequest& requ
                                                     const Llm& model);
 
 // This owner pays the parser, speculative cursor snapshots, tokenizer planning
-// storage and output copies from the request's actual prepared token allowance.
+// storage and output copies. Its fixed part is charged when the request is
+// prepared; the output's share grows with the bytes actually generated
+// (chat::ToolOutputBytes of the open call), never from max_tokens.
 struct ChatTools {
   MemoryCharge charge;
+  RequestMemory* memory = nullptr;  // the pool `charge` grows in
+  // What `charge` holds besides the output's share (the constrained row's
+  // scratch, the span planner, these owners): the output grows on top of it.
+  std::uint64_t fixed = 0;
   std::shared_ptr<const api::ToolOptions> options;
   chat::ToolCallFormat format;
   base::json::Limits limits;
   std::shared_ptr<chat::ToolSampling> sampling;
 };
+// Grows `tools.charge` to fund an open call (or held text) of `open` bytes:
+// within the grant when it fits, else past it while the request pool's capacity
+// holds it (the grant follows at the driver's next settle), else a refusal.
+std::optional<api::Error> FundToolOutput(ChatTools& tools, std::size_t open);
 
 struct ChatPrompt {
   std::shared_ptr<const api::PromptTokens> token_storage;
@@ -56,6 +66,7 @@ struct ChatPrompt {
   std::uint32_t stable_boundary = 0;
   std::uint32_t max_tokens = 0;
   bool reasoning = false;
+  bool may_reason = false;  // ChatRenderOptions::may_reason
   std::shared_ptr<ChatTools> tools;
   std::shared_ptr<MemoryCharge> output_charge;
 };
@@ -110,6 +121,10 @@ class ChatOutput final {
     tokenizer::StreamDecoder decoder;
     bool thinking = false, any_content = false, finished = false;
     bool decoder_finished = false;
+    // The exchange refused an event (the client gone, a deadline, the runtime
+    // stopping, a response refusal): the exchange answers for the request, so
+    // the parser's resulting cancellation is not an output error.
+    bool sink_cancelled = false;
     std::shared_ptr<ChatTools> tools;
     std::shared_ptr<MemoryCharge> output_charge;
     std::optional<chat::ToolInterpreter> parser;

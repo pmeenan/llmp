@@ -884,7 +884,7 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       formula and floor, `SetBudget` as a scheduler command, a device-aware
       default mode and discrete sizing, the follow-up switch release tail; D-124
       accepted.
-- [ ] **F3a Tool-call correctness:** bounded JSON depth, growth-funded tool
+- [x] **F3a Tool-call correctness:** bounded JSON depth, growth-funded tool
       output, one request-local refusal channel, one grammar shared by parser,
       sampler and judge, Llama leading-JSON calls, self-opened reasoning, marked
       forced spans, linear-time result association.

@@ -2480,6 +2480,14 @@ context, performance, sampled quality or speculative decoding. Full M3.5
 served-model/client qualification remains **open**; final integrated source
 checks remain separate from this diagnostic.
 
+**Amended 2026-10-26 (M3.5 review fixes, tool calls).** `strict: true` on a
+definition is accepted and ignored, as vLLM does (it was refused); schema
+enforcement remains M7. `tools: []` with `auto` is a request without tools.
+Replies whose message has calls and no text send `content: null`. Tool names
+that are not UTF-8, not NFC under an NFC tokenizer, or that contain a control
+token's text are refused with 400 `invalid_tool_name`. The rest of the contract
+is unchanged ([tool-calls.md](tool-calls.md)).
+
 ## D-096: The runtime serves M3's models through an engine module, `[models]` in the configuration and two local serving commands; GGML, CUTLASS and cuBLAS ship  (2026-09-28, status: accepted by the owner, 2026-09-28; adds configuration keys and runtime commands, D-016 public surfaces; applies D-076's consequences for shipping cuBLAS; changes GGML's and CUTLASS's lock `use` to product under D-057; its engine's CUDA use moved behind the device runtime on 2026-09-29, noted below; engine structure amended by D-107 (one runner of shared components, one serving adapter per pipeline kind); its engine core builds in every profile since 2026-10-08, amended below)
 
 **Amended 2026-10-18** (review follow-up R7). The service and serving

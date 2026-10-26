@@ -3239,18 +3239,38 @@ TEST(ForcedSpan, RawNewlineRunsAreTheRealBlocksAndLiteralMarkersMustReproduce) {
   EXPECT_EQ(nonreproducing.error().rule, Rule::kUnsupported);
 }
 
-TEST(ForcedSpan, SentencePieceDummyPrefixIsNeverSilentlyApproximated) {
+TEST(ForcedSpan, SentencePieceForcedBytesContinueTheStreamWithoutADummyPrefix) {
   auto tokenizer = tok::Tokenizer::Create(SpmSpec(true));
   ASSERT_TRUE(tokenizer);
+  // A plain encoding starts a stream: its dummy ▁ would decode as a space.
+  EXPECT_EQ(Encode(*tokenizer, "a"), (std::vector<TokenId>{258}));
+  EXPECT_EQ(Encode(*tokenizer, "a", {.continuation = true}), (std::vector<TokenId>{256}));
+  EXPECT_EQ(
+      Encode(*tokenizer, "a<bos>a", {.special = tok::SpecialTokens::kParse, .continuation = true}),
+      (std::vector<TokenId>{256, 264, 256}));
   auto options = ForcedOptions();
   options.terminal = true;
-  auto changed = tokenizer->PlanForcedSpan(std::nullopt, "a", options);
-  ASSERT_FALSE(changed);
-  EXPECT_EQ(changed.error().rule, Rule::kUnsupported);
+  auto middle = tokenizer->PlanForcedSpan(std::nullopt, "a", options);
+  ASSERT_TRUE(middle) << Failed(middle, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(middle->tokens, (std::vector<TokenId>{256}));
+  EXPECT_EQ(ForcedText(*tokenizer, middle->tokens), "a");
+  // After a selected token, and after a control token inside the span.
+  auto healed = tokenizer->PlanForcedSpan(256, " a", options);
+  ASSERT_TRUE(healed) << Failed(healed, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(healed->tokens, (std::vector<TokenId>{259}));
+  EXPECT_TRUE(healed->replaces_selected);
+  auto control = tokenizer->PlanForcedSpan(std::nullopt, "<bos>a", options);
+  ASSERT_TRUE(control) << Failed(control, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(control->tokens, (std::vector<TokenId>{264, 256}));
+  auto cover = tokenizer->ForcedCoverBytes("a", options);
+  ASSERT_TRUE(cover) << Failed(cover, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(*cover, 1U);
+  // A span that starts the stream keeps the selected token's dummy-space policy.
   options.decode.remove_space_prefix = true;
-  auto exact = tokenizer->PlanForcedSpan(std::nullopt, "a", options);
-  ASSERT_TRUE(exact) << Failed(exact, &tok::Error::ToString).value_or("");
-  EXPECT_EQ(ForcedText(*tokenizer, exact->tokens, options.decode), "a");
+  auto start = tokenizer->PlanForcedSpan(std::nullopt, "a", options);
+  ASSERT_TRUE(start) << Failed(start, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(start->tokens, (std::vector<TokenId>{258}));
+  EXPECT_EQ(ForcedText(*tokenizer, start->tokens, options.decode), "a");
 }
 
 TEST(ForcedSpan, ActualTokenAndContextLimitsCutOnlyCanonicalTokens) {
@@ -3355,7 +3375,8 @@ TEST(ForcedSpan, FollowingByteCannotPromoteARepartitionedCanonicalPrefix) {
 }
 
 TEST(ForcedSpan, MultiStageSplitPlanAndUnmatchedGapPropagateStablePrefixExactly) {
-  // 1. Regex::Split advances stable_prefix past an unmatched gap when no unstable EOF hit occurred.
+  // 1. An unmatched gap stays open until a match ends it: appending "c" to
+  // "axb" extends the gap "xb", so only the match "a" is stable.
   {
     auto regex = tok::Regex::Compile("a", tok::RegexDialect::kHuggingFace);
     ASSERT_TRUE(regex);
@@ -3363,11 +3384,15 @@ TEST(ForcedSpan, MultiStageSplitPlanAndUnmatchedGapPropagateStablePrefixExactly)
     std::vector<std::uint32_t> lengths;
     tok::RegexBudget budget{.remaining = 1024};
     std::size_t stable_prefix = 0;
-    bool append_may_shrink = false;
-    ASSERT_TRUE(regex->Split(text, lengths, budget, &stable_prefix, &append_may_shrink));
+    ASSERT_TRUE(regex->Split(text, lengths, budget, &stable_prefix));
     EXPECT_EQ(lengths, (std::vector<std::uint32_t>{1, 2}));
-    EXPECT_EQ(stable_prefix, text.size());
-    EXPECT_FALSE(append_may_shrink);
+    EXPECT_EQ(stable_prefix, 1U);
+    // A gap a match closes is stable with it.
+    const std::u32string closed = U"axa!";
+    lengths.clear();
+    ASSERT_TRUE(regex->Split(closed, lengths, budget, &stable_prefix));
+    EXPECT_EQ(lengths, (std::vector<std::uint32_t>{1, 1, 1, 1}));
+    EXPECT_EQ(stable_prefix, 3U);
   }
   // 2. Multi-stage SplitPlan propagates stable_prefix across all stages instead of overwriting
   // stage 0's instability with stage 1's local result.
@@ -3375,15 +3400,262 @@ TEST(ForcedSpan, MultiStageSplitPlanAndUnmatchedGapPropagateStablePrefixExactly)
     const std::array<std::string, 2> expressions{"[a-z]+", "a"};
     auto plan = tok::SplitPlan::Compile(expressions, tok::RegexDialect::kHuggingFace);
     ASSERT_TRUE(plan);
-    const std::u32string text = U"12ab";
+    const std::u32string text = U"ab1c";
     std::vector<std::uint32_t> lengths;
     auto budget = plan->Budget(text.size());
     std::size_t stable_prefix = 0;
-    bool append_may_shrink = false;
-    ASSERT_TRUE(plan->Split(text, lengths, budget, &stable_prefix, &append_may_shrink));
-    EXPECT_EQ(lengths, (std::vector<std::uint32_t>{2, 1, 1}));
-    // Stage 0 ("12" gap, "ab" match touching EOF under [a-z]+) is unstable at offset 2 ("ab"),
-    // even though stage 1 ("a" on "ab") has no EOF-touching match at the end of "ab".
+    ASSERT_TRUE(plan->Split(text, lengths, budget, &stable_prefix));
+    EXPECT_EQ(lengths, (std::vector<std::uint32_t>{1, 1, 1, 1}));
+    // Stage 0 proves "ab" (its match stopped at "1"); the gap "1" is closed only
+    // by the match "c", which consulted EOF. Stage 1's own split of "1" and "c"
+    // cannot extend stage 0's proof.
     EXPECT_EQ(stable_prefix, 2U);
   }
+}
+
+TEST(ForcedSpan, MarkedSpansKeepControlTextInClientBytesAsText) {
+  Vocab v;
+  const auto call = v.Add("<call>", TokenKind::kControl);
+  const auto eos = v.Add("<eos>", TokenKind::kControl);
+  const auto added = v.Add("<u>", TokenKind::kUserDefined);
+  auto tokenizer = v.Build();
+  const std::string marker = "<call>";
+  const std::string forced = marker + "x<eos><u>y";  // a client name holding control text
+  auto spans = tokenizer.ControlSpans(marker);
+  ASSERT_TRUE(spans);
+  ASSERT_EQ(spans->size(), 1U);
+  auto options = ForcedOptions();
+  options.terminal = true;
+  // Unmarked kParse turns the client's text into a control ID.
+  auto parsed = tokenizer.PlanForcedSpan(std::nullopt, forced, options);
+  ASSERT_TRUE(parsed);
+  EXPECT_NE(std::ranges::find(parsed->tokens, eos), parsed->tokens.end());
+  options.marked = true;
+  options.encode.special = tok::SpecialTokens::kUserDefinedOnly;
+  options.specials = *spans;
+  auto marked = tokenizer.PlanForcedSpan(std::nullopt, forced, options);
+  ASSERT_TRUE(marked) << Failed(marked, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(marked->tokens.front(), call);
+  EXPECT_EQ(std::ranges::find(marked->tokens, eos), marked->tokens.end());
+  EXPECT_NE(std::ranges::find(marked->tokens, added), marked->tokens.end());  // still matches
+  EXPECT_EQ(ForcedText(tokenizer, marked->tokens), forced);
+  std::vector<TokenId> expected;
+  ASSERT_TRUE(tokenizer.EncodeMarked(forced, *spans, {}, expected));
+  EXPECT_EQ(marked->tokens, expected);
+  // encode.special is ignored for control tokens once marked.
+  options.encode.special = tok::SpecialTokens::kParse;
+  auto ignored = tokenizer.PlanForcedSpan(std::nullopt, forced, options);
+  ASSERT_TRUE(ignored);
+  EXPECT_EQ(ignored->tokens, expected);
+  // The cover follows the same policy: only a marked span is one atom.
+  auto marked_cover = tokenizer.ForcedCoverBytes(marker, options);
+  ASSERT_TRUE(marked_cover);
+  EXPECT_EQ(*marked_cover, marker.size());
+  options.specials = {};
+  auto text_cover = tokenizer.ForcedCoverBytes(marker, options);
+  ASSERT_TRUE(text_cover);
+  EXPECT_EQ(*text_cover, 0U);
+}
+
+TEST(ForcedSpan, MarkedSpansHealASelectionInsideThemAndShiftIntoTheHeldTail) {
+  Vocab v;
+  const auto call = v.Add("<call>", TokenKind::kControl);
+  auto tokenizer = v.Build();
+  auto options = ForcedOptions();
+  options.terminal = true;
+  options.marked = true;
+  options.encode.special = tok::SpecialTokens::kUserDefinedOnly;
+  // The selected "<" begins the marked span: the plan replaces it.
+  const std::array inside = {tok::SpecialSpan{0, 6}};
+  options.specials = inside;
+  auto healed = tokenizer.PlanForcedSpan(Byte('<'), "call>x", options);
+  ASSERT_TRUE(healed) << Failed(healed, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(healed->tokens, (std::vector<TokenId>{call, Byte('x')}));
+  EXPECT_TRUE(healed->replaces_selected);
+  EXPECT_TRUE(healed->selected_covered);
+  EXPECT_EQ(healed->consumed_forced_bytes, 6U);
+  // A selected control token is its own span; an identical span merges.
+  options.specials = {};
+  auto own = tokenizer.PlanForcedSpan(call, "x", options);
+  ASSERT_TRUE(own) << Failed(own, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(own->tokens, (std::vector<TokenId>{call, Byte('x')}));
+  EXPECT_FALSE(own->replaces_selected);
+  options.specials = inside;
+  auto merged = tokenizer.PlanForcedSpan(call, "x", options);
+  ASSERT_TRUE(merged);
+  EXPECT_EQ(merged->tokens, own->tokens);
+  // The held tail keeps its spans, shifted: here it is exactly one atom.
+  options.terminal = false;
+  options.remaining_tokens = 3;
+  const std::array later = {tok::SpecialSpan{3, 6}};
+  options.specials = later;
+  auto held = tokenizer.PlanForcedSpan(Byte('a'), " b<call>", options);
+  ASSERT_TRUE(held) << Failed(held, &tok::Error::ToString).value_or("");
+  EXPECT_TRUE(held->limited);
+  EXPECT_EQ(held->tokens.size(), 3U);
+  EXPECT_EQ(held->held, "<call>");
+  EXPECT_EQ(held->cover_bytes, 6U);
+}
+
+TEST(ForcedSpan, MarkedSpansAreCheckedLikeEncodeMarked) {
+  Vocab v;
+  const auto call = v.Add("<call>", TokenKind::kControl);
+  auto tokenizer = v.Build();
+  auto options = ForcedOptions();
+  options.marked = true;
+  const auto refused = [&](std::optional<TokenId> selected, std::string_view forced,
+                           std::span<const tok::SpecialSpan> spans) {
+    options.specials = spans;
+    return Failed(tokenizer.PlanForcedSpan(selected, forced, options), &tok::Error::rule);
+  };
+  const std::array partial = {tok::SpecialSpan{0, 3}};
+  EXPECT_EQ(refused(std::nullopt, "<call>", partial), Rule::kSpecialToken);
+  const std::array outside = {tok::SpecialSpan{2, 6}};
+  EXPECT_EQ(refused(std::nullopt, "<call>", outside), Rule::kSpecialToken);
+  const std::array disordered = {tok::SpecialSpan{6, 6}, tok::SpecialSpan{0, 6}};
+  EXPECT_EQ(refused(std::nullopt, "<call><call>", disordered), Rule::kSpecialToken);
+  const std::array overlap = {tok::SpecialSpan{2, 6}};
+  EXPECT_EQ(refused(call, "xx<call>", overlap), Rule::kSpecialToken);  // inside the selected
+  const std::array empty = {tok::SpecialSpan{0, 0}};
+  EXPECT_EQ(refused(std::nullopt, "<call>", empty), Rule::kSpecialToken);
+  options.specials = partial;
+  EXPECT_EQ(Failed(tokenizer.ForcedCoverBytes("<call>", options), &tok::Error::rule),
+            Rule::kSpecialToken);
+  options.marked = false;
+  const std::array whole = {tok::SpecialSpan{0, 6}};
+  EXPECT_EQ(refused(std::nullopt, "<call>", whole), Rule::kUnsupported);
+  options.specials = whole;
+  EXPECT_EQ(Failed(tokenizer.ForcedCoverBytes("<call>", options), &tok::Error::rule),
+            Rule::kUnsupported);
+}
+
+TEST(ForcedSpan, ControlSpansAndControlTextFollowTheParsingMatcher) {
+  Vocab v;
+  v.Add("<a>", TokenKind::kControl);
+  v.Add("<a>b", TokenKind::kUserDefined);
+  v.Add("<c>", TokenKind::kControl);
+  auto tokenizer = v.Build();
+  auto spans = tokenizer.ControlSpans("x<a>y<a>b<c>");
+  ASSERT_TRUE(spans);
+  ASSERT_EQ(spans->size(), 2U);  // the longer user-defined "<a>b" hides a control
+  EXPECT_EQ((*spans)[0].offset, 1U);
+  EXPECT_EQ((*spans)[0].length, 3U);
+  EXPECT_EQ((*spans)[1].offset, 9U);
+  EXPECT_EQ((*spans)[1].length, 3U);
+  auto none = tokenizer.ControlSpans("<a");
+  ASSERT_TRUE(none);
+  EXPECT_TRUE(none->empty());
+  const auto contains = [&](std::string_view text) {
+    auto found = tokenizer.ContainsControlText(text);
+    EXPECT_TRUE(found);
+    return found.value_or(false);
+  };
+  EXPECT_FALSE(contains(""));
+  EXPECT_FALSE(contains("x<a"));
+  EXPECT_FALSE(contains("<c"));
+  EXPECT_TRUE(contains("x<a>"));
+  EXPECT_TRUE(contains("<a>b"));  // a substring, even inside a user-defined token
+  EXPECT_TRUE(contains("zz<c>zz"));
+  llmp::base::WorkPulse pulse;
+  pulse.Cancel();
+  llmp::base::SetThreadPulse(&pulse);
+  const std::string long_text(std::size_t{1} << 17U, '<');
+  const auto cancelled = tokenizer.ContainsControlText(long_text);
+  const auto cancelled_spans = tokenizer.ControlSpans(long_text);
+  llmp::base::SetThreadPulse(nullptr);
+  EXPECT_EQ(Failed(cancelled, &tok::Error::rule), Rule::kCancelled);
+  EXPECT_EQ(Failed(cancelled_spans, &tok::Error::rule), Rule::kCancelled);
+}
+
+TEST(ForcedSpan, AnOpenAtomPrefixHoldsBlocksItsClosedFragmentWouldSplitDifferently) {
+  Vocab v;
+  const auto spaces = v.Merge(" ", " ");
+  const auto call = v.Add("<call>", TokenKind::kControl);
+  auto tokenizer = v.Build();
+  // If "<call>" does follow, the fragment "a  " ends in one two-space block.
+  EXPECT_EQ(Encode(tokenizer, "a  <call>", {.special = tok::SpecialTokens::kParse}),
+            (std::vector<TokenId>{Byte('a'), spaces, call}));
+  auto plan = tokenizer.PlanForcedSpan(std::nullopt, "a  <c", ForcedOptions());
+  ASSERT_TRUE(plan) << Failed(plan, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(plan->tokens, (std::vector<TokenId>{Byte('a')}));
+  EXPECT_EQ(plan->held, "  <c");
+  // Blocks the closed fragment reproduces are still committed.
+  auto kept = tokenizer.PlanForcedSpan(std::nullopt, "abc<c", ForcedOptions());
+  ASSERT_TRUE(kept);
+  EXPECT_EQ(ForcedText(tokenizer, kept->tokens), "abc");
+  EXPECT_EQ(kept->held, "<c");
+  // A prefix only of a control token holds nothing once control text is text.
+  auto options = ForcedOptions();
+  options.marked = true;
+  auto marked = tokenizer.PlanForcedSpan(std::nullopt, "a  <c", options);
+  ASSERT_TRUE(marked);
+  EXPECT_EQ(ForcedText(tokenizer, marked->tokens), "a  <");
+  EXPECT_EQ(marked->held, "c");
+}
+
+TEST(ForcedSpan, ForcedBytesThatFinishAPublishedCharacterAreHeldNotRefused) {
+  Vocab v;
+  const auto tail = v.Merge("\xbd", "\x9c");  // splits U+FF5C, as in DeepSeek's markers
+  auto tokenizer = v.Build();
+  const std::string forced = "\xef\xbd\x9c!";  // "｜!"
+  EXPECT_EQ(Encode(tokenizer, forced), (std::vector<TokenId>{Byte('\xef'), tail, Byte('!')}));
+  // Masking: every candidate whose bytes run along the forced text is planned,
+  // from every offset an accepted candidate can publish.
+  const auto options = ForcedOptions();
+  std::vector<bool> reached(forced.size() + 1, false);
+  std::vector<std::size_t> pending{0};
+  reached[0] = true;
+  while (!pending.empty()) {
+    const auto at = pending.back();
+    pending.pop_back();
+    if (at == forced.size()) continue;
+    const auto rest = std::string_view(forced).substr(at);
+    auto cover = tokenizer.ForcedCoverBytes(rest, options);
+    ASSERT_TRUE(cover) << at << ": " << Failed(cover, &tok::Error::ToString).value_or("");
+    bool accepted = false;
+    for (TokenId id = 0; std::cmp_less(id, tokenizer.size()); ++id) {
+      if (!tokenizer.CoversForced(id, *cover)) continue;
+      const auto piece = ForcedText(tokenizer, std::span(&id, 1));
+      if (piece.empty() || !rest.starts_with(piece)) continue;
+      std::size_t next = forced.size();
+      if (piece.size() < rest.size()) {
+        auto plan = tokenizer.PlanForcedSpan(id, rest.substr(piece.size()), options);
+        ASSERT_TRUE(plan) << at << ": " << Failed(plan, &tok::Error::ToString).value_or("");
+        if (plan->selected_covered && !plan->tokens.empty())
+          next = at + plan->committed_bytes;
+        else if (plan->selected_matches_canonical_prefix)
+          next = at + piece.size();
+        else
+          continue;
+      }
+      accepted = true;
+      if (!reached[next]) {
+        reached[next] = true;
+        pending.push_back(next);
+      }
+    }
+    EXPECT_TRUE(accepted) << at;
+  }
+  EXPECT_TRUE(reached[1]);  // the lead byte alone was published
+  EXPECT_TRUE(reached[forced.size()]);
+  // A token allowance can end a committed span inside a character too.
+  Vocab w;
+  const auto lead = w.Merge("\xef", "\xbd");
+  auto limited = w.Build();
+  auto cut_options = ForcedOptions(1);
+  cut_options.terminal = true;
+  auto cut = limited.PlanForcedSpan(std::nullopt,
+                                    "\xef\xbd\x9c"
+                                    "a b",
+                                    cut_options);
+  ASSERT_TRUE(cut) << Failed(cut, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(cut->tokens, (std::vector<TokenId>{lead}));
+  EXPECT_TRUE(cut->limited);
+  EXPECT_EQ(cut->held,
+            "\x9c"
+            "a b");
+  EXPECT_EQ(cut->cover_bytes, 0U);
+  // More continuation bytes than one character can hold are refused.
+  EXPECT_EQ(Failed(limited.ForcedCoverBytes("\x9c\x9c\x9c\x9c", cut_options), &tok::Error::rule),
+            Rule::kInvalidUtf8);
 }

@@ -714,6 +714,41 @@ TEST_P(Gemma4ServingGpu, ActualPinnedTemplateNativeInterpreterAndRendererAgree) 
     const auto conversation = llmp::test_support::ConversationFrom(c, &arguments);
     const auto a = native->Render(conversation);
     const auto b = llmp::chat::RenderInterpreted(*program, conversation, facts, std::nullopt);
+    // Tool results that follow no assistant call (or outnumber its calls)
+    // render upstream, but the shared history contract refuses them for
+    // serving, as OpenAI's API does (docs/tool-calls.md). Direct
+    // interpretation keeps the pinned source's semantics: when it renders
+    // one, it renders the source's bytes.
+    const std::string_view name = llmp::test_support::Get(c, "name").string();
+    if (name == "orphan-tool" || name == "tool-first" || name == "g3-system-ws" ||
+        name == "bools-nulls") {
+      EXPECT_FALSE(a);
+      if (const auto expected = c.find("sha256"); b && expected)
+        EXPECT_EQ(llmp::base::ToHex(llmp::base::Sha256{}.Update(b->text).Finish()),
+                  expected->string());
+      continue;
+    }
+    if (name == "chain-tools") {
+      // The raw fixture is the source baseline, with Gemma's empty-ID
+      // last-match bug; serving renders the resolved association instead
+      // (chat_template_test's ServedGemmaRenderingsEqualTransformers).
+      ASSERT_TRUE(a) << (a ? "" : a.error().ToString());
+      ASSERT_TRUE(b) << (b ? "" : b.error().ToString());
+      EXPECT_EQ(llmp::base::ToHex(llmp::base::Sha256{}.Update(b->text).Finish()),
+                llmp::test_support::Get(c, "sha256").string());
+      std::string resolved = b->text;
+      const auto first = resolved.find("response:g{value:");
+      ASSERT_NE(first, std::string::npos);
+      resolved.replace(first, std::string_view("response:g").size(), "response:f");
+      EXPECT_EQ(a->text, resolved);
+      auto projected = llmp::chat::ProjectContent(conversation);
+      ASSERT_TRUE(projected);
+      auto interpreted =
+          llmp::chat::RenderInterpreted(*program, *projected, facts, std::nullopt, {}, true);
+      ASSERT_TRUE(interpreted) << interpreted.error().ToString();
+      EXPECT_EQ(interpreted->text, a->text);
+      continue;
+    }
     if (const auto expected = c.find("sha256")) {
       ASSERT_TRUE(a) << (a ? "" : a.error().ToString());
       ASSERT_TRUE(b) << (b ? "" : b.error().ToString());

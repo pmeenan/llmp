@@ -74,10 +74,8 @@ std::uint64_t SplitPlan::WorkingBytes(std::size_t n) const {
 
 std::expected<void, Error> SplitPlan::Split(std::span<const char32_t> text,
                                             std::vector<std::uint32_t>& lengths,
-                                            RegexBudget& budget, std::size_t* stable_prefix,
-                                            bool* append_may_shrink) const {
+                                            RegexBudget& budget, std::size_t* stable_prefix) const {
   if (stable_prefix != nullptr) *stable_prefix = 0;
-  if (append_may_shrink != nullptr) *append_may_shrink = false;
   if (text.empty()) return {};
   if (text.size() >= std::numeric_limits<std::uint32_t>::max())
     return std::unexpected(Error{Rule::kBounds, "split input code point limit"});
@@ -96,10 +94,8 @@ std::expected<void, Error> SplitPlan::Split(std::span<const char32_t> text,
       const bool closed = piece_end <= stable_limit && piece_end < text.size();
       const bool track_stable = stable_prefix != nullptr && !closed && offset <= stable_limit;
       std::size_t stable = 0;
-      bool shrink = false;
-      if (auto split = stage.Split(
-              text.subspan(offset, length), next, budget, track_stable ? &stable : nullptr,
-              append_may_shrink != nullptr && piece_end == text.size() ? &shrink : nullptr);
+      if (auto split = stage.Split(text.subspan(offset, length), next, budget,
+                                   track_stable ? &stable : nullptr);
           !split)
         return split;
       if (stable_prefix != nullptr) {
@@ -109,7 +105,6 @@ std::expected<void, Error> SplitPlan::Split(std::span<const char32_t> text,
           next_limit = std::min(stable_limit, offset + stable);
         }
       }
-      if (append_may_shrink != nullptr) *append_may_shrink = *append_may_shrink || shrink;
       offset = piece_end;
     }
     stable_limit = next_limit;

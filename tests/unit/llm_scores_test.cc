@@ -1955,7 +1955,7 @@ TEST_F(LlmTools, AcceptedSpeculativeEosEndsJudgingBeforeAnUnpublishedToolOpener)
   EXPECT_GT(llm_->counts().speculative_units, 0U);
   EXPECT_GT(output.accepted, 0U);
   EXPECT_GT(output.drafted, output.accepted);
-  EXPECT_FALSE(constraint->refused_candidates());
+  EXPECT_FALSE(constraint->refused());
 }
 
 TEST_F(LlmTools, CertainSpanScoresEveryPublishedTokenFromItsActualCausalRow) {
@@ -1997,7 +1997,7 @@ TEST_F(LlmTools, EmptyConstraintCandidatesRetireOnlyTheirRequestAndKeepNativeFai
   last['z'] = 1;  // finite native output, excluded by the required opener
   rt::Generation refused;
   EXPECT_FALSE(BranchAt(0).Generate(last, options, refused));
-  EXPECT_TRUE(constraint->refused_candidates());
+  EXPECT_TRUE(constraint->refused());
   EXPECT_TRUE(llm_->generation_cohort_usable());
   EXPECT_TRUE(refused.tokens.empty());
   EXPECT_EQ(source_->queued(), queued);
@@ -2006,7 +2006,7 @@ TEST_F(LlmTools, EmptyConstraintCandidatesRetireOnlyTheirRequestAndKeepNativeFai
   last['z'] = -std::numeric_limits<float>::infinity();
   rt::Generation invalid;
   EXPECT_FALSE(BranchAt(0).Generate(last, options, invalid));
-  EXPECT_FALSE(native_failure->refused_candidates());
+  EXPECT_FALSE(native_failure->refused());
   EXPECT_EQ(source_->queued(), queued);
   options.tool_sampling.reset();
   last['a'] = 1;
@@ -2038,7 +2038,7 @@ TEST_F(LlmTools, ChooseValidatesExcludedNativeLogitsBeforeMaskingOrRefusal) {
         auto generated = BranchAt(0).Generate(last, options, output);
         ASSERT_FALSE(generated);
         EXPECT_THAT(generated.error(), HasSubstr("invalid-logits"));
-        EXPECT_FALSE(constraint->refused_candidates());
+        EXPECT_FALSE(constraint->refused());
         EXPECT_TRUE(output.tokens.empty());
         EXPECT_EQ(source_->queued(), queued);
         EXPECT_EQ(State(0), (std::vector<std::int32_t>{'x'}));
@@ -2209,14 +2209,15 @@ TEST_F(LlmTools, PreparedOutputPaymentFollowsPausedStateAfterRequestRetires) {
     auto prepared = rt::service_detail::PrepareChat(*llm_, *request, exchange, memory);
     ASSERT_TRUE(prepared) << prepared.error().message;
     ASSERT_TRUE(prepared->tools);
-    held = prepared->tools->charge.bytes() + prepared->tools->options->charge.bytes() +
-           prepared->output_charge->bytes();
     rt::service_detail::ChatOutput output(*llm_, exchange, false, prepared->tools,
                                           prepared->output_charge);
     const std::string generated = "<function=lookup><parameter=s>x</parameter></function>tail";
     const std::vector<std::int32_t> ids(generated.begin(), generated.end());
     ASSERT_FALSE(output.Push(ids));
     ASSERT_TRUE(output.pending());
+    // The output's share grew with the call's bytes as they arrived.
+    held = prepared->tools->charge.bytes() + prepared->tools->options->charge.bytes() +
+           prepared->output_charge->bytes();
     saved = output.Save();
   }
   EXPECT_EQ(memory.used(), held);
@@ -2232,6 +2233,41 @@ TEST_F(LlmTools, PreparedOutputPaymentFollowsPausedStateAfterRequestRetires) {
     EXPECT_EQ(memory.used(), held);
   }
   EXPECT_EQ(memory.used(), 0U);
+}
+
+TEST_F(LlmTools, ToolOutputMemoryFollowsGeneratedBytesNotMaxTokens) {
+  QwenChat();
+  // A small request pool: the old prepayment (about 1,200 x the longest token
+  // x max_tokens, and max_tokens omitted is the rest of the context) refused
+  // this request or grew the pool by reclaiming other models (B2).
+  rt::RequestMemory memory(std::uint64_t{32} << 20U);
+  ToolExchange exchange;
+  exchange.serial = true;
+  auto request = rt::api::ParseChatRequest(R"({"model":"m",
+      "messages":[{"role":"user","content":"read"}],
+      "tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]})",
+                                           &memory);
+  ASSERT_TRUE(request);
+  auto prepared = rt::service_detail::PrepareChat(*llm_, *request, exchange, memory);
+  ASSERT_TRUE(prepared) << prepared.error().message;
+  ASSERT_TRUE(prepared->tools);
+  EXPECT_GT(prepared->max_tokens, 2000U);  // the rest of the context
+  const auto initial = prepared->tools->charge.bytes();
+  EXPECT_LT(initial, std::uint64_t{1} << 20U);
+  rt::service_detail::ChatOutput output(*llm_, exchange, false, prepared->tools,
+                                        prepared->output_charge);
+  const std::string value(20000, 'v');
+  const std::string generated = "<function=lookup><parameter=s>" + value;
+  const std::vector<std::int32_t> ids(generated.begin(), generated.end());
+  ASSERT_TRUE(output.Push(ids));
+  const auto grown = prepared->tools->charge.bytes();
+  EXPECT_GE(grown, *llmp::chat::ToolOutputBytes(prepared->tools->format, value.size()));
+  EXPECT_GT(grown, initial);
+  // Past the request pool's capacity the growth is refused for this request alone.
+  const std::vector<std::int32_t> more(1'000'000, 'v');
+  EXPECT_FALSE(output.Push(more));
+  ASSERT_TRUE(output.error());
+  EXPECT_LE(memory.used(), memory.capacity());
 }
 
 TEST_F(LlmTools, AcceptedCallPauseOwnsUnreadTokenBatchAcrossBothContinuationAdapters) {
@@ -2381,7 +2417,7 @@ TEST_P(LlmToolInvalidVerify, ExcludedNativeInvalidityCannotDisappearInKeep) {
   ASSERT_FALSE(generated);
   EXPECT_THAT(generated.error(), HasSubstr("invalid-logits"));
   EXPECT_TRUE(verified);
-  EXPECT_FALSE(constraint->refused_candidates());
+  EXPECT_FALSE(constraint->refused());
   EXPECT_EQ(reported, (std::vector<std::int32_t>{'r'}));
   EXPECT_EQ(output.tokens, reported);
   EXPECT_EQ(output.accepted, 0U);

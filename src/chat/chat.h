@@ -164,6 +164,12 @@ struct Message {
   // Local association into the immediately preceding assistant's calls. Never
   // serialized as an invented persistent ID. Missing associations remain explicit.
   std::optional<std::size_t> resolved_tool_call = {};
+  // The only name the preceding assistant's unclaimed calls share (calls no
+  // result of this group resolves to), by the index of a call that bears it;
+  // absent when they have several names or none. It names a function, never
+  // an occurrence: renderers that need a result's name and have neither its
+  // call nor tool_result_name read it. Set on each result by ProjectContent.
+  std::optional<std::size_t> implied_name_call = {};
   std::string tool_result_name = {};
   bool tool_result_is_error = false;
   bool tool_result_normalized = false;
@@ -183,6 +189,9 @@ struct Conversation {
   // charged, within the model's bound (Llm::RenderCharge, D-102).
   std::size_t max_render_bytes = jinja::Limits{}.max_output_bytes;
   std::size_t max_live_bytes = 0;
+  // ProjectContent's most storage (ProjectionStorageBytes; 0: unchecked):
+  // serving sets it to the projection it charged.
+  std::size_t max_projection_bytes = 0;
 };
 
 // The shared template boundary. Text parts concatenate exactly; tools project
@@ -190,9 +199,14 @@ struct Conversation {
 // missing IDs retain supplied order and resolve only from unambiguous evidence.
 // Error results retain status and render with an explicit "[tool error] " prefix.
 // Images and unrepresentable content ordering fail before template rendering.
+// Projection is linear in the conversation's messages, parts and calls.
 bool HasStructuredContent(const Conversation& conversation);
 std::expected<Conversation, Error> ProjectContent(const Conversation& conversation,
                                                   bool supports_tools = true);
+// At most what ProjectContent's copy of a conversation and its working
+// tables (parsed tool arguments, association indexes) hold: what a caller
+// funds before projecting, and the bound max_projection_bytes checks.
+std::uint64_t ProjectionStorageBytes(const Conversation& conversation);
 
 using jinja::Boundary;
 using jinja::BoundaryKind;

@@ -131,7 +131,7 @@ class Parser {
   std::expected<void, Error> Run() {
     doc_.nodes_.emplace_back();  // the root is node 0
     SkipSpace();
-    if (auto v = ParseValue(0, 0); !v) {
+    if (auto v = ParseRoot(); !v) {
       return v;
     }
     SkipSpace();
@@ -182,17 +182,84 @@ class Parser {
     return {};
   }
 
-  // Parses the value at pos_ into node `index`.
-  std::expected<void, Error> ParseValue(std::uint32_t index, std::size_t depth) {
-    if (pos_ >= text_.size()) {
-      return Fail("value expected");
+  // Parses the value at pos_ into node 0, iteratively, so that nesting
+  // costs no stack, whatever Limits::max_depth allows. An open container's
+  // own node holds its frame until it closes: its kind, in `first` where its
+  // children start in pending_, and in `size` the enclosing open container.
+  // Nesting therefore needs no memory beyond the node table ParseWorkingBytes
+  // already counts.
+  std::expected<void, Error> ParseRoot() {
+    std::uint32_t index = 0;      // the node the next value fills
+    std::uint32_t container = 0;  // the innermost open container, while depth > 0
+    std::size_t depth = 0;        // the containers open around the next value
+    while (true) {
+      if (pos_ >= text_.size()) {
+        return Fail("value expected");
+      }
+      bool element = false;  // whether an element of `container` comes next
+      const char c = text_[pos_];
+      if (c == '{' || c == '[') {
+        if (depth + 1 > limits_.max_depth) {
+          return Fail("nesting too deep");
+        }
+        ++pos_;  // the bracket
+        doc_.nodes_[index] = {.kind = c == '{' ? Kind::kObject : Kind::kArray,
+                              .integer = false,
+                              .size = container,
+                              .first = static_cast<std::uint32_t>(pending_.size())};
+        container = index;
+        ++depth;
+        SkipSpace();
+        element = pos_ >= text_.size() || text_[pos_] != (c == '{' ? '}' : ']');
+        if (!element) {
+          ++pos_;
+          auto parent = CloseContainer(container);
+          if (!parent) {
+            return std::unexpected(parent.error());
+          }
+          container = *parent;
+          --depth;
+        }
+      } else if (auto s = ParseScalar(index); !s) {
+        return s;
+      }
+      // After a complete value: a ',' asks for the next element of `container`,
+      // its closing bracket completes `container` itself.
+      while (!element) {
+        if (depth == 0) {
+          return {};
+        }
+        SkipSpace();
+        const bool object = doc_.nodes_[container].kind == Kind::kObject;
+        if (pos_ < text_.size() && text_[pos_] == ',') {
+          ++pos_;
+          SkipSpace();
+          element = true;
+        } else if (pos_ < text_.size() && text_[pos_] == (object ? '}' : ']')) {
+          ++pos_;
+          auto parent = CloseContainer(container);
+          if (!parent) {
+            return std::unexpected(parent.error());
+          }
+          container = *parent;
+          --depth;
+        } else {
+          return Fail(object ? "',' or '}' expected" : "',' or ']' expected");
+        }
+      }
+      auto child = BeginElement(doc_.nodes_[container].kind == Kind::kObject);
+      if (!child) {
+        return std::unexpected(child.error());
+      }
+      index = *child;
     }
-    const char c = text_[pos_];
+  }
+
+  // Parses the scalar at pos_ (not a container; pos_ inside the text) into
+  // node `index`.
+  std::expected<void, Error> ParseScalar(std::uint32_t index) {
     Document::Node node;
-    switch (c) {
-      case '{':
-      case '[':
-        return ParseContainer(index, depth, c == '{');
+    switch (text_[pos_]) {
       case '"': {
         auto s = ParseString();
         if (!s) {
@@ -412,62 +479,48 @@ class Parser {
     return node;
   }
 
-  std::expected<void, Error> ParseContainer(std::uint32_t index, std::size_t depth, bool object) {
-    if (depth + 1 > limits_.max_depth) {
-      return Fail("nesting too deep");
-    }
-    ++pos_;  // the bracket
-    const std::size_t base = pending_.size();
-    SkipSpace();
-    const char close = object ? '}' : ']';
-    if (pos_ < text_.size() && text_[pos_] == close) {
-      ++pos_;
-    } else {
-      while (true) {
-        if (object) {
-          if (pos_ >= text_.size() || text_[pos_] != '"') {
-            return Fail("member name expected");
-          }
-          auto key = NewNode();
-          if (!key) {
-            return std::unexpected(key.error());
-          }
-          auto s = ParseString();
-          if (!s) {
-            return std::unexpected(s.error());
-          }
-          doc_.nodes_[*key] = *s;
-          pending_.push_back(*key);
-          SkipSpace();
-          if (pos_ >= text_.size() || text_[pos_] != ':') {
-            return Fail("':' expected");
-          }
-          ++pos_;
-          SkipSpace();
-        }
-        auto child = NewNode();
-        if (!child) {
-          return std::unexpected(child.error());
-        }
-        pending_.push_back(*child);
-        if (auto v = ParseValue(*child, depth + 1); !v) {
-          return v;
-        }
-        SkipSpace();
-        if (pos_ < text_.size() && text_[pos_] == ',') {
-          ++pos_;
-          SkipSpace();
-          continue;
-        }
-        if (pos_ < text_.size() && text_[pos_] == close) {
-          ++pos_;
-          break;
-        }
-        return Fail(object ? "',' or '}' expected" : "',' or ']' expected");
+  // Starts an element of the open container at pos_ (past the bracket or
+  // ',' and any space): an object's key and its ':', then the node the
+  // element's value fills, which it returns.
+  std::expected<std::uint32_t, Error> BeginElement(bool object) {
+    if (object) {
+      if (pos_ >= text_.size() || text_[pos_] != '"') {
+        return Fail("member name expected");
       }
+      auto key = NewNode();
+      if (!key) {
+        return std::unexpected(key.error());
+      }
+      auto s = ParseString();
+      if (!s) {
+        return std::unexpected(s.error());
+      }
+      doc_.nodes_[*key] = *s;
+      pending_.push_back(*key);
+      SkipSpace();
+      if (pos_ >= text_.size() || text_[pos_] != ':') {
+        return Fail("':' expected");
+      }
+      ++pos_;
+      SkipSpace();
     }
+    auto child = NewNode();
+    if (!child) {
+      return std::unexpected(child.error());
+    }
+    pending_.push_back(*child);
+    return *child;
+  }
+
+  // Completes the open container `index` (pos_ past its closing bracket):
+  // moves its pending children to kids_, refuses a repeated member name,
+  // and returns the container that encloses it.
+  std::expected<std::uint32_t, Error> CloseContainer(std::uint32_t index) {
+    const Document::Node frame = doc_.nodes_[index];
+    const bool object = frame.kind == Kind::kObject;
+    const std::size_t base = frame.first;
     const std::size_t count = pending_.size() - base;
-    Document::Node node{.kind = object ? Kind::kObject : Kind::kArray,
+    Document::Node node{.kind = frame.kind,
                         .integer = false,
                         .size = static_cast<std::uint32_t>(object ? count / 2 : count),
                         .first = static_cast<std::uint32_t>(doc_.kids_.size())};
@@ -487,7 +540,7 @@ class Parser {
         return Fail("duplicate member name");
       }
     }
-    return {};
+    return frame.size;
   }
 
   std::string_view text_;
@@ -707,6 +760,58 @@ std::optional<Value> Value::find(std::string_view name) const {
     }
   }
   return std::nullopt;
+}
+
+void AppendValue(Value value, std::string& out) {
+  struct Frame {
+    Value container;
+    std::size_t next;
+  };
+  std::vector<Frame> open;
+  for (;;) {
+    switch (value.kind()) {
+      case Kind::kNull:
+        out += "null";
+        break;
+      case Kind::kFalse:
+        out += "false";
+        break;
+      case Kind::kTrue:
+        out += "true";
+        break;
+      case Kind::kNumber:
+        out += value.number();
+        break;
+      case Kind::kString:
+        AppendQuoted(value.string(), out);
+        break;
+      case Kind::kArray:
+      case Kind::kObject:
+        out += value.is_object() ? '{' : '[';
+        open.push_back({value, 0});
+        break;
+    }
+    // Close every finished container, then descend into the next member.
+    for (;;) {
+      if (open.empty()) return;
+      auto& top = open.back();
+      if (top.next == top.container.size()) {
+        out += top.container.is_object() ? '}' : ']';
+        open.pop_back();
+        continue;
+      }
+      if (top.next != 0) out += ',';
+      if (top.container.is_object()) {
+        AppendQuoted(top.container.key(top.next), out);
+        out += ':';
+        value = top.container.member(top.next);
+      } else {
+        value = top.container.at(top.next);
+      }
+      ++top.next;
+      break;
+    }
+  }
 }
 
 }  // namespace llmp::base::json

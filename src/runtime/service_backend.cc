@@ -194,10 +194,13 @@ std::expected<api::Completion, api::Error> NodeBackend::SerialChat(Llm& l,
       return {};  // the state holds what ran; the exchange answers for why
     }
     auto generated = l.Generate(last, options, generation, resume != nullptr);
-    if (!generated && options.tool_sampling && options.tool_sampling->refused_candidates() &&
+    // Any refusal by the request's tool grammar (no allowed candidate, a token
+    // or forced span outside it) is this request's alone, as in a cohort.
+    if (!generated && options.tool_sampling && options.tool_sampling->refused() &&
         l.generation_cohort_usable()) {
       constraint_problem =
-          Failure(500, "no generated token satisfies the tool constraint", "tool_output_invalid");
+          Failure(500, "the generation was refused by its tool constraint: " + generated.error(),
+                  "tool_output_invalid");
       return {};  // EndRequest still authenticates retirement before this is returned.
     }
     return capacity(std::move(generated), "the generation failed: ");
