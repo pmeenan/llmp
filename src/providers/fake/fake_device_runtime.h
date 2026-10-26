@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 
 #include "base/bytes.h"
 #include "providers/device_runtime.h"
@@ -49,6 +50,11 @@ enum class RuntimeError : int {
 struct FakeDeviceSettings {
   // What the fake device memory may back at once, across its classes.
   base::Bytes capacity = base::Bytes(std::uint64_t{4} << 30U);
+  // Whether QueryDeviceFacts reports the device's memory as the host's
+  // (DeviceFacts::unified), and what QueryDeviceMemory reports free (none:
+  // the capacity).
+  bool unified = true;
+  std::optional<base::Bytes> free = std::nullopt;
 };
 // The settings the next OpenDevice uses (before it; not thread-safe with it).
 void ConfigureFakeDevice(FakeDeviceSettings settings);

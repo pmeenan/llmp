@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <algorithm>
+#include <format>
 #include <limits>
 #include <utility>
 
@@ -651,17 +652,22 @@ Status ModelRunner::ContinueRouted(RunPath& path, std::shared_ptr<StepTransactio
     };
     if (!needs_lease && !node_.InRequest(stream_))
       return Error("supplemental work requires a live request");
+    bool over_budget = false;
     const auto posted =
         needs_lease ? node_.SupplementalJob(flight->closure, queue_continuation, flight,
                                             routed_->allowance, "routed selected continuation",
-                                            stream_, &retired, flight->capacity)
+                                            stream_, &retired, flight->capacity, &over_budget)
                     : node_.Job({}, queue_continuation, "routed selected continuation", stream_, {},
                                 &retired);
     if (!posted || flight->unknown || !flight->continuation.result ||
         flight->execution.launch()->faulted()) {
       // No false inference from an error to retirement. The retained flight
       // keeps the complete caller owner, plan, source, pinned data and launch.
-      return Error(!posted                        ? posted.error()
+      // A capacity refusal says so: the selection did not fit the budget.
+      return Error(!posted && over_budget
+                       ? std::format("capacity: the routed selection does not fit the budget ({})",
+                                     posted.error())
+                   : !posted                      ? posted.error()
                    : !flight->continuation.result ? flight->continuation.result.error().detail
                                                   : "routed continuation faulted");
     }

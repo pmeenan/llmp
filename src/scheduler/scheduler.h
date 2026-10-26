@@ -447,6 +447,10 @@ struct SchedulerSettings {
   LandingZone landing = {};  // NOLINT(readability-redundant-member-init)
   // Told of each page-in's progress; outlives the scheduler. Optional.
   PageInObserver* observer = nullptr;
+  // The domain whose budget headroom bounds the backing lane's handle pool
+  // (BackingService::Rebalance, at the end of every turn; D-124 as amended
+  // 2026-10-25). None: the pool, if any, is left to itself.
+  std::optional<catalog::DomainId> pool_domain = std::nullopt;
 };
 
 // The lanes the scheduler publishes to; any may be absent (its work is
@@ -679,15 +683,22 @@ class Scheduler {
   std::size_t copying() const;
   const SchedulerStats& stats() const { return stats_; }
 
+  // The execution budget B. Any thread may read it; only the scheduler's
+  // thread changes it (SetBudget), so one turn's decisions see one value.
   base::Bytes budget() const noexcept {
     return base::Bytes(budget_bytes_.load(std::memory_order_acquire));
   }
-  void SetBudget(base::Bytes budget) noexcept {
-    budget_bytes_.store(budget.value(), std::memory_order_release);
-  }
+  // The scheduler's thread (a Call): B set to `budget`, but never below
+  // the outstanding claims of `domain` (D-050: what its extents hold
+  // beyond the idle, reclaimable ones; architecture.md's budget reduction).
+  // Returns the budget applied.
+  base::Bytes SetBudget(base::Bytes budget, catalog::DomainId domain);
 
  private:
   std::expected<void, WorkError> CheckRequestLease(std::uint64_t request, catalog::LeaseId lease);
+  // The backing lane's pool held to the budget's headroom (SchedulerSettings::
+  // pool_domain), at the end of each turn.
+  void RebalancePool();
   friend class TaskContext;
 
   // What an operation is: a stage of a page-in, the unmap of an eviction,
@@ -878,10 +889,12 @@ class Scheduler {
   void NoteFollow();
   void AwaitFollow();
 
-  // Page-ins (pagein.cc). With `own`, the extent's own parked eviction
-  // has just ended and its kept backing is the load's.
+  // Page-ins (pagein.cc). `limit`: the budget the caller's decision read
+  // once. With `own`, the extent's own parked eviction has just ended and
+  // its kept backing is the load's.
   std::expected<void, WorkError> BeginPageIn(TaskRecord& record, catalog::ExtentId extent,
-                                             const PageSource& source, bool own = false,
+                                             const PageSource& source, Bytes limit,
+                                             bool own = false,
                                              std::shared_ptr<EvictionReceipt> receipt = {});
   // A parked eviction in `domain` keeping backing for `place`: the budget
   // is each domain's, so a charge never moves between domains.

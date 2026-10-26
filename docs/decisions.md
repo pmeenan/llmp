@@ -149,7 +149,7 @@ Import success alone is not a serving, quality or performance qualification.
 semantic metadata in these declarative mappings without checkpoint-specific
 execution code.
 
-## D-124: Physical memory modes: dedicated node pool versus shared-machine mode (2026-10-21, status: proposed; implements memory pool preallocation and shared-workstation operational profiles; amends D-004, D-006, D-096, D-097)
+## D-124: Physical memory modes: dedicated node pool versus shared-machine mode (2026-10-21, status: accepted by the owner, 2026-10-25, as amended that day (below); implements memory pool preallocation and shared-workstation operational profiles; amends D-004, D-006, D-096, D-097)
 
 **Decision.** Physical memory management operates in two explicit operational modes configured via `[memory] mode = "dedicated" | "shared"` (with optional `[memory] budget_gib = <int>`, defaulting to 0 for full detected capacity):
 
@@ -173,6 +173,66 @@ execution code.
 **Consequences.** `[memory]` in `llmp.toml` gains `mode = "dedicated" | "shared"` and `budget_gib`. Telemetry and `swap-table` reports display `memory_mode`, `created_backings`, `released_backings`, `live_backings`, `reserve_available`, and `reserve_target`.
 
 **Reopen if.** Dynamic paging performance in shared mode on unified memory (e.g. GB10) differs significantly from discrete GPUs, or if unified virtual memory primitives allow seamless kernel-level reclamation without explicit userland release hooks.
+
+**Amended 2026-10-25 (owner acceptance, with the M3.5 review's fixes,
+`m35-review` A2-A5, A10).** Accepted with these changes, which override
+the text above where they differ:
+
+- **The pool stays within the budget (invariant 5).** The pool's empty
+  handles are not catalog occupancy, so they now never hold more than the
+  budget leaves beside the occupancy: one live target,
+  `max(0, B - occupancy) / extent`, at most the pool's ceiling. The
+  scheduler gives the backing lane that headroom at the end of every turn
+  (`BackingService::Rebalance`): the lane releases what lies past it, and
+  creates only within it, between commands. Taking a handle for a charged
+  load, or keeping an evicted extent's, moves backing between the pool and
+  the occupancy and changes nothing, so the swap path is untouched; a
+  charge outside the pool (plans and graphs past their floor, token and
+  request memory, result payments, pinned staging, host-class backing) or a
+  lower budget sheds that many handles, and the pool grows back, lazily, as
+  they shrink. The handles are counted once: physical use is the
+  occupancy plus the pool, within `B`. Handles released this way and made
+  again later come from whatever the host's free memory is then, so
+  RE-059's placement guarantee covers the handles made at the start only.
+- **The modes differ in the pool, not in the mechanism.** Dedicated keeps a
+  pool whose ceiling is what every model could page in at once, filled at
+  the start; shared keeps none (its ceiling is 0, as above). One runtime
+  policy object (`runtime/memory_policy.h`) holds every mode difference: the
+  pool, the workspace's default, the idle release, the budget's shrink and
+  the release under pressure.
+- **Preallocation is best effort.** A device that cannot back the whole
+  pool at the start gives a smaller one (the log says how many handles it
+  made, and why it stopped); loads past it create their own. The start is
+  never refused for it.
+- **The default mode follows the device.** Unset, `mode` is dedicated where
+  the device's memory is the host's (the GB10's) and shared on a discrete
+  GPU, until M6 builds the device budget. On a discrete GPU the budget is
+  also at most the device's free memory less a step's plans and a 1 GiB
+  margin (a bound, not a measurement), never the host's MemAvailable alone.
+- **Pressure and release free physical memory first.** Pressure from
+  outside and `POST /llmp/v1/memory/release` drain the pool's empty handles
+  first (they cost nothing to restore) and keep the pool from refilling
+  (until the pressure ends, or until the next activation after a release),
+  so the cache evicted for what remains is released to the system rather
+  than pooled. `released_backings` reports the provider's own count. The
+  route answers 409 only when work is in flight; any other failure is a
+  500.
+- **The shared budget shrinks to the right value and comes back in steps.**
+  Under pressure the budget is `occupancy - (target - available)`, never
+  below the fixed memory plus the largest active footprint, and never
+  lowered while a turn's work runs; once the pressure ends it rises toward
+  the configured budget by what is available past the target, a step at a
+  time. A budget change is a scheduler command
+  (`PagedNode::SetBudget`, applied on the scheduler's thread) that never
+  drops below the domain's outstanding claims (D-050); a page-in decision
+  reads one budget.
+- **A quick follow-up switch waits for the last one's releases.** Backing
+  an earlier swap is still releasing counts as occupancy until each release
+  lands; a swap short of room waits for that tail while it moves (bounded by
+  the node's quiet time, D-102) before it evicts any cache.
+- `idle_release_seconds` applies in shared mode only (dedicated mode logs
+  that it ignores it); `[memory]`'s times have no caps but what the clock
+  represents (D-102).
 
 ## D-123: Capability-driven optimization and normalization; no checkpoint or shape pins in runtime, planner, kernel or importer selection (2026-10-20, status: accepted at the owner's direction; amends D-107, D-109, D-118 and D-119)
 
@@ -1769,7 +1829,7 @@ after an audit of about 70 limits):
   bound. The template interpreter's step and work budgets become
   cancellation points, not caps; its memory and depth bounds stay.
   Node configuration drops the 16-model and generic 1M-context caps.
-- **Kept:** retention expiry with its 24-hour default (7 days by D-055's 2026-10-20 amendment, the runtime's default following with M3.5's retention item; the owner's
+- **Kept:** retention expiry with its 24-hour default (7 days by D-055's 2026-10-20 amendment; the runtime's `retention_hours` default is 168; the owner's
   configurable cache timeout, 2026-10-02), idle keep-alive, descriptor
   and memory bounds, format and arithmetic bounds, Jinja2's own
   `MAX_RANGE` refusal, and wire-protocol value ranges (TypeSafe's option

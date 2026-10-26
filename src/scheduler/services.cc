@@ -169,6 +169,7 @@ void CarryRegion(providers::DeviceMemory* memory, CompletionBoard& board, Operat
           if (creates != nullptr) creates->Attempt(false);
           auto created = memory->Create(work.allocation_class, Bytes(extent));
           if (creates != nullptr) creates->Completed(false);
+          if (reserve != nullptr) reserve->Created();
           if (!created) {
             if (creates != nullptr) creates->Failed(false, created.error());
             failure = created.error();
@@ -350,6 +351,7 @@ void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, HandleReserv
       if (creates != nullptr) creates->Attempt(false);
       const auto created = memory->Create(work.allocation_class, work.size);
       if (creates != nullptr) creates->Completed(false);
+      if (reserve != nullptr) reserve->Created();
       if (!created) {
         if (creates != nullptr) creates->Failed(false, created.error());
         unknown(created.error()) ? unproven(Acceptance::kUnknown) : not_started();
@@ -603,17 +605,139 @@ std::optional<providers::BackingId> HandleReserve::Take(std::size_t allocation_c
   }
   const providers::BackingId backing = kept_.back();
   kept_.pop_back();
+  ++version_;
   return backing;
 }
 
 bool HandleReserve::Keep(std::size_t allocation_class, Bytes size, providers::BackingId backing) {
   std::lock_guard lock(mutex_);
   if (settings_.count == 0 || allocation_class != settings_.allocation_class ||
-      size != settings_.size || kept_.size() + lost_ >= settings_.count) {
+      size != settings_.size || HeldLocked() >= ceiling_) {
     return false;
   }
   kept_.push_back(backing);
+  ++version_;
   return true;
+}
+
+bool HandleReserve::BeginRefill() {
+  std::lock_guard lock(mutex_);
+  if (settings_.count == 0 || drained_ || RemainingLocked() >= ceiling_ ||
+      (managed_ && grant_ == 0)) {
+    return false;
+  }
+  if (managed_) --grant_;
+  ++creating_;
+  ++version_;
+  return true;
+}
+
+bool HandleReserve::EndRefill(std::optional<providers::BackingId> created, bool lost,
+                              bool known_failure) {
+  std::lock_guard lock(mutex_);
+  --creating_;
+  ++version_;
+  if (lost) ++lost_;
+  // Never raised: a drain's lowered ceiling stays (a shed the provider
+  // refused may have left the pool above it).
+  if (known_failure && managed_) ceiling_ = std::min(ceiling_, RemainingLocked());
+  if (!created) return false;
+  if (drained_ || RemainingLocked() >= ceiling_) {
+    // The ceiling fell, or a drain began, meanwhile: shed, not kept, so
+    // the lane's release accounts for it (a refusal keeps it, an unknown
+    // outcome counts it lost) and a drain waits for it.
+    shed_.push_back(*created);
+    ++shedding_;
+    return false;
+  }
+  kept_.push_back(*created);
+  return true;
+}
+
+bool HandleReserve::Rebalance(std::size_t headroom, std::size_t transients, std::uint64_t* seen) {
+  std::lock_guard lock(mutex_);
+  if (!managed_) {
+    if (seen != nullptr) *seen = version_;
+    return false;
+  }
+  const std::size_t allowed = headroom > SIZE_MAX - transients ? SIZE_MAX : headroom + transients;
+  // Never past its ceiling either: a drain's shed the provider refused is
+  // shed again here, after the lane's next command.
+  const std::size_t most = std::min(allowed, ceiling_);
+  std::size_t shed = 0;
+  if (!shed_refused_ && HeldLocked() > most) {
+    shed = std::min(kept_.size(), HeldLocked() - most);
+    for (std::size_t i = 0; i < shed; ++i) {
+      shed_.push_back(kept_.back());
+      kept_.pop_back();
+    }
+    shedding_ += shed;
+  }
+  // Everything it holds counts here, the handles on their way out too:
+  // what it may create is certainly within the headroom.
+  const std::size_t pooled = RemainingLocked() + shedding_;
+  const std::size_t room =
+      !drained_ && ceiling_ > RemainingLocked() ? ceiling_ - RemainingLocked() : 0;
+  const std::size_t grant = std::min(headroom > pooled ? headroom - pooled : 0, room);
+  if (shed != 0 || grant != grant_) ++version_;
+  grant_ = grant;
+  if (seen != nullptr) *seen = version_;
+  return shed != 0 || grant_ != 0;
+}
+
+std::size_t HandleReserve::SetCeiling(std::size_t ceiling) {
+  std::lock_guard lock(mutex_);
+  ceiling_ = std::min(ceiling_, ceiling);
+  drained_ = true;  // first: a create in flight is shed when it ends
+  std::size_t shed = 0;
+  if (HeldLocked() > ceiling_) {
+    shed = std::min(kept_.size(), HeldLocked() - ceiling_);
+    for (std::size_t i = 0; i < shed; ++i) {
+      shed_.push_back(kept_.back());
+      kept_.pop_back();
+    }
+    shedding_ += shed;
+  }
+  grant_ = 0;
+  ++version_;
+  return shed;
+}
+
+std::vector<providers::BackingId> HandleReserve::TakeShed() {
+  std::lock_guard lock(mutex_);
+  return std::exchange(shed_, {});
+}
+
+void HandleReserve::Shed(std::size_t released, std::span<const providers::BackingId> refused,
+                         std::size_t lost) {
+  std::lock_guard lock(mutex_);
+  shedding_ -= std::min(shedding_, released + refused.size() + lost);
+  lost_ += lost;  // may still exist: counted, never kept again
+  if (!refused.empty()) {
+    // Still there, still the pool's: released at teardown, or shed again
+    // after the lane's next command.
+    kept_.insert(kept_.end(), refused.begin(), refused.end());
+    shed_refused_ = true;
+  }
+  ++version_;
+}
+
+std::vector<providers::BackingId> HandleReserve::TakeAll() {
+  std::lock_guard lock(mutex_);
+  std::vector<providers::BackingId> all = std::exchange(kept_, {});
+  all.insert(all.end(), shed_.begin(), shed_.end());
+  shedding_ -= std::min(shedding_, shed_.size());
+  shed_.clear();
+  ++version_;
+  return all;
+}
+
+std::size_t HandleReserve::target() const {
+  std::lock_guard lock(mutex_);
+  if (!managed_) return ceiling_;
+  const std::size_t remaining = RemainingLocked();
+  const std::size_t aim = grant_ > SIZE_MAX - remaining ? SIZE_MAX : remaining + grant_;
+  return std::min(ceiling_, aim);
 }
 
 std::optional<HandoffStash::Kept> HandoffStash::Take(std::size_t allocation_class, Bytes size) {
@@ -1088,6 +1212,12 @@ BackingService::BackingService(providers::DeviceMemory* memory, CompletionBoard&
 
 void BackingService::Handle(DeviceCommand& command) {
   refill_ok_ = true;
+  {
+    // A new version if it was set: the scheduler's next Rebalance sheds
+    // the refused handles again instead of skipping unchanged inputs.
+    std::lock_guard lock(reserve_.mutex_);
+    if (std::exchange(reserve_.shed_refused_, false)) ++reserve_.version_;
+  }
   if (const auto* work = std::get_if<BackingWork>(&command.work)) {
     const bool lazy_park = work->kind == BackingWork::Kind::kUnmap && work->retain && work->lazy;
     if (lazy_park) creates_.BeginPark();
@@ -1104,11 +1234,9 @@ void BackingService::Handle(DeviceCommand& command) {
 
 bool BackingService::Refill() {
   // Closed and drained: the lane is stopping, and what it would create
-  // now would only be released. A startup-preallocated pool recycles handles
-  // as extents are evicted and never creates extra handles in the background
-  // while its handles are mapped.
-  if (memory_ == nullptr || !refill_ok_ || refill_lost_ || !reserve_.needs_refill() ||
-      queue_.drained()) {
+  // now would only be released.
+  if (memory_ == nullptr || !refill_ok_ || refill_lost_ || queue_.drained() ||
+      !reserve_.BeginRefill()) {
     return false;
   }
   const ReserveSettings settings = reserve_.settings();
@@ -1117,117 +1245,154 @@ bool BackingService::Refill() {
   creates_.Completed(true);
   if (!created) {
     creates_.Failed(true, created.error());
-    // Known: tried again after the next command. Unknown: the provider's
-    // state is not what the reserve's count says, so it is left short, the
-    // backing that may exist counted in its place.
+    // Known: tried again after the next command (unmanaged), or never past
+    // what the pool holds (managed: the device is short). Unknown: the
+    // provider's state is not what the pool's count says, so it is left
+    // short, the backing that may exist counted in its place.
     refill_ok_ = false;
     refill_lost_ = created.error().error == providers::ProviderError::kUnknown;
-    if (refill_lost_) {
-      reserve_.Lose();
-    }
+    (void)reserve_.EndRefill(std::nullopt, refill_lost_, !refill_lost_);
+    NotifyDrain();
     return false;
   }
-  if (!reserve_.Keep(settings.allocation_class, settings.size, *created)) {
-    (void)memory_->Release(*created);
-    return false;
-  }
+  // Kept, or shed (a drain began meanwhile) for the next ReleaseShed:
+  // progress either way, so the lane releases it before it waits.
+  (void)reserve_.EndRefill(*created, false, false);
+  NotifyDrain();
   return true;
 }
 
-std::expected<void, std::string> BackingService::SetReserve(std::size_t allocation_class,
-                                                            Bytes extent_bytes, std::size_t count,
-                                                            bool preallocate_now) {
-  const bool preallocate = preallocate_now && memory_ != nullptr && count > 0;
-  reserve_.SetSettings(
-      ReserveSettings{.allocation_class = allocation_class, .size = extent_bytes, .count = count},
-      preallocate);
-  if (preallocate) {
-    std::vector<providers::BackingId> allocated;
-    allocated.reserve(count);
-    for (std::size_t i = 0; i < count; ++i) {
-      auto created = memory_->Create(allocation_class, extent_bytes);
-      if (!created) {
-        for (const auto id : allocated) {
-          (void)memory_->Release(id);
-        }
-        creates_.StartupPoolRolledBack(allocated.size());
-        reserve_.SetSettings({}, false);
-        return std::unexpected(
-            std::format("preallocating backing pool: {}", created.error().detail));
-      }
-      allocated.push_back(*created);
-      creates_.StartupPoolCreated();
-    }
-    for (const auto id : allocated) {
-      reserve_.KeepUnchecked(id);
-    }
-  }
-  return {};
-}
-
-std::optional<providers::BackingId> BackingService::TakeFromReserve(std::size_t allocation_class,
-                                                                    Bytes size) {
-  return reserve_.Take(allocation_class, size);
-}
-
-bool BackingService::ReturnToReserve(providers::BackingId backing) {
-  const auto s = reserve_.settings();
-  return reserve_.Keep(s.allocation_class, s.size, backing);
-}
-
-std::size_t BackingService::DrainReserveWorkerLocked(std::size_t target) {
-  if (memory_ == nullptr) return 0;
-  const auto handles = reserve_.DrainDownTo(target);
-  std::size_t released_count = 0;
+bool BackingService::ReleaseShed() {
+  std::vector<providers::BackingId> handles = reserve_.TakeShed();
+  if (handles.empty()) return false;
+  std::size_t released = 0;
+  std::size_t lost = 0;
+  std::vector<providers::BackingId> refused;
   for (const providers::BackingId backing : handles) {
-    if (memory_->Release(backing)) {
-      ++released_count;
+    if (const auto done = memory_->Release(backing); done) {
+      ++released;
+    } else if (done.error().error == providers::ProviderError::kUnknown) {
+      ++lost;
+    } else {
+      refused.push_back(backing);
     }
   }
-  return released_count;
+  reserve_.Shed(released, refused, lost);
+  released_.fetch_add(released, std::memory_order_acq_rel);
+  NotifyDrain();
+  return true;
 }
 
-std::size_t BackingService::DrainReserve(std::optional<std::size_t> down_to) {
-  const std::size_t target = down_to.value_or(reserve_.target());
+void BackingService::NotifyDrain() {
+  {
+    std::lock_guard lock(mu_);  // a drain's wait sees it, or is not yet waiting
+  }
+  cv_.notify_all();
+}
+
+void BackingService::Wake() {
+  if (wake_pending_.exchange(true, std::memory_order_acq_rel)) return;
+  if (queue_.TryPush(DeviceCommand{}) != base::PushResult::kAccepted) {
+    // Full: the lane is busy and looks at the pool between commands
+    // anyway. Closed: it is stopping.
+    wake_pending_.store(false, std::memory_order_release);
+  }
+}
+
+std::size_t BackingService::Preallocate(std::size_t count, std::string* failure) {
+  if (memory_ == nullptr || count == 0) return 0;
+  const ReserveSettings settings = reserve_.settings();
+  std::size_t made = 0;
+  for (; made < count; ++made) {
+    auto created = memory_->Create(settings.allocation_class, settings.size);
+    if (!created) {
+      {
+        // The ceiling falls to what the pool holds, the backing an unknown
+        // outcome may have made counted in it, so nothing it keeps is shed.
+        std::lock_guard lock(reserve_.mutex_);
+        if (created.error().error == providers::ProviderError::kUnknown) ++reserve_.lost_;
+        reserve_.ceiling_ = std::min(reserve_.ceiling_, reserve_.RemainingLocked());
+        reserve_.grant_ = 0;
+        ++reserve_.version_;
+      }
+      if (failure != nullptr) *failure = created.error().detail;
+      break;
+    }
+    reserve_.KeepUnchecked(*created);
+    creates_.StartupPoolCreated();
+  }
+  return made;
+}
+
+void BackingService::Rebalance(Bytes headroom, std::size_t transients) {
+  const Bytes size = reserve_.settings().size;
+  if (size.value() == 0) return;
+  const std::uint64_t handles = headroom.value() / size.value();
+  const std::uint64_t version = reserve_.version();
+  if (handles == last_headroom_ && transients == last_transients_ && version == last_version_) {
+    return;
+  }
+  last_headroom_ = handles;
+  last_transients_ = transients;
+  // The version Rebalance left under the pool's lock, not a later read: a
+  // lane's change just after (a refused shed's flag cleared, a create
+  // kept) is then seen at the next turn instead of skipped.
+  const bool work =
+      reserve_.Rebalance(handles > SIZE_MAX ? SIZE_MAX : static_cast<std::size_t>(handles),
+                         transients, &last_version_);
+  if (work) Wake();
+}
+
+std::size_t BackingService::DrainReserve(std::size_t ceiling) {
+  if (memory_ == nullptr) return 0;
+  const std::uint64_t before = released_.load(std::memory_order_acquire);
+  if (reserve_.SetCeiling(ceiling) == 0 && reserve_.settling() == 0) return 0;
   std::unique_lock lock(mu_);
+  if (worker_running_) {
+    lock.unlock();
+    Wake();
+    lock.lock();
+    // Its sheds released, and a create in flight ended (and shed).
+    cv_.wait(lock, [&] { return reserve_.settling() == 0 || !worker_running_; });
+  }
   if (!worker_running_) {
-    return DrainReserveWorkerLocked(target);
+    // No lane runs (before Run, inline lanes, after the join): the
+    // provider is this thread's to call, and Run starts on no other.
+    lock.unlock();
+    (void)ReleaseShed();
   }
-  drain_requested_ = true;
-  drain_target_ = target;
-  (void)queue_.TryPush(DeviceCommand{}, base::PushKind::kCleanup);
-  cv_.wait(lock, [&] { return !drain_requested_ || !worker_running_; });
-  if (drain_requested_) {
-    drain_result_ = DrainReserveWorkerLocked(target);
-    drain_requested_ = false;
-  }
-  return drain_result_;
+  return static_cast<std::size_t>(released_.load(std::memory_order_acquire) - before);
+}
+
+void BackingService::RestoreReserve() {
+  reserve_.RestoreCeiling();  // a new version: the scheduler's next turn looks again
 }
 
 bool BackingService::ReleaseReserve() {
-  std::unique_lock lock(mu_);
+  std::lock_guard lock(mu_);
   if (memory_ == nullptr) return true;
-  const auto handles = reserve_.DrainDownTo(0);
   bool released = true;
-  for (const providers::BackingId backing : handles) {
+  for (const providers::BackingId backing : reserve_.TakeAll()) {
     released = memory_->Release(backing).has_value() && released;
   }
   return released;
 }
 
 bool BackingService::Turn() {
-  bool progress = false;
+  bool progress = ReleaseShed();
   for (std::size_t i = 0; i < batch_; ++i) {
     std::optional<DeviceCommand> command = queue_.TryPop();
     if (!command) {
       break;
     }
     if (command->operation == OperationId{}) {
+      wake_pending_.store(false, std::memory_order_release);
       continue;
     }
     Handle(*command);
     progress = true;
   }
+  progress = ReleaseShed() || progress;
   return progress || Refill();
 }
 
@@ -1238,14 +1403,7 @@ void BackingService::Run() {
   }
   const std::stop_token never;
   while (true) {
-    {
-      std::unique_lock lock(mu_);
-      if (drain_requested_) {
-        drain_result_ = DrainReserveWorkerLocked(drain_target_.value_or(reserve_.target()));
-        drain_requested_ = false;
-        cv_.notify_all();
-      }
-    }
+    (void)ReleaseShed();
     std::optional<DeviceCommand> command = queue_.TryPop();
     if (!command) {
       if (Refill()) {
@@ -1256,28 +1414,18 @@ void BackingService::Run() {
         break;
       }
     }
-    {
-      std::unique_lock lock(mu_);
-      if (drain_requested_) {
-        drain_result_ = DrainReserveWorkerLocked(drain_target_.value_or(reserve_.target()));
-        drain_requested_ = false;
-        cv_.notify_all();
-      }
-    }
     if (command->operation == OperationId{}) {
-      continue;
+      wake_pending_.store(false, std::memory_order_release);
+      continue;  // a wake: the pool has work (the loop's head)
     }
     Handle(*command);
   }
+  (void)ReleaseShed();
   {
     std::lock_guard lock(mu_);
-    if (drain_requested_) {
-      drain_result_ = DrainReserveWorkerLocked(drain_target_.value_or(reserve_.target()));
-      drain_requested_ = false;
-    }
     worker_running_ = false;
-    cv_.notify_all();
   }
+  cv_.notify_all();
 }
 
 Lane<CpuCommand>::Handler CpuHandler(CompletionBoard& board) {

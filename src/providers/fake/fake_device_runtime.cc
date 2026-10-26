@@ -138,12 +138,13 @@ std::expected<DeviceFacts, DeviceStatus> QueryDeviceFacts(int ordinal) {
   if (ordinal != 0) {
     return Failed(RuntimeError::kNoDevice);
   }
-  return DeviceFacts{.architecture = 0};
+  return DeviceFacts{.architecture = 0, .unified = Settings().unified};
 }
 
 std::expected<DeviceMemoryInfo, DeviceStatus> QueryDeviceMemory() {
   const auto capacity = static_cast<std::size_t>(Settings().capacity.value());
-  return DeviceMemoryInfo{.free = capacity, .total = capacity};
+  const auto free = static_cast<std::size_t>(Settings().free.value_or(Settings().capacity).value());
+  return DeviceMemoryInfo{.free = std::min(free, capacity), .total = capacity};
 }
 
 DeviceStatus CopyAsync(NativeStream stream, void* to, const void* from, std::size_t bytes,

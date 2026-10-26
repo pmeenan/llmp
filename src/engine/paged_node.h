@@ -194,8 +194,7 @@ struct Mapped {
 // Unmaps and releases `mapped`'s backing (it holds none once the VMM lane
 // manages it, D-033) and frees its reservation; false if any step failed.
 // A mapped that holds nothing is left as it is.
-bool ReleaseMapped(providers::VmmProvider& memory, Mapped& mapped,
-                   scheduler::BackingService* backing_lane = nullptr);
+bool ReleaseMapped(providers::VmmProvider& memory, Mapped& mapped);
 
 // A model's places checked still where it registered them and pinned there
 // (D-090), on the scheduler's thread: how many are not, and the first.
@@ -216,9 +215,17 @@ struct LoadStats {
   std::uint64_t pieces = 0;    // the chunks (segments) they carried
 };
 
-enum class MemoryMode : std::uint8_t {
-  kDedicated,
-  kShared,
+// D-124's dedicated node pool (PagedNode::Start; as amended 2026-10-25):
+// created, unmapped 2 MiB device handles the VMM lane keeps for loads to
+// take, at most `ceiling` bytes of them, and never more than the budget
+// leaves beside the domain's occupancy (scheduler::HandleReserve): what it
+// holds is not occupancy, so it shrinks as charges outside it grow or the
+// budget falls, and grows back (lazily, as the lane idles) as they shrink.
+// `fill`: created at Start up to that headroom, as many as the device gives
+// (best effort: a refusal leaves a smaller pool, never a refused start).
+struct NodePool {
+  base::Bytes ceiling;
+  bool fill = true;
 };
 
 struct NodeSettings {
@@ -241,15 +248,14 @@ struct NodeSettings {
   // zero), unless the file was kept across a restart (D-105: its adopted
   // extents are read); off is an internal override for matched controls.
   bool zero_state = true;
-  // 2 MiB device handles the VMM lane keeps created ahead, charged as one
-  // pinned runtime extent (scheduler::ReserveSettings; D-033 as amended
-  // 2026-10-07). None by default: a harness's budget counts only what it
-  // maps; the runtime keeps kHandleReserve. With one, the VMM lane calls
+  // At most this many 2 MiB device handles the VMM lane keeps created
+  // ahead, filled as it idles, within the budget's headroom as Start's
+  // NodePool is (scheduler::HandleReserve; D-033 as amended 2026-10-07).
+  // None by default: a harness's budget counts only what it maps. Start's
+  // NodePool, if given, takes its place. With either, the VMM lane calls
   // the device-memory provider while idle, so once the lanes run nothing
   // else may call it until they have joined (device_memory.h).
   std::size_t handle_reserve = 0;
-  MemoryMode memory_mode = MemoryMode::kDedicated;
-  bool preallocate_pool = false;
   bool diagnostic_backing_timing = false;  // internal cap-only attribution, no public setting
   // Each slot's bytes (and the reader's largest request): 2 MiB, or more
   // for reads longer than their extent (a DeepSeek expert slab's pages,
@@ -601,7 +607,11 @@ class PagedNode {
   // Only the owning model's unreferenced pinned allocation, after positive
   // device completion and destruction of every plan/registration naming it.
   Status RetireMapped(Mapped& mapped);
-  Status Start(base::Bytes budget, std::optional<base::Bytes> pool_ceiling = std::nullopt);
+  // `pool`: the dedicated node pool (NodePool); none, the settings'
+  // handle_reserve.
+  Status Start(base::Bytes budget, std::optional<NodePool> pool = std::nullopt);
+  // What a NodePool's fill could not create, and why ("" if nothing).
+  const std::string& pool_shortfall() const { return pool_shortfall_; }
   void Run();
   // Every problem in one error. Once.
   Status TearDown(std::span<PagedModel* const> models);
@@ -626,7 +636,13 @@ class PagedNode {
   catalog::DomainId domain() const { return domain_; }
   scheduler::Scheduler& scheduler() { return *scheduler_; }
   [[nodiscard]] base::Bytes budget() const noexcept;
-  void SetBudget(base::Bytes budget) noexcept;
+  // The driver's: the execution budget for every later page-in, applied by
+  // the scheduler at a turn's boundary and never below the domain's
+  // outstanding claims (scheduler::Scheduler::SetBudget, D-050). Returns
+  // the budget applied. Before Start it only records it.
+  std::expected<base::Bytes, std::string> SetBudget(base::Bytes budget);
+  // The same on the scheduler's thread (inside a Call), at once.
+  base::Bytes ApplyBudget(base::Bytes budget);
   // The physical bytes needed if all registered live-state ceilings were
   // used. A harness may budget this without mapping any unused state.
   std::uint64_t StateCapacity() const;
@@ -827,13 +843,27 @@ class PagedNode {
     return backing_lane_ != nullptr ? backing_lane_->create_counts()
                                     : scheduler::BackingCreateCounts{};
   }
-  MemoryMode memory_mode() const noexcept { return settings_.memory_mode; }
+  // The handle pool (NodePool, or the settings' handle_reserve): the empty
+  // handles it holds, and what it aims to hold now (any thread; snapshots).
   std::size_t ReserveAvailable() const {
     return backing_lane_ != nullptr ? backing_lane_->ReserveAvailable() : 0;
   }
   std::size_t ReserveTarget() const {
     return backing_lane_ != nullptr ? backing_lane_->ReserveTarget() : 0;
   }
+  // The driver's: the pool kept to at most `keep` handles and never
+  // refilled (no create; an eviction's backing is kept only up to `keep`,
+  // released past it) until RestorePool; what it held past that released
+  // (the release route, and
+  // pressure from outside, give the pool's empty handles back before any
+  // cache, D-124 as amended). Returns how many the provider released.
+  std::size_t DrainPool(std::size_t keep = 0) {
+    return backing_lane_ != nullptr ? backing_lane_->DrainReserve(keep) : 0;
+  }
+  void RestorePool() {
+    if (backing_lane_ != nullptr) backing_lane_->RestoreReserve();
+  }
+  // Any thread: the provider's live backings (an atomic count).
   std::size_t LiveBackings() const { return memory_ != nullptr ? memory_->backings() : 0; }
   std::uint64_t CreatedBackings() const {
     return memory_ != nullptr ? memory_->created_backings() : 0;
@@ -841,10 +871,6 @@ class PagedNode {
   std::uint64_t ReleasedBackings() const {
     return memory_ != nullptr ? memory_->released_backings() : 0;
   }
-  std::size_t ReleaseUnusedBacking() {
-    return backing_lane_ != nullptr ? backing_lane_->DrainReserve() : 0;
-  }
-  bool ReleaseMapped(Mapped& mapped);
   // Owner-only board counters become readable after teardown joins the
   // scheduler and lanes. Never read them concurrently with Harvest.
   std::optional<scheduler::HarvestStats> retired_harvest_stats() const {
@@ -877,12 +903,15 @@ class PagedNode {
   // No implicit request refresh is performed.
   // Any post-submission failure ends normal continuation. Unknown retirement
   // retains the entire payload and base lease until FinishSupplemental proves
-  // the scoped page-ins and submitted operation have ended.
+  // the scoped page-ins and submitted operation have ended. `over_budget`,
+  // if given, says whether a refusal was the budget's: the selection did not
+  // fit even after the reclaim Acquire would make (ReclaimFor::kMaterialize),
+  // a capacity refusal rather than a fault, as Acquire reports it.
   Status SupplementalJob(const catalog::Closure& selected, scheduler::DeviceJob job,
                          std::shared_ptr<const void> payload,
                          std::shared_ptr<ExecutionMetadataAllowance> allowance,
                          std::string_view what, std::uint32_t stream, JobReport* report = nullptr,
-                         const SupplementalCapacity& capacity = {});
+                         const SupplementalCapacity& capacity = {}, bool* over_budget = nullptr);
   std::expected<SupplementalCapacity, std::string> PrepareSupplementalCapacity(
       std::uint32_t stream, std::uint64_t max_extents,
       std::shared_ptr<ExecutionMetadataAllowance> allowance);
@@ -1113,6 +1142,7 @@ class PagedNode {
   catalog::DomainId domain_;
   std::vector<Span> spans_;  // sorted by base once setup ends
   base::Bytes budget_;
+  std::string pool_shortfall_;
 
   Mapped zone_;
   Mapped activations_;

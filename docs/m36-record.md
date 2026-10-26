@@ -320,7 +320,7 @@ evidence. The nested scope text, verbatim, is
     the 2.6 GiB shared workspace resident at startup, and on a long-running
     host the driver backs it with about 51,000 scattered 64 KiB pieces taken
     from the buddy allocator's smallest free blocks, so big prefill steps
-    lose about 1.3% of GPU time ([RE-059](rough-edges.md#re-059-gb10-kernel-speed-depends-on-where-the-kernels-free-memory-puts-a-device-allocation--2026-10-17-status-open)).
+    lose about 1.3% of GPU time ([RE-059](rough-edges.md#re-059-gb10-kernel-speed-depends-on-where-the-kernels-free-memory-puts-a-device-allocation--2026-10-17-status-resolved-in-d-124)).
   - *Ruled out:* the state layout (`0c6bcc9a`) and the access pattern
     (per-extent against range-wide `cuMemSetAccess`).
   - *Workaround tried, not landed:* a startup "borrow until 2 MiB blocks"

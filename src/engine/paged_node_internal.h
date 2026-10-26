@@ -161,33 +161,6 @@ inline Status CheckReplacementClosure(const catalog::Catalog& catalog, catalog::
   return {};
 }
 
-inline bool ReleaseMapped(providers::VmmProvider& memory, Mapped& mapped,
-                          scheduler::BackingService* backing_lane) {
-  if (!mapped.reservation.valid()) {
-    return true;
-  }
-  const bool unmapped =
-      mapped.backings.empty() ||
-      memory.Unmap(mapped.reservation, Bytes(0), Bytes(mapped.backings.size() * kPagedExtent))
-          .has_value();
-  if (!unmapped) {
-    return false;
-  }
-  bool released = true;
-  for (const auto backing : mapped.backings) {
-    if (backing_lane != nullptr && backing_lane->ReturnToReserve(backing)) {
-      continue;
-    }
-    released = memory.Release(backing).has_value() && released;
-  }
-  if (!released || !memory.Free(mapped.reservation)) {
-    return false;
-  }
-  mapped.backings.clear();
-  mapped.reservation = {};
-  return true;
-}
-
 // One wait of the driver's under its patience.
 class PagedNode::Waiter {
  public:

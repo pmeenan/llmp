@@ -90,4 +90,12 @@ std::expected<std::vector<catalog::ExtentId>, std::string> ReleaseForHandoff(
   return release;
 }
 
+RoomWait WaitForReleaseTail(const scheduler::EvictionReceipt::Snapshot& tail,
+                            std::uint64_t evicting,
+                            scheduler::EvictionReceipt::Clock::time_point now,
+                            std::chrono::milliseconds quiet) {
+  return !tail.complete && evicting != 0 && !tail.Stalled(now, quiet) ? RoomWait::kWait
+                                                                      : RoomWait::kReclaim;
+}
+
 }  // namespace llmp::runtime

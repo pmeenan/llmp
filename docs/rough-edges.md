@@ -73,7 +73,6 @@ including queried resources and workspace allocation accounting. No sm86
 execution is established by this result.
 
 ## RE-059: GB10 kernel speed depends on where the kernel's free memory puts a device allocation  (2026-10-17, status: resolved in D-124)
-<a id="re-059-gb10-kernel-speed-depends-on-where-the-kernels-free-memory-puts-a-device-allocation--2026-10-17-status-open"></a>
 
 Environment: `spark` and `spark-b` (GB10, driver 580.178.04, CUDA 13.0,
 4 KiB kernel pages, THP `madvise`), DeepSeek V4 with DSpark at four
@@ -113,9 +112,14 @@ would be a workaround for the measured cases, not a placement policy. The
 dedicated physical pool ([features.md](features.md), "Physical-memory mode
 per node"; D-124) resolves this: in dedicated mode (`mode = "dedicated"`),
 `PagedNode` allocates 2 MiB physical backing handles once at start up to the
-node's unmapped budget while host physical memory is clean, and recycles them via
-`BackingService::ReturnToReserve()` across swaps and model evictions. Post-init
-allocations remain at zero, guaranteeing deterministic physical placement.
+node's unmapped budget while host physical memory is clean, and recycles them
+across swaps and model evictions (the backing lane's pool). Since D-124's
+amendment of 2026-10-25 the pool stays within the budget's headroom: charges
+outside it (plans and graphs past their floor, request and token memory)
+shed handles and the pool grows back lazily when they shrink, so handles made
+after the start come from whatever the host's free memory is then. Placement
+is deterministic for the handles the start made; post-init creates count
+the rest (`backing_creates` in the swap-table report).
 This resolves the root cause of M3.6's accepted DSpark C4 wall exception
 ([m36-record.md](m36-record.md)): in a 2-block matched re-gate on `spark`
 against `61f8426f`, `gemma2` passed (`C1.prefill_s` +0.32%, `C2.prefill_s`

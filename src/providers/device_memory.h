@@ -180,9 +180,10 @@ class VmmProvider : public DeviceMemory {
   // charged as quarantined (invariant 8).
   Bytes UndeterminedBytes() const;
 
-  // What is live, for tests and leak checks at shutdown.
+  // What is live, for tests and leak checks at shutdown. backings() is an
+  // atomic count any thread may read while the owning lane changes it.
   std::size_t reservations() const { return reservations_.size(); }
-  std::size_t backings() const { return backings_.size(); }
+  std::size_t backings() const { return live_backings_.load(std::memory_order_relaxed); }
   std::uint64_t created_backings() const {
     return created_backings_.load(std::memory_order_relaxed);
   }
@@ -254,6 +255,7 @@ class VmmProvider : public DeviceMemory {
   std::atomic<bool> changing_{false};
   std::atomic<std::uint64_t> created_backings_{0};
   std::atomic<std::uint64_t> released_backings_{0};
+  std::atomic<std::size_t> live_backings_{0};
   base::SlotTable<ReservationTag, Reservation> reservations_;
   base::SlotTable<BackingTag, Backing> backings_;
 };

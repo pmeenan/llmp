@@ -165,6 +165,23 @@ The entries below record each change; the record of the milestone is
   atoms the grouped GEMM reads; the importer sizes its route workspace from
   the widest table.
 
+- Physical memory modes (D-124, accepted as amended 2026-10-25): the
+  dedicated pool's empty handles now stay within the budget's headroom
+  (charges outside the pool, or a lower budget, give handles back to the
+  system; the pool regrows lazily), so physical use no longer exceeds the
+  budget by the runtime's plans, graphs and request memory. Pressure from
+  outside and `POST /llmp/v1/memory/release` release the pool's handles
+  first and report the provider's `released_backings`; the route answers
+  409 only while work is in flight and 500 for any other failure. Shared
+  mode's budget shrinks to the occupancy less the shortfall (it could grow
+  under pressure before), never below the running model's footprint, and
+  comes back in steps. `[memory] mode` now defaults by device: dedicated on
+  unified memory (the GB10), shared on a discrete GPU, whose budget is also
+  bounded by its free memory; startup preallocation is best effort and never
+  refuses the start. A quick follow-up switch waits for the previous swap's
+  backing releases instead of evicting cache or refusing. `[memory]`'s time
+  settings accept up to 2^31 - 1 seconds or milliseconds (D-102).
+
 - Shared attention fallbacks preserve head/token geometry, BF16 batch views,
   declared mask dtype and row extents. Supported strided scalar conversions use
   the existing native copy path with checked owner bounds. Mixed F32/F16 addition

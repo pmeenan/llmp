@@ -50,7 +50,11 @@ void Server::ProcessPendingRelease() {
     const std::scoped_lock lock(mutex_);
     Channel& ch = *release_req->channel;
     if (!report) {
-      ch.PutError(server_detail::Refusal(409, report.error(), "busy"));
+      // Only work in flight is a conflict; anything else is the runtime's
+      // own failure to release, reported as such.
+      const bool busy = report.error() == "busy";
+      ch.PutError(busy ? server_detail::Refusal(409, report.error(), "busy")
+                       : server_detail::Refusal(500, report.error(), "release_failed"));
     } else {
       std::string quoted_model;
       base::json::AppendQuoted(report->evicted_model, quoted_model);

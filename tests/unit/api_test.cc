@@ -1628,6 +1628,7 @@ class FakeBackend final : public api::Backend {
   std::atomic<unsigned> yields{0};
   std::atomic<unsigned> resumes{0};
   std::atomic<bool> fail_release_working_set{false};
+  std::string release_failure = "busy";
   std::string last_release_reason;
   std::string release_evicted_model = "alpha";
 
@@ -1635,7 +1636,7 @@ class FakeBackend final : public api::Backend {
       std::string_view reason = "manual") override {
     last_release_reason = std::string(reason);
     if (fail_release_working_set.load()) {
-      return std::unexpected("busy");
+      return std::unexpected(release_failure);
     }
     return api::ReleaseReport{
         .evicted_model = release_evicted_model,
@@ -3282,6 +3283,15 @@ TEST_F(ServerTest, MemoryReleaseEndpoint) {
   EXPECT_THAT(busy, StartsWith("HTTP/1.1 409 "));
   EXPECT_THAT(busy, HasSubstr("conflict_error"));
   EXPECT_THAT(busy, HasSubstr("busy"));
+
+  // Any other failure is the runtime's own: a 500, never a conflict.
+  backend_.release_failure = "evicting alpha: the provider refused an unmap";
+  const std::string failed = Exchange(
+      "POST /llmp/v1/memory/release HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+  EXPECT_THAT(failed, StartsWith("HTTP/1.1 500 "));
+  EXPECT_THAT(failed, HasSubstr("release_failed"));
+  EXPECT_THAT(failed, HasSubstr("refused an unmap"));
+  backend_.release_failure = "busy";
 
   // When an active request is running, release is immediately rejected with 409 Conflict.
   backend_.fail_release_working_set.store(false);

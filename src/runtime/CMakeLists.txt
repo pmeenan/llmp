@@ -7,9 +7,9 @@
 # start's memory guard (memory_guard.h),
 # a chat cohort's state-capacity policy (cohort_capacity.h) and schedule
 # (cohort_schedule.h), when pressure from outside has it trim
-# (pressure_trim.h), room for a swap (swap_room.h), the chat route's
-# HTTP, requests, binding, server, watchdog and memory-derived limits
-# (http.h, api.h, binding.h, api_server.h, watchdog.h, intake_limits.h;
+# (pressure_trim.h), the physical memory policy (memory_policy.h), room
+# for a swap (swap_room.h), the chat route's HTTP, requests, binding,
+# server, watchdog and memory-derived limits (http.h, api.h, binding.h, api_server.h, watchdog.h, intake_limits.h;
 # D-097, D-102), each model's settings in three layers and their
 # calibration on the machine (model_settings.h, calibration.h; D-103),
 # hang recovery's ladder (hang_ladder.h, D-102), and the records of
@@ -20,7 +20,7 @@ add_library(llmp_runtime STATIC runtime.cc commands.cc http.cc api.cc api_server
                                   calibration.cc cohort_capacity.cc
                                   completion_tokens.cc component_admission.cc numerical_evidence.cc hang_ladder.cc intake_limits.cc
                                   kept_record.cc memory_guard.cc model_settings.cc stored_binding_bound.cc image_stage.cc
-                                  prefill.cc pressure_trim.cc state_keeper.cc swap_room.cc
+                                  memory_policy.cc prefill.cc pressure_trim.cc state_keeper.cc swap_room.cc
                                   watchdog.cc)
 target_include_directories(llmp_runtime PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_runtime PUBLIC llmp_artifact llmp_chat llmp_config llmp_platform

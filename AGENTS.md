@@ -344,8 +344,8 @@ the commit gate.
       be persisted (spilled, not cleared), then what cannot be (graphs);
       measured costs override the tiers. LRU within a kind; plan and graph
       caches have no fixed count caps; spilled state is kept 7 days
-      (configurable; owner 2026-10-20, to survive an idle weekend; the
-      runtime's 24 h default moves with M3.5's retention item).
+      (168 h, `[memory] retention_hours`, configurable; owner 2026-10-20,
+      to survive an idle weekend).
       docs/runtime-serving.md ("The reclaim order"), D-055.
     - *Limits come from real resources only* (RAM, disk, descriptors,
       context, format bounds): no time caps or abuse-motivated count caps;

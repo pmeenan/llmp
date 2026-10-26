@@ -68,25 +68,23 @@ bool PressureTrim::Trimmed(std::uint64_t freed, std::uint64_t needed, Clock::tim
 }
 
 std::uint64_t AdjustSharedBudget(std::optional<std::uint64_t> available, bool pressed,
-                                 std::uint64_t current_occupancy, std::uint64_t fixed,
+                                 std::uint64_t occupancy, std::uint64_t floor,
                                  std::uint64_t current_budget, std::uint64_t configured_budget,
                                  const PressureTrimLimits& limits) {
   if (!available.has_value() || configured_budget == 0) {
     return current_budget;
   }
-  const std::uint64_t target_headroom = limits.low_bytes + limits.headroom_bytes;
-  if (pressed && *available < target_headroom) {
-    const std::uint64_t shortfall = target_headroom - *available;
-    const std::uint64_t supportable =
-        *available > UINT64_MAX - current_occupancy
-            ? configured_budget
-            : std::min(configured_budget, current_occupancy + *available);
-    const std::uint64_t lower = supportable > shortfall ? supportable - shortfall : fixed;
-    const std::uint64_t new_budget = std::clamp(lower, fixed, configured_budget);
-    return std::min(current_budget, new_budget);
+  const std::uint64_t target = limits.low_bytes + limits.headroom_bytes;
+  const std::uint64_t least = std::min(floor, configured_budget);
+  if (pressed) {
+    if (*available >= target) return current_budget;
+    const std::uint64_t shortfall = target - *available;
+    const std::uint64_t lower = occupancy > shortfall ? occupancy - shortfall : 0;
+    return std::min(current_budget, std::clamp(lower, least, configured_budget));
   }
-  if (*available >= target_headroom && current_budget < configured_budget) {
-    return configured_budget;
+  if (*available > target && current_budget < configured_budget) {
+    const std::uint64_t step = *available - target;
+    return step >= configured_budget - current_budget ? configured_budget : current_budget + step;
   }
   return current_budget;
 }

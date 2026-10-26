@@ -92,6 +92,7 @@
 #include "runtime/kept_record.h"
 #include "runtime/llm_build.h"
 #include "runtime/memory_guard.h"
+#include "runtime/memory_policy.h"
 #include "runtime/model_settings.h"
 #include "runtime/prefill.h"
 #include "runtime/pressure_trim.h"
@@ -1950,6 +1951,7 @@ class Server {
   std::uint64_t budget() const { return budget_; }
   std::uint64_t dynamic_budget() const { return dynamic_budget_; }
   std::uint64_t fixed_bytes() const { return fixed_; }
+  const MemoryPolicy& memory_policy() const { return policy_; }
   // The most any model's chunk builds on the host (Served::host_input_bytes;
   // one model runs at a time), which the start's memory guard counts beside
   // its margin.
@@ -2076,6 +2078,20 @@ class Server {
   std::uint64_t dynamic_budget_ = 0;  // ordinary guard-derived B before an internal cap
   std::uint64_t fixed_ = 0;
   std::uint64_t configured_budget_ = 0;
+  // What a shared-mode shrink never goes below (AdjustSharedBudget): the
+  // fixed memory and the largest active footprint.
+  std::uint64_t floor_budget_ = 0;
+  // The physical memory policy, decided at Start (memory_policy.h), and
+  // whether the device's memory is the host's.
+  MemoryPolicy policy_;
+  bool unified_ = true;
+  // The node pool kept from growing: by pressure from outside until it
+  // ends, and by a release of the working set until the next activation.
+  bool pool_pressed_ = false;
+  bool pool_released_ = false;
+  // The last activation's eviction receipt, once sealed: its releases may
+  // still be in flight when the next swap sizes its room.
+  std::weak_ptr<scheduler::EvictionReceipt> release_tail_;
   Clock::time_point last_activity_{Clock::now()};
   std::uint64_t host_inputs_ = 0;
   std::uint64_t plans_ = 0;  // plan_floor_bytes()

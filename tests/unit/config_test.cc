@@ -336,11 +336,15 @@ TEST(NodeConfigTest, MemoryModeAndPressureRefusals) {
   EXPECT_THAT(Failures("schema_version = 2\n[memory]\nbudget_gib = 1048577\n"),
               ElementsAre(HasSubstr("memory.budget_gib must be from 0 to 1048576")));
 
-  // idle_release_seconds out of bounds (0..86400)
+  // idle_release_seconds: no cap of its own (D-102), only what the clock
+  // represents (0..2^31 - 1).
   EXPECT_THAT(Failures("schema_version = 2\n[memory]\nidle_release_seconds = -1\n"),
-              ElementsAre(HasSubstr("memory.idle_release_seconds must be from 0 to 86400")));
-  EXPECT_THAT(Failures("schema_version = 2\n[memory]\nidle_release_seconds = 86401\n"),
-              ElementsAre(HasSubstr("memory.idle_release_seconds must be from 0 to 86400")));
+              ElementsAre(HasSubstr("memory.idle_release_seconds must be from 0 to 2147483647")));
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\nidle_release_seconds = 2147483648\n"),
+              ElementsAre(HasSubstr("memory.idle_release_seconds must be from 0 to 2147483647")));
+  EXPECT_EQ(Parsed("schema_version = 2\n[memory]\nidle_release_seconds = 604800\n")
+                .memory.idle_release_seconds.value,
+            604800U);
 
   // pressure_low_mib out of bounds (64..1048576)
   EXPECT_THAT(Failures("schema_version = 2\n[memory]\npressure_low_mib = 63\n"),
@@ -360,14 +364,18 @@ TEST(NodeConfigTest, MemoryModeAndPressureRefusals) {
   EXPECT_THAT(Failures("schema_version = 2\n[memory]\npressure_stall_percent = 100.1\n"),
               ElementsAre(HasSubstr("memory.pressure_stall_percent must be in (0.0, 100.0]")));
 
-  // pressure_first_backoff_ms out of bounds (100..3600000)
+  // pressure_first_backoff_ms out of bounds (100..2^31 - 1)
   EXPECT_THAT(
       Failures("schema_version = 2\n[memory]\npressure_first_backoff_ms = 99\n"),
-      ElementsAre(HasSubstr("memory.pressure_first_backoff_ms must be from 100 to 3600000")));
+      ElementsAre(HasSubstr("memory.pressure_first_backoff_ms must be from 100 to 2147483647")));
 
-  // pressure_max_backoff_ms out of bounds (100..3600000)
-  EXPECT_THAT(Failures("schema_version = 2\n[memory]\npressure_max_backoff_ms = 3600001\n"),
-              ElementsAre(HasSubstr("memory.pressure_max_backoff_ms must be from 100 to 3600000")));
+  // pressure_max_backoff_ms out of bounds (100..2^31 - 1); a day is fine.
+  EXPECT_THAT(
+      Failures("schema_version = 2\n[memory]\npressure_max_backoff_ms = 2147483648\n"),
+      ElementsAre(HasSubstr("memory.pressure_max_backoff_ms must be from 100 to 2147483647")));
+  EXPECT_EQ(Parsed("schema_version = 2\n[memory]\npressure_max_backoff_ms = 86400000\n")
+                .memory.pressure_max_backoff_ms.value,
+            86400000U);
 
   // pressure_max_backoff_ms < pressure_first_backoff_ms
   EXPECT_THAT(Failures(R"(schema_version = 2
@@ -378,10 +386,10 @@ pressure_max_backoff_ms = 1000
               ElementsAre(HasSubstr("memory.pressure_max_backoff_ms (1000) must be at least "
                                     "memory.pressure_first_backoff_ms (5000)")));
 
-  // pressure_log_interval_seconds out of bounds (1..86400)
+  // pressure_log_interval_seconds out of bounds (1..2^31 - 1)
   EXPECT_THAT(
       Failures("schema_version = 2\n[memory]\npressure_log_interval_seconds = 0\n"),
-      ElementsAre(HasSubstr("memory.pressure_log_interval_seconds must be from 1 to 86400")));
+      ElementsAre(HasSubstr("memory.pressure_log_interval_seconds must be from 1 to 2147483647")));
 }
 
 TEST(NodeConfigTest, ReadsTheMemberExample) {

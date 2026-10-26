@@ -128,7 +128,7 @@ class LlmPromptSessions : public LlmFixture {
     const auto bytes = Occupancy() + extra_extents * kExtent + kExtent / 2;
     ASSERT_TRUE(node_->Call(
         [&]() -> en::Status {
-          node_->SetBudget(Bytes(bytes));
+          (void)node_->ApplyBudget(Bytes(bytes));
           return {};
         },
         "setting a test's physical execution budget"));
@@ -140,7 +140,7 @@ class LlmPromptSessions : public LlmFixture {
     const auto bytes = Occupancy() - resident + extents * kExtent + kExtent / 2;
     ASSERT_TRUE(node_->Call(
         [&]() -> en::Status {
-          node_->SetBudget(Bytes(bytes));
+          (void)node_->ApplyBudget(Bytes(bytes));
           return {};
         },
         "bounding actual resident state capacity"));
@@ -148,7 +148,7 @@ class LlmPromptSessions : public LlmFixture {
   void Unlimit() {
     ASSERT_TRUE(node_->Call(
         [&]() -> en::Status {
-          node_->SetBudget(full_budget_);
+          (void)node_->ApplyBudget(full_budget_);
           return {};
         },
         "restoring the test's execution budget"));

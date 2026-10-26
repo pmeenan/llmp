@@ -91,6 +91,7 @@ std::expected<DeviceFacts, DeviceStatus> QueryDeviceFacts(int ordinal) {
   DeviceFacts facts;
   facts.architecture = static_cast<std::uint32_t>((100 * major) + (10 * minor));
   facts.multiprocessors = properties.multiProcessorCount;
+  facts.unified = properties.integrated != 0;
   std::copy_n(properties.name, facts.name.size(), facts.name.begin());
   facts.name.back() = '\0';
   // Instruction families of the queried compute capability. Physical support

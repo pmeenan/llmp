@@ -223,13 +223,17 @@ schema_version = 2
 # false: nothing outlives the process (the spill files stay unnamed, and
 # what an earlier start kept is removed).
 # keep_across_restart = true
-# Physical-memory mode: "dedicated" (default) or "shared".
-# "dedicated": physical backing is acquired up front and held across models.
+# Physical-memory mode: "dedicated" or "shared"; unset, the device's
+# default: "dedicated" on a unified-memory device (the DGX Spark's GB10),
+# "shared" on a discrete GPU.
+# "dedicated": empty physical backing is created at the start, within the
+# budget, and recycled across models.
 # "shared": memory is allocated on demand and released when idle or under pressure.
 # mode = "dedicated"
-# Maximum physical memory budget in GiB (0 = auto / full device memory).
+# The most the memory budget may be, in GiB (0: what the start measures
+# available; on a discrete GPU at most its free memory).
 # budget_gib = 0
-# In shared mode, seconds of inactivity before idle model working sets are
+# Shared mode only: seconds without a request before the working set is
 # released (0 disables idle release).
 # idle_release_seconds = 300
 # Host memory pressure trim thresholds (runtime/pressure_trim.h).

@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -239,6 +240,45 @@ TEST(SwapRoom, ARoundWithoutProgressStops) {
   int rounds = 0;
   EXPECT_FALSE(MakeRoom(l, [](std::uint64_t ask) { return ask; }, rounds));
   EXPECT_EQ(rounds, 1);
+}
+
+// A10: a swap short of room waits for an earlier activation's releases
+// still in flight (they count as occupancy until they land) rather than
+// evicting cache for room they are about to give back; it reclaims once
+// they are done, or once they have stalled for the node's quiet time.
+TEST(SwapRoom, AShortSwapWaitsForAnEarlierReleaseTailWhileItMoves) {
+  using Receipt = llmp::scheduler::EvictionReceipt;
+  using std::chrono::milliseconds;
+  const auto now = Receipt::Clock::now();
+  constexpr milliseconds kQuiet{600000};
+  Receipt::Snapshot moving;
+  moving.pending = 12;
+  moving.progressed = now - milliseconds(2);
+  constexpr std::uint64_t kEvicting = 24 * kExtent;
+  EXPECT_EQ(rt::WaitForReleaseTail(moving, kEvicting, now, kQuiet), rt::RoomWait::kWait);
+  Receipt::Snapshot done = moving;
+  done.pending = 0;
+  done.complete = true;
+  EXPECT_EQ(rt::WaitForReleaseTail(done, kEvicting, now, kQuiet), rt::RoomWait::kReclaim);
+  Receipt::Snapshot stalled = moving;
+  stalled.progressed = now - kQuiet;
+  EXPECT_EQ(rt::WaitForReleaseTail(stalled, kEvicting, now, kQuiet), rt::RoomWait::kReclaim);
+  // Incomplete, but nothing left evicting (a failed load holds what keeps it
+  // open): no room would come of waiting.
+  EXPECT_EQ(rt::WaitForReleaseTail(moving, 0, now, kQuiet), rt::RoomWait::kReclaim);
+}
+
+// An incoming extent the occupancy charges already (loading, or evicting:
+// parked with its backing, or still releasing) adds nothing to the room a
+// swap needs; only a nonresident one adds its bytes. Counted twice, a quick
+// return to the model just left (its extents parked in the last swap's
+// tail) waits for, or reclaims cache for, room it already holds.
+TEST(SwapRoom, IncomingExtentsAlreadyChargedAddNothing) {
+  using State = llmp::catalog::ExtentState;
+  EXPECT_EQ(rt::IncomingCharge(State::kNonresident, kExtent), kExtent);
+  EXPECT_EQ(rt::IncomingCharge(State::kResident, kExtent), 0U);
+  EXPECT_EQ(rt::IncomingCharge(State::kLoading, kExtent), 0U);
+  EXPECT_EQ(rt::IncomingCharge(State::kEvicting, kExtent), 0U);
 }
 
 }  // namespace

@@ -411,7 +411,7 @@ family" guide, and its long-context scaling work.
 
 - [x] **Physical memory modes (owner, 2026-10-16/17): the first M3.5 work
       item.** Implemented under D-124 (2026-10-21). The accepted M3.6 exception
-      for DeepSeek DSpark's C4 wall has this as its fix ([RE-059](rough-edges.md#re-059-gb10-kernel-speed-depends-on-where-the-kernels-free-memory-puts-a-device-allocation--2026-10-17-status-open):
+      for DeepSeek DSpark's C4 wall has this as its fix ([RE-059](rough-edges.md#re-059-gb10-kernel-speed-depends-on-where-the-kernels-free-memory-puts-a-device-allocation--2026-10-17-status-resolved-in-d-124):
       the driver backs a resident workspace with scattered 64 KiB pieces on a
       long-running host, which costs big prefill steps about 1.3% GPU time),
       and the image's response to placement is not monotonic, so placement
@@ -900,7 +900,7 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       could not import), image generation in the default models set, dense RoPE
       scaling types mapped or refused instead of run as YaRN, the IMROPE
       capability aligned with its check, and the 256-block scale-atom cap removed.
-- [ ] **F2 Memory policy:** a live pool target (dedicated pool charged within the
+- [x] **F2 Memory policy:** a live pool target (dedicated pool charged within the
       budget; pressure and release free backings first), the shared-mode shrink
       formula and floor, `SetBudget` as a scheduler command, a device-aware
       default mode and discrete sizing, the follow-up switch release tail; D-124

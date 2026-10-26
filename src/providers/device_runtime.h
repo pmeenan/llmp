@@ -89,6 +89,9 @@ struct DeviceFacts {
   bool fp8_mma = false;
   bool fp4_mma = false;
   bool block_scaled_mma = false;
+  // Its memory is the host's (an integrated GPU, the GB10's: one physical
+  // budget, D-004), not a separate device memory (a discrete GPU, D-082).
+  bool unified = false;
 };
 std::expected<DeviceFacts, DeviceStatus> QueryDeviceFacts(int ordinal);
 

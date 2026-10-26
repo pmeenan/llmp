@@ -189,11 +189,14 @@ chat_template = "/path/to/chat_template.jinja"  # likewise
 composition = "62497918…"  # a pipeline (D-089)
 
 [memory]                     # D-055 as amended 2026-10-02, D-124 (below)
-# mode = "dedicated"         # "dedicated" (default on DGX Spark) preallocates physical backing pool;
-                             #   "shared" (for workstations) demand-allocates backing and releases on idle
-# budget_gib = 0             # whole-node memory budget in GiB (0 = detected hardware capacity)
-# idle_release_seconds = 300 # in shared mode: seconds of inactivity before dropping resident models,
-                             #   freeing unused backings, and trimming heap
+# mode = "dedicated"         # unset: the device's default, "dedicated" on a unified-memory
+                             #   device (the GB10: a pool of empty handles filled at the start,
+                             #   within the budget's headroom), "shared" on a discrete GPU (no
+                             #   pool; backing on demand, released on eviction, idle and pressure)
+# budget_gib = 0             # the most the budget may be, in GiB (0: what the start measures
+                             #   available; on a discrete GPU at most its free memory)
+# idle_release_seconds = 300 # shared mode only: seconds without a request before the working
+                             #   set is released and the heap trimmed (0: never)
 # retention_hours = 168      # idle conversations, resident or spilled, and their
                              #   turn checkpoints stay reusable this long: 1 to 8,760
                              #   (across a restart too, D-105)
@@ -713,9 +716,16 @@ request holds is never deleted; a swap that still does not fit is
 refused before anything moves, and the deletions wait until the swap's
 room is made, so a swap refused for room deletes nothing. It also reads MemAvailable and the
 kernel's pressure-stall information (`runtime/pressure_trim.h`): under 512
-MiB available, one reclaim through the same order asks for what would
-bring MemAvailable back to 1.5 GiB (the mark plus 1 GiB of headroom),
-taking whatever part of it the order has. A full memory stall of 5% of
+MiB available, the dedicated pool's empty handles are released first (they
+cost nothing to restore; the pool then refills no more until the pressure
+ends, so what the order evicts next is released rather than pooled), then
+one reclaim through the same order asks for what would still bring
+MemAvailable back to 1.5 GiB (the mark plus 1 GiB of headroom), taking
+whatever part of it the order has. In shared mode the budget then follows
+(D-124 as amended): the occupancy less the shortfall, never below the fixed
+memory and the largest active footprint nor while a turn's work runs, and
+back toward the configured budget in steps of what is available past the
+target once the pressure ends. A full memory stall of 5% of
 the last 10 seconds only raises the trigger to that target: a stall
 alone (a compile or a copy with plenty available) is not pressure on the
 runtime. Pressure ends only back at

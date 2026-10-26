@@ -1083,7 +1083,29 @@ bool Scheduler::Turn() {
     StepTask(*task);
     progress = true;
   }
+  RebalancePool();
   return progress;
+}
+
+void Scheduler::RebalancePool() {
+  if (lanes_.backing == nullptr || !settings_.pool_domain) return;
+  // The pool's empty handles are not occupancy (D-124), so they stay
+  // within what the budget leaves beside it (invariant 5): the lane sheds
+  // what lies past that headroom and refills only within it.
+  const Bytes occupancy = catalog_.OccupancyOf(*settings_.pool_domain).Total();
+  const Bytes limit = budget();
+  const Bytes headroom = occupancy < limit ? Bytes(limit.value() - occupancy.value()) : Bytes();
+  lanes_.backing->Rebalance(headroom, loads_.size() + evictions_.size());
+}
+
+Bytes Scheduler::SetBudget(Bytes budget, catalog::DomainId domain) {
+  const catalog::Occupancy occupancy = catalog_.OccupancyOf(domain);
+  const Bytes total = occupancy.Total();
+  const Bytes claims =
+      total > occupancy.idle ? Bytes(total.value() - occupancy.idle.value()) : Bytes();
+  const Bytes applied = std::max(budget, claims);
+  budget_bytes_.store(applied.value(), std::memory_order_release);
+  return applied;
 }
 
 std::optional<std::expected<void, Fault>> Scheduler::Stopped() const {

@@ -23,6 +23,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <list>
@@ -136,23 +137,34 @@ struct QueueSettings {
   std::size_t batch = 16;     // commands a turn takes
 };
 
-// A reserve of created, unmapped backing of one class and size (D-033 as
-// amended 2026-10-07), kept by the VMM lane: a map of that class and size
-// takes one instead of creating backing, and the lane creates more while
-// it has no command, up to `count`, off the critical path. A plain unmap's
-// backing, or a kept one released, refills a reserve that is short instead
-// of being released. The node charges all `count` in the catalog as one
-// pinned extent before the scheduler starts, so the reserve never holds
-// backing the catalog does not count; the lane releases what it holds at
-// teardown (ReleaseReserve).
+// A pool of created, unmapped backing of one class and size (D-033 as
+// amended 2026-10-07; D-124 as amended 2026-10-25), kept by the VMM lane: a
+// map of that class and size takes one instead of creating backing, and a
+// plain unmap's backing, or a kept one released, goes back to it instead of
+// being released while it holds fewer than its ceiling (`count`, which
+// SetCeiling may lower and RestoreCeiling raise again).
+//
+// What it holds is not catalog occupancy (D-124: no phantom extents), so it
+// stays within the budget's headroom instead: what it holds beside the
+// domain's occupancy never exceeds the budget (invariant 5, pager-
+// invariants.md). Taking one for a charged load, or keeping an evicted
+// extent's, moves backing between the pool and the occupancy and changes
+// nothing; only the pool's own creates, a load's own create, and the
+// occupancy or budget changing move the headroom. Managed (the paged
+// node's), the scheduler tells it the headroom at each turn (Rebalance):
+// it then sheds what lies past the headroom (the lane releases it) and may
+// create (Refill) at most what lies certainly within it (the grant), which
+// every create the lane makes uses up. Unmanaged (a lane on its own, as in
+// the lane tests), it refills up to its ceiling.
 struct ReserveSettings {
   std::size_t allocation_class = 0;
   Bytes size;
-  std::size_t count = 0;  // 0: no reserve
+  std::size_t count = 0;  // the ceiling; 0: no reserve
 };
 class HandleReserve {
  public:
-  explicit HandleReserve(ReserveSettings settings) : settings_(settings) {}
+  explicit HandleReserve(ReserveSettings settings)
+      : settings_(settings), ceiling_(settings.count) {}
   bool Holds(std::size_t allocation_class, Bytes size) const {
     std::lock_guard lock(mutex_);
     return settings_.count != 0 && allocation_class == settings_.allocation_class &&
@@ -160,25 +172,64 @@ class HandleReserve {
   }
   // One of that class and size, if any is kept.
   std::optional<providers::BackingId> Take(std::size_t allocation_class, Bytes size);
-  // Keeps `backing` (of that class and size) if the reserve is short.
+  // Keeps `backing` (of that class and size) if the reserve is short of
+  // its ceiling.
   bool Keep(std::size_t allocation_class, Bytes size, providers::BackingId backing);
+  // Startup preallocation's (BackingService::Preallocate).
   void KeepUnchecked(providers::BackingId backing) {
     std::lock_guard lock(mutex_);
     kept_.push_back(backing);
+    ++version_;
   }
-  // A create whose outcome is unknown: its backing may exist, uncounted
-  // but beneath the reserve's charge, so the reserve keeps one fewer.
-  void Lose() {
+  // A create the lane made for anything but the pool (a load's own):
+  // it took headroom the grant may have counted on.
+  void Created() {
     std::lock_guard lock(mutex_);
-    ++lost_;
+    if (managed_ && grant_ != 0) --grant_;
   }
-  bool short_of_count() const {
+  // A refill may start now: one create is counted in flight, and the
+  // grant (managed) is used by one.
+  bool BeginRefill();
+  // The refill's outcome: kept (true), or, when the ceiling fell or a
+  // drain began meanwhile, shed (false: the lane releases it with the
+  // pool's other sheds, and a drain waits for it); or none. `lost`
+  // (unknown outcome) counts the backing that may exist against the
+  // ceiling for good. With `known_failure` while managed, the ceiling
+  // falls to what it holds: the pool grows no further (the device is
+  // short of memory), and loads create their own.
+  bool EndRefill(std::optional<providers::BackingId> created, bool lost, bool known_failure);
+  // The scheduler's thread: the budget's headroom beside the domain's
+  // occupancy, in handles, and how many page-ins and evictions are in flight
+  // (each may count one handle twice: charged and still kept, until the lane
+  // has taken or kept it). Sheds what lies past the headroom even counting
+  // those, and grants what lies within it counting nothing twice. True if
+  // the lane has work (a shed, or a refill it may start). `seen`: the
+  // version it left, read under its lock, so a change another thread makes
+  // just after is never taken as seen.
+  bool Rebalance(std::size_t headroom, std::size_t transients, std::uint64_t* seen = nullptr);
+  // Any thread: the ceiling, now at most `ceiling` (lowered, never raised),
+  // with what lies past it shed, and the pool drained until RestoreCeiling:
+  // it creates nothing (no refill), so it never grows back meanwhile; an
+  // unmap's backing may still be kept up to the lowered ceiling, which
+  // moves bytes from the occupancy and adds none. Returns how many it shed.
+  std::size_t SetCeiling(std::size_t ceiling);
+  void RestoreCeiling() {
     std::lock_guard lock(mutex_);
-    return kept_.size() + lost_ < settings_.count;
+    ceiling_ = settings_.count;
+    drained_ = false;
+    ++version_;
   }
-  bool needs_refill() const {
+  // The lane: handles shed, to release; then what became of them.
+  std::vector<providers::BackingId> TakeShed();
+  void Shed(std::size_t released, std::span<const providers::BackingId> refused, std::size_t lost);
+  // Teardown, once the lane runs no more: everything it holds.
+  std::vector<providers::BackingId> TakeAll();
+  // Managed from now on, granted `grant` creates.
+  void Manage(std::size_t grant) {
     std::lock_guard lock(mutex_);
-    return !preallocated_ && kept_.size() + lost_ < settings_.count;
+    managed_ = true;
+    grant_ = grant;
+    ++version_;
   }
   ReserveSettings settings() const {
     std::lock_guard lock(mutex_);
@@ -188,37 +239,45 @@ class HandleReserve {
     std::lock_guard lock(mutex_);
     return kept_.size();
   }
-  std::size_t target() const {
+  // What it aims to hold now: its ceiling unmanaged; managed, what it holds
+  // and may still create, within the ceiling.
+  std::size_t target() const;
+  std::size_t shedding() const {
     std::lock_guard lock(mutex_);
-    return settings_.count;
+    return shedding_;
   }
-  void SetSettings(ReserveSettings settings, bool preallocated = false) {
+  // Handles a drain waits for: shed and not yet released, or being
+  // created (a drained pool sheds what a create in flight makes).
+  std::size_t settling() const {
     std::lock_guard lock(mutex_);
-    settings_ = settings;
-    preallocated_ = preallocated;
+    return shedding_ + creating_;
   }
-  std::vector<providers::BackingId> Drain() {
-    std::lock_guard lock(mutex_);
-    std::vector<providers::BackingId> result = std::move(kept_);
-    kept_.clear();
-    return result;
-  }
-  std::vector<providers::BackingId> DrainDownTo(std::size_t target) {
-    std::lock_guard lock(mutex_);
-    std::vector<providers::BackingId> excess;
-    while (kept_.size() > target) {
-      excess.push_back(kept_.back());
-      kept_.pop_back();
-    }
-    return excess;
-  }
+  // Moves whenever what it holds, or may create, changes (any thread).
+  std::uint64_t version() const { return version_.load(std::memory_order_acquire); }
 
  private:
+  std::size_t RemainingLocked() const { return kept_.size() + lost_ + creating_; }
+  // What counts against the ceiling for a shed or a keep: drained, a
+  // create in flight is shed when it ends (EndRefill), so it is not.
+  std::size_t HeldLocked() const { return kept_.size() + lost_ + (drained_ ? 0 : creating_); }
+
   mutable std::mutex mutex_;
   ReserveSettings settings_;
+  std::size_t ceiling_ = 0;
   std::vector<providers::BackingId> kept_;
+  std::vector<providers::BackingId> shed_;  // taken out of kept_, for the lane to release
+  std::size_t shedding_ = 0;                // shed_ and those the lane is releasing
   std::size_t lost_ = 0;
-  bool preallocated_ = false;
+  std::size_t creating_ = 0;
+  bool managed_ = false;
+  std::size_t grant_ = 0;
+  // A shed's release was refused: none until the lane's next command.
+  bool shed_refused_ = false;
+  // SetCeiling's, until RestoreCeiling: no refill.
+  bool drained_ = false;
+  std::atomic<std::uint64_t> version_ = 0;
+
+  friend class BackingService;
 };
 
 // Backing kept for a handoff and not yet mapped again or released
@@ -545,6 +604,10 @@ class DeviceService {
 // This lane is then the provider's one caller (device_memory.h): the
 // DeviceService beside it is given none, so VMM work that reached it by
 // mistake is refused rather than raced.
+//
+// It keeps the handle pool (HandleReserve): between commands it releases
+// what the pool shed and creates what the pool may refill, one at a time,
+// so a command waits for one provider call at most.
 class BackingService {
  public:
   BackingService(providers::DeviceMemory* memory, CompletionBoard& board, QueueSettings queue,
@@ -561,42 +624,76 @@ class BackingService {
   bool Turn();
   // Until closed, with everything queued carried out.
   void Run();
+  // The thread that will call Run, before it starts it: from here on the
+  // provider is the lane's alone, so a DrainReserve meanwhile waits for the
+  // lane instead of calling the provider beside it (device_memory.h).
+  void Starting() {
+    std::lock_guard lock(mu_);
+    worker_running_ = true;
+  }
   // Backing kept for a handoff: read only while the lane is idle (tests,
   // teardown).
   std::size_t stashed() const { return stash_.size(); }
-  // The reserve's backing: read, or released, only while the lane is idle
-  // and will run no more (teardown). False if any release failed.
+  // The pool's backing (any thread; a snapshot).
   std::size_t reserved() const { return reserve_.size(); }
-  std::expected<void, std::string> SetReserve(std::size_t allocation_class, Bytes extent_bytes,
-                                              std::size_t count, bool preallocate_now = false);
-  std::optional<providers::BackingId> TakeFromReserve(std::size_t allocation_class, Bytes size);
-  bool ReturnToReserve(providers::BackingId backing);
+  // Before the lane runs, on the caller's thread: up to `count` handles
+  // created into the pool at once (D-124's dedicated pool), as many as the
+  // provider gives. A refusal ends it, keeps what was made and lowers the
+  // ceiling to it (`failure` says why): the node starts with a smaller
+  // pool and its loads create their own past it, never a refused start.
+  std::size_t Preallocate(std::size_t count, std::string* failure = nullptr);
+  // The pool is the scheduler's from now on (Rebalance), granted `grant`
+  // creates until its first turn.
+  void ManageReserve(std::size_t grant) { reserve_.Manage(grant); }
+  // The scheduler's thread, each turn: the budget less the domain's
+  // occupancy, and the page-ins and evictions in flight
+  // (HandleReserve::Rebalance). Wakes the lane if the pool has work for it.
+  void Rebalance(Bytes headroom, std::size_t transients);
+  // Any thread but the lane's: the pool's ceiling lowered to `ceiling`
+  // and the pool drained until RestoreReserve (it creates nothing
+  // meanwhile, so it never grows back), and what it held past the
+  // ceiling, or a create in flight made, released, waited for (released
+  // here while the lane is not running). Returns how many the provider
+  // released. Pressure from outside and the release route give
+  // the pool's empty handles back first (D-124 as amended).
+  std::size_t DrainReserve(std::size_t ceiling);
+  void RestoreReserve();
   std::size_t ReserveAvailable() const { return reserve_.size(); }
   std::size_t ReserveTarget() const { return reserve_.target(); }
-  std::size_t DrainReserve(std::optional<std::size_t> down_to = std::nullopt);
+  // Teardown, once the lane has returned: releases what the pool holds.
+  // False if any release failed.
   bool ReleaseReserve();
   BackingCreateStats create_stats() const { return creates_.Snapshot(); }
   BackingCreateCounts create_counts() const { return creates_.Counts(); }
 
  private:
   void Handle(DeviceCommand& command);
-  // Creates one reserve backing if the reserve is short: true if it did.
+  // Creates one pool backing if the pool may refill: true if it did.
   bool Refill();
-  std::size_t DrainReserveWorkerLocked(std::size_t target);
+  // Releases what the pool shed: true if there was any.
+  bool ReleaseShed();
+  // A drain's wait looks again (DrainReserve).
+  void NotifyDrain();
+  // Has the lane look at the pool (a command of no operation, at most one
+  // queued at a time; a full queue means the lane is busy and looks anyway).
+  void Wake();
 
-  mutable std::mutex mu_;
+  mutable std::mutex mu_;  // worker_running_, and the drain's waits
   std::condition_variable cv_;
   bool worker_running_ = false;
-  bool drain_requested_ = false;
-  std::optional<std::size_t> drain_target_;
-  std::size_t drain_result_ = 0;
+  std::atomic<bool> wake_pending_ = false;
+  std::atomic<std::uint64_t> released_ = 0;  // shed handles the provider released
+  // The scheduler's thread only: Rebalance's last inputs.
+  std::uint64_t last_headroom_ = ~std::uint64_t{0};
+  std::size_t last_transients_ = 0;
+  std::uint64_t last_version_ = ~std::uint64_t{0};
 
   providers::DeviceMemory* memory_;
   CompletionBoard& board_;
   base::BoundedQueue<DeviceCommand> queue_;
   std::size_t batch_;
-  HandoffStash stash_;     // the lane's thread only
-  HandleReserve reserve_;  // the lane's thread only
+  HandoffStash stash_;  // the lane's thread only
+  HandleReserve reserve_;
   BackingCreateCounters creates_;
   bool refill_ok_ = true;     // a create failed: none until the next command
   bool refill_lost_ = false;  // an unknown outcome: never again

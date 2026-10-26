@@ -160,20 +160,25 @@ enum class Kind : std::uint8_t {
   kMemoryStallPercent,  // [memory] pressure_stall_percent
 };
 
-// [memory]'s integer settings and their ranges.
+// [memory]'s integer settings and their ranges. Times have no cap of
+// their own (D-102): the most is what the runtime's steady-clock
+// arithmetic represents without overflow (2^31 - 1 seconds or
+// milliseconds, past any deadline it adds them to); sizes stop where
+// their shift into bytes would.
 struct MemoryIntegerSpec {
   std::string_view key;
   std::int64_t least;
   std::int64_t most;
 };
+constexpr std::int64_t kMemoryTimeMost = 0x7FFF'FFFFLL;
 constexpr std::array<MemoryIntegerSpec, 7> kMemoryIntegers = {{
     {"budget_gib", 0, 1048576},
-    {"idle_release_seconds", 0, 86400},
+    {"idle_release_seconds", 0, kMemoryTimeMost},
     {"pressure_low_mib", 64, 1048576},
     {"pressure_headroom_mib", 64, 1048576},
-    {"pressure_first_backoff_ms", 100, 3600000},
-    {"pressure_max_backoff_ms", 100, 3600000},
-    {"pressure_log_interval_seconds", 1, 86400},
+    {"pressure_first_backoff_ms", 100, kMemoryTimeMost},
+    {"pressure_max_backoff_ms", 100, kMemoryTimeMost},
+    {"pressure_log_interval_seconds", 1, kMemoryTimeMost},
 }};
 
 const MemoryIntegerSpec* FindMemoryInteger(std::string_view key) {

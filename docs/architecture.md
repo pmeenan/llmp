@@ -716,42 +716,54 @@ uses one GPU, device 0. Two ledgers stay separate
   occupancy against `B`. Revocable cache may fill capacity that is committed
   but not yet used.
 
-A budget reduction is a scheduler request. It waits for retirement or is
-refused; the budget never drops below outstanding claims (D-050). Under
-external memory pressure (D-124), the runtime can dynamically trim its active
-node budget (`SetBudget(budget - needed)`) and restore the configured budget
-once pressure subsides.
+A budget change is a scheduler command (`PagedNode::SetBudget`, applied on
+the scheduler's thread between turns); the budget never drops below
+outstanding claims (D-050: what the domain's extents hold beyond the idle,
+reclaimable ones), and one page-in decision reads one budget. Under
+external memory pressure in shared mode (D-124 as amended 2026-10-25), the
+runtime lowers it to the occupancy less the shortfall, never below the
+fixed memory plus the largest active footprint and never while a turn's
+work runs, and raises it again in steps once the pressure ends.
 
 ### Physical memory modes
 
 D-124 establishes two operational modes configured under `[memory]`:
 
-- **Dedicated node pool (`mode = "dedicated"`, default on Spark):** The
-  runtime assumes whole-node ownership. At `PagedNode::Start`, physical memory
-  handles are pre-allocated synchronously up to the unmapped budget headroom
-  into a physical backing pool (`BackingService`). Page-in operations recycle
-  these handles directly without driver allocation overhead on the hot path.
-  Page-outs return handles to the pool. The catalog accounts for mapped
-  virtual extents only, avoiding phantom extent charges for unmapped pool
-  handles.
-- **Shared-machine mode (`mode = "shared"`):** For workstations and shared
-  development hosts. Unmapped physical memory handles are not pre-allocated at
-  startup (`startup_pool_creates == 0`, `ReserveTarget() == 0`). Physical
-  memory is allocated on demand as extents are mapped and unmapped/released
-  back to the driver/OS upon eviction. Workspace is pageable by default. Two
-  reclamation levers operate automatically: Lever 1 (idle timeout releasing the
-  working set, evicting idle conversations, draining unused handles, and
-  trimming the heap via `platform::ReleaseFreeHeap()`) and Lever 2 (dynamic
-  budget reduction and working set release under `PressureTrim`). Local tools
-  can proactively trigger working set release via `POST /llmp/v1/memory/release`
-  on loopback.
+- **Dedicated node pool (`mode = "dedicated"`, the default on a
+  unified-memory device such as the GB10):** The runtime assumes whole-node
+  ownership. At `PagedNode::Start` (`engine::NodePool`), empty 2 MiB device
+  handles are created, best effort, up to the budget's headroom into the
+  backing lane's pool (`scheduler::HandleReserve`); page-ins take them with
+  no driver allocation on the hot path and page-outs return them. The pool's
+  handles are not catalog occupancy (no phantom extents), so they stay within
+  the headroom instead, one live target `max(0, B - occupancy) / extent`:
+  the scheduler hands the backing lane the headroom at the end of every turn,
+  and the lane releases what lies past it (a charge outside the pool grew or
+  the budget fell) and refills only within it, between commands. Pool-held
+  handles are counted once, beside the occupancy, and the two together stay
+  within `B` (pager invariant 5).
+- **Shared-machine mode (`mode = "shared"`, the default on a discrete GPU,
+  and for workstations):** No pool (`startup_pool_creates == 0`,
+  `ReserveTarget() == 0`). Physical memory is allocated on demand as extents
+  are mapped and released to the driver and OS on eviction. The workspace is
+  pageable by default. Two levers operate automatically: the idle release
+  (after `idle_release_seconds`, the working set released, idle
+  conversations evicted and the heap trimmed with
+  `platform::ReleaseFreeHeap()`) and, under `PressureTrim`, the budget
+  lowered and the working set released when a trim falls short.
+
+In both modes, pressure from outside and `POST /llmp/v1/memory/release`
+(loopback only) give the pool's empty handles back first and keep it from
+refilling, then reclaim cache through the reclaim order, whose evicted
+backing is then released rather than pooled. `runtime/memory_policy.h`
+holds every difference between the modes.
 
 ### Backing and addresses
 
 D-033 starts with independent 2 MiB physical extents. Compatible backing is
 handed directly to admitted loads that need it; in dedicated mode the pool
-holds pre-allocated backing handles, while in shared mode handles are created
-and destroyed on demand (D-124). A state's fresh extents are zeroed on
+holds empty backing handles within the budget's headroom, while in shared
+mode handles are created and destroyed on demand (D-124 as amended). A state's fresh extents are zeroed on
 the device rather than read from its sparse spill file, unless that file
 was kept across a restart (D-105), whose adopted extents are read. Weights and state are backed by device-located VMM:
 the GB10's L2 does not cache host-located memory (RE-022). On validated
@@ -812,8 +824,9 @@ wait for all consumers and registrations → write back only if preservation
 requires it → commit recoverable state / invalidate discarded entries → unmap
 and release or recycle → update occupancy and generation. The unmap and
 release run on the VMM lane while the extent is EVICTING (D-033: the
-backing is released, or refills a short handle reserve, never pooled
-beyond it). An eviction asked for with a handoff
+backing is released, or kept by the handle pool while it is short of its
+ceiling; keeping it moves the bytes from the occupancy to the pool, so the
+two stay within B, D-124 as amended). An eviction asked for with a handoff
 (M3's full swap) keeps the backing and parks, still EVICTING and charged;
 by default it stays mapped where it was (D-033's lazy handoff, 2026-10-07).
 A page-in in the same domain whose backing has the same class and size

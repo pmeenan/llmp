@@ -976,6 +976,13 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
   const StateKeeper::Quiet quiet(keeper_.get());
   parts = SwapParts{};
   last_activity_ = Clock::now();
+  if (pool_released_) {
+    // A release of the working set kept the node pool empty until the
+    // runtime serves again (ReleaseWorkingSet): it grows back lazily now,
+    // unless pressure from outside still holds it.
+    pool_released_ = false;
+    if (!pool_pressed_) node_.RestorePool();
+  }
   if (resident_ == &m) {
     return {};
   }
@@ -1009,6 +1016,9 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
           },
           "sealing an activation's release receipt");
       parts.capture_failed_ = parts.capture_failed_ || !sealed;
+      // The next activation short of room waits for this one's releases
+      // still in flight before it reclaims (MakeRoomForSwap).
+      if (sealed) server.release_tail_ = parts.receipt_;
     }
   } measurement{*this, parts, node_.SetEvictionReceipt(parts.receipt_)};
   // The activation is the incoming model's page-in need: its weight files

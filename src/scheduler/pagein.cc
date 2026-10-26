@@ -240,6 +240,9 @@ std::expected<Readiness, WorkError> Scheduler::Materialize(TaskId task,
     return std::unexpected(WorkError::kClosed);
   }
   bool waiting = false;
+  // One budget for the whole decision: every check below, and each load it
+  // begins, sees the same B (it changes only on this thread, SetBudget).
+  const Bytes limit = budget();
   for (const auto& [extent, generation] : closure.extents) {
     const auto found = catalog_.Describe(extent);
     if (!found) {
@@ -281,7 +284,7 @@ std::expected<Readiness, WorkError> Scheduler::Materialize(TaskId task,
         if (board_.available() == 0) {
           return std::unexpected(NoMailboxEver() ? WorkError::kUnavailable : WorkError::kBusy);
         }
-        if (auto begun = BeginPageIn(*record, extent, source->second); !begun) {
+        if (auto begun = BeginPageIn(*record, extent, source->second, limit); !begun) {
           return std::unexpected(begun.error());
         }
         waiting = true;
@@ -313,14 +316,14 @@ std::expected<Readiness, WorkError> Scheduler::Materialize(TaskId task,
           }
           // Its bytes leave the occupancy and come back as the load's: the
           // load fits exactly when the occupancy is within B now.
-          if (catalog_.OccupancyOf(found->descriptor.domain).Total() > budget()) {
+          if (catalog_.OccupancyOf(found->descriptor.domain).Total() > limit) {
             return std::unexpected(WorkError::kOverBudget);
           }
           auto receipt = eviction->second.receipt;
           if (receipt) receipt->Transfer();
           EndParked(extent);
-          if (auto begun =
-                  BeginPageIn(*record, extent, source->second, /*own=*/true, std::move(receipt));
+          if (auto begun = BeginPageIn(*record, extent, source->second, limit, /*own=*/true,
+                                       std::move(receipt));
               !begun) {
             return std::unexpected(begun.error());
           }
@@ -346,13 +349,14 @@ std::expected<Readiness, WorkError> Scheduler::Materialize(TaskId task,
 }
 
 std::expected<void, WorkError> Scheduler::BeginPageIn(TaskRecord& record, catalog::ExtentId extent,
-                                                      const PageSource& source, bool own,
+                                                      const PageSource& source, Bytes limit,
+                                                      bool own,
                                                       std::shared_ptr<EvictionReceipt> receipt) {
   // Backing a parked eviction kept, if one keeps a compatible one: the
   // load is allowed that extent's bytes over B because the parked
   // eviction completes in the same step, moving the charge.
   std::optional<catalog::ExtentId> donor;
-  Bytes budget = this->budget();
+  Bytes budget = limit;
   // Only where the extent's charge is its backing's size, so that moving a
   // charge moves exactly the bytes kept.
   const auto view = catalog_.Describe(extent);

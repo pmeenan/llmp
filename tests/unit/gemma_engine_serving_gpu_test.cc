@@ -1741,7 +1741,8 @@ TEST_P(GemmaEngineServingGpu, PartialCachedSwitchReleasesRequestAndRetainsOtherW
   life->config.models.push_back(other);
   life->options.partial_weight_eviction = true;
   life->options.diagnostic_budget_cap_bytes = std::uint64_t{16} << 30U;
-  ASSERT_TRUE(Start());
+  const auto started = Start();
+  ASSERT_TRUE(started) << started.error();
   ASSERT_TRUE(first_activation.diagnostic.eviction_split_available);  // empty-victim Swap
   auto* peer = dynamic_cast<rt::Llm*>(life->server->Find("other"));
   ASSERT_NE(peer, nullptr);

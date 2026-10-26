@@ -84,14 +84,19 @@ class PressureTrim {
   std::uint64_t short_trims_ = 0;
 };
 
-// Shared-mode dynamic budget after any pressure trim has run: only shrinks
-// below `current_budget` when pressure is active (`pressed`) and `available`
-// remains below `limits.low_bytes + limits.headroom_bytes`, anchored to
-// `min(configured_budget, current_occupancy + available) - shortfall` and
-// clamped to `[fixed, configured_budget]`. Restores `configured_budget` once
-// `available >= limits.low_bytes + limits.headroom_bytes`.
+// Shared mode's dynamic budget after any pressure trim has run (D-124 as
+// amended 2026-10-25). Under pressure (`pressed`, and `available` below the
+// target, the low mark plus the headroom): the budget the occupancy would
+// have once it gave back the shortfall, `occupancy - (target - available)`,
+// never below `floor` (what the running model needs: the fixed memory and
+// the largest active footprint) nor above `configured`, and never raised.
+// Once pressure has ended (not pressed, `available` past the target):
+// raised toward `configured` by at most what is available past the target,
+// a step at a time, so a steady outside workload cannot make it swing
+// between the two (and the cache be evicted each swing). Unknown
+// availability, or no configured budget, changes nothing.
 std::uint64_t AdjustSharedBudget(std::optional<std::uint64_t> available, bool pressed,
-                                 std::uint64_t current_occupancy, std::uint64_t fixed,
+                                 std::uint64_t occupancy, std::uint64_t floor,
                                  std::uint64_t current_budget, std::uint64_t configured_budget,
                                  const PressureTrimLimits& limits = {});
 

@@ -260,11 +260,33 @@ base::Bytes PagedNode::budget() const noexcept {
   return scheduler_ != nullptr ? scheduler_->budget() : budget_;
 }
 
-void PagedNode::SetBudget(base::Bytes budget) noexcept {
-  budget_ = budget;
-  if (scheduler_ != nullptr) {
-    scheduler_->SetBudget(budget);
+std::expected<base::Bytes, std::string> PagedNode::SetBudget(base::Bytes budget) {
+  if (torn_down_) return Error("the node is torn down");
+  if (scheduler_ == nullptr) {
+    budget_ = budget;
+    return budget;
   }
+  // Without the scheduler's thread the catalog is this one's.
+  if (threads_.empty()) return ApplyBudget(budget);
+  base::Bytes applied;
+  if (auto set = Call(
+          [&]() -> Status {
+            applied = ApplyBudget(budget);
+            return {};
+          },
+          "setting the execution budget");
+      !set) {
+    return std::unexpected(set.error());
+  }
+  return applied;
+}
+
+base::Bytes PagedNode::ApplyBudget(base::Bytes budget) {
+  if (scheduler_ == nullptr) {
+    budget_ = budget;
+    return budget;
+  }
+  return scheduler_->SetBudget(budget, domain_);
 }
 
 void PagedNode::KeepPinned(void* pointer, std::optional<std::uint32_t> stream) {
@@ -371,7 +393,7 @@ bool PagedNode::RetireRing(std::unique_ptr<providers::Storage> ring,
   return true;
 }
 
-Status PagedNode::Start(Bytes budget, std::optional<Bytes> pool_ceiling) {
+Status PagedNode::Start(Bytes budget, std::optional<NodePool> pool) {
   budget_ = budget;
   board_ = std::make_unique<sc::CompletionBoard>(1024, wake_);
   // One request per 2 MiB chunk (the reader's default), or with coalesce
@@ -409,35 +431,34 @@ Status PagedNode::Start(Bytes budget, std::optional<Bytes> pool_ceiling) {
   }
   // Managed backing's VMM work on a lane of its own, so the zone's copies
   // never wait behind it (docs/experiments/pagein-perf/); that lane alone
-  // calls the device-memory provider (device_memory.h).
-  const std::size_t occupied = catalog_.OccupancyOf(domain_).Total().value();
-  std::size_t unmapped_budget_extents =
-      budget.value() > occupied ? (budget.value() - occupied) / kPagedExtent : 0;
-  if (pool_ceiling.has_value()) {
-    unmapped_budget_extents =
-        std::min<std::size_t>(unmapped_budget_extents, pool_ceiling->value() / kPagedExtent);
-  }
-  std::size_t target_handles = 0;
-  if (settings_.preallocate_pool) {
-    target_handles = unmapped_budget_extents;
-  } else if (settings_.memory_mode == MemoryMode::kShared && settings_.handle_reserve == 0) {
-    target_handles = 0;
-  } else {
-    target_handles = settings_.handle_reserve;
-  }
-
-  sc::ReserveSettings reserve{.allocation_class = device_class_,
-                              .size = Bytes(kPagedExtent),
-                              .count = memory_ != nullptr ? target_handles : 0};
+  // calls the device-memory provider (device_memory.h). Its handle pool
+  // stays within the budget's headroom: the scheduler rebalances it each
+  // turn (SchedulerSettings::pool_domain).
+  const std::uint64_t occupied = catalog_.OccupancyOf(domain_).Total().value();
+  const std::size_t headroom = static_cast<std::size_t>(
+      budget.value() > occupied ? (budget.value() - occupied) / kPagedExtent : 0);
+  const std::size_t ceiling = memory_ == nullptr ? 0
+                              : pool.has_value()
+                                  ? static_cast<std::size_t>(pool->ceiling.value() / kPagedExtent)
+                                  : settings_.handle_reserve;
+  sc::ReserveSettings reserve{
+      .allocation_class = device_class_, .size = Bytes(kPagedExtent), .count = ceiling};
   backing_lane_ = std::make_unique<sc::BackingService>(
       memory_.get(), *board_, sc::QueueSettings{.capacity = 256, .reserved = 16, .batch = 32},
       reserve, settings_.diagnostic_backing_timing);
-  if (settings_.preallocate_pool && target_handles > 0 && memory_ != nullptr) {
-    auto preallocated = backing_lane_->SetReserve(device_class_, Bytes(kPagedExtent),
-                                                  target_handles, /*preallocate_now=*/true);
-    if (!preallocated) {
-      return Error(preallocated.error());
+  pool_shortfall_.clear();
+  std::size_t filled = 0;
+  if (ceiling > 0) {
+    const std::size_t aim = std::min(ceiling, headroom);
+    if (pool.has_value() && pool->fill) {
+      std::string failure;
+      filled = backing_lane_->Preallocate(aim, &failure);
+      if (filled < aim) {
+        pool_shortfall_ = std::format("{} of {} handles created ({})", filled, aim,
+                                      failure.empty() ? "no reason given" : failure);
+      }
     }
+    backing_lane_->ManageReserve(aim > filled ? aim - filled : 0);
   }
   sc::LandingZone landing{
       .slots = {},
@@ -450,7 +471,8 @@ Status PagedNode::Start(Bytes budget, std::optional<Bytes> pool_ceiling) {
                                    .budget = budget,
                                    .lazy_handoff = settings_.lazy_handoff,
                                    .landing = landing,
-                                   .observer = settings_.observer};
+                                   .observer = settings_.observer,
+                                   .pool_domain = domain_};
   if (settings_.poll_window) {
     scheduling.poll_window = *settings_.poll_window;  // a diagnostic (NodeSettings)
   }
@@ -490,6 +512,7 @@ void PagedNode::Run() {
   threads_.emplace_back(thread([this] { storage_lane_->Run(); }));
   threads_.emplace_back(thread([this] { device_lane_->RunSubmission(); }));
   threads_.emplace_back(thread([this] { device_lane_->RunCompletion(); }));
+  backing_lane_->Starting();  // before its thread: a drain from now on waits for it
   threads_.emplace_back(thread([this] { backing_lane_->Run(); }));
   if (copy_lane_ != nullptr) {
     threads_.emplace_back(thread([this] { copy_lane_->RunSubmission(); }));
@@ -916,10 +939,27 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
   return Joined(problems);
 }
 
-bool PagedNode::ReleaseMapped(Mapped& mapped) {
-  if (memory_ == nullptr) return true;
-  return llmp::engine::ReleaseMapped(
-      *memory_, mapped, mapped.allocation_class == device_class_ ? backing_lane_.get() : nullptr);
+bool ReleaseMapped(providers::VmmProvider& memory, Mapped& mapped) {
+  if (!mapped.reservation.valid()) {
+    return true;
+  }
+  const bool unmapped =
+      mapped.backings.empty() ||
+      memory.Unmap(mapped.reservation, Bytes(0), Bytes(mapped.backings.size() * kPagedExtent))
+          .has_value();
+  if (!unmapped) {
+    return false;
+  }
+  bool released = true;
+  for (const auto backing : mapped.backings) {
+    released = memory.Release(backing).has_value() && released;
+  }
+  if (!released || !memory.Free(mapped.reservation)) {
+    return false;
+  }
+  mapped.backings.clear();
+  mapped.reservation = {};
+  return true;
 }
 
 }  // namespace llmp::engine

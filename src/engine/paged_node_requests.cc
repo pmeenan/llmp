@@ -96,8 +96,9 @@ Status PagedNode::SupplementalJob(const catalog::Closure& selected, sc::DeviceJo
                                   std::shared_ptr<const void> payload,
                                   std::shared_ptr<ExecutionMetadataAllowance> allowance,
                                   std::string_view what, std::uint32_t stream, JobReport* report,
-                                  const SupplementalCapacity& capacity) {
+                                  const SupplementalCapacity& capacity, bool* over_budget) {
   if (report) *report = {};
+  if (over_budget) *over_budget = false;
   if (job_active_ || supplemental_ || torn_down_ || stream >= streams_.size())
     return Error("supplemental work has an invalid stream, overlapping job or unretired operation");
   const auto found = requests_.find(stream);
@@ -197,6 +198,7 @@ Status PagedNode::SupplementalJob(const catalog::Closure& selected, sc::DeviceJo
     }
     if (plan.shortfall.value() != 0) {
       supplemental_.reset();
+      if (over_budget) *over_budget = true;
       return Error("the supplemental closure remains over budget");
     }
   }

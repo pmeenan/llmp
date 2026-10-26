@@ -159,11 +159,15 @@ std::expected<BackingId, Failure> VmmProvider::Create(std::size_t allocation_cla
   if (!handle) {
     if (Unknown(handle.error())) {
       // The backing may exist: keep it charged, with no handle to use.
-      (void)backings_.Insert(Backing{.allocation_class = allocation_class,
-                                     .size = size,
-                                     .handle = 0,
-                                     .mapped = false,
-                                     .undetermined = true});
+      if (backings_
+              .Insert(Backing{.allocation_class = allocation_class,
+                              .size = size,
+                              .handle = 0,
+                              .mapped = false,
+                              .undetermined = true})
+              .valid()) {
+        live_backings_.fetch_add(1, std::memory_order_relaxed);
+      }
     }
     return std::unexpected(handle.error());
   }
@@ -181,6 +185,7 @@ std::expected<BackingId, Failure> VmmProvider::Create(std::size_t allocation_cla
                                        undone.error().detail});
   }
   created_backings_.fetch_add(1, std::memory_order_relaxed);
+  live_backings_.fetch_add(1, std::memory_order_relaxed);
   return id;
 }
 
@@ -204,6 +209,7 @@ std::expected<void, Failure> VmmProvider::Release(BackingId backing) {
   }
   (void)backings_.Erase(backing);
   released_backings_.fetch_add(1, std::memory_order_relaxed);
+  live_backings_.fetch_sub(1, std::memory_order_relaxed);
   return {};
 }
 

@@ -346,10 +346,16 @@ struct MemoryConfig {
   // process (the spill files stay unnamed, as before D-105).
   bool keep_across_restart = true;
 
+  // Unset (`set` false), the device chooses (runtime/memory_policy.h):
+  // dedicated where its memory is the host's (the GB10's), shared on a
+  // discrete GPU; `value` is then only a placeholder.
   Setting<MemoryMode> mode{MemoryMode::kDedicated};
-  // Maximum physical memory budget in GiB (0 = auto / full device memory).
+  // The most the execution budget may be, in GiB (0: what the start
+  // measures available, the host's MemAvailable less what its guard sets
+  // apart and, on a discrete GPU, at most the device's free memory).
   Setting<std::uint64_t> budget_gib{0};
-  // Shared-machine mode idle working-set release timer in seconds (0 disables).
+  // Shared mode only: the working set released after this long without a
+  // request, in seconds (0 disables). Dedicated mode keeps its working set.
   Setting<std::uint64_t> idle_release_seconds{300};
   // Host pressure trim thresholds (runtime/pressure_trim.h).
   Setting<std::uint64_t> pressure_low_mib{512};

@@ -95,7 +95,8 @@ class LlmScores : public LlmFixture {
     ASSERT_TRUE(stats);
     auto set = node_->Call(
         [&]() -> rt::Status {
-          node_->SetBudget(Bytes(stats->catalog_occupancy_bytes + extents * kExtent + kExtent / 2));
+          (void)node_->ApplyBudget(
+              Bytes(stats->catalog_occupancy_bytes + extents * kExtent + kExtent / 2));
           return {};
         },
         "setting the score test budget");

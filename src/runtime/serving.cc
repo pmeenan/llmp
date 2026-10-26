@@ -169,9 +169,8 @@ namespace {
 engine::NodeSettings MakeNodeSettings(const config::NodeConfig& config,
                                       const ServingOptions& options,
                                       scheduler::PageInObserver* observer) {
-  const auto mode = config.memory.mode.value;
-  const bool preallocate =
-      (mode == config::MemoryMode::kDedicated && !options.handle_reserve.has_value());
+  // The dedicated node pool is Start's (engine::NodePool, MemoryPolicy);
+  // a handle reserve here is the serving options' internal override.
   const std::size_t reserve = options.handle_reserve.value_or(0);
   return engine::NodeSettings{
       .compute_streams = std::max<std::size_t>(config.models.size(), 1),
@@ -182,9 +181,6 @@ engine::NodeSettings MakeNodeSettings(const config::NodeConfig& config,
       .lazy_handoff = options.lazy_handoff,
       .zero_state = options.zero_state,
       .handle_reserve = reserve,
-      .memory_mode = (mode == config::MemoryMode::kShared) ? engine::MemoryMode::kShared
-                                                           : engine::MemoryMode::kDedicated,
-      .preallocate_pool = preallocate,
       .slot_bytes = engine::kSlabSlotBytes,
       .observer = observer,
       .poll_window = std::nullopt,
@@ -521,6 +517,21 @@ Status Server::Start(bool snapshot) {
   if (!prepaid) {
     if (auto r = node_.Open(); !r) return r;
   }
+  // The physical memory policy (D-124 as amended): `[memory] mode`, or the
+  // device's default, dedicated where its memory is the host's (the
+  // GB10's) and shared on a discrete GPU, whose budget is its own.
+  {
+    const auto facts = providers::QueryDeviceFacts(node_.device_ordinal());
+    unified_ = !facts || facts->unified;
+    policy_ = ChooseMemoryPolicy(config_.memory, unified_);
+    Log(std::format("memory: {} mode ({}; {} device memory)", policy_.name(),
+                    policy_.configured ? "configured" : "the device's default",
+                    unified_ ? "unified" : "discrete"));
+    if (policy_.mode == config::MemoryMode::kDedicated && config_.memory.idle_release_seconds.set &&
+        config_.memory.idle_release_seconds.value > 0)
+      Log("memory: idle_release_seconds applies in shared mode only; dedicated mode keeps its "
+          "working set");
+  }
   // Each model's stream and owner: its place among the registered.
   for (std::size_t i = 0; i < config_.models.size(); ++i) {
     const std::size_t before = models_.size();
@@ -679,8 +690,8 @@ Status Server::Start(bool snapshot) {
   const std::uint64_t resident_need = GuardReserve(startup_guard) + resident_largest;
   const bool fits =
       startup_available == 0 || resident_need + (std::uint64_t{1} << 30U) <= startup_available;
-  const bool shared_mode = config_.memory.mode.value == config::MemoryMode::kShared;
-  const bool pageable = options_.pageable_workspace.value_or(shared_mode ? true : !fits);
+  const bool pageable =
+      options_.pageable_workspace.value_or(policy_.pageable_workspace ? true : !fits);
   Log(std::format(
       "workspace: {} ({:.2f} GiB of activations and {:.2f} GiB of pool); {}",
       pageable ? "paged with the active model" : "resident for the node's life",
@@ -783,10 +794,27 @@ Status Server::Start(bool snapshot) {
   // the measured available memory, leaving host-built inputs, the plans and
   // the uncounted margin outside it. A virtual context ceiling need not fit
   // before it is used; a growth that cannot fit its active closure fails.
-  if (available != 0) {
-    budget_ = fixed_ + ((available - GuardReserve(bounds)) / kExtent * kExtent);
+  // On a discrete GPU (D-082) the paged extents live in its own memory: the
+  // cap is also its free memory less what it keeps outside the catalog
+  // (a step's plans and kDeviceUncountedMargin), never the host's alone.
+  std::optional<std::uint64_t> device_free;
+  if (!unified_) {
+    if (const auto info = providers::QueryDeviceMemory(); info) device_free = info->free;
+  }
+  const auto headroom = BudgetHeadroom({.host_available = available,
+                                        .host_reserve = GuardReserve(bounds),
+                                        .device_free = device_free,
+                                        .device_reserve = plans + kDeviceUncountedMargin,
+                                        .extent = kExtent});
+  if (headroom) {
+    budget_ = fixed_ + *headroom;
   } else {
     budget_ += node_.StateCapacity();
+  }
+  if (device_free) {
+    Log(std::format("discrete device: {:.2f} GiB free; the budget's headroom {:.2f} GiB",
+                    static_cast<double>(*device_free) / (1ULL << 30U),
+                    static_cast<double>(headroom.value_or(0)) / (1ULL << 30U)));
   }
   dynamic_budget_ = budget_;
   if (config_.memory.budget_gib.value > 0 && !options_.diagnostic_budget_cap_bytes.has_value()) {
@@ -810,21 +838,34 @@ Status Server::Start(bool snapshot) {
     Log(std::format("diagnostic budget cap: dynamic={} selected={} bytes; requested={} bytes",
                     dynamic_budget_, budget_, requested));
   }
+  // What a shrink of the shared mode's budget never goes below: the
+  // running model's footprint beside the fixed memory, as the start
+  // required (AdjustSharedBudget).
+  floor_budget_ = fixed_ + largest;
   const auto add_sat = [](std::uint64_t a, std::uint64_t b) {
     std::uint64_t out = 0;
     return __builtin_add_overflow(a, b, &out) ? std::numeric_limits<std::uint64_t>::max() : out;
   };
-  const std::uint64_t image_growth = has_image ? (std::uint64_t{8} << 30U) : 0;
-  const std::uint64_t max_device_bytes = add_sat(add_sat(total_weights, pageable ? workspace_ : 0),
-                                                 add_sat(node_.StateCapacity(), image_growth));
-  const std::uint64_t avail_pool =
-      available != 0 ? (available > GuardReserve(bounds)
-                            ? (available - GuardReserve(bounds)) / kExtent * kExtent
-                            : 0)
-                     : max_device_bytes;
-  const std::uint64_t pool_ceiling = std::min(max_device_bytes, avail_pool);
-  if (auto r = node_.Start(base::Bytes(budget_), base::Bytes(pool_ceiling)); !r) {
+  // The dedicated node pool (D-124 as amended): at most what every model
+  // could page in at once, and within the budget's headroom however that
+  // moves (engine::NodePool). Shared mode keeps none; the serving options'
+  // handle reserve, when given, replaces it.
+  std::optional<engine::NodePool> node_pool;
+  if (policy_.pool && !options_.handle_reserve.has_value()) {
+    const std::uint64_t image_growth = has_image ? (std::uint64_t{8} << 30U) : 0;
+    const std::uint64_t max_device_bytes =
+        add_sat(add_sat(total_weights, pageable ? workspace_ : 0),
+                add_sat(node_.StateCapacity(), image_growth));
+    node_pool = engine::NodePool{
+        .ceiling = base::Bytes(std::min(max_device_bytes, headroom.value_or(max_device_bytes))),
+        .fill = true};
+  }
+  if (auto r = node_.Start(base::Bytes(budget_), node_pool); !r) {
     return r;
+  }
+  if (!node_.pool_shortfall().empty()) {
+    Log(std::format("memory: the node pool started smaller: {}; loads past it create their own",
+                    node_.pool_shortfall()));
   }
   configured_budget_ = budget_;
   last_activity_ = Clock::now();
@@ -1623,23 +1664,35 @@ void Server::Maintain() {
   // As far as it can: what a request holds stays, the rest still goes.
   (void)DeleteSpilledPast(0);
   RecordCalibrations();
-  if (config_.memory.mode.value == config::MemoryMode::kShared &&
-      config_.memory.idle_release_seconds.value > 0 && !HasActiveTurnWork()) {
+  if (policy_.idle_release && !HasActiveTurnWork()) {
     const auto idle_limit = std::chrono::seconds(config_.memory.idle_release_seconds.value);
     if (now >= last_activity_ + idle_limit && (resident_ != nullptr || AnyResidentState())) {
       (void)ReleaseWorkingSet("idle timeout");
     }
   }
   // Pressure from outside the runtime: other processes share the node's
-  // memory (D-004). One reclaim of what would restore the target headroom,
-  // spaced by a back-off while the pressure persists (PressureTrim), never
-  // the running model's in-use floor (Reclaim).
+  // memory (D-004). The node pool's empty handles go first, released to
+  // the system (they cost nothing to restore), with the pool kept from
+  // growing back until the pressure ends; then one reclaim of what would
+  // still restore the target headroom, spaced by a back-off while the
+  // pressure persists (PressureTrim), never the running model's in-use
+  // floor (Reclaim). Its evictions' backing is released, not pooled.
   const platform::MemoryPressure pressure = platform::ReadMemoryPressure();
   const PressureTrim::Trim trim = pressure_.Observe(pressure, now);
   if (trim.now) {
-    std::uint64_t freed = Reclaim(trim.needed, true, trim.why, nullptr, std::nullopt, true);
-    if (config_.memory.mode.value == config::MemoryMode::kShared && freed < trim.needed &&
-        resident_ != nullptr && !HasActiveTurnWork()) {
+    std::uint64_t freed = 0;
+    if (policy_.pool) {
+      const std::uint64_t handles = (trim.needed + kExtent - 1) / kExtent;
+      const std::size_t kept = node_.ReserveAvailable();
+      const std::size_t keep = kept > handles ? kept - static_cast<std::size_t>(handles) : 0;
+      freed = std::uint64_t{node_.DrainPool(keep)} * kExtent;
+      pool_pressed_ = true;
+    }
+    if (freed < trim.needed) {
+      freed += Reclaim(trim.needed - freed, true, trim.why, nullptr, std::nullopt, true);
+    }
+    if (policy_.release_under_pressure && freed < trim.needed && resident_ != nullptr &&
+        !HasActiveTurnWork()) {
       auto rel = ReleaseWorkingSet("memory pressure");
       if (rel) {
         freed += rel->reclaimed_bytes;
@@ -1656,8 +1709,14 @@ void Server::Maintain() {
           std::chrono::duration_cast<std::chrono::seconds>(pressure_.backoff()).count(),
           pressure_.trims(), pressure_.short_trims()));
     }
+  } else if (pool_pressed_ && !pressure_.pressed()) {
+    // The pressure has ended: the pool may grow back, lazily, within the
+    // budget's headroom (unless a release keeps it empty until the next
+    // activation).
+    pool_pressed_ = false;
+    if (!pool_released_) node_.RestorePool();
   }
-  if (config_.memory.mode.value == config::MemoryMode::kShared && configured_budget_ > 0) {
+  if (policy_.shrink_budget && configured_budget_ > 0) {
     const auto avail =
         trim.now ? platform::AvailableMemoryBytes().or_else(
                        [&]() -> std::optional<std::uint64_t> { return pressure.available; })
@@ -1672,12 +1731,16 @@ void Server::Maintain() {
           },
           "reading occupancy for shared-mode dynamic budget");
     }
-    const std::uint64_t new_budget =
-        AdjustSharedBudget(avail, pressed, current_occupancy, fixed_, node_.budget().value(),
-                           configured_budget_, pressure_.limits());
-    if (new_budget != node_.budget().value()) {
-      node_.SetBudget(base::Bytes(new_budget));
-      budget_ = new_budget;
+    const std::uint64_t current = node_.budget().value();
+    std::uint64_t new_budget = AdjustSharedBudget(avail, pressed, current_occupancy, floor_budget_,
+                                                  current, configured_budget_, pressure_.limits());
+    // A shrink waits for the turn's work to end: what the running requests
+    // grow into is theirs (D-050); the reclaim above still gave back the rest.
+    if (new_budget < current && HasActiveTurnWork()) new_budget = current;
+    if (new_budget != current) {
+      if (const auto applied = node_.SetBudget(base::Bytes(new_budget)); applied) {
+        budget_ = applied->value();
+      }
     }
   }
 }

@@ -543,7 +543,8 @@ TEST_F(AcquireTest, LiveBudgetUpdateGovernsSubsequentAcquisitions) {
   EXPECT_EQ(failed.error.load(), static_cast<int>(sc::WorkError::kOverBudget));
   EXPECT_EQ(Resident(0), 0U);
 
-  scheduler_->SetBudget(Bytes((1 + kPerModel) * kSize));
+  EXPECT_EQ(scheduler_->SetBudget(Bytes((1 + kPerModel) * kSize), domain_),
+            Bytes((1 + kPerModel) * kSize));
   EXPECT_EQ(scheduler_->budget(), Bytes((1 + kPerModel) * kSize));
 
   ts::Done succeeded;

@@ -792,11 +792,18 @@ Status Server::MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out
                                PendingWeightEvictions* pending) {
   const SwapPhaseTimer timer(options_.diagnostic_budget_cap_bytes ? &swap_host_phases_.room_seconds
                                                                   : nullptr);
-  if (budget_ < configured_budget_) {
+  if (policy_.shrink_budget && budget_ < configured_budget_ && !pressure_.pressed()) {
+    // Shared mode's budget back toward the configured one, a step at a time
+    // past the target (AdjustSharedBudget's hysteresis), never in one jump.
     const auto pressure = platform::ReadMemoryPressure();
-    if (pressure.available.has_value() && *pressure.available >= pressure_.target_bytes()) {
-      node_.SetBudget(base::Bytes(configured_budget_));
-      budget_ = configured_budget_;
+    const std::uint64_t current = node_.budget().value();
+    const std::uint64_t raised =
+        AdjustSharedBudget(pressure.available, /*pressed=*/false, 0, floor_budget_, current,
+                           configured_budget_, pressure_.limits());
+    if (raised != current) {
+      if (const auto applied = node_.SetBudget(base::Bytes(raised)); applied) {
+        budget_ = applied->value();
+      }
     }
   }
   // Size physical occupancy afresh, including required charges above B.
@@ -811,19 +818,25 @@ Status Server::MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out
   for (;;) {
     std::uint64_t need = 0;
     std::uint64_t credit = 0;
+    std::uint64_t evicting = 0;
     auto sized = node_.Call(
         [&]() -> Status {
           const auto& catalog = node_.catalog();
-          std::uint64_t after = catalog.OccupancyOf(node_.domain()).Total().value();
+          const auto occupancy = catalog.OccupancyOf(node_.domain());
+          std::uint64_t after = occupancy.Total().value();
+          evicting = occupancy.evicting.value();
           for (const auto& [extent, generation] : m.everything().extents) {
             const auto view = catalog.Describe(extent);
             if (!view || view->descriptor.domain != node_.domain() ||
                 view->content_generation != generation || view->discarded ||
                 view->state == catalog::ExtentState::kQuarantined)
               return Error("a swap's incoming closure is stale or invalid");
-            if (view->state != catalog::ExtentState::kResident &&
-                !add(after, view->descriptor.size.value()))
+            if (!add(after, IncomingCharge(view->state, view->descriptor.size.value())))
               return Error("a swap's incoming occupancy overflows");
+            // The incoming model's own evicting bytes free no room for it:
+            // a release tail of its own extents is not waited for.
+            if (view->state == catalog::ExtentState::kEvicting)
+              evicting -= std::min(evicting, view->descriptor.size.value());
           }
           std::set<catalog::ExtentId> counted;
           for (const auto extent : out) {
@@ -859,6 +872,26 @@ Status Server::MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out
         "sizing actual missing incoming and selected swap extents");
     if (!sized) return sized;
     if (credit >= need) return {};
+    // An earlier activation's backing still being released (its lazy-
+    // handoff tail, D-033) counts as occupancy until each release lands:
+    // wait for it while it moves, before evicting any cache for room it is
+    // about to give back (D-007), and size again.
+    if (auto tail = release_tail_.lock()) {
+      scheduler::EvictionReceipt::Snapshot snapshot;
+      if (auto read = node_.Call(
+              [&]() -> Status {
+                snapshot = tail->Read();
+                return {};
+              },
+              "reading an earlier activation's release tail");
+          !read)
+        return read;
+      if (WaitForReleaseTail(snapshot, evicting, Clock::now(), node_.quiet()) == RoomWait::kWait) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        continue;
+      }
+      release_tail_.reset();
+    }
     if (!progress.Shrank(need - credit)) break;
     const auto selected_before = pending == nullptr ? 0 : pending->selected.size();
     const auto freed = Reclaim(need - credit, false, "a swap's incoming model", &m, std::nullopt,
@@ -920,6 +953,22 @@ std::expected<api::ReleaseReport, std::string> Server::ReleaseWorkingSet(std::st
       !r) {
     return std::unexpected(r.error());
   }
+  const std::uint64_t released_before = node_.ReleasedBackings();
+  // What the release gives back is physical memory, not only occupancy:
+  // the node pool's empty handles go first (they cost nothing to restore,
+  // D-124 as amended), and it stays empty until the next activation, so
+  // the backing of everything evicted below is released to the system,
+  // not pooled again.
+  (void)node_.DrainPool(0);
+  pool_released_ = true;
+  // The bookkeeping follows what was released however far it got: every
+  // model's weights are evicted from here on, so none is resident any more
+  // whatever fails below (the next activation loads one whole), and the
+  // idle models' files close on every return.
+  struct Settle {
+    Server& server;
+    ~Settle() { server.DeactivateIdleModels(); }
+  } settle{*this};
   for (const auto& m : models_) {
     m->DropPlans();
   }
@@ -969,11 +1018,12 @@ std::expected<api::ReleaseReport, std::string> Server::ReleaseWorkingSet(std::st
   if (resident_ != nullptr) {
     report.evicted_model = resident_->name();
   }
+  resident_ = nullptr;
   for (const auto& m : models_) {
-    if (auto evicted = EvictPaged(*m); !evicted) {
-      return std::unexpected(std::format("evicting {}: {}", m->name(), evicted.error()));
-    }
-    if (m->llm()) {
+    // Each model's state bookkeeping follows its own eviction at once, so
+    // a failure further on leaves the ones before it consistent.
+    const auto evicted = EvictPaged(*m);
+    if (m->llm() && evicted) {
       auto& l = static_cast<Llm&>(*m);
       if (m->HasRetainedState()) {
         m->StateWrittenBack(true);
@@ -990,9 +1040,10 @@ std::expected<api::ReleaseReport, std::string> Server::ReleaseWorkingSet(std::st
         std::erase(spilled_, m.get());
       }
     }
+    if (!evicted) {
+      return std::unexpected(std::format("evicting {}: {}", m->name(), evicted.error()));
+    }
   }
-  resident_ = nullptr;
-  DeactivateIdleModels();
 
   if (node_.workspace_pageable()) {
     std::vector<catalog::ExtentId> workspace_to_evict;
@@ -1016,7 +1067,8 @@ std::expected<api::ReleaseReport, std::string> Server::ReleaseWorkingSet(std::st
       }
     }
   }
-  report.released_backings = node_.ReleaseUnusedBacking();
+  // Whatever the evictions' releases left in the pool meanwhile.
+  (void)node_.DrainPool(0);
   std::uint64_t after_occupancy = 0;
   if (auto r = node_.Call(
           [&]() -> Status {
@@ -1030,6 +1082,7 @@ std::expected<api::ReleaseReport, std::string> Server::ReleaseWorkingSet(std::st
   report.reclaimed_bytes =
       before_occupancy > after_occupancy ? before_occupancy - after_occupancy : 0;
   platform::ReleaseFreeHeap();
+  report.released_backings = static_cast<std::size_t>(node_.ReleasedBackings() - released_before);
   Log(std::format(
       "released working set ({}) [evicted={}, spilled={:.1f} MiB, reclaimed={:.1f} MiB, "
       "released_backings={}]",

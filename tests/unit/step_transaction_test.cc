@@ -883,7 +883,7 @@ TEST(StepTransactionTest, SupplementalJobReclaimsBeforeMaterializingSelectedExte
     EXPECT_EQ(what, en::PagedNode::ReclaimFor::kMaterialize);
     EXPECT_NE(std::ranges::find(protect, node.activations().extents.front()), protect.end());
     if (!allow_reclaim) return 0;
-    node.SetBudget(llmp::base::Bytes(fixed + 4 * en::kPagedExtent));
+    EXPECT_TRUE(node.SetBudget(llmp::base::Bytes(fixed + 4 * en::kPagedExtent)));
     return needed;
   });
 
