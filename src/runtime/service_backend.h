@@ -79,11 +79,12 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       cancelled = true;
       yielding = false;  // cancelled, it ends; it does not continue
     }
-    // Yields only a generation under way that is not set aside or waiting
-    // for capacity (its continuation is its generation so far).
+    // Yields a generation under way that is not set aside or waiting for
+    // capacity (its continuation is its generation so far), or output not
+    // yet delivered (host-only: its continuation finishes it).
     bool Yield() override {
       if ((generation_session == nullptr && stage != Stage::kOutput) ||
-          (generation_session && generation_session->done() && !output.pending()) ||
+          (generation_session && generation_session->done() && output.done()) ||
           generation.tokens.empty() || wait != CapacityWait::kNone || resume || error ||
           cancelled) {
         return false;
@@ -91,8 +92,13 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       yielding = true;
       return true;
     }
+    // Pauses for another model only while device work remains: a member
+    // whose generation is complete has only its output to deliver, host-only
+    // work that needs no residency, so it finishes in this cohort (or yields
+    // its place to a slow reader, Yield) instead of carrying a continuation.
     bool YieldForSwitch() override {
-      if (terminal()) {
+      if (terminal() || stage == Stage::kOutput ||
+          (generation_session != nullptr && generation_session->done())) {
         return false;
       }
       if (generation.tokens.empty() && prompt_session != nullptr &&

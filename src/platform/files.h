@@ -8,6 +8,7 @@
 #ifndef LLMP_PLATFORM_FILES_H_
 #define LLMP_PLATFORM_FILES_H_
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -34,9 +35,15 @@ std::expected<int, int> OpenPathReference(int parent, const char* name, bool fol
 // an inconsistent identity/size, otherwise errno. The returned close-on-exec
 // descriptor is independent of the reference and the caller's to close.
 // Linux uses /proc/self/fd; failure to reopen is an error, never a pathname
-// fallback. This pins identity, not file contents: writes can still change it.
+// fallback, and a missing /proc is kNoProcfs, never ENOENT (the file is
+// there: it is pinned). This pins identity, not file contents: writes can
+// still change it.
 // With direct true, request direct I/O; unsupported files return EINVAL.
 std::expected<int, int> ReopenRegularFileForRead(int reference, bool direct = false);
+
+// The reopen's error when the system has no usable /proc (a sandbox or chroot
+// without it): EOPNOTSUPP.
+inline constexpr int kNoProcfs = EOPNOTSUPP;
 
 // The same identity-preserving reopen, optionally for reads and writes. Never
 // creates or truncates an object, and checks its type before opening for I/O.

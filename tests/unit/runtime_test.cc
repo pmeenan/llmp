@@ -365,6 +365,19 @@ TEST(LockFile, CreatesPrivateAndTakesWhatExists) {
     ASSERT_TRUE(first.has_value()) << first.error();
   }
   EXPECT_TRUE(llmp::platform::LockFile::Acquire(scratch.path() / "a.lock").has_value());
+  // One the runtime cannot write (read-only here; another user's alike) is
+  // used as found, warned about elsewhere, never refused: flock needs no
+  // write access. Its lock still excludes a second holder.
+  std::ofstream(scratch.path() / "read-only.lock") << "";
+  ASSERT_EQ(::chmod((scratch.path() / "read-only.lock").c_str(), 0400), 0);
+  {
+    auto held = llmp::platform::LockFile::Acquire(scratch.path() / "read-only.lock");
+    ASSERT_TRUE(held.has_value()) << held.error();
+    auto again = llmp::platform::LockFile::Acquire(scratch.path() / "read-only.lock");
+    ASSERT_FALSE(again.has_value());
+    EXPECT_THAT(again.error(), HasSubstr("is locked"));
+  }
+  ASSERT_EQ(::chmod((scratch.path() / "read-only.lock").c_str(), 0600), 0);
 }
 
 // Runs body in a child with the crash policy installed; returns its wait

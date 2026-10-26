@@ -88,17 +88,43 @@ class PressureTrim {
 // amended 2026-10-25). Under pressure (`pressed`, and `available` below the
 // target, the low mark plus the headroom): the budget the occupancy would
 // have once it gave back the shortfall, `occupancy - (target - available)`,
-// never below `floor` (what the running model needs: the fixed memory and
-// the largest active footprint) nor above `configured`, and never raised.
-// Once pressure has ended (not pressed, `available` past the target):
-// raised toward `configured` by at most what is available past the target,
-// a step at a time, so a steady outside workload cannot make it swing
-// between the two (and the cache be evicted each swing). Unknown
-// availability, or no configured budget, changes nothing.
+// never below `floor` (what the running model and requests need:
+// SharedBudgetFloor) nor above `configured`, and never raised. Once
+// pressure has ended (not pressed, `available` past the target): raised
+// toward `configured` by at most what is available past the target, a step
+// at a time, so a steady outside workload cannot make it swing between the
+// two (and the cache be evicted each swing). Unknown availability, or no
+// configured budget, changes nothing.
 std::uint64_t AdjustSharedBudget(std::optional<std::uint64_t> available, bool pressed,
                                  std::uint64_t occupancy, std::uint64_t floor,
                                  std::uint64_t current_budget, std::uint64_t configured_budget,
                                  const PressureTrimLimits& limits = {});
+
+// Shared mode's floor for AdjustSharedBudget (D-124 as amended 2026-10-26):
+// `base`, the fixed memory and the largest model's footprint (what the start
+// required), and `held`, the conversation state the requests hold now
+// (measured from the live state, so it follows a request's growth), never
+// past `configured`. Not a slot through a whole context: a floor that could
+// equal the budget would keep shared mode from giving anything back.
+std::uint64_t SharedBudgetFloor(std::uint64_t base, std::uint64_t held,
+                                std::uint64_t configured) noexcept;
+
+// The shared budget lent to a request's refused state growth once the
+// reclaim order fell `shortfall` short of it: what is held is the
+// request's, so a shrink never makes a held request wait or fail (D-050).
+// Raised by the shortfall, never past `configured` nor below `current`.
+std::uint64_t LiftSharedBudget(std::uint64_t current, std::uint64_t configured,
+                               std::uint64_t shortfall) noexcept;
+
+// What a refused growth of `needed` bytes was given: `freed` by the reclaim
+// order and the budget lent from `before` to `after`. Lent back whole (to
+// `configured`), it counts as all of `needed`: `needed` is the whole
+// growth, not what it fell short of the headroom left, so a lift capped at
+// the configured budget may fall short of it while the growth fits there;
+// the retry's own refusal then stands (nothing more is lent, as without
+// the pressure). Otherwise what was freed and lent.
+std::uint64_t LiftRelief(std::uint64_t needed, std::uint64_t freed, std::uint64_t before,
+                         std::uint64_t after, std::uint64_t configured) noexcept;
 
 }  // namespace llmp::runtime
 

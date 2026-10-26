@@ -24,7 +24,8 @@ class LockFile {
   ~LockFile();
 
   // Opens or creates path (created 0600; an existing one is used whatever
-  // its owner and mode) and takes its lock without waiting. It must be a
+  // its owner and mode, opened for reading only: flock writes nothing) and
+  // takes its lock without waiting. It must be a
   // regular file, pinned before it is opened for I/O. Links are followed,
   // including a dangling link whose target is created exclusively. Pathname
   // changes after selection do not transfer the lock to another object.

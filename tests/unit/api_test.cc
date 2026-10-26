@@ -1488,6 +1488,12 @@ class FakeBackend final : public api::Backend {
       }
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
+    if (text == "tool-then-stop") {
+      // A call, then a stop string matched in the text after it.
+      (void)exchange.ToolCall({.id = {}, .name = "read", .input_json = R"({"filePath":"a"})"});
+      (void)exchange.Content("xabc");
+      return api::Completion{.completion_tokens = 6, .cached_tokens = 0, .stopped = false};
+    }
     if (text == "tool-answer" || text == "tool-stop" || text == "tool-length") {
       (void)exchange.Reasoning("read first");
       (void)exchange.Content(text == "tool-stop" ? "xabc" : "ab");
@@ -1632,9 +1638,11 @@ class FakeBackend final : public api::Backend {
   std::string last_release_reason;
   std::string release_evicted_model = "alpha";
 
+  std::function<void()> on_release;  // set before the release is asked for
   std::expected<api::ReleaseReport, std::string> ReleaseWorkingSet(
       std::string_view reason = "manual") override {
     last_release_reason = std::string(reason);
+    if (on_release) on_release();
     if (fail_release_working_set.load()) {
       return std::unexpected(release_failure);
     }
@@ -2348,6 +2356,26 @@ TEST_F(ServerTest, ToolCallsUseTheSameNormalizedWholeCallInJsonAndStreaming) {
   EXPECT_THAT(stream, HasSubstr(R"("completion_tokens":12)"));
   EXPECT_TRUE(stream.ends_with("data: [DONE]\n\n"));
 }
+TEST_F(ServerTest, AStopStringAfterAToolCallStillFinishesWithToolCalls) {
+  for (const bool stream : {false, true}) {
+    SCOPED_TRACE(stream);
+    const auto body = BodyOf(Exchange(Post(
+        Chat("tool-then-stop", stream ? R"(,"stop":"abc","stream":true)" : R"(,"stop":"abc")"))));
+    if (stream) {
+      EXPECT_THAT(body, HasSubstr(R"("finish_reason":"tool_calls")"));
+      EXPECT_THAT(body, Not(HasSubstr(R"("finish_reason":"stop")")));
+      continue;
+    }
+    auto doc = json::Parse(body);
+    ASSERT_TRUE(doc) << body;
+    const auto choice = In(doc->root(), {"choices"}).at(0);
+    EXPECT_EQ(In(choice, {"finish_reason"}).string(), "tool_calls");
+    EXPECT_EQ(In(choice, {"message", "content"}).string(), "x");
+    EXPECT_EQ(In(In(choice, {"message", "tool_calls"}).at(0), {"function", "name"}).string(),
+              "read");
+  }
+}
+
 TEST_F(ServerTest, ExplicitTextStopAndLengthOverrideToolFinishReason) {
   for (const auto name : {"tool-stop", "tool-length"}) {
     auto response = Exchange(Post(Chat(name, R"(,"stop":"abc")")));
@@ -3293,20 +3321,176 @@ TEST_F(ServerTest, MemoryReleaseEndpoint) {
   EXPECT_THAT(failed, HasSubstr("refused an unmap"));
   backend_.release_failure = "busy";
 
-  // When an active request is running, release is immediately rejected with 409 Conflict.
+  // While a request runs, a release is not refused: it waits for the
+  // driver's next idle point, then answers (two together, with one report).
   backend_.fail_release_working_set.store(false);
   backend_.release.store(false);
   const int fd = Connect(Post(Chat("block")));
   WaitStarted();
-  const std::string active_busy = Exchange(
-      "POST /llmp/v1/memory/release HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
-  EXPECT_THAT(active_busy, StartsWith("HTTP/1.1 409 "));
-  EXPECT_THAT(active_busy, HasSubstr("server is busy with active work"));
-  EXPECT_THAT(active_busy, HasSubstr("conflict_error"));
+  constexpr std::string_view kRelease =
+      "POST /llmp/v1/memory/release HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n";
+  const int waiting = Connect(kRelease);
+  const int also = Connect(kRelease);
+  std::array<pollfd, 2> unanswered{{{.fd = waiting, .events = POLLIN, .revents = 0},
+                                    {.fd = also, .events = POLLIN, .revents = 0}}};
+  EXPECT_EQ(::poll(unanswered.data(), unanswered.size(), 200), 0);
+  std::atomic<unsigned> releases{0};
+  backend_.on_release = [&] { ++releases; };
   backend_.release.store(true);
   std::string ignored;
-  (void)ReadResponse(fd, ignored);
+  EXPECT_THAT(ReadResponse(fd, ignored), StartsWith("HTTP/1.1 200 "));
+  for (const int answered : {waiting, also}) {
+    ignored.clear();
+    const std::string released = ReadResponse(answered, ignored);
+    EXPECT_THAT(released, StartsWith("HTTP/1.1 200 OK\r\n"));
+    EXPECT_THAT(released, HasSubstr(R"("released_backings":8)"));
+    (void)::close(answered);
+  }
+  EXPECT_EQ(releases.load(), 1U);
+  backend_.on_release = nullptr;
   (void)::close(fd);
+}
+
+// A release that arrives while a cohort runs holds nothing back (the
+// starvation bound comes first): a later request still joins the cohort, and
+// the release runs where the cohort ends with nothing left to start.
+TEST_F(ServerTest, AReleaseWaitsForTheCohortWhichKeepsAdmitting) {
+  StartCooperative();
+  cooperative_->pause_units.store(true);
+  std::atomic<unsigned> started_at_release{99};
+  backend_.on_release = [&] { started_at_release.store(cooperative_->started.load()); };
+  const int first = Connect(Post(Chat("a", R"(,"max_tokens":3)")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  const int release = Connect(
+      "POST /llmp/v1/memory/release HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+  const int second = Connect(Post(Chat("b", R"(,"max_tokens":3)")));
+  pollfd unanswered{.fd = release, .events = POLLIN, .revents = 0};
+  EXPECT_EQ(::poll(&unanswered, 1, 200), 0);  // the cohort's unit still runs
+  cooperative_->release.store(true);
+  std::string pending;
+  for (const int fd : {first, second}) {
+    pending.clear();
+    EXPECT_THAT(ReadResponse(fd, pending), StartsWith("HTTP/1.1 200 "));
+    (void)::close(fd);
+  }
+  pending.clear();
+  EXPECT_THAT(ReadResponse(release, pending), StartsWith("HTTP/1.1 200 OK\r\n"));
+  EXPECT_EQ(started_at_release.load(), 2U);
+  EXPECT_EQ(cooperative_->peak.load(), 2U);  // the second joined the first's cohort
+  (void)::close(release);
+  backend_.on_release = nullptr;
+}
+
+// A release waits at most for the running turn's end: there, its members
+// still running, it is answered 409 and they go on, never paused or
+// cancelled for it.
+TEST_F(ServerTest, AReleaseIsAnsweredBusyAtTheTurnsEndWhileTheCohortGoesOn) {
+  api::ServerOptions options;
+  options.model_turn = std::chrono::milliseconds(50);
+  StartCooperative(options);
+  std::atomic<unsigned> asked{0};
+  backend_.on_release = [&] { ++asked; };
+  const int first = Connect(Post(Chat("long", R"(,"max_tokens":300)")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  const int release = Connect(
+      "POST /llmp/v1/memory/release HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+  std::string pending;
+  const std::string busy = ReadResponse(release, pending);
+  EXPECT_THAT(busy, StartsWith("HTTP/1.1 409 "));
+  EXPECT_THAT(busy, HasSubstr("busy"));
+  EXPECT_EQ(cooperative_->retired.load(), 0U);  // answered while the request still ran
+  pending.clear();
+  EXPECT_THAT(ReadResponse(first, pending),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("completion_tokens":300)")));
+  EXPECT_EQ(asked.load(), 0U);
+  EXPECT_EQ(cooperative_->yielded.load(), 0U);
+  EXPECT_EQ(cooperative_->cancelled.load(), 0U);
+  (void)::close(release);
+  (void)::close(first);
+  backend_.on_release = nullptr;
+}
+
+// Nor does a release suspend model rotation: another model's request still
+// runs at the turn's end, the paused member resuming after it, and the
+// release is answered 409 there.
+TEST_F(ServerTest, AReleaseDoesNotSuspendModelRotation) {
+  api::ServerOptions options;
+  options.model_turn = std::chrono::milliseconds(50);
+  StartCooperative(options);
+  std::atomic<unsigned> asked{0};
+  backend_.on_release = [&] { ++asked; };
+  const int first = Connect(Post(Chat("long", R"(,"max_tokens":80)")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  const int release = Connect(
+      "POST /llmp/v1/memory/release HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+  EXPECT_THAT(Exchange(Post(Chat("substitute", "", "tiny"))),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr("substitute")));
+  std::string pending;
+  EXPECT_THAT(ReadResponse(release, pending), StartsWith("HTTP/1.1 409 "));
+  pending.clear();
+  EXPECT_THAT(ReadResponse(first, pending),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("completion_tokens":80)")));
+  EXPECT_EQ(cooperative_->yielded.load(), 1U);
+  EXPECT_EQ(cooperative_->resumed.load(), 1U);
+  EXPECT_EQ(asked.load(), 0U);
+  (void)::close(release);
+  (void)::close(first);
+  backend_.on_release = nullptr;
+}
+
+// Where the running work ends with a queued request that would start, the
+// release is answered 409 without being run: queued work is not held back
+// for it.
+TEST_F(ServerTest, AReleaseWithQueuedWorkAtTheEndIsBusy) {
+  std::atomic<unsigned> asked{0};
+  backend_.on_release = [&] { ++asked; };
+  backend_.release.store(false);
+  const int running = Connect(Post(Chat("block")));
+  WaitStarted();
+  const int release = Connect(
+      "POST /llmp/v1/memory/release HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+  const int queued = Connect(Post(Chat("after")));
+  pollfd unanswered{.fd = release, .events = POLLIN, .revents = 0};
+  EXPECT_EQ(::poll(&unanswered, 1, 200), 0);  // the running request goes on
+  backend_.release.store(true);
+  std::string pending;
+  EXPECT_THAT(ReadResponse(release, pending), StartsWith("HTTP/1.1 409 "));
+  for (const int fd : {running, queued}) {
+    pending.clear();
+    EXPECT_THAT(ReadResponse(fd, pending), StartsWith("HTTP/1.1 200 "));
+    (void)::close(fd);
+  }
+  EXPECT_EQ(asked.load(), 0U);
+  (void)::close(release);
+  backend_.on_release = nullptr;
+}
+
+// A release whose client left before the cohort's end is answered to no
+// one: it never runs (and, as any release, held no request back).
+TEST_F(ServerTest, AReleaseWhoseClientLeftNeverRuns) {
+  StartCooperative();
+  cooperative_->pause_units.store(true);
+  std::atomic<unsigned> asked{0};
+  backend_.on_release = [&] { ++asked; };
+  const int first = Connect(Post(Chat("a", R"(,"max_tokens":20)")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  const int release = Connect(
+      "POST /llmp/v1/memory/release HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  (void)::close(release);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const int second = Connect(Post(Chat("b", R"(,"max_tokens":3)")));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  cooperative_->release.store(true);
+  std::string answer;
+  for (const int fd : {first, second}) {
+    answer.clear();
+    EXPECT_THAT(ReadResponse(fd, answer), StartsWith("HTTP/1.1 200 "));
+    (void)::close(fd);
+  }
+  EXPECT_EQ(cooperative_->peak.load(), 2U);  // the second joined the first's cohort
+  EXPECT_EQ(asked.load(), 0U);
+  backend_.on_release = nullptr;
 }
 
 // The node's other names, as the resolution gives them (the tailnet's
@@ -4050,6 +4234,113 @@ TEST_F(ServerTest, ACohortsPausedReaderYieldsToAPendingSwitch) {
   (void)::close(slow);
   EXPECT_EQ(cooperative_->cancelled.load(), 0U);
   EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
+// A pending release is not a waiter a paused reader yields its place to:
+// its continuation would keep the state the release waits for. The cohort
+// waits for its reader, and the release is answered once it finishes.
+TEST_F(ServerTest, APausedReaderDoesNotYieldItsPlaceToARelease) {
+  api::ServerOptions options;
+  options.intake.stream_buffer = std::size_t{64} << 10U;
+  options.yield_after = std::chrono::milliseconds(100);
+  StartCooperative(options);
+  const int slow = Open(4096);
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(
+      slow, Post(Chat("pour", R"(,"stream":true,"max_tokens":2000)"))));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->paused_units.load() != 0; }));
+  const int release = Connect(
+      "POST /llmp/v1/memory/release HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+  pollfd unanswered{.fd = release, .events = POLLIN, .revents = 0};
+  EXPECT_EQ(::poll(&unanswered, 1, 600), 0);  // several yield_after periods
+  EXPECT_EQ(cooperative_->yielded.load(), 0U);
+  std::string streamed;
+  ReadUntil(slow, streamed, "data: [DONE]\n\n");
+  EXPECT_EQ(ContentBytes(streamed), std::size_t{2000} * 8192);
+  std::string answer;
+  EXPECT_THAT(ReadResponse(release, answer), StartsWith("HTTP/1.1 200 OK\r\n"));
+  (void)::close(release);
+  (void)::close(slow);
+  EXPECT_EQ(cooperative_->yielded.load(), 0U);
+}
+
+// A release the backend finds busy only because of a continuation parked
+// until its client reads is answered 409: it does not wait on a client
+// (which may never read), every cohort draining meanwhile.
+TEST_F(ServerTest, AReleaseBusyOnlyWithAParkedReaderIsAConflict) {
+  api::ServerOptions options;
+  options.intake.stream_buffer = std::size_t{64} << 10U;
+  options.yield_after = std::chrono::milliseconds(200);
+  StartCooperative(options);
+  backend_.fail_release_working_set.store(true);  // "busy": the parked state
+  const int slow = Open(4096);
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(
+      slow, Post(Chat("pour", R"(,"stream":true,"max_tokens":2000)"))));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->paused_units.load() != 0; }));
+  EXPECT_THAT(Exchange(Post(Chat("serial"))),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr("serial")));
+  ASSERT_EQ(cooperative_->yielded.load(), 1U);  // parked, its client not reading
+  const std::string busy = Exchange(
+      "POST /llmp/v1/memory/release HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+  EXPECT_THAT(busy, StartsWith("HTTP/1.1 409 "));
+  EXPECT_THAT(busy, HasSubstr("busy"));
+  EXPECT_EQ(cooperative_->resumed.load(), 0U);
+  backend_.fail_release_working_set.store(false);
+  std::string streamed;
+  ReadUntil(slow, streamed, "data: [DONE]\n\n");
+  EXPECT_EQ(ContentBytes(streamed), std::size_t{2000} * 8192);
+  (void)::close(slow);
+  EXPECT_EQ(cooperative_->cancelled.load(), 0U);
+}
+
+// Nor does it wait on fresh requests: a cohort that admits them as they
+// come is not held back for it, and where it ends with only the parked
+// reader's state left, the release is answered 409 at once.
+TEST_F(ServerTest, AReleaseBusyWithAParkedReaderDoesNotWaitOnFreshRequests) {
+  api::ServerOptions options;
+  options.intake.stream_buffer = std::size_t{64} << 10U;
+  options.yield_after = std::chrono::milliseconds(200);
+  StartCooperative(options);
+  backend_.fail_release_working_set.store(true);  // "busy": the parked state
+  const int slow = Open(4096);
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(
+      slow, Post(Chat("pour", R"(,"stream":true,"max_tokens":2000)"))));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->paused_units.load() != 0; }));
+  EXPECT_THAT(Exchange(Post(Chat("serial"))),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr("serial")));
+  ASSERT_EQ(cooperative_->yielded.load(), 1U);  // parked, its client not reading
+  cooperative_->pause_units.store(true);
+  std::atomic<unsigned> asked{0}, started_when_asked{99};
+  backend_.on_release = [&] {
+    ++asked;
+    started_when_asked.store(cooperative_->started.load());
+  };
+  const unsigned before = cooperative_->started.load();
+  const int first = Connect(Post(Chat("a", R"(,"max_tokens":3)")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->started.load() == before + 1; }));
+  const int release = Connect(
+      "POST /llmp/v1/memory/release HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+  const int second = Connect(Post(Chat("b", R"(,"max_tokens":3)")));
+  pollfd unanswered{.fd = release, .events = POLLIN, .revents = 0};
+  EXPECT_EQ(::poll(&unanswered, 1, 200), 0);  // the first's unit still runs
+  cooperative_->release.store(true);
+  std::string answer;
+  for (const int fd : {first, second}) {
+    answer.clear();
+    EXPECT_THAT(ReadResponse(fd, answer), StartsWith("HTTP/1.1 200 "));
+    (void)::close(fd);
+  }
+  answer.clear();
+  EXPECT_THAT(ReadResponse(release, answer), StartsWith("HTTP/1.1 409 "));
+  EXPECT_EQ(asked.load(), 1U);
+  EXPECT_EQ(started_when_asked.load(), before + 2);  // the second joined the first
+  (void)::close(release);
+  backend_.on_release = nullptr;
+  backend_.fail_release_working_set.store(false);
+  cooperative_->pause_units.store(false);
+  std::string streamed;
+  ReadUntil(slow, streamed, "data: [DONE]\n\n");
+  EXPECT_EQ(ContentBytes(streamed), std::size_t{2000} * 8192);
+  (void)::close(slow);
 }
 
 // And in a full cohort: a same-model request the cohort cannot take waits

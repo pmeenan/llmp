@@ -634,7 +634,6 @@ TEST_F(LlmPromptSessions, ResumingAtATurnCheckpointMustPrefillBeforeAnotherModel
   auto resumed = BranchAt(0).BeginPrompt(prompt, 8);
   ASSERT_TRUE(resumed);
   Policy policy(std::chrono::seconds(30), start);
-  policy.BeginPass(Policy::Head::kOtherModel);
   for (const auto phase : {Phase::kReuse, Phase::kCheckpoint, Phase::kChunk}) {
     const auto unit = (*resumed)->NextUnit();
     ASSERT_TRUE(unit);
@@ -643,7 +642,11 @@ TEST_F(LlmPromptSessions, ResumingAtATurnCheckpointMustPrefillBeforeAnotherModel
     policy.UnitCompleted(start + std::chrono::seconds(60), unit->advances_request()
                                                                ? Policy::Unit::kProgress
                                                                : Policy::Unit::kReadiness);
-    EXPECT_EQ(policy.YieldForSwitch(start + std::chrono::seconds(60)), phase == Phase::kChunk);
+    const auto pass = policy.Decide({.point = Policy::Point::kPass,
+                                     .queue = {.head = Policy::Head::kOtherModel, .other = 0},
+                                     .now = start + std::chrono::seconds(60)});
+    ASSERT_TRUE(pass) << pass.error();
+    EXPECT_EQ(pass->yield_for_switch, phase == Phase::kChunk);
     EXPECT_EQ(BranchAt(0).history().size(), phase == Phase::kChunk ? 16U : 8U);
   }
   Cancel(**resumed);

@@ -896,8 +896,11 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       image fence acknowledgement and request layout, row-read settling,
       checkpoint staging re-reserved after a fence, history copies (the
       generated-input classification item was superseded by F6).
-- [ ] **F5 Serving:** output delivery as host-only state, one cohort decision
-      function, kept-record commit by descriptor, clock-skew and lock-file edges.
+- [x] **F5 Serving:** output delivery as host-only state, one cohort decision
+      function, kept-record commit by descriptor, clock-skew and lock-file
+      edges, a startup allowance that no longer sums sequential phases, a
+      shared-mode floor of the state requests hold (refused growth is lent
+      budget back), and a memory release that waits at most one turn.
 - [x] **F6 Comparison out of production:** exact-site recipe comparison moved to
       `benchmarks/` (dense decoders could not finish a prefill plan at
       `265c821a`); coarse, versioned rank rows in `src/`.

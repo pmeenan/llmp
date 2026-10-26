@@ -2336,6 +2336,109 @@ TEST_F(LlmTools, FinalBareJsonTextPauseResumesWithoutReplayingOrFinishingTwice) 
   EXPECT_EQ(exchange.text, generated);
 }
 
+namespace {
+// A switch yield (Exchange::Yielding) as both paths see it: every event is
+// accepted and then pauses its sender; nothing is refused.
+class SwitchExchange : public rt::api::Exchange {
+ public:
+  bool Admit(const Admission&) override { return true; }
+  bool Next(rt::Phase, std::uint64_t) override { return true; }
+  bool Reasoning(std::string_view value) override {
+    reasoning += value;
+    return !yielding && !backpressure;
+  }
+  bool Content(std::string_view value) override {
+    text += value;
+    ++events;
+    return !yielding && !backpressure;
+  }
+  bool ToolCall(const llmp::chat::ToolUsePart& call) override {
+    calls.push_back(call);
+    ++events;
+    if (pause_after_call) backpressure = true;
+    return !yielding && !backpressure;
+  }
+  bool Continue() override { return !yielding && !backpressure; }
+  bool Paused() const override { return backpressure && !yielding; }
+  bool Yielding() const override { return yielding; }
+  bool yielding = false, backpressure = false, pause_after_call = false;
+  std::string text, reasoning;
+  std::vector<llmp::chat::ToolUsePart> calls;
+  int events = 0;
+};
+}  // namespace
+
+// The end of a chat output on either path (FinishOrCarry, A11): a complete
+// generation's output is finished even when the request yields its place
+// for a switch; what the yield pauses is carried and completed exactly once
+// by the resumed output-only frame, never dropped as a finished reply.
+TEST_F(LlmTools, ASwitchYieldAtTheEndCarriesTheFinalCallAndFlushAndCompletesThemOnce) {
+  auto sampling = Constraint();
+  const std::array<llmp::chat::ToolDefinition, 1> definitions{
+      {{.name = "lookup", .description = {}}}};
+  auto request = llmp::chat::ToolRequest::Create(definitions, {}, true, {});
+  ASSERT_TRUE(request);
+  auto options = std::make_shared<rt::api::ToolOptions>();
+  options->request = std::move(*request);
+  auto tools = std::make_shared<rt::service_detail::ChatTools>();
+  tools->options = options;
+  tools->format = llmp::chat::QwenToolCalls();
+  tools->sampling = sampling;
+  // Held at the generation's end: the call's trailing text (its reader
+  // behind when the yield came) and a marker prefix only the finish flushes.
+  const std::string generated =
+      "before<function=lookup><parameter=s>value</parameter></function>after<fun";
+  const std::vector<std::int32_t> ids(generated.begin(), generated.end());
+  for (const bool behind : {false, true}) {
+    SCOPED_TRACE(behind);
+    SwitchExchange exchange;
+    exchange.pause_after_call = behind;
+    rt::service_detail::ChatOutput output(*llm_, exchange, false, tools);
+    (void)output.Push(ids);
+    ASSERT_EQ(exchange.calls.size(), 1U);
+    EXPECT_EQ(output.pending(), behind);
+    // The yield, between the final decode and the output unit.
+    exchange.yielding = true;
+    EXPECT_TRUE(rt::service_detail::FinishOrCarry(output, true, true, true));
+    EXPECT_FALSE(output.done());
+    EXPECT_FALSE(output.error());
+    auto saved = output.Save();
+    // Taken up again, output-only: it drains and finishes what was carried.
+    exchange.yielding = false;
+    exchange.backpressure = false;
+    exchange.pause_after_call = false;
+    rt::service_detail::ChatOutput resumed(*llm_, exchange, false, tools);
+    resumed.Restore(std::move(saved));
+    (void)resumed.Drain();
+    EXPECT_FALSE(rt::service_detail::FinishOrCarry(resumed, true, true, false));
+    EXPECT_TRUE(resumed.done());
+    EXPECT_FALSE(resumed.error());
+    EXPECT_EQ(exchange.calls.size(), 1U);
+    EXPECT_EQ(exchange.calls[0].input_json, R"({"s":"value"})");
+    EXPECT_EQ(exchange.text, "beforeafter<fun");
+  }
+}
+
+TEST_F(LlmTools, AGenerationUnderWayIsCarriedUnfinishedAndOneNotYieldingFinishes) {
+  (void)Constraint();  // the fixture's model
+  SwitchExchange exchange;
+  rt::service_detail::ChatOutput carried(*llm_, exchange, false);
+  const std::vector<std::int32_t> ids{'a', 'b', 'c'};
+  ASSERT_TRUE(carried.Push(ids));
+  exchange.yielding = true;
+  // Its generation continues: carried as it is, nothing finished or flushed.
+  EXPECT_TRUE(rt::service_detail::FinishOrCarry(carried, false, false, true));
+  EXPECT_FALSE(carried.done());
+  // Not yielding (a request that ends, its client gone or its allowance
+  // spent): finished, whatever its generation.
+  exchange.yielding = false;
+  rt::service_detail::ChatOutput ended(*llm_, exchange, false);
+  ASSERT_TRUE(ended.Push(ids));
+  EXPECT_FALSE(rt::service_detail::FinishOrCarry(ended, false, false, false));
+  EXPECT_TRUE(ended.done());
+  EXPECT_EQ(exchange.text, "abcabc");
+}
+
 TEST_F(LlmTools, MidCertainBatchYieldPreservesUnreportedKnownSuffixForRestoredPublicPrefix) {
   auto constraint = Constraint();
   auto& branch = BranchAt(0);

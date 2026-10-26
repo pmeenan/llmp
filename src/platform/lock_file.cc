@@ -25,8 +25,10 @@ namespace {
 
 std::string Errno(int error) { return std::strerror(error); }  // NOLINT(concurrency-mt-unsafe)
 
-// Existing files are pinned before their I/O open. Missing names are created
-// exclusively in a pinned parent directory. A final dangling link is followed
+// Existing files are pinned before their I/O open, for reading only: flock
+// needs no write access, so a lock file the runtime cannot write (read-only,
+// or another user's) still locks. Missing names are created exclusively in a
+// pinned parent directory. A final dangling link is followed
 // explicitly so creation keeps the lock-file policy without O_CREAT opening a
 // FIFO or device that arrived in the meantime.
 std::expected<int, int> OpenLockFile(const std::filesystem::path& path) {
@@ -38,7 +40,7 @@ std::expected<int, int> OpenLockFile(const std::filesystem::path& path) {
     auto pinned = OpenPathReference(parent.get(), name.c_str());
     if (pinned) {
       const OwnedDescriptor reference(*pinned);
-      return ReopenRegularFile(reference.get(), true);
+      return ReopenRegularFile(reference.get(), false);
     }
     if (pinned.error() != ENOENT) return std::unexpected(pinned.error());
 
@@ -56,7 +58,7 @@ std::expected<int, int> OpenLockFile(const std::filesystem::path& path) {
     if (leaf) {
       const OwnedDescriptor reference(*leaf);
       if (::fstat(reference.get(), &status) != 0) return std::unexpected(errno);
-      if (!S_ISLNK(status.st_mode)) return ReopenRegularFile(reference.get(), true);
+      if (!S_ISLNK(status.st_mode)) return ReopenRegularFile(reference.get(), false);
       if (++links > kSymlinks) return std::unexpected(ELOOP);
       // readlinkat's empty name reads this pinned symlink, even if its name
       // has been replaced. Grow only when the filesystem reports truncation.
@@ -84,7 +86,7 @@ std::expected<int, int> OpenLockFile(const std::filesystem::path& path) {
           return std::unexpected(arrived.error() == ENOENT ? EAGAIN : arrived.error());
         }
         const OwnedDescriptor reference(*arrived);
-        return ReopenRegularFile(reference.get(), true);
+        return ReopenRegularFile(reference.get(), false);
       }
       return std::unexpected(errno);
     }
@@ -124,7 +126,8 @@ std::expected<LockFile, std::string> LockFile::Acquire(const std::filesystem::pa
       return std::unexpected(std::format("the lock file {} is not a regular file", path.string()));
     }
     return std::unexpected(
-        std::format("cannot open the lock file {}: {}", path.string(), Errno(opened.error())));
+        std::format("cannot open the lock file {}: {}", path.string(),
+                    opened.error() == kNoProcfs ? "/proc is not mounted" : Errno(opened.error())));
   }
   const int fd = *opened;
   LockFile lock(fd);

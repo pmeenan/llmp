@@ -722,8 +722,10 @@ outstanding claims (D-050: what the domain's extents hold beyond the idle,
 reclaimable ones), and one page-in decision reads one budget. Under
 external memory pressure in shared mode (D-124 as amended 2026-10-25), the
 runtime lowers it to the occupancy less the shortfall, never below the
-fixed memory plus the largest active footprint and never while a turn's
-work runs, and raises it again in steps once the pressure ends.
+fixed memory plus the largest active footprint and the state the running
+requests hold now (D-124 as amended 2026-10-26; a held request's refused
+growth is lent the budget back, up to the configured one), and raises it
+again in steps once the pressure ends.
 
 ### Physical memory modes
 
@@ -753,9 +755,10 @@ D-124 establishes two operational modes configured under `[memory]`:
   lowered and the working set released when a trim falls short.
 
 In both modes, pressure from outside and `POST /llmp/v1/memory/release`
-(loopback only) give the pool's empty handles back first and keep it from
-refilling, then reclaim cache through the reclaim order, whose evicted
-backing is then released rather than pooled. `runtime/memory_policy.h`
+(loopback only; run where the running turn or cohort ends if the node is
+idle there, otherwise answered 409; it holds no request back) give the pool's empty handles back first and keep
+it from refilling, then reclaim cache through the reclaim order, whose
+evicted backing is then released rather than pooled. `runtime/memory_policy.h`
 holds every difference between the modes.
 
 ### Backing and addresses
@@ -1513,7 +1516,8 @@ exit 75 (the host not ready yet), never giving up, but not after exit
 3. Take the per-node process lock: the runtime holds an exclusive lock on
    `<anchor>.lock`, `/var/lib/llmp/enrollment.lock` when packaged, which
    no configuration moves and `/run/llmp`'s removal at stop does not
-   touch (D-074).
+   touch (D-074); an existing one is opened read-only (flock needs no
+   write access), so one the runtime cannot write still locks.
 4. Resolve and check the runtime's own roles (`installed`, `spill`,
    `state`: nesting, writability; ownership and modes only warned of,
    D-073 as amended on 2026-10-09), comparing the job-only paths by

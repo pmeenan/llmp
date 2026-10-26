@@ -301,11 +301,13 @@ std::expected<Message, Error> ParseMessage(const json::Value& m, std::size_t ind
       return std::unexpected(MemoryRefusal(*memory, bytes, "assistant tool calls"));
     std::vector<chat::MessagePart> parts;
     if (count) {
+      // Moved, not copied: the text parts' bytes are charged once, with the
+      // message (the charge above covers only the part slots).
+      if (auto* text_parts = out.content.mutable_parts())
+        parts = std::move(*text_parts);
+      else if (auto* text = out.content.mutable_text(); !null_content && text && *text)
+        parts.emplace_back(chat::TextPart{std::move(**text)});
       parts.reserve(count + text_count);
-      if (old)
-        parts = *old;
-      else if (!null_content && out.content.text())
-        parts.emplace_back(chat::TextPart{*out.content.text()});
     }
     for (std::size_t i = 0; i < count; ++i) {
       const auto where =

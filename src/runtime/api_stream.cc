@@ -214,10 +214,7 @@ int Server::Stream::End(const std::expected<Completion, Error>& result) {
     EmitLocked(text_.Finish());  // non-streaming: only local strings
     usage_.completion_tokens = result->completion_tokens;
     usage_.cached_tokens = result->cached_tokens;
-    const Finish finish = text_.stopped()    ? Finish::kStop
-                          : !result->stopped ? Finish::kLength
-                          : tool_count_ != 0 ? Finish::kToolCalls
-                                             : Finish::kStop;
+    const Finish finish = FinishReason(text_.stopped(), result->stopped, tool_count_);
     // The body's most: what the request memory could hold besides it.
     const std::uint64_t most = server_.memory_->capacity();
     bool funded = true;
@@ -287,10 +284,7 @@ int Server::Stream::End(const std::expected<Completion, Error>& result) {
         channel_.PutError(error);
         status = error.status;
       } else {
-        const Finish finish = text_.stopped()    ? Finish::kStop
-                              : !result->stopped ? Finish::kLength
-                              : tool_count_ != 0 ? Finish::kToolCalls
-                                                 : Finish::kStop;
+        const Finish finish = FinishReason(text_.stopped(), result->stopped, tool_count_);
         if (pending_.request.stream) {
           if (!channel_.head_sent) {
             channel_.PutStart();

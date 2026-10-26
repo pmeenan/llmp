@@ -12,6 +12,10 @@ After=local-fs.target network.target nvidia-persistenced.service
 # Ordering only: the chat route finds the tailnet's addresses at startup
 # (D-097), so it starts after Tailscale where Tailscale is installed.
 After=tailscaled.service
+# Ordering only: kept conversations (D-105) are dated by the wall clock, so
+# the runtime starts once it is synchronized where a time-sync service
+# provides the target (a record dated ahead of it is still kept, as now).
+After=time-sync.target
 # A start that fails (a host not yet ready, exit 75; a crash; a confirmed
 # hang's restart) is retried, never given up on (D-102): no start limit,
 # and the restarts back off (RestartSteps below).

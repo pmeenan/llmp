@@ -98,14 +98,21 @@ std::expected<std::uint64_t, std::string> StartupBootstrapBytes(std::uint64_t al
       16 * (kMaxCalibrationBytes + sizeof(ModelSettings) + sizeof(Calibration)) +
       4 * (sizeof(OpenedModelArtifacts) + sizeof(std::shared_ptr<OpenedModelArtifacts>) + 64);
   constexpr std::uint64_t alignment = a::kChunkBytes;
+  // The loan is one workspace that startup's phases take in turn, on the
+  // serialized construction owner: the fact passes (every alias's artifacts
+  // opened, each pass's retained owners moved to their own payments before
+  // the next), then each alias's chat readers (Llm::UseChatAssets, on the
+  // loan the Server lends), after every fact pass's parser has died. So it
+  // holds the larger phase, not their sum (which was 17.8 GiB, past a 16 GiB
+  // cap, for nothing that coexists); what every alias retains throughout
+  // (settings, configured text) is beside either.
   auto chat = ChatReaderBytes();
   if (!chat) return std::unexpected(chat.error());
   std::uint64_t bytes = 0, configured = 0;
   if (aliases == 0 || __builtin_mul_overflow(configuration_bytes, std::uint64_t{16}, &configured) ||
       __builtin_mul_overflow(aliases, per_alias, &bytes) ||
       __builtin_add_overflow(bytes, configured, &bytes) ||
-      __builtin_add_overflow(bytes, fixed, &bytes) ||
-      __builtin_add_overflow(bytes, *chat, &bytes) ||
+      __builtin_add_overflow(bytes, std::max(fixed, *chat), &bytes) ||
       __builtin_add_overflow(bytes, alignment - 1, &bytes))
     return std::unexpected("startup parser loan overflows");
   return bytes / alignment * alignment;

@@ -592,7 +592,10 @@ runner adoption; later `Setup` failure ownership remains a separate contract.
 **Startup's construction payment** (`Server::Start`, `ComponentLlmBuild`,
 `ComponentImageServingBuild`; the default for every model, with no setting
 or environment). Before any artifact is opened, a parser loan
-(`StartupBootstrapBytes`: the configured aliases' readers at their caps)
+(`StartupBootstrapBytes`: the configured aliases' readers at their caps,
+one workspace the artifact fact passes and then each alias's chat readers
+take in turn, so the larger of the two phases, about 9.4 GiB, rather than
+their 17.8 GiB sum, beside what every alias retains)
 is cataloged against the node's measured headroom, MemAvailable less the
 6 GiB margin in whole 2 MiB extents (`MeasuredStartupCeiling`); unknown
 availability refuses the start. Each model's build then pays its
@@ -723,7 +726,15 @@ one reclaim through the same order asks for what would still bring
 MemAvailable back to 1.5 GiB (the mark plus 1 GiB of headroom), taking
 whatever part of it the order has. In shared mode the budget then follows
 (D-124 as amended): the occupancy less the shortfall, never below the fixed
-memory and the largest active footprint nor while a turn's work runs, and
+memory, the largest active footprint and the conversation state the requests
+hold now (measured from their live state at each adjustment, so it follows
+their growth; never past the configured budget), nor while other work in a
+request (an image's) runs; a held request's state growth that the shrunk
+budget refuses, once the reclaim order has given what it has, is lent the
+budget back by the shortfall (`Server::RelieveRefusedState`; a lift to the
+configured budget relieves the whole growth, and no shrink in the next
+maintenance takes the lent budget back before the growth's retry), so no
+admitted request waits or fails for a shrink; and
 back toward the configured budget in steps of what is available past the
 target once the pressure ends. A full memory stall of 5% of
 the last 10 seconds only raises the trigger to that target: a stall
@@ -1115,7 +1126,7 @@ fields:
 | `artifact`, `drafter`, `layout` | the model's artifact and drafter IDs; `model::KeptLayoutId` | not this model's or layout's (a changed context is another layout) |
 | `slot`, `stages` (each `file`, `device`, `inode`, `generation`, `file_bytes`) | the slot, and each stage's spill file's name, identity and size (its region's bytes) | another slot's or stage's, or not the file it names, or another size |
 | `extents` | each used extent (stage, index) with the SHA-256 of its 2 MiB in its stage's file | outside its region or layout, out of order, none, or a digest the file does not match |
-| `tokens`, `cursor`, `decoding`, `used_unix_ms` | every token the state has seen, the speculation cursor and adaptive draft depth that go with it (its relative cost is the machine's calibration's now, D-103, never a reason to refuse), and the last use (wall clock) | a token outside the vocabulary, more than the context, a draft depth of another maximum, past `retention_hours`, or more than a minute in the future |
+| `tokens`, `cursor`, `decoding`, `used_unix_ms` | every token the state has seen, the speculation cursor and adaptive draft depth that go with it (its relative cost is the machine's calibration's now, D-103, never a reason to refuse), and the last use (wall clock) | a token outside the vocabulary, more than the context, a draft depth of another maximum, or past `retention_hours` (a last use after now, a clock ahead then or behind now, is read as now: the digests guard the content, and `llmp.service` starts after `time-sync.target`) |
 | `checkpoints` | each turn checkpoint: its file and identity, position, creation, pages, footprint, cursor, draft depth and each page's SHA-256 | (that checkpoint alone is left out) |
 | `digest` | the SHA-256 of the record before it | the record cut short or edited |
 
@@ -1131,7 +1142,10 @@ immediately; the worker may hold one other record while hashing. A keeper
 thread (`runtime/state_keeper.h`) syncs the files, hashes them on four threads and writes
 the record unless the slot was invalidated meanwhile, off the driver's
 path (written and synced beside its name, renamed over it only while the
-slot is still current, its directory synced after; no file is read,
+slot is still current and the file there is still the one written, told
+by its open descriptor with no reopen; a failed commit leaves no
+temporary file holding the conversation's tokens; its directory synced
+after; no file is read,
 written, renamed or removed and nothing logged under the keeper's lock, so
 a turn that invalidates a slot never waits on the worker's filesystem calls
 and the last resort's drain keeps its deadline. Invalidation's own unlink
@@ -1161,7 +1175,10 @@ files, other models' directories, temporary files. A record whose token
 history does not fit this start's memory but which otherwise checks (its
 identity, layout and retention) leaves its model's directory as it is for
 a later start; that run keeps none of the model's own conversations
-across a restart. The start logs each
+across a restart. So does a record this start cannot read for want of its
+own resources (no usable `/proc`, descriptors or memory,
+`kept::ReadableLater`); one no start could read (not readable to the
+runtime, a link loop, an I/O error) is refused. The start logs each
 refusal with its reason and each adoption with its token count, never
 content (D-014), and extends the service manager's start timeout as it
 goes. **At a graceful stop** (SIGTERM) the resident model's idle
@@ -1939,7 +1956,8 @@ spilling the branch the request takes. That reclaim runs in the
 cooperative backend's `Start`, between completed units, the one native
 work admission does. Otherwise the request waits first in the queue,
 logged (`waits for memory for a request slot`), and is looked at again
-when a running request retires. A lone request always starts, and one
+when a running request retires; it keeps its rendering and tokens (still
+charged to the request memory) meanwhile, so it is not rendered again. A lone request always starts, and one
 that arrives while its model is being made resident joins as before. In
 a matched A/B with Qwen3.8 at 1.45 GiB of state room, admission kept
 requests waiting in the queue rather than in the cohort at a 0.6% lower
@@ -1966,12 +1984,30 @@ native generation waves retain their ordinary serial entry points.
 ### Pending model switches
 
 When a different model reaches the queue's head, the running cohort stops
-refilling. After `[client] model_turn_seconds` of resident work (default
-30, configurable from 1 to 2,592,000 seconds), its members pause at their
-next completed unit. Both follow the queue's current head, pass by pass:
-once that request leaves (its client gone), the cohort refills again and
-pauses no member for it, unless members already paused for it: then the
-rest pause too, and all resume together. Initial swap time is excluded from that turn. The
+refilling (admission stays FIFO: a same-model head is admitted even with
+another model's request behind it). When a request for a different model
+waits anywhere in the queue, after `[client] model_turn_seconds` of
+resident work (default 30, configurable from 1 to 2,592,000 seconds), the
+members pause at their next completed unit, and that request (the first
+for another model, wherever it waits) runs as the substitute. Both follow
+the queue as it is, pass by pass: once that request leaves (its client
+gone), the cohort refills again and pauses no member for it, unless
+members already paused for it: then the rest pause too, and all resume
+together. A member whose generation is complete only has its output to
+deliver, host-only work that needs no residency: it does not pause for the
+switch, it never makes a cohort swap its model back in (with its client
+behind, the cohort waits for that client, and the member yields its place
+once due, as any paused reader does), and its output is finished even when
+it yields (the decoder's held tail and the tool parser's final flush; a
+finish the yield paused continues as an output-only continuation, on the
+cooperative and serial paths alike). A pending `POST /llmp/v1/memory/release`
+changes neither refills nor turns (the starvation bound comes first): it
+waits at most until the running turn ends (`model_turn_seconds` of useful
+work) or, sooner, until the cohort ends; there it runs if the node is idle
+(nothing running, nothing queued that would start) and is otherwise
+answered 409 (D-124 as amended 2026-10-26). With n other models waiting, the primary
+model runs every other turn and each other model at least one turn in 2n,
+so every waiting model is reached within 2n turns. Initial swap time is excluded from that turn. The
 30-second fallback is a scheduling policy, not a measured throughput knee
 or a request deadline. A full set of slots is still checked for a pending
 other model; same-model newcomers wait for a slot without preempting a
@@ -1991,8 +2027,14 @@ prefill checkpoint chooses that anchor before pausing; runnable generating
 peers restore before their resumed decode wave begins.
 
 Model-turn, cohort refill/drain and continuation ordering live in the
-socket-free `scheduler::CohortPolicy`; the transport owns request frames and
-performs the chosen actions after native retirement. Unit selection within a
+socket-free `scheduler::CohortPolicy`, one `Decide(view) -> action` function
+asked at the executor's points in a checked order (a pass, its admissions,
+its wait, and at the end whether to run a substitute), with the queue's
+classification (`CohortPolicy::Look`); `Server::ServeCooperative` is its
+executor, owns request frames and performs the chosen actions after native
+retirement. It is node-local: a conductor places models across nodes and
+leaves each node's turns to it. Before the schedule, `scheduler::GateCohortUnit`
+puts output delivery first and swaps only for device work. Unit selection within a
 model lives in `scheduler/cohort_schedule.h`. Its existing unit-count aging
 is unchanged; the throughput-first calibrated starvation bound remains planned.
 

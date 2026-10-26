@@ -244,6 +244,15 @@ struct Expected {
 std::expected<void, std::string> Check(Record& record, const Expected& expected,
                                        std::vector<std::string>* dropped = nullptr);
 
+// Whether a record that could not be read (its errno) may be readable to a
+// later start: this one lacks /proc, descriptors or memory, which says
+// nothing of the record, so the model's kept conversations stay untouched
+// for that start. Any other failure (too long, not a regular file, a link to
+// nothing or a loop, not readable to the runtime, an I/O error) is one no
+// later start reads either: the record is refused and removed, so it never
+// leaves the model's conversations unkept start after start.
+bool ReadableLater(int error);
+
 }  // namespace llmp::runtime::kept
 
 #endif  // LLMP_RUNTIME_KEPT_RECORD_H_

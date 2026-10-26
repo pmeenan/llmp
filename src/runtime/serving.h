@@ -2008,6 +2008,20 @@ class Server {
   std::expected<api::ReleaseReport, std::string> ReleaseWorkingSet(
       std::string_view reason = "manual");
   bool HasActiveTurnWork() const;
+  // Shared mode's budget floor (SharedBudgetFloor): the fixed memory and the
+  // largest footprint, and the state the requests hold now (HeldStateBytes:
+  // resident state of the branches in a session, leased, or held for a
+  // continuation), measured at each use so it follows their growth.
+  std::uint64_t HeldStateBytes() const;
+  std::uint64_t SharedFloor() const;
+  // A request's refused state growth of `needed` bytes (both execution
+  // paths): the reclaim order first, then in shared mode, the budget lent
+  // back by what it fell short (LiftSharedBudget). What it made available
+  // (`needed` once the budget is lent back to the configured one).
+  std::uint64_t RelieveRefusedState(std::uint64_t needed);
+  // Work in a request that is not conversation state (an image model's) or
+  // a reclaim: a shared-mode shrink waits for its end.
+  bool HasActiveNonStateWork() const;
   void TouchActivity() noexcept { last_activity_ = Clock::now(); }
   bool AnyResidentState();
 
@@ -2085,8 +2099,8 @@ class Server {
   std::uint64_t dynamic_budget_ = 0;  // ordinary guard-derived B before an internal cap
   std::uint64_t fixed_ = 0;
   std::uint64_t configured_budget_ = 0;
-  // What a shared-mode shrink never goes below (AdjustSharedBudget): the
-  // fixed memory and the largest active footprint.
+  // The fixed part of what a shared-mode shrink never goes below
+  // (SharedFloor): the fixed memory and the largest active footprint.
   std::uint64_t floor_budget_ = 0;
   // The physical memory policy, decided at Start (memory_policy.h), and
   // whether the device's memory is the host's.
@@ -2122,6 +2136,9 @@ class Server {
   Clock::duration retention_;
   std::uint64_t spill_budget_ = 0;
   Clock::time_point next_maintenance_;
+  // When the shared budget was last lent back to a refused state growth
+  // (RelieveRefusedState): no shrink before its retry.
+  std::optional<Clock::time_point> lent_at_;
   PressureTrim pressure_;  // when pressure from outside has it trim
 };
 

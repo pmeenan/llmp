@@ -84,7 +84,9 @@ std::expected<void, std::string> CheckMemoryGuard(const MemoryGuard& guard);
 
 // Initial metadata loan, independent of a file's observed size: the existing
 // readers enforce their caps on opened descriptors even if files grow. At most
-// target+drafter parse simultaneously; aliases resolve and set up sequentially.
+// target+drafter parse simultaneously; aliases resolve and set up sequentially,
+// and the chat readers (ChatReaderBytes) run after the artifact parsers have
+// died, so the loan is the larger of the two phases, not their sum.
 // Each retained alias has a separate StartupArtifactPayment before another
 // alias can reuse this workspace. The server replaces this loan only after
 // all parser owners have died.

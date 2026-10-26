@@ -4,11 +4,13 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/json.h"
@@ -338,4 +340,50 @@ TEST(ApiTools, CallsSeparateStopMatchingAndNonStreamingUsesNormalizedArguments) 
   EXPECT_TRUE(stopped.stopped());
   EXPECT_TRUE(stopped.Boundary().content.empty());
   EXPECT_TRUE(stopped.Content("later").content.empty());
+}
+
+// The finish reason a reply reports: a call it emitted is tool_calls even
+// when a stop string matched after it; only an allowance's end is length.
+TEST(ApiTools, ToolCallsOutrankAStopStringButNotTheTokenAllowance) {
+  struct Case {
+    bool text_stopped, generation_stopped;
+    std::uint64_t calls;
+    api::Finish expected;
+  };
+  for (const auto& c : std::vector<Case>{
+           {false, true, 0, api::Finish::kStop},
+           {false, true, 2, api::Finish::kToolCalls},
+           {true, false, 0, api::Finish::kStop},
+           {true, false, 1, api::Finish::kToolCalls},  // a stop string after a call
+           {true, true, 1, api::Finish::kToolCalls},
+           {false, false, 0, api::Finish::kLength},
+           {false, false, 1, api::Finish::kLength},
+       }) {
+    EXPECT_EQ(api::FinishReason(c.text_stopped, c.generation_stopped, c.calls), c.expected);
+  }
+}
+
+// An assistant's text, scalar or in parts, comes before its calls (moved
+// into the message's parts, not copied).
+TEST(ApiTools, AssistantTextPrecedesItsCalls) {
+  for (const std::string_view content :
+       {std::string_view(R"("before")"),
+        std::string_view(R"([{"type":"text","text":"before"},{"type":"text","text":"again"}])")}) {
+    SCOPED_TRACE(content);
+    auto parsed = api::ParseChatRequest(
+        std::string(R"({"model":"m","messages":[
+      {"role":"user","content":"go"},
+      {"role":"assistant","content":)") +
+        std::string(content) +
+        R"(,"tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]},
+      {"role":"tool","tool_call_id":"a","content":"ok"}]})");
+    ASSERT_TRUE(parsed) << Failed(parsed, &api::Error::message).value_or("");
+    const auto* parts = parsed->messages[1].content.parts();
+    ASSERT_NE(parts, nullptr);
+    const bool listed = content.front() == '[';
+    ASSERT_EQ(parts->size(), listed ? 3U : 2U);
+    EXPECT_EQ(std::get<chat::TextPart>(parts->at(0)).text, "before");
+    if (listed) EXPECT_EQ(std::get<chat::TextPart>(parts->at(1)).text, "again");
+    EXPECT_EQ(std::get<chat::ToolUsePart>(parts->back()).name, "f");
+  }
 }

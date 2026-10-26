@@ -3,6 +3,16 @@
 #include "runtime/service_backend.h"
 
 namespace llmp::runtime::service_detail {
+namespace {
+// A deferred request's rendering, kept with it in the queue (Start).
+struct ChatPrepared final : api::CooperativeBackend::Prepared {
+  ChatPrepared(ChatPrompt prompt, std::shared_ptr<api::LiteralOutput> output)
+      : rendered(std::move(prompt)), literal(std::move(output)) {}
+  ChatPrompt rendered;
+  std::shared_ptr<api::LiteralOutput> literal;
+};
+}  // namespace
+
 bool NodeBackend::Supports(const api::CooperativeBackend::Request& request) const {
   Served* model = server_.Find(request.options.model);
   return model != nullptr && model->llm() && static_cast<Llm&>(*model).supports_generation_waves();
@@ -34,12 +44,19 @@ std::expected<std::unique_ptr<api::CooperativeBackend::Work>, api::Error> NodeBa
     return std::unique_ptr<api::CooperativeBackend::Work>{};
   }
   // A request that yielded its place continues from its generation so far
-  // (ChatResume); any other is rendered now.
+  // (ChatResume); one deferred after it was rendered, from that rendering
+  // (ChatPrepared, only this backend's); any other is rendered now.
   const auto* resume = static_cast<const ChatResume*>(request.resume);
+  const auto* cached = request.prepared != nullptr && *request.prepared != nullptr
+                           ? static_cast<const ChatPrepared*>(request.prepared->get())
+                           : nullptr;
   std::shared_ptr<api::LiteralOutput> literal = resume != nullptr ? resume->literal : nullptr;
   std::expected<ChatPrompt, api::Error> rendered;
   if (resume != nullptr) {
     rendered = resume->rendered;
+  } else if (cached != nullptr) {
+    rendered = cached->rendered;
+    literal = cached->literal;
   } else if (request.literal != nullptr) {
     auto prepared =
         api::PrepareLiteralPrompt(*request.literal, model.tokenizer(), model.usable_context(),
@@ -67,6 +84,13 @@ std::expected<std::unique_ptr<api::CooperativeBackend::Work>, api::Error> NodeBa
   if (!rendered) {
     return std::unexpected(rendered.error());
   }
+  // Deferred from here on (no slot, no memory for one), it keeps its
+  // rendering for its next Start.
+  const auto defer = [&]() {
+    if (resume == nullptr && cached == nullptr && request.prepared != nullptr)
+      *request.prepared = std::make_shared<ChatPrepared>(*rendered, literal);
+    return std::unique_ptr<api::CooperativeBackend::Work>{};
+  };
   const std::vector<std::int32_t>& wanted =
       resume != nullptr ? resume->history : rendered->tokens();
   // Choose only an unclaimed model-owned branch. Prefix matching is a
@@ -108,7 +132,7 @@ std::expected<std::unique_ptr<api::CooperativeBackend::Work>, api::Error> NodeBa
     }
   }
   if (slot == cohort_.size()) {
-    return std::unique_ptr<api::CooperativeBackend::Work>{};
+    return defer();
   }
   auto branch = model.branch(slot);
   if (!branch) {
@@ -142,7 +166,7 @@ std::expected<std::unique_ptr<api::CooperativeBackend::Work>, api::Error> NodeBa
                             "prompt state to come for {} tokens beside {} active requests",
                             model.name(), static_cast<double>(*needed) / (1U << 20U),
                             rendered->tokens().size(), claimed));
-      return std::unique_ptr<api::CooperativeBackend::Work>{};
+      return defer();
     }
   }
   Floors floors = model.floors();
@@ -150,6 +174,7 @@ std::expected<std::unique_ptr<api::CooperativeBackend::Work>, api::Error> NodeBa
     floors.prefill = floors.decode;  // teacher forcing is one-row target work
   }
   const auto swap_bytes = SwapBytes(model);
+  if (request.prepared != nullptr) request.prepared->reset();  // the frame owns it now
   auto frame =
       std::make_unique<ChatWork>(*this, model, **branch, slot, request.options, exchange,
                                  std::move(*rendered), floors, swap_bytes, std::move(literal));
@@ -206,26 +231,46 @@ std::expected<api::CooperativeBackend::Unit, std::string> NodeBackend::NextUnit(
   selected_prefill_count_ = 0;
   selected_decode_.clear();
   selected_output_.clear();
-  selected_swap_ = server_.resident() != cohort_model_;
-  // Draining accepted output is its own host-only completed unit. Selection
-  // performs no callbacks; Advance owns emission and any resulting pause/error.
-  for (auto* base : work) {
-    auto& frame = static_cast<ChatWork&>(*base);
-    if (frame.literal == nullptr && !frame.exchange.Paused() &&
-        (frame.stage == ChatWork::Stage::kOutput || frame.output.pending() ||
-         (frame.generation_session && frame.generation_session->done())))
-      selected_output_.push_back(&frame);
+  selected_swap_ = false;
+  // The gate (cohort_schedule.h): draining accepted output is its own
+  // host-only completed unit, first; a member that only needs its output
+  // delivered never makes the cohort swap. Selection performs no callbacks;
+  // Advance owns emission and any resulting pause/error.
+  std::array<scheduler::GatedMember, Llm::kMaxBranches> gated{};
+  for (std::size_t i = 0; i < work.size(); ++i) {
+    const auto& frame = static_cast<const ChatWork&>(*work[i]);
+    const bool generated = frame.generation_session && frame.generation_session->done();
+    const bool paused = frame.exchange.Paused();
+    // A generating member whose client is behind waits at its completed
+    // step (the schedule skips it): no device work until its client reads,
+    // so it alone never swaps the model back in only to pause.
+    gated[i] = {.output = frame.literal == nullptr && (frame.stage == ChatWork::Stage::kOutput ||
+                                                       frame.output.pending() || generated),
+                .device = frame.stage == ChatWork::Stage::kPrompt ||
+                          (frame.stage == ChatWork::Stage::kGeneration && !generated && !paused),
+                .paused = paused};
   }
-  if (!selected_output_.empty()) {
-    selected_swap_ = false;  // draining bytes needs no activation or device unit
-    return api::CooperativeBackend::Unit{
-        .phase = Phase::kDecode, .expected_seconds = 0, .advances_request = false};
-  }
-  if (selected_swap_) {
-    return api::CooperativeBackend::Unit{
-        .phase = Phase::kSwap,
-        .expected_seconds =
-            static_cast<double>(SwapBytes(*cohort_model_)) / kSwapFloorBytesPerSecond};
+  switch (scheduler::GateCohortUnit(std::span(gated).first(work.size()),
+                                    server_.resident() == cohort_model_)) {
+    case scheduler::CohortGate::kOutput:
+      for (std::size_t i = 0; i < work.size(); ++i) {
+        if (gated[i].output && !gated[i].paused)
+          selected_output_.push_back(&static_cast<ChatWork&>(*work[i]));
+      }
+      return api::CooperativeBackend::Unit{
+          .phase = Phase::kDecode, .expected_seconds = 0, .advances_request = false};
+    case scheduler::CohortGate::kSwap:
+      selected_swap_ = true;
+      return api::CooperativeBackend::Unit{
+          .phase = Phase::kSwap,
+          .expected_seconds =
+              static_cast<double>(SwapBytes(*cohort_model_)) / kSwapFloorBytesPerSecond};
+    case scheduler::CohortGate::kPaused:
+      // Every member only waits for its client to read its output: no
+      // device work, so no residency either.
+      return api::CooperativeBackend::Unit{.phase = Phase::kPaused, .expected_seconds = 0};
+    case scheduler::CohortGate::kSchedule:
+      break;
   }
 
   // The schedule (cohort_schedule.h): the prompt with the fewest tokens
@@ -586,14 +631,23 @@ api::CooperativeBackend::Retirement NodeBackend::Retire(api::CooperativeBackend:
     }
   }
   // Yielding its place (D-102): its state stays as a finished turn's, and
-  // it continues from its generation so far when taken up again, unless
-  // the generation ended whole anyway.
-  const bool yields =
-      frame.yielding && !frame.error &&
-      (frame.output.pending() || (!frame.generation.stopped &&
-                                  ((frame.model_paused && frame.generation.tokens.empty()) ||
-                                   (!frame.generation.tokens.empty() &&
-                                    frame.generation.tokens.size() < frame.options.max_tokens))));
+  // it continues from its generation so far when taken up again. A complete
+  // generation's output is finished here either way (FinishOrCarry): only a
+  // finish the yield paused is carried, as an output-only continuation.
+  const bool continues =
+      !frame.generation.stopped && ((frame.model_paused && frame.generation.tokens.empty()) ||
+                                    (!frame.generation.tokens.empty() &&
+                                     frame.generation.tokens.size() < frame.options.max_tokens));
+  bool yields = false;
+  if (!frame.error && frame.literal != nullptr) {
+    yields = frame.yielding && continues;
+  } else if (!frame.error && (frame.yielding || !frame.generation.tokens.empty())) {
+    yields = FinishOrCarry(frame.output, !continues, frame.generation.stopped, frame.yielding);
+    if (frame.output.error()) {
+      frame.error = *frame.output.error();
+      yields = false;
+    }
+  }
   std::shared_ptr<api::Yielded> yielded;
   if (yields) {
     if (frame.model_paused) {
@@ -610,11 +664,6 @@ api::CooperativeBackend::Retirement NodeBackend::Retire(api::CooperativeBackend:
       frame.error = kept.error();
     } else {
       yielded = std::move(*kept);
-    }
-  } else if (!frame.error && !frame.generation.tokens.empty()) {
-    if (frame.literal == nullptr) {
-      (void)frame.output.Finish(frame.generation.stopped);
-      if (frame.output.error()) frame.error = *frame.output.error();
     }
   }
   api::LiteralResult literal_result;
@@ -920,8 +969,9 @@ void NodeBackend::WaitForCapacity(std::span<ChatWork* const> refused) {
     slots.push_back(frame->slot);
   }
   Cohort cohort = Snapshot();
-  // The node's reclaim order first (Server::Reclaim): plans and graphs,
-  // idle conversations spilled, in the order's priority, for what each
+  // The node's reclaim order first (Server::RelieveRefusedState): plans and
+  // graphs, idle conversations spilled, in the order's priority, then in
+  // shared mode a shrunk budget lent back, for what each
   // refused member asked: all of it or nothing, member by member, so one
   // member's need that cannot be met does not keep another's from it
   // (those relieved run again; the rest are refused again and wait).
@@ -929,7 +979,7 @@ void NodeBackend::WaitForCapacity(std::span<ChatWork* const> refused) {
   for (const ChatWork* frame : refused) {
     const std::uint64_t needed =
         std::max<std::uint64_t>(frame->model.RefusedBytes(frame->branch), kExtentBytes);
-    reclaimed = server_.Reclaim(needed, true, "conversation state refused") >= needed || reclaimed;
+    reclaimed = server_.RelieveRefusedState(needed) >= needed || reclaimed;
   }
   CapacityDecision decision = OnCapacityRefused(cohort, slots, reclaimed);
   Apply(cohort);
@@ -977,8 +1027,11 @@ void NodeBackend::Preempt(ChatWork& frame) {
     frame.generation_session.reset();
     if (finished) {
       if (frame.generation.stopped || frame.generation.tokens.size() >= frame.options.max_tokens) {
+        // Complete: only its output is left to deliver, host-only work
+        // that waits for no capacity (and is never begun again: Rebalance).
         frame.resume = false;
         frame.stage = frame.literal == nullptr ? ChatWork::Stage::kOutput : ChatWork::Stage::kDone;
+        frame.wait = CapacityWait::kNone;
       } else {
         // The prompt and the generated tokens the state holds; the anchor
         // stays in frame.generation, already streamed.
@@ -1000,10 +1053,11 @@ void NodeBackend::Preempt(ChatWork& frame) {
   const std::size_t held = frame.branch.history().size();
   // Spill, not clear: its state written to its slot's spill file and
   // restored exactly when it begins again, so it continues as if never
-  // set aside (Llm::SpillSetAside). Only a state that cannot be spilled
-  // is cleared, and then rebuilt by prefill.
-  if ((!frame.resume || frame.resume_tokens.size() == held) &&
-      frame.model.SpillSetAside(frame.branch)) {
+  // set aside (Llm::SpillSetAside). A resume part rebuilt (its history a
+  // prefix of what it rebuilds) spills too: its restart restores that
+  // prefix and prefills only the rest (ReusePrompt's live prefix). Only a
+  // state that cannot be spilled is cleared, and then rebuilt by prefill.
+  if (frame.model.SpillSetAside(frame.branch)) {
     Say(log_, std::format("{}'s request in slot {} set aside for its peers: its state spilled "
                           "at {} tokens, restored when they finish",
                           frame.model.name(), frame.slot, held));
@@ -1026,6 +1080,11 @@ void NodeBackend::Rebalance() {
     return;
   }
   ChatWork& frame = *cohort_[*restart];
+  if (frame.stage != ChatWork::Stage::kPrompt || frame.prompt_session != nullptr) {
+    // Only output left to deliver (or nothing): never begun again, which
+    // would generate a reply already sent. It is runnable as it is.
+    return;
+  }
   // A generation set aside resumes from its spilled state: its prompt
   // only restores it (BeginPrompt's `resume`).
   auto prompt = WorkPrompt(frame);

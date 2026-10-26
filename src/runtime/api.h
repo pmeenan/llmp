@@ -277,6 +277,14 @@ class IgnoredFields {
 
 enum class Finish : std::uint8_t { kStop, kLength, kToolCalls };
 
+// A reply's finish reason. A generation its allowance ended (neither it nor
+// a stop string stopped it) is length; otherwise a reply that emitted tool
+// calls is tool_calls, also when a stop string matched after them; else stop.
+inline Finish FinishReason(bool text_stopped, bool generation_stopped, std::uint64_t tool_calls) {
+  if (!text_stopped && !generation_stopped) return Finish::kLength;
+  return tool_calls != 0 ? Finish::kToolCalls : Finish::kStop;
+}
+
 struct Usage {
   std::uint32_t prompt_tokens = 0;
   std::uint32_t completion_tokens = 0;

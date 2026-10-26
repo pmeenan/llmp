@@ -59,6 +59,30 @@ struct ScheduleChoice {
 // prompt when there is none.
 ScheduleChoice NextCohortUnit(std::span<const ScheduledMember> members);
 
+// What a cohort member needs before its next unit, as the gate below sees it.
+struct GatedMember {
+  // Accepted output not yet delivered (an output-only continuation, a paused
+  // parser or unread tokens, or a generation done): host-only work.
+  bool output = false;
+  // A prompt or a generation still to run on the model (resident) now: a
+  // generation whose client is behind waits at its completed step, so its
+  // caller does not count it until that client reads.
+  bool device = false;
+  bool paused = false;  // its client is behind (backpressure)
+};
+enum class CohortGate : std::uint8_t {
+  kOutput,    // drain the members with output whose clients read
+  kSwap,      // make the cohort's model resident
+  kSchedule,  // NextCohortUnit chooses among the device work
+  kPaused,    // every member waits for its client
+};
+// Before the schedule: delivering output that is already generated needs
+// neither residency nor the device, so it goes first, and a member that only
+// needs its output delivered never makes the cohort swap (with its client
+// behind, the cohort waits for it). A swap only when a member needs device
+// work and the model is not `resident`.
+CohortGate GateCohortUnit(std::span<const GatedMember> members, bool resident);
+
 }  // namespace llmp::scheduler
 
 #endif  // LLMP_SCHEDULER_COHORT_SCHEDULE_H_

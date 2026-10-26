@@ -311,33 +311,56 @@ TEST_F(PrivateFileRace, LockCreatesInThePinnedParentWhenItsNameChanges) {
   EXPECT_FALSE(pf::LockFile::Acquire(root / "selected/new"));
 }
 
-TEST_F(PrivateFileRace, ReplacementIdentityChecksRefuseSubstitutedSpecialObjectsBeforeIo) {
+// The replacement is told apart by its open descriptor: committing or
+// abandoning it opens nothing by name (no pin, no /proc reopen), so a
+// substituted special object is never opened for I/O (TearDown counts).
+TEST_F(PrivateFileRace, ReplacementIdentityChecksRefuseSubstitutedObjectsWithoutOpeningThem) {
   auto directory = pf::OpenPathReference(-1, root.c_str());
   ASSERT_TRUE(directory);
   const pf::OwnedDescriptor dir(*directory);
   for (const bool commit : {false, true}) {
-    for (const std::string_view kind : {"fifo", "device"}) {
+    for (const std::string_view kind : {"fifo", "device", "regular"}) {
       SCOPED_TRACE(commit);
       SCOPED_TRACE(kind);
       Write(root / "record", "original");
       auto written = pf::WritePrivateReplacement(dir.get(), "record", "replacement");
       ASSERT_TRUE(written);
-      Intercept race{.name = "record.tmp", .before = true, .replace = [&] {
-                       fs::remove(root / "record.tmp");
-                       Replace(root / "record.tmp", kind);
-                     }};
-      intercept = &race;
+      fs::remove(root / "record.tmp");
+      Replace(root / "record.tmp", kind);
+      Intercept any{.name = "record.tmp", .flags = 0, .before = true, .replace = [] {}};
+      intercept = &any;
       if (commit) {
         EXPECT_EQ(pf::CommitPrivateReplacement(dir.get(), "record", *written).error_or(0), EPERM);
       } else {
         pf::AbandonPrivateReplacement(dir.get(), "record", *written);
       }
       intercept = nullptr;
-      EXPECT_TRUE(race.fired);
+      EXPECT_FALSE(any.fired);  // nothing was opened by its name
       EXPECT_EQ(pf::ReadSmallFile(root / "record").value_or(""), "original");
+      // Another writer's regular file is left to it; a link or special file
+      // a commit finds in its place goes (an abandon leaves what is not its own).
+      const bool left = kind == "regular" || !commit;
+      EXPECT_EQ(fs::symlink_status(root / "record.tmp").type() != fs::file_type::not_found, left);
       fs::remove(root / "record.tmp");
     }
   }
+}
+
+TEST_F(PrivateFileRace, AFailedCommitLeavesNoTemporaryRecordBehind) {
+  auto directory = pf::OpenPathReference(-1, root.c_str());
+  ASSERT_TRUE(directory);
+  const pf::OwnedDescriptor dir(*directory);
+  Write(root / "record", "original");
+  // The rename fails (a directory stands at the name): the temporary file,
+  // which holds what the record would have kept, is removed.
+  fs::remove(root / "record");
+  fs::create_directory(root / "record");
+  Write(root / "record" / "inside", "x");
+  auto written = pf::WritePrivateReplacement(dir.get(), "record", "tokens");
+  ASSERT_TRUE(written);
+  EXPECT_FALSE(pf::CommitPrivateReplacement(dir.get(), "record", *written));
+  EXPECT_FALSE(fs::exists(root / "record.tmp"));
+  EXPECT_TRUE(fs::is_directory(root / "record"));
 }
 
 TEST_F(PrivateFileRace, LockRefusesSymlinkLoopsAndDoesNotCreateMissingParents) {

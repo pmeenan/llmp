@@ -838,14 +838,15 @@ Status Server::Start(bool snapshot) {
     Log(std::format("diagnostic budget cap: dynamic={} selected={} bytes; requested={} bytes",
                     dynamic_budget_, budget_, requested));
   }
-  // What a shrink of the shared mode's budget never goes below: the
-  // running model's footprint beside the fixed memory, as the start
-  // required (AdjustSharedBudget).
-  floor_budget_ = fixed_ + largest;
   const auto add_sat = [](std::uint64_t a, std::uint64_t b) {
     std::uint64_t out = 0;
     return __builtin_add_overflow(a, b, &out) ? std::numeric_limits<std::uint64_t>::max() : out;
   };
+  // The fixed part of what a shrink of the shared mode's budget never
+  // goes below (SharedFloor): the running model's footprint beside the
+  // fixed memory, as the start required. The conversation state the
+  // requests hold is added as it is measured, never a context's worth.
+  floor_budget_ = add_sat(fixed_, largest);
   // The dedicated node pool (D-124 as amended): at most what every model
   // could page in at once, and within the budget's headroom however that
   // moves (engine::NodePool). Shared mode keeps none; the serving options'
@@ -1082,10 +1083,25 @@ Status Server::PrepareKept() {
       const std::string record_name = kept::RecordFileName(slot);
       auto text = platform::ReadPrivateFile(*dir, record_name.c_str(), kept::kMostRecordBytes);
       if (!text) {
-        if (text.error() != ENOENT) {
-          Log(std::format("model {}: slot {}'s kept conversation was refused: its record: {}",
-                          l.name(), slot, Errno(text.error())));
+        const int error = text.error();
+        if (error == ENOENT) {
+          continue;  // none kept for this slot
         }
+        if (kept::ReadableLater(error)) {
+          // Not readable by this start (no usable /proc, out of descriptors
+          // or memory): nothing says the record is bad, so none of this
+          // model's kept conversations is removed this run; a start with
+          // them reads it.
+          Log(std::format("model {}: slot {}'s kept conversation could not be read: its record: {}",
+                          l.name(), slot,
+                          error == platform::kNoProcfs ? "/proc is not mounted" : Errno(error)));
+          deferred = true;
+          break;
+        }
+        // Not a record any start reads (kept::ReadableLater): refused, and
+        // removed with the slot's files below.
+        Log(std::format("model {}: slot {}'s kept conversation was refused: its record: {}",
+                        l.name(), slot, Errno(error)));
         continue;
       }
       expected.slot = slot;
@@ -1732,11 +1748,18 @@ void Server::Maintain() {
           "reading occupancy for shared-mode dynamic budget");
     }
     const std::uint64_t current = node_.budget().value();
-    std::uint64_t new_budget = AdjustSharedBudget(avail, pressed, current_occupancy, floor_budget_,
+    std::uint64_t new_budget = AdjustSharedBudget(avail, pressed, current_occupancy, SharedFloor(),
                                                   current, configured_budget_, pressure_.limits());
-    // A shrink waits for the turn's work to end: what the running requests
-    // grow into is theirs (D-050); the reclaim above still gave back the rest.
-    if (new_budget < current && HasActiveTurnWork()) new_budget = current;
+    // What the running requests hold and grow into is theirs (D-050): the
+    // floor holds their state as it is now, and a growth the shrunk budget
+    // refuses has the budget lent back (RelieveRefusedState). Other work in
+    // a request (an image's) waits for its end; so does a reclaim.
+    // Nor is a budget just lent back to a refused growth taken back before
+    // its retry has grown into it (RelieveRefusedState).
+    if (new_budget < current &&
+        (HasActiveNonStateWork() || (lent_at_ && now - *lent_at_ < kMaintenanceInterval))) {
+      new_budget = current;
+    }
     if (new_budget != current) {
       if (const auto applied = node_.SetBudget(base::Bytes(new_budget)); applied) {
         budget_ = applied->value();

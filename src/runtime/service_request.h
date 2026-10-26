@@ -146,6 +146,16 @@ class ChatOutput final {
   std::shared_ptr<State> state_;
 };
 
+// The end of a chat request's output, on either path. Once its generation
+// is complete (`complete`: stopped, at its token allowance, or ended) its
+// output is finished now (the decoder's held tail, the tool parser's final
+// flush: host-only work), also when it yields its place (`yielding`). True
+// when a continuation is carried: a generation still under way that yields,
+// or a finish the yield paused before its last event (its shared state
+// carries the paused parser; the resumed output-only frame completes it).
+// False when it ends here: finished, or failed (ChatOutput::error()).
+bool FinishOrCarry(ChatOutput& output, bool complete, bool stopped, bool yielding);
+
 // A chat request that yielded its place (api::Exchange::Yielding): what it
 // continues from, on either path. Its state is kept as a finished turn's
 // (resident, or spilled when memory needs it), so taking it up again

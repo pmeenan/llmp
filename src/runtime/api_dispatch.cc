@@ -10,6 +10,7 @@
 #include <expected>
 #include <format>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -34,33 +35,62 @@ using server_detail::Seconds;
 // ---------------------------------------------------------------- driver
 
 void Server::ProcessPendingRelease() {
-  std::optional<PendingRelease> release_req;
+  std::vector<PendingRelease> releases;
+  bool idle = false;
   {
     const std::scoped_lock lock(mutex_);
-    if (pending_release_.has_value()) {
-      release_req = std::move(pending_release_);
-      pending_release_.reset();
+    if (!ReleaseWaitingLocked()) return;  // none, or their clients all left
+    releases.swap(pending_releases_);
+    // Idle: nothing runs and nothing queued would start (a request parked
+    // until its client reads would not). Queued work is never held back
+    // for a release (the starvation bound comes first, D-102): it is
+    // answered busy instead.
+    idle = running_.empty() && dispatching_ == 0 && queue_.empty() && suspended_requests_ == 0;
+  }
+  // The backend may still find state held: a continuation parked until its
+  // client reads, which may be never; the release does not wait for it.
+  auto report = idle ? backend_.ReleaseWorkingSet("http")
+                     : std::expected<ReleaseReport, std::string>(std::unexpected("busy"));
+  {
+    const std::scoped_lock lock(mutex_);
+    AnswerReleasesLocked(releases, report);
+  }
+  WakeIo();
+}
+
+void Server::RefusePendingReleases() {
+  {
+    const std::scoped_lock lock(mutex_);
+    if (!ReleaseWaitingLocked()) return;
+    std::vector<PendingRelease> releases;
+    releases.swap(pending_releases_);
+    AnswerReleasesLocked(releases, std::unexpected("busy"));
+  }
+  WakeIo();
+}
+
+void Server::AnswerReleasesLocked(std::span<const PendingRelease> releases,
+                                  const std::expected<ReleaseReport, std::string>& report) {
+  const bool busy = !report && report.error() == "busy";
+  std::string body;
+  if (report) {
+    std::string quoted_model;
+    base::json::AppendQuoted(report->evicted_model, quoted_model);
+    body = std::format(
+        R"({{"evicted_model":{},"spilled_bytes":{},"reclaimed_bytes":{},"released_backings":{}}})",
+        quoted_model, report->spilled_bytes, report->reclaimed_bytes, report->released_backings);
+  }
+  for (const PendingRelease& release : releases) {
+    Channel& ch = *release.channel;
+    if (ch.gone) {
+      continue;  // its client left while it waited
     }
-  }
-  if (!release_req.has_value()) {
-    return;
-  }
-  auto report = backend_.ReleaseWorkingSet("http");
-  {
-    const std::scoped_lock lock(mutex_);
-    Channel& ch = *release_req->channel;
     if (!report) {
-      // Only work in flight is a conflict; anything else is the runtime's
-      // own failure to release, reported as such.
-      const bool busy = report.error() == "busy";
-      ch.PutError(busy ? server_detail::Refusal(409, report.error(), "busy")
+      // Anything other than work in flight is the runtime's own failure
+      // to release, reported as such.
+      ch.PutError(busy ? server_detail::Refusal(409, "server is busy with active work", "busy")
                        : server_detail::Refusal(500, report.error(), "release_failed"));
     } else {
-      std::string quoted_model;
-      base::json::AppendQuoted(report->evicted_model, quoted_model);
-      const std::string body = std::format(
-          R"({{"evicted_model":{},"spilled_bytes":{},"reclaimed_bytes":{},"released_backings":{}}})",
-          quoted_model, report->spilled_bytes, report->reclaimed_bytes, report->released_backings);
       ch.PutHead(200, server_detail::kJson, body.size());
       ch.PutBody(body);
       ch.PutEnd();
@@ -70,7 +100,6 @@ void Server::ProcessPendingRelease() {
       dirty_.push_back(ch.connection);
     }
   }
-  WakeIo();
 }
 
 void Server::Serve(Pending& pending, int wake_fd, const std::function<bool()>& on_wake) {
@@ -123,9 +152,23 @@ void Server::Serve(Pending& pending, int wake_fd, const std::function<bool()>& o
   Progress(Phase::kIdle, 0);
 }
 
+bool Server::ReleaseWaitingLocked() {
+  // A release whose client left is answered to no one: it neither runs nor
+  // keeps a cohort draining for it.
+  std::erase_if(pending_releases_, [](const PendingRelease& r) { return r.channel->gone; });
+  return !pending_releases_.empty();
+}
+
+bool Server::WaitersLocked() const {
+  // A pending release is not one: a member that yielded its place to it
+  // would keep its state as a continuation, which only leaves the release
+  // busy.
+  return !queue_.empty() || suspended_requests_ != 0;
+}
+
 bool Server::YieldDueLocked(const Channel& channel, Clock::time_point now) const {
-  return blocked_ && (!queue_.empty() || suspended_requests_ != 0) && channel.paused &&
-         !channel.gone && !channel.stalled && now - channel.paused_at >= options_.yield_after;
+  return blocked_ && WaitersLocked() && channel.paused && !channel.gone && !channel.stalled &&
+         now - channel.paused_at >= options_.yield_after;
 }
 
 void Server::Requeue(Pending& pending, Stream& stream, std::shared_ptr<Yielded> yielded) {
@@ -280,6 +323,16 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
   Policy policy(options_.model_turn, Clock::now(),
                 substitute ? Policy::Role::kSubstitute : Policy::Role::kPrimary);
   std::string fatal;
+  // The queue as this cohort sees it (CohortPolicy::Look), under mutex_.
+  const auto look = [&](std::string_view model) {
+    return Policy::Look(
+        queue_, model, [](const Pending& p) -> std::string_view { return p.request.model; },
+        [&](const Pending& head) {
+          return cooperative.Supports({.options = head.request,
+                                       .literal = head.literal ? &*head.literal : nullptr,
+                                       .resume = head.resume.get()});
+        });
+  };
   // False means deferred with no effects. The caller still owns the frame
   // and either restores it to the FIFO or uses the serial path alone.
   const auto start = [&](std::unique_ptr<Active>& frame) {
@@ -404,17 +457,30 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
     // as well as live works so an endless invalid FIFO cannot starve decode.
     std::size_t attempts = 0;
     std::uint64_t seen = 0;
+    bool releasing = false;
+    std::expected<Policy::Action, std::string> pass;
     {
       const std::scoped_lock lock(mutex_);
-      // Capture arrivals with the head observation. Taking this later could
-      // hide a competing arrival during refill from an all-reader-paused wait.
+      // Capture arrivals with the queue observation. Taking this later could
+      // hide a competing arrival during refill from an all-reader-paused wait;
+      // a release that arrives ends such a wait too (the turn's end then
+      // bounds the wait, where the release is answered).
       seen = enqueued_;
-      policy.BeginPass(queue_.empty() ? Policy::Head::kEmpty
-                       : queue_.front().request.model != active.front()->pending.request.model
-                           ? Policy::Head::kOtherModel
-                           : Policy::Head::kCompatible);
+      releasing = ReleaseWaitingLocked();
+      pass = policy.Decide({.point = Policy::Point::kPass,
+                            .queue = look(active.front()->pending.request.model),
+                            .release_pending = releasing,
+                            .now = Clock::now()});
     }
-    if (policy.YieldForSwitch(Clock::now())) {
+    if (!pass) {
+      fatal = pass.error();  // the executor's own fault: the cohort ends
+      continue;
+    }
+    if (pass->release_busy) {
+      RefusePendingReleases();  // the turn ended, its members still busy
+      releasing = false;
+    }
+    if (pass->yield_for_switch) {
       for (const auto& frame : active) {
         if (!frame->exchange.Yielding() && frame->work->YieldForSwitch()) {
           frame->model_paused = true;
@@ -427,25 +493,27 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
         break;
       }
     }
-    while (policy.CanRefill(active.size(), kMaxActiveRequests, attempts)) {
+    for (;;) {
       std::optional<Pending> pending;
       {
         const std::scoped_lock lock(mutex_);
-        if (stopping_ || queue_.empty()) {
+        if (stopping_) {
           break;
         }
-        Pending& head = queue_.front();
-        const auto kind =
-            head.request.model != active.front()->pending.request.model ? Policy::Head::kOtherModel
-            : cooperative.Supports({.options = head.request,
-                                    .literal = head.literal ? &*head.literal : nullptr,
-                                    .resume = head.resume.get()})
-                ? Policy::Head::kCompatible
-                : Policy::Head::kIncompatible;
-        if (!policy.AdmitHead(kind)) {
+        const auto admit = policy.Decide({.point = Policy::Point::kAdmit,
+                                          .queue = look(active.front()->pending.request.model),
+                                          .active = active.size(),
+                                          .capacity = kMaxActiveRequests,
+                                          .attempts = attempts,
+                                          .release_pending = ReleaseWaitingLocked()});
+        if (!admit) {
+          fatal = admit.error();
           break;
         }
-        pending.emplace(std::move(head));
+        if (!admit->admit) {
+          break;
+        }
+        pending.emplace(std::move(queue_.front()));
         queue_.pop_front();
         pending->channel->queued = false;
         ++dispatching_;
@@ -466,16 +534,21 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
         break;
       }
     }
-    policy.AdmissionFinished();
     // Backpressure that blocks others (D-102): the queue waits on this
     // cohort (it must drain for another model, or is full) while a member
     // waits for its client. Such a member yields its place once paused for
     // yield_after (Work::Yield); one that cannot yet goes on.
     std::vector<Active*> yielding;
+    Clock::time_point turn_ends;
     {
       const std::scoped_lock lock(mutex_);
-      blocked_ =
-          policy.BlocksWaiters(active.size() >= kMaxActiveRequests, suspended_requests_ != 0);
+      const auto wait = policy.Decide({.point = Policy::Point::kWait,
+                                       .active = active.size(),
+                                       .capacity = kMaxActiveRequests,
+                                       .suspended_elsewhere = suspended_requests_ != 0});
+      if (!wait) fatal = wait.error();
+      blocked_ = wait && wait->blocks_waiters;
+      turn_ends = wait ? wait->wake : Clock::time_point::max();
       const auto now = Clock::now();
       for (const auto& frame : active) {
         if (!frame->exchange.Yielding() && YieldDueLocked(*frame->pending.channel, now)) {
@@ -528,14 +601,14 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
       // (it may join), one is due to yield its place, or the runtime stops;
       // the next pass then retires, admits, yields or advances.
       std::vector<const Channel*> waiting;
-      Clock::time_point yield_due = policy.SwitchDeadline();
+      Clock::time_point yield_due = turn_ends;
       {
         const std::scoped_lock lock(mutex_);
         for (const auto& frame : active) {
           const Channel& ch = *frame->pending.channel;
           if (ch.paused && !ch.gone && !ch.stalled) {
             waiting.push_back(&ch);
-            if (blocked_ && (!queue_.empty() || suspended_requests_ != 0)) {
+            if (blocked_ && WaitersLocked()) {
               yield_due = std::min(yield_due, ch.paused_at + options_.yield_after);
             }
           }
@@ -552,8 +625,9 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
       }
       empty_pauses = 0;
       std::ignore = AwaitReaders(
-          [this, &waiting, seen, yield_due] {
-            return enqueued_ == seen && Clock::now() < yield_due &&
+          [this, &waiting, seen, releasing, yield_due] {
+            return enqueued_ == seen && pending_releases_.empty() != releasing &&
+                   Clock::now() < yield_due &&
                    std::ranges::all_of(
                        waiting,
                        [](const Channel* ch) { return ch->paused && !ch->gone && !ch->stalled; });
@@ -585,17 +659,19 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
     std::optional<Pending> replacement;
     {
       const std::scoped_lock lock(mutex_);
-      // The different-model head may have left while native retirement
+      // The other model's request may have left while native retirement
       // waited. A fresh same-model request must wait for the originals'
-      // held slots, rather than falling back to a serial clear of one.
-      const auto head = queue_.empty() ? Policy::Head::kEmpty
-                        : queue_.front().request.model != suspended.front().request.model
-                            ? Policy::Head::kOtherModel
-                            : Policy::Head::kCompatible;
-      if (policy.RunSubstitute(head, stopping_ || !fatal.empty())) {
-        replacement.emplace(std::move(queue_.front()));
+      // held slots, rather than falling back to a serial clear of one; the
+      // substitute is the first request for another model, wherever it waits.
+      const auto seen = look(suspended.front().request.model);
+      const auto end = policy.Decide(
+          {.point = Policy::Point::kEnd, .queue = seen, .stopped = stopping_ || !fatal.empty()});
+      if (!end) fatal = end.error();
+      if (end && end->run_substitute) {
+        const auto at = queue_.begin() + static_cast<std::ptrdiff_t>(*seen.other);
+        replacement.emplace(std::move(*at));
         replacement->channel->queued = false;
-        queue_.pop_front();
+        queue_.erase(at);
         ++dispatching_;
       }
     }
@@ -734,8 +810,8 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
         dirty_.push_back(channel.connection);
       }
     }
-    if (pending_release_.has_value()) {
-      Channel& channel = *pending_release_->channel;
+    for (const PendingRelease& release : pending_releases_) {
+      Channel& channel = *release.channel;
       channel.keep_alive = false;
       lines.push_back(std::format("request {}: 503, the runtime is stopping", channel.id));
       channel.PutError(server_detail::Refusal(503, "the runtime is stopping"));
@@ -743,8 +819,8 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
         channel.dirty = true;
         dirty_.push_back(channel.connection);
       }
-      pending_release_.reset();
     }
+    pending_releases_.clear();
     queue_.clear();
   }
   for (const std::string& line : lines) {

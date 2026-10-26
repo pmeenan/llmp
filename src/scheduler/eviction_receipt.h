@@ -22,7 +22,6 @@ class EvictionReceipt {
     std::uint64_t pending = 0;
     std::uint64_t handed_off = 0;
     std::uint64_t released_unused = 0;
-    std::uint64_t refused = 0;
     std::uint64_t quarantined = 0;
     std::uint64_t occupancy = 0;
     Clock::time_point finished;
@@ -79,10 +78,11 @@ class EvictionReceipt {
     ++snapshot_.released_unused;
     snapshot_.progressed = Clock::now();
   }
-  void End(bool evicted, bool quarantined, std::uint64_t occupancy) {
+  // Its work's terminal event, whatever its outcome (an eviction done or
+  // refused, a load mapped, failed or released unused, Released's count).
+  void End(bool quarantined, std::uint64_t occupancy) {
     base::Check(snapshot_.pending != 0, "an eviction receipt settled twice");
     --snapshot_.pending;
-    snapshot_.refused += !evicted && !quarantined;
     snapshot_.quarantined += quarantined;
     snapshot_.occupancy = occupancy;
     snapshot_.finished = Clock::now();

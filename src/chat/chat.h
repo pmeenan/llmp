@@ -136,6 +136,9 @@ class Content {
   // must project structured content before using it.
   const std::optional<std::string>& text() const { return std::get<0>(value_); }
   const std::vector<MessagePart>* parts() const { return std::get_if<1>(&value_); }
+  // The same, for a caller that moves them out (the Content is then empty).
+  std::optional<std::string>* mutable_text() { return std::get_if<0>(&value_); }
+  std::vector<MessagePart>* mutable_parts() { return std::get_if<1>(&value_); }
   std::uint64_t PayloadBytes() const;
   std::uint64_t StorageBytes() const;
   // Extra owned storage and JSON parser working memory during projection.

@@ -482,12 +482,12 @@ void StateKeeper::Work(const std::stop_token& stop) {
     // can wait long on a busy disk, and the driver's Invalidate (a turn
     // restoring the slot) takes the lock.
     std::optional<int> unwritten;
-    std::optional<platform::FileIdentity> prepared;  // the temporary file written
+    std::optional<platform::PrivateReplacement> prepared;  // the temporary file written
     if (hashed && !stale) {
       if (auto written =
               platform::WritePrivateReplacement(dir, name.c_str(), kept::Encode(job.record));
           written) {
-        prepared = *written;
+        prepared = std::move(*written);
       } else {
         unwritten = written.error();
       }
@@ -525,8 +525,8 @@ void StateKeeper::Work(const std::stop_token& stop) {
       state.committing = false;
       if (!renamed) {
         // Nothing moved (a rename is atomic, and never of a temporary file
-        // other than the one written, which the failure removed): whatever
-        // stood there stands.
+        // other than the one written, which every failure but another
+        // writer's file in its place removed): whatever stood there stands.
         ++stats_.failed;
         line = std::format("a kept conversation's record {} was not written: {}", name,
                            Errno(renamed.error()));

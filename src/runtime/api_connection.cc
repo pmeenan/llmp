@@ -557,21 +557,11 @@ void Server::OnRequest(Connection& c, http::Request request) {
     Flush(c);
   };
   if (request.path == "/llmp/v1/memory/release") {
-    bool busy = false;
+    // Answered by the driver where the running work or turn ends, not
+    // refused at once while requests run (ProcessPendingRelease).
     {
       const std::scoped_lock lock(mutex_);
-      busy = !running_.empty() || !queue_.empty() || !parked_.empty() || suspended_requests_ != 0 ||
-             dispatching_ != 0 || pending_release_.has_value();
-      if (!busy) {
-        pending_release_ = PendingRelease{
-            .connection = c.id,
-            .channel = channel,
-        };
-      }
-    }
-    if (busy) {
-      Refuse(c, Refusal(409, "server is busy with active work", "busy"));
-      return;
+      pending_releases_.push_back({.connection = c.id, .channel = channel});
     }
     ready_.Signal();
     return;

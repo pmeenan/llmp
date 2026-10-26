@@ -176,5 +176,41 @@ TEST(CohortSchedule, AStartedPromptAboutToFinishGoesBeforeAnAgedOne) {
   EXPECT_LE(kPromptFinishRows, 512U);
 }
 
+// The gate before the schedule (A11): output already generated is host-only
+// work, so a member that only needs its output delivered never makes the
+// cohort swap, and with its client behind the cohort waits for it.
+TEST(CohortGate, OutputNeedsNoResidencyAndOnlyDeviceWorkSwaps) {
+  constexpr GatedMember kDrain{.output = true, .device = false, .paused = false};
+  constexpr GatedMember kBehind{.output = true, .device = false, .paused = true};
+  constexpr GatedMember kWork{.output = false, .device = true, .paused = false};
+  constexpr GatedMember kWorkBehind{.output = false, .device = true, .paused = true};
+  constexpr GatedMember kHeldCall{.output = true, .device = true, .paused = false};
+  struct Case {
+    std::vector<GatedMember> members;
+    bool resident;
+    CohortGate expected;
+  };
+  const std::vector<Case> cases = {
+      // Output-only members whose readers are behind: no swap, a wait.
+      {{kBehind}, false, CohortGate::kPaused},
+      {{kBehind, kBehind}, false, CohortGate::kPaused},
+      {{kBehind}, true, CohortGate::kPaused},
+      // Output whose reader reads drains first, resident or not.
+      {{kDrain}, false, CohortGate::kOutput},
+      {{kBehind, kDrain, kWork}, false, CohortGate::kOutput},
+      {{kHeldCall}, false, CohortGate::kOutput},
+      // Device work swaps only when the model is not resident.
+      {{kBehind, kWork}, false, CohortGate::kSwap},
+      {{kBehind, kWork}, true, CohortGate::kSchedule},
+      {{kWorkBehind}, false, CohortGate::kSwap},
+      {{kWorkBehind}, true, CohortGate::kSchedule},  // the schedule pauses it
+      {{kHeldCall, kBehind}, false, CohortGate::kOutput},
+  };
+  for (std::size_t i = 0; i < cases.size(); ++i) {
+    SCOPED_TRACE(i);
+    EXPECT_EQ(GateCohortUnit(cases[i].members, cases[i].resident), cases[i].expected);
+  }
+}
+
 }  // namespace
 }  // namespace llmp::scheduler

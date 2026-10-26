@@ -136,6 +136,40 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Output already generated is host-only work: a cohort whose members only
+  wait for their clients to read no longer swaps its model back in (or fails
+  a finished reply when that swap is refused), a member whose generation is
+  complete no longer pauses for a model switch, and a reply's last tool call
+  and held text are finished on both paths even when it yields its place
+  (they were dropped, or left unsent, on a yield after the final decode).
+  A model turn now ends for another model's request waiting anywhere in the
+  queue, which then runs as the substitute, not only one at its head.
+  `POST /llmp/v1/memory/release` is no longer refused with 409 the moment
+  work runs: it waits at most until the running turn ends (or the cohort
+  sooner), runs there if the node is idle and is otherwise answered 409,
+  holding no request back meanwhile (D-124 as amended 2026-10-26); it is
+  also answered 409 when only a request waiting for its client to read
+  holds state.
+- A stop string matched after a tool call now reports `finish_reason`
+  `tool_calls` (it reported `stop`).
+- Kept conversations (D-105): a record dated after now (a clock behind at
+  boot) is kept, dated now, instead of deleted, and `llmp.service` starts
+  after `time-sync.target`; a record this start cannot read for want of its
+  own resources (no `/proc`, descriptors or memory) keeps the model's kept
+  conversations for a later start instead of deleting them; a record's commit compares the file it wrote by its open
+  descriptor and leaves no temporary file holding a conversation's tokens
+  when it fails. A lock file the runtime cannot write is used (flock needs
+  no write access), no longer refusing the start.
+- Startup's parser loan is the larger of its two phases (artifact facts,
+  then chat readers), about 9.4 GiB instead of their 17.8 GiB sum, so two
+  models start under a 16 GiB budget cap again. Shared mode's budget floor
+  now holds the conversation state the running requests hold, measured as
+  it grows, beside the largest footprint, and a request's growth the shrunk
+  budget refuses is lent the budget back instead of failing or waiting
+  (D-124 as amended 2026-10-26).
+  Serial literal completions count as activity for shared mode's idle
+  release, and a request deferred for a slot keeps its rendering.
+
 - Tool calls (M3.5 review B1, B2, B5–B8, B11, B12). The output parser, the
   sampler and the speculative judge now run one incremental grammar on the
   same decoded bytes, so they cannot disagree: unconstrained auto mode no

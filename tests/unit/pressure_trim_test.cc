@@ -240,3 +240,62 @@ TEST(PressureTrim, AdjustSharedBudgetShrinksOnlyUnderPressureAndRestoresInSteps)
 }
 
 }  // namespace
+
+// The shared floor follows what the requests hold, not a context's worth:
+// with nothing held it is the fixed memory and the largest footprint, it
+// rises as their live state grows, and it never passes the configured
+// budget (so shared mode can always give back what is not held).
+TEST(PressureTrim, TheSharedFloorHoldsWhatTheRequestsHoldAndNoMore) {
+  constexpr std::uint64_t kBase = 1024 * kMiB;  // fixed + largest footprint
+  constexpr std::uint64_t kCeiling = 8192 * kMiB;
+  EXPECT_EQ(rt::SharedBudgetFloor(kBase, 0, kCeiling), kBase);
+  EXPECT_EQ(rt::SharedBudgetFloor(kBase, 300 * kMiB, kCeiling), kBase + 300 * kMiB);
+  EXPECT_EQ(rt::SharedBudgetFloor(kBase, 64 * 1024 * kMiB, kCeiling), kCeiling);
+  EXPECT_EQ(rt::SharedBudgetFloor(UINT64_MAX, UINT64_MAX, kCeiling), kCeiling);
+
+  // Under heavy pressure the shrink stops at the held state above the base:
+  // a running request keeps what it holds.
+  const std::uint64_t held = 700 * kMiB;
+  const std::uint64_t floor = rt::SharedBudgetFloor(kBase, held, kCeiling);
+  EXPECT_EQ(
+      rt::AdjustSharedBudget(1 * kMiB, /*pressed=*/true, 2048 * kMiB, floor, kCeiling, kCeiling),
+      kBase + held);
+  // Once the requests let it go, the same pressure shrinks to the base.
+  EXPECT_EQ(
+      rt::AdjustSharedBudget(1 * kMiB, /*pressed=*/true, 2048 * kMiB,
+                             rt::SharedBudgetFloor(kBase, 0, kCeiling), kBase + held, kCeiling),
+      kBase);
+}
+
+// A held request's growth that the reclaim order could not cover is lent
+// the shrunk budget back, by the shortfall, never past the configured one.
+TEST(PressureTrim, ARefusedGrowthLiftsTheSharedBudgetWithinTheConfiguredOne) {
+  constexpr std::uint64_t kCeiling = 8192 * kMiB;
+  EXPECT_EQ(rt::LiftSharedBudget(2048 * kMiB, kCeiling, 64 * kMiB), 2112 * kMiB);
+  EXPECT_EQ(rt::LiftSharedBudget(8000 * kMiB, kCeiling, 1024 * kMiB), kCeiling);
+  EXPECT_EQ(rt::LiftSharedBudget(kCeiling, kCeiling, 64 * kMiB), kCeiling);
+  EXPECT_EQ(rt::LiftSharedBudget(2048 * kMiB, kCeiling, UINT64_MAX), kCeiling);
+  EXPECT_EQ(rt::LiftSharedBudget(2048 * kMiB, kCeiling, 0), 2048 * kMiB);
+  // Never lowered (a budget above the configured one is a diagnostic's).
+  EXPECT_EQ(rt::LiftSharedBudget(9000 * kMiB, kCeiling, 64 * kMiB), 9000 * kMiB);
+}
+
+// A lift capped at the configured budget counts as the whole growth: the
+// growth asks for all its bytes, not what it fell short of the headroom
+// left, and the configured budget may hold it although the lift fell short
+// of them (a request failed for the shrink alone). Short of the configured
+// budget, or with nothing lent, only what was given counts; the retry's own
+// refusal at the configured budget then stands.
+TEST(PressureTrim, ALiftToTheConfiguredBudgetRelievesTheWholeGrowth) {
+  constexpr std::uint64_t kCeiling = 8192 * kMiB;
+  // 40 MiB lent to the ceiling for a 64 MiB growth with 32 MiB of headroom.
+  EXPECT_EQ(rt::LiftRelief(64 * kMiB, 0, kCeiling - 40 * kMiB, kCeiling, kCeiling), 64 * kMiB);
+  EXPECT_EQ(rt::LiftRelief(64 * kMiB, 8 * kMiB, kCeiling - 40 * kMiB, kCeiling, kCeiling),
+            64 * kMiB);
+  // Short of the ceiling: what was freed and lent.
+  EXPECT_EQ(rt::LiftRelief(64 * kMiB, 8 * kMiB, 2048 * kMiB, 2104 * kMiB, kCeiling), 64 * kMiB);
+  EXPECT_EQ(rt::LiftRelief(64 * kMiB, 0, 2048 * kMiB, 2080 * kMiB, kCeiling), 32 * kMiB);
+  // Nothing lent (already at the ceiling): only the reclaim order's answer.
+  EXPECT_EQ(rt::LiftRelief(64 * kMiB, 16 * kMiB, kCeiling, kCeiling, kCeiling), 16 * kMiB);
+  EXPECT_EQ(rt::LiftRelief(64 * kMiB, UINT64_MAX, 0, kCeiling, kCeiling), UINT64_MAX);
+}

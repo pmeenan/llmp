@@ -233,13 +233,15 @@ std::expected<api::Completion, api::Error> NodeBackend::SerialChat(Llm& l,
                           m->name(), prefill.chunks, l.history().size(), tokens.size()));
     return so_far(reused);
   }
-  if (!exchange.Yielding()) (void)output.Finish(generation.stopped);
+  // Its output finished once its generation is complete, also when it yields
+  // its place (FinishOrCarry, as a cohort member's): a finish the yield
+  // paused continues, as does a generation under way. There may be no
+  // further GPU work, but accepted bytes must still reach the client exactly
+  // once.
+  const bool continues = !generation.stopped && generation.tokens.size() < rendered.max_tokens;
+  const bool carry = FinishOrCarry(output, !continues, generation.stopped, exchange.Yielding());
   if (output.error()) return std::unexpected(*output.error());
-  // Final-drain pauses also continue: there may be no further GPU work, but
-  // already accepted bytes must still reach the client exactly once.
-  if (exchange.Yielding() &&
-      ((!generation.stopped && generation.tokens.size() < rendered.max_tokens) ||
-       output.pending())) {
+  if (carry) {
     auto yielded = KeepContinuation(rendered, generation, options, output.Save(),
                                     resume != nullptr ? resume->reused : reused, *memory_);
     if (!yielded) return std::unexpected(yielded.error());
@@ -263,6 +265,8 @@ std::expected<api::Completion, api::Error> NodeBackend::SerialChat(Llm& l,
 
 std::expected<api::Completion, api::Error> NodeBackend::Complete(
     const api::CompletionRequest& request, api::Exchange& exchange) {
+  // A request's activity, as a chat turn's (shared mode's idle release).
+  server_.TouchActivity();
   const auto& controls = request.options;
   Served* model = server_.Find(controls.model);
   if (model == nullptr || !model->llm()) {
@@ -373,6 +377,7 @@ std::expected<api::Completion, api::Error> NodeBackend::Complete(
   Generation generation;
   MemoryCharge token_charge;
   options.on_tokens = [&](std::span<const std::int32_t> fresh) {
+    server_.TouchActivity();
     if (auto refused = FundHistory(token_charge, *memory_,
                                    generation.tokens.capacity() * sizeof(std::int32_t), true)) {
       output_problem = std::move(refused);
@@ -462,6 +467,7 @@ std::expected<api::Completion, api::Error> NodeBackend::Complete(
   if (ladder_ != nullptr) {
     ladder_->Served(model->name());  // a later hang may reset it again
   }
+  server_.TouchActivity();
   return result;
 }
 
@@ -514,7 +520,7 @@ std::string NodeBackend::failure() const { return failure_; }
 Llm::CapacityReclaim NodeBackend::SerialReclaim(Llm& model) {
   return [this, &model](const Llm::Branch& refused) {
     const std::uint64_t needed = std::max<std::uint64_t>(model.RefusedBytes(refused), kExtentBytes);
-    return server_.Reclaim(needed, true, "conversation state refused") >= needed;
+    return server_.RelieveRefusedState(needed) >= needed;
   };
 }
 

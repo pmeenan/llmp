@@ -474,6 +474,12 @@ bool ChatOutput::Finish(bool stopped) {
   return !state_->error;
 }
 
+bool FinishOrCarry(ChatOutput& output, bool complete, bool stopped, bool yielding) {
+  if (yielding && !complete) return true;
+  (void)output.Finish(stopped);
+  return yielding && !output.error() && !output.done();
+}
+
 std::expected<std::shared_ptr<ChatResume>, api::Error> KeepContinuation(
     const ChatPrompt& prompt, const Generation& generation, const GenerateOptions& options,
     std::shared_ptr<ChatOutput::State> output, std::uint32_t reused, RequestMemory& memory,

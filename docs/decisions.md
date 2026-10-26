@@ -166,7 +166,7 @@ execution code.
   - Workspace memory is pageable by default (`pageable_workspace = true`), allowing full eviction of scratch and KV buffers when the engine is not actively decoding.
   - **Lever 1 (Idle Timeout):** When no requests have arrived for `[memory] idle_release_seconds` (defaulting to 300 s), the runtime automatically drops active execution plans, evicts idle conversation branches, unmaps and releases any resident model weights and workspace, drains all unused physical backing handles, and trims the process heap (`malloc_trim` / `platform::ReleaseFreeHeap()`).
   - **Lever 2 (Memory Pressure Trim):** When external system memory pressure is detected via `PressureTrim` (`pressure_trim.h`), the runtime drops execution plans, trims unneeded state, dynamically lowers `node_.SetBudget(budget - needed)`, and invokes working set release (`ReleaseWorkingSet("memory pressure")`) if free headroom remains insufficient, restoring the configured budget when external pressure subsides.
-  - **Loopback HTTP Release Endpoint:** Local tooling (such as `hostlock`) can proactively command the runtime to immediately surrender its working set via `POST /llmp/v1/memory/release`. The route is strictly restricted to loopback connections (403 Forbidden for non-loopback, 405 Method Not Allowed for non-POST), returning a JSON report (`evicted_model`, `spilled_bytes`, `reclaimed_bytes`, `released_backings`) or 409 Conflict if active requests are currently executing.
+  - **Loopback HTTP Release Endpoint:** Local tooling (such as `hostlock`) can proactively command the runtime to immediately surrender its working set via `POST /llmp/v1/memory/release`. The route is strictly restricted to loopback connections (403 Forbidden for non-loopback, 405 Method Not Allowed for non-POST), returning a JSON report (`evicted_model`, `spilled_bytes`, `reclaimed_bytes`, `released_backings`) or 409 Conflict if active requests are currently executing (amended 2026-10-26, below: it waits at most for the running turn's end, then runs if the node is idle and is otherwise answered 409).
 
 **Context.** On a dedicated DGX Spark, memory belongs entirely to the runtime, so preallocating backing eliminates kernel/driver allocation overhead and page faults during interactive turns. On a developer workstation or shared server, however, holding gigabytes of pinned or reserved physical memory starves compilers, linkers, and test suites (or trips `hostlock`). Operating in shared mode ensures zero idle footprint while preserving full execution performance when active.
 
@@ -216,11 +216,13 @@ the text above where they differ:
   so the cache evicted for what remains is released to the system rather
   than pooled. `released_backings` reports the provider's own count. The
   route answers 409 only when work is in flight; any other failure is a
-  500.
+  500 (amended 2026-10-26, below: it waits at most for the running turn's
+  end).
 - **The shared budget shrinks to the right value and comes back in steps.**
   Under pressure the budget is `occupancy - (target - available)`, never
   below the fixed memory plus the largest active footprint, and never
-  lowered while a turn's work runs; once the pressure ends it rises toward
+  lowered while a turn's work runs (amended 2026-10-26, below: the floor
+  holds the requests' live state instead); once the pressure ends it rises toward
   the configured budget by what is available past the target, a step at a
   time. A budget change is a scheduler command
   (`PagedNode::SetBudget`, applied on the scheduler's thread) that never
@@ -233,6 +235,41 @@ the text above where they differ:
 - `idle_release_seconds` applies in shared mode only (dedicated mode logs
   that it ignores it); `[memory]`'s times have no caps but what the clock
   represents (D-102).
+
+*Amended 2026-10-26 (M3.5 foundation review fixes):*
+
+- **A release waits at most for the running turn's end; the starvation
+  bound comes first.** `POST /llmp/v1/memory/release` is not refused at once
+  for work in flight, but it holds no request back either (D-102's
+  starvation bound, AGENTS.md rule 11, takes priority over an operator's
+  release): while one waits, cohorts admit, end turns and rotate models as
+  they would without it, and a paused reader does not yield its place to it
+  (its continuation would only keep the node busy). It waits at most until
+  the running turn ends (`model_turn_seconds` of useful work, as for
+  another model's request) or, sooner, the running cohort or serial
+  request ends. There, if the node is idle (nothing runs, nothing queued
+  would start), it runs and is answered with its report (several waiting
+  together get one); otherwise it is answered 409. A 409 also answers a
+  release the backend still finds busy at an idle point: a continuation
+  parked until its client reads is not waited for (the release would wait
+  on a client). A release whose client left is dropped unanswered; any
+  other failure is a 500.
+- **The shared budget's floor follows what the requests hold.** A shrink
+  never goes below the fixed memory, the largest active footprint and the
+  conversation state the requests hold now (the resident state of every
+  branch in a session, leased by a request or held for a continuation),
+  measured from the live state at each adjustment, never past the
+  configured budget. It is not a slot's state through a whole context: a
+  floor that can equal the budget would keep shared mode from giving
+  anything back. A shrink no longer waits for a conversation turn to end
+  (only for other work in a request, an image's, or a reclaim); instead a
+  held request's state growth that the shrunk budget refuses, once the
+  reclaim order has given what it has, is lent the budget back by the
+  shortfall, up to the configured budget, so no admitted request waits or
+  fails because of a shrink (D-050): a lift to the configured budget
+  relieves the whole growth (whose refusal there then stands, as without
+  the pressure), no shrink takes a lent budget back before the growth's
+  retry, and the floor then holds what it grew into.
 
 ## D-123: Capability-driven optimization and normalization; no checkpoint or shape pins in runtime, planner, kernel or importer selection (2026-10-20, status: accepted at the owner's direction; amends D-107, D-109, D-118 and D-119)
 

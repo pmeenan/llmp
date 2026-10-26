@@ -223,11 +223,26 @@ struct Completion {
 // work after Retire proves its references retired, including error outcomes.
 class CooperativeBackend {
  public:
+  // What Start prepared for a request before it deferred it (its rendering
+  // and tokens, already charged to the request memory): kept with the queued
+  // request, so its next Start reuses it rather than rendering it again.
+  class Prepared {
+   public:
+    Prepared() = default;
+    Prepared(const Prepared&) = delete;
+    Prepared& operator=(const Prepared&) = delete;
+    Prepared(Prepared&&) = delete;
+    Prepared& operator=(Prepared&&) = delete;
+    virtual ~Prepared() = default;
+  };
   struct Request {
     const ChatRequest& options;
     const CompletionRequest* literal = nullptr;
     // A request that yielded its place before, to continue (Exchange::Yielding).
     const Yielded* resume = nullptr;
+    // The queued request's preparation (Start's to set and take); null
+    // where there is nowhere to keep one.
+    std::shared_ptr<Prepared>* prepared = nullptr;
   };
   class Work {
    public:
@@ -283,7 +298,8 @@ class CooperativeBackend {
   // driver between units, as a refused unit's reclaim does
   // (docs/runtime-serving.md#request-slots). A null work means capacity deferred: no Admit, output,
   // mutation or retained reference. With no active work it falls back to Complete. An Error
-  // likewise retains no references and ends only this request. On success, Request itself, its
+  // likewise retains no references and ends only this request. A deferral may keep what it
+  // prepared in Request::prepared (its only effect). On success, Request itself, its
   // parsed members and Exchange have stable addresses until Retire proves their references retired.
   virtual std::expected<std::unique_ptr<Work>, Error> Start(const Request& request,
                                                             Exchange& exchange) = 0;
@@ -488,6 +504,8 @@ class Server {
     // A request that yielded its place: what its backend continues it from
     // and its response's progress (Stream).
     std::shared_ptr<Yielded> resume;
+    // What a cooperative Start prepared before it deferred this request.
+    std::shared_ptr<CooperativeBackend::Prepared> prepared;
     std::optional<OutputText> text;
     Usage usage{};
     std::string reasoning;  // a non-streaming response's text so far
@@ -552,8 +570,19 @@ class Server {
   Clock::time_point Sweep(Clock::time_point now);
   bool EvictIdle();
 
-  // Driver thread.
+  // Driver thread. Where a cohort or a serial request ended, answers the
+  // waiting working-set releases: run when the node is idle (nothing runs,
+  // nothing queued would start), otherwise 409, queued work never held
+  // back for a release (D-102); 409 too when the backend still finds state
+  // held (a continuation parked until its client reads, which may never).
   void ProcessPendingRelease();
+  // Driver thread: a cohort's turn ended with releases waiting, its members
+  // still busy: they are answered 409 (CohortPolicy::Action::release_busy).
+  void RefusePendingReleases();
+  // With mutex_ held: `releases` answered with `report` (a 409 for "busy",
+  // a 500 for any other failure), those whose clients left skipped.
+  void AnswerReleasesLocked(std::span<const PendingRelease> releases,
+                            const std::expected<ReleaseReport, std::string>& report);
   void Serve(Pending& pending, int wake_fd, const std::function<bool()>& on_wake);
   std::expected<void, std::string> ServeCooperative(Pending first, CooperativeBackend& cooperative,
                                                     int wake_fd,
@@ -564,9 +593,17 @@ class Server {
   // A request that yielded its place goes to the back of the queue, with
   // its response's progress (`stream`'s) and its backend's continuation.
   void Requeue(Pending& pending, Stream& stream, std::shared_ptr<Yielded> yielded);
-  // With mutex_ held: whether requests wait in the queue that a paused
-  // request keeps from running, and since when a channel paused would make
-  // it yield (ServerOptions::yield_after).
+  // With mutex_ held: whether requests wait on the running ones (queued
+  // requests, continuations set aside). A pending working-set release is not
+  // counted: a paused member yielding its place to it would only keep its
+  // state as a continuation, which leaves the release busy.
+  bool WaitersLocked() const;
+  // With mutex_ held: whether a working-set release waits (for its turn's end),
+  // those whose clients left dropped.
+  bool ReleaseWaitingLocked();
+  // With mutex_ held: whether such work waits that a paused request keeps
+  // from running, and since when a channel paused would make it yield
+  // (ServerOptions::yield_after).
   bool YieldDueLocked(const Channel& channel, Clock::time_point now) const;
   // With mutex_ held: a parked request whose client read is queued again.
   void UnparkLocked(const Channel& channel);
@@ -648,7 +685,12 @@ class Server {
   // queued again once their clients take their output (Flush), so they are
   // not taken up (and their models swapped in) only to yield again.
   std::deque<Pending> parked_;
-  std::optional<PendingRelease> pending_release_;
+  // POST /llmp/v1/memory/release requests waiting, answered together at
+  // most at the running turn's end (ProcessPendingRelease where it ends,
+  // RefusePendingReleases at a turn's end with its members still busy); the
+  // cohort admits, turns and rotates as it would without them (D-124 as
+  // amended 2026-10-26).
+  std::vector<PendingRelease> pending_releases_;
 
   // The parse thread's: bodies to parse and results to hand back (under
   // parse_mutex_), the I/O thread woken for each.

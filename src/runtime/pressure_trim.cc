@@ -89,4 +89,24 @@ std::uint64_t AdjustSharedBudget(std::optional<std::uint64_t> available, bool pr
   return current_budget;
 }
 
+std::uint64_t SharedBudgetFloor(std::uint64_t base, std::uint64_t held,
+                                std::uint64_t configured) noexcept {
+  std::uint64_t floor = 0;
+  if (__builtin_add_overflow(base, held, &floor)) floor = configured;
+  return std::min(floor, configured);
+}
+
+std::uint64_t LiftSharedBudget(std::uint64_t current, std::uint64_t configured,
+                               std::uint64_t shortfall) noexcept {
+  if (current >= configured) return current;
+  return shortfall >= configured - current ? configured : current + shortfall;
+}
+
+std::uint64_t LiftRelief(std::uint64_t needed, std::uint64_t freed, std::uint64_t before,
+                         std::uint64_t after, std::uint64_t configured) noexcept {
+  const std::uint64_t lent = after > before ? after - before : 0;
+  const std::uint64_t made = lent > UINT64_MAX - freed ? UINT64_MAX : freed + lent;
+  return lent > 0 && after >= configured ? std::max(needed, made) : made;
+}
+
 }  // namespace llmp::runtime

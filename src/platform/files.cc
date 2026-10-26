@@ -50,7 +50,14 @@ std::expected<int, int> ReopenRegularFile(int reference, bool write, bool direct
   const std::string path = "/proc/self/fd/" + std::to_string(reference);
   const int fd = ::open(path.c_str(), (write ? O_RDWR : O_RDONLY) | O_CLOEXEC | O_NOCTTY |
                                           O_NONBLOCK | (direct ? O_DIRECT : 0));
-  if (fd < 0) return std::unexpected(errno);
+  if (fd < 0) {
+    // The reference is open, so its magic link exists wherever procfs is
+    // mounted: ENOENT or ENOTDIR here means no usable /proc, never that
+    // the file is absent (a caller would read that as "nothing there" and
+    // remove what it keeps). Said as such, loudly.
+    const int error = errno;
+    return std::unexpected(error == ENOENT || error == ENOTDIR ? kNoProcfs : error);
+  }
   struct stat status{};
   const bool stated = ::fstat(fd, &status) == 0;
   const int error = stated ? EIO : errno;

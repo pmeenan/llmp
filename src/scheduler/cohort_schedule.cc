@@ -42,4 +42,14 @@ ScheduleChoice NextCohortUnit(std::span<const ScheduledMember> members) {
   return {.decode = false, .prompt = aged && !finishing ? aged : shortest};
 }
 
+CohortGate GateCohortUnit(std::span<const GatedMember> members, bool resident) {
+  bool device = false;
+  for (const GatedMember& m : members) {
+    if (m.output && !m.paused) return CohortGate::kOutput;
+    device = device || m.device;
+  }
+  if (!device) return CohortGate::kPaused;
+  return resident ? CohortGate::kSchedule : CohortGate::kSwap;
+}
+
 }  // namespace llmp::scheduler

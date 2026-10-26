@@ -79,20 +79,40 @@ std::expected<void, int> ReplacePrivateFile(int dir, const char* name, std::stri
 // no sync waited on there). WritePrivateReplacement: `name`.tmp beneath
 // `dir` made here (O_EXCL, 0600, never through a link; one a crash left
 // is removed first), `bytes` written and synced; removed again on
-// failure. Returns its identity, which the other steps take.
-// CommitPrivateReplacement: that file, still the one written, renamed over
-// `name` (atomic: on failure nothing moved; a link at `name` is replaced,
-// not written through). Refused (EPERM) when it is not: one that is not a
-// regular file is removed; another regular file put there since is left
-// to whoever made it (a later Write removes it). The file written is
-// removed when the rename fails. SyncDirectory: the rename (or
-// a removal) reaches the device. AbandonPrivateReplacement: the temporary
-// file removed, unrenamed, if it is still the one written.
-std::expected<FileIdentity, int> WritePrivateReplacement(int dir, const char* name,
-                                                         std::string_view bytes);
+// failure. Returns the file written, still open: its descriptor tells it
+// from any other (an open file's inode is never reused), so the other
+// steps compare the name's file with it and reopen nothing (no /proc).
+// CommitPrivateReplacement: that file, still the one at `name`.tmp,
+// renamed over `name` (atomic: on failure nothing moved; a link at `name`
+// is replaced, not written through). Refused (EPERM) when it is not:
+// another regular file put there since is left to whoever made it (a
+// later Write removes it); anything else there is removed. Every other
+// failure removes `name`.tmp too, so nothing it held stays behind.
+// SyncDirectory: the rename (or a removal) reaches the device.
+// AbandonPrivateReplacement: the temporary file removed, unrenamed, if it
+// is still the one written.
+class PrivateReplacement {
+ public:
+  PrivateReplacement() = default;
+  PrivateReplacement(PrivateReplacement&& other) noexcept;
+  PrivateReplacement& operator=(PrivateReplacement&& other) noexcept;
+  PrivateReplacement(const PrivateReplacement&) = delete;
+  PrivateReplacement& operator=(const PrivateReplacement&) = delete;
+  ~PrivateReplacement();
+
+  int fd() const { return fd_; }
+
+ private:
+  friend std::expected<PrivateReplacement, int> WritePrivateReplacement(int dir, const char* name,
+                                                                        std::string_view bytes);
+  explicit PrivateReplacement(int fd) : fd_(fd) {}
+  int fd_ = -1;
+};
+std::expected<PrivateReplacement, int> WritePrivateReplacement(int dir, const char* name,
+                                                               std::string_view bytes);
 std::expected<void, int> CommitPrivateReplacement(int dir, const char* name,
-                                                  const FileIdentity& written);
-void AbandonPrivateReplacement(int dir, const char* name, const FileIdentity& written);
+                                                  const PrivateReplacement& written);
+void AbandonPrivateReplacement(int dir, const char* name, const PrivateReplacement& written);
 std::expected<void, int> SyncDirectory(int dir);
 
 // Reads a private file (as OpenPrivateFile opens it) of at most `limit`

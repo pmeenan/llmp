@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -588,14 +589,12 @@ TEST(KeptRecord, AForeignOrExpiredRecordIsRefused) {
   refused([](kept::Record&, kept::Expected& e) { e.now_unix_ms += e.retention_ms; }, "retention");
   // Edited times at the ends of their range overflow nothing.
   refused([](kept::Record& c, kept::Expected&) { c.used_unix_ms = kLeastMs; }, "retention");
-  refused([](kept::Record& c, kept::Expected&) { c.used_unix_ms = kMostMs; }, "future");
   refused([](kept::Record& c, kept::Expected&) { c.files[0].bytes += 4096; }, "size");
   // A checkpoint past the conversation, expired or outside the layout goes alone.
   for (const auto& change : std::vector<void (*)(kept::Checkpoint&)>{
            [](kept::Checkpoint& c) { c.position = 7; },
            [](kept::Checkpoint& c) { c.created_unix_ms -= 25LL * 3600 * 1000; },
            [](kept::Checkpoint& c) { c.created_unix_ms = kLeastMs; },
-           [](kept::Checkpoint& c) { c.created_unix_ms = kMostMs; },
            [](kept::Checkpoint& c) { c.ranges[0].offset = 5 * kExtent; },
            [](kept::Checkpoint& c) { c.file = kept::CheckpointFileName(3, 7); },
            [](kept::Checkpoint& c) { c.digests.clear(); },
@@ -606,6 +605,38 @@ TEST(KeptRecord, AForeignOrExpiredRecordIsRefused) {
     EXPECT_TRUE(kept::Check(copy, Expect(r), &dropped).has_value());
     EXPECT_TRUE(copy.checkpoints.empty());
     EXPECT_EQ(dropped.size(), 1U);
+  }
+  // A time after now is a clock that was ahead when it was written or is
+  // behind now (a boot before NTP synced): kept, dated now, its retention
+  // counted from then; content is the digests' to guard, not the clock's.
+  for (const std::int64_t ahead : {std::int64_t{61'000}, std::int64_t{3'600'000}, kMostMs}) {
+    SCOPED_TRACE(ahead);
+    kept::Record copy = r;
+    const kept::Expected expected = Expect(r);
+    const auto later = [&](std::int64_t at) {
+      return ahead > std::numeric_limits<std::int64_t>::max() - at ? ahead : at + ahead;
+    };
+    copy.used_unix_ms = later(expected.now_unix_ms);
+    copy.checkpoints[0].created_unix_ms = later(expected.now_unix_ms);
+    std::vector<std::string> dropped;
+    ASSERT_TRUE(kept::Check(copy, expected, &dropped).has_value());
+    EXPECT_TRUE(dropped.empty());
+    EXPECT_EQ(copy.used_unix_ms, expected.now_unix_ms);
+    ASSERT_EQ(copy.checkpoints.size(), 1U);
+    EXPECT_EQ(copy.checkpoints[0].created_unix_ms, expected.now_unix_ms);
+  }
+}
+
+// A record a start could not read: only a want of /proc, descriptors or
+// memory leaves the model's kept conversations for a later start; any other
+// failure is one no later start gets past, so the record is refused (and
+// removed) rather than keeping that model's conversations unkept forever.
+TEST(KeptRecord, OnlyAStartsOwnWantDefersAnUnreadableRecord) {
+  for (const int later : {llmp::platform::kNoProcfs, EMFILE, ENFILE, ENOMEM, EAGAIN, EINTR}) {
+    EXPECT_TRUE(kept::ReadableLater(later)) << later;
+  }
+  for (const int never : {EACCES, ELOOP, EIO, EFBIG, EPERM, ENOLINK, ENOENT}) {
+    EXPECT_FALSE(kept::ReadableLater(never)) << never;
   }
 }
 

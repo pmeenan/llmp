@@ -384,7 +384,8 @@ struct Server::Active {
       : pending(std::move(request)),
         request{.options = pending.request,
                 .literal = pending.literal ? &*pending.literal : nullptr,
-                .resume = pending.resume.get()},
+                .resume = pending.resume.get(),
+                .prepared = &pending.prepared},
         started(pending.started.value_or(Clock::now())),
         exchange(server, pending, wake_fd, on_wake, started, true) {}
 };

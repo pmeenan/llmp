@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -22,6 +23,7 @@
 
 #include "base/json.h"
 #include "base/sha256.h"
+#include "platform/files.h"
 #include "runtime/intake_limits.h"
 
 namespace llmp::runtime::kept {
@@ -35,15 +37,16 @@ std::unexpected<std::string> Bad(std::string what) {
 
 // A time a record gives (milliseconds since the epoch, any 64-bit value an
 // edited record may hold) against now: past `retention_ms` before now, or
-// more than a minute after it (a clock stepped back a little is allowed),
-// with no arithmetic that can overflow.
+// after it, with no arithmetic that can overflow. A time after now is a
+// clock that was ahead when the record was written, or is behind now (a
+// boot before NTP synced): within retention, read as now, since the
+// digests, not the time, guard the content.
 enum class When : std::uint8_t { kWithin, kExpired, kFuture };
 When TimeOf(std::int64_t at, std::int64_t now_ms, std::int64_t retention_ms) {
-  constexpr std::int64_t kSkewMs = 60'000;
   if (now_ms < 0 || retention_ms < 0 || at <= now_ms - retention_ms) {
     return When::kExpired;  // now_ms and retention_ms are the runtime's: small
   }
-  return at > now_ms + kSkewMs ? When::kFuture : When::kWithin;
+  return at > now_ms ? When::kFuture : When::kWithin;
 }
 
 // ---------------------------------------------------------------- writing
@@ -734,13 +737,8 @@ std::expected<void, std::string> CheckCheckpoint(const Checkpoint& c, const Reco
   if (c.cursor > c.position) {
     return Bad("a checkpoint's speculation cursor lies past its tokens");
   }
-  switch (TimeOf(c.created_unix_ms, e.now_unix_ms, e.retention_ms)) {
-    case When::kExpired:
-      return Bad("a checkpoint is past its retention");
-    case When::kFuture:
-      return Bad("a checkpoint was made in the future");
-    case When::kWithin:
-      break;
+  if (TimeOf(c.created_unix_ms, e.now_unix_ms, e.retention_ms) == When::kExpired) {
+    return Bad("a checkpoint is past its retention");
   }
   if (c.digests.size() != c.ranges.size() || c.ranges.empty()) {
     return Bad("a checkpoint's digests do not match its pages");
@@ -838,7 +836,8 @@ std::expected<void, std::string> Check(Record& r, const Expected& e,
     case When::kExpired:
       return Bad("it is past its retention ([memory] retention_hours)");
     case When::kFuture:
-      return Bad("its last use is in the future");
+      r.used_unix_ms = e.now_unix_ms;  // its retention counts from now
+      break;
     case When::kWithin:
       break;
   }
@@ -858,10 +857,17 @@ std::expected<void, std::string> Check(Record& r, const Expected& e,
       }
       continue;
     }
+    // Made "in the future" by a clock that has since moved back: made now.
+    c.created_unix_ms = std::min(c.created_unix_ms, e.now_unix_ms);
     kept.push_back(std::move(c));
   }
   r.checkpoints = std::move(kept);
   return {};
+}
+
+bool ReadableLater(int error) {
+  return error == platform::kNoProcfs || error == EMFILE || error == ENFILE || error == ENOMEM ||
+         error == EAGAIN || error == EINTR;
 }
 
 }  // namespace llmp::runtime::kept

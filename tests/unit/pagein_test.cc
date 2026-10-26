@@ -3707,7 +3707,6 @@ TEST_P(PageInTest, FailedHandoffLoadKeepsItsReceiptThroughUnusedBackingRelease) 
   EXPECT_EQ(receipt->Read().pending, 0U);
   EXPECT_EQ(receipt->Read().handed_off, 1U);
   EXPECT_EQ(receipt->Read().released_unused, 2U);
-  EXPECT_EQ(receipt->Read().refused, 1U);
   EXPECT_EQ(receipt->Read().quarantined, 0U);
 }
 

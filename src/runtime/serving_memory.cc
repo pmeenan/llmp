@@ -798,7 +798,7 @@ Status Server::MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out
     const auto pressure = platform::ReadMemoryPressure();
     const std::uint64_t current = node_.budget().value();
     const std::uint64_t raised =
-        AdjustSharedBudget(pressure.available, /*pressed=*/false, 0, floor_budget_, current,
+        AdjustSharedBudget(pressure.available, /*pressed=*/false, 0, SharedFloor(), current,
                            configured_budget_, pressure_.limits());
     if (raised != current) {
       if (const auto applied = node_.SetBudget(base::Bytes(raised)); applied) {
@@ -912,6 +912,52 @@ bool Server::AnyResidentState() {
         }
       }
     }
+  }
+  return false;
+}
+
+std::uint64_t Server::HeldStateBytes() const {
+  std::uint64_t held = 0;
+  for (const auto& m : models_) {
+    if (!m->llm()) continue;
+    auto& l = static_cast<Llm&>(*m);
+    for (std::size_t i = 0; i < l.branches(); ++i) {
+      if (auto b = l.branch(i); b && (!l.BranchIdle(**b) || (*b)->HeldByContinuation())) {
+        const std::uint64_t bytes = l.ResidentStateBytes(**b);
+        held = bytes > UINT64_MAX - held ? UINT64_MAX : held + bytes;
+      }
+    }
+  }
+  return held;
+}
+
+std::uint64_t Server::SharedFloor() const {
+  return SharedBudgetFloor(floor_budget_, HeldStateBytes(), configured_budget_);
+}
+
+std::uint64_t Server::RelieveRefusedState(std::uint64_t needed) {
+  std::uint64_t freed = Reclaim(needed, true, "conversation state refused");
+  if (freed >= needed || !policy_.shrink_budget || configured_budget_ == 0) return freed;
+  // Shared mode, the budget shrunk by pressure from outside: the state a
+  // request holds is its own (D-050), so its growth is lent the budget back
+  // (toward the configured one) rather than refused or kept waiting; the
+  // floor then holds it (SharedFloor).
+  const std::uint64_t current = node_.budget().value();
+  const std::uint64_t lifted = LiftSharedBudget(current, configured_budget_, needed - freed);
+  if (lifted <= current) return freed;
+  const auto applied = node_.SetBudget(base::Bytes(lifted));
+  if (!applied || applied->value() <= current) return freed;
+  budget_ = applied->value();
+  // Kept for the retry: a shrink in the maintenance before it would take
+  // back what was lent (the floor holds the state only once it has grown).
+  lent_at_ = Clock::now();
+  return LiftRelief(needed, freed, current, budget_, configured_budget_);
+}
+
+bool Server::HasActiveNonStateWork() const {
+  if (reclaiming_) return true;
+  for (const auto& m : models_) {
+    if (!m->llm() && m->has_paged() && node_.InRequest(m->paged().stream())) return true;
   }
   return false;
 }

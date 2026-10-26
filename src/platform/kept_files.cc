@@ -60,20 +60,13 @@ FileIdentity IdentityOf(const struct stat& st, int fd) {
           .generation = FileGeneration(fd)};
 }
 
-// Pin the file without following a final link, then check its type before
-// opening it to query the inode generation. No special object is opened for
-// I/O, including one substituted during a replacement's identity check.
-std::expected<FileIdentity, int> IdentityAt(int dir, const std::string& name, struct stat& st) {
-  auto pinned = OpenPathReference(dir, name.c_str(), false);
-  if (!pinned) return std::unexpected(pinned.error());
-  const Owned reference(*pinned);
-  auto opened = ReopenRegularFileForRead(reference.get());
-  if (!opened) return std::unexpected(opened.error());
-  const Owned fd(*opened);
-  if (::fstat(fd.get(), &st) != 0) {
-    return std::unexpected(errno);
-  }
-  return IdentityOf(st, fd.get());
+// Whether the file at `name` beneath `dir` (not following a final link)
+// is the open file `fd`; errno when either could not be looked at.
+std::expected<bool, int> SameFileAt(int dir, const std::string& name, int fd, struct stat& st) {
+  struct stat ours{};
+  if (::fstat(fd, &ours) != 0) return std::unexpected(errno);
+  if (::fstatat(dir, name.c_str(), &st, AT_SYMLINK_NOFOLLOW) != 0) return std::unexpected(errno);
+  return S_ISREG(st.st_mode) && st.st_dev == ours.st_dev && st.st_ino == ours.st_ino;
 }
 
 }  // namespace
@@ -179,31 +172,46 @@ std::expected<PrivateFile, int> OpenPrivateFile(int dir, const char* name, Priva
   return std::unexpected(error);
 }
 
-std::expected<FileIdentity, int> WritePrivateReplacement(int dir, const char* name,
-                                                         std::string_view bytes) {
+PrivateReplacement::PrivateReplacement(PrivateReplacement&& other) noexcept
+    : fd_(std::exchange(other.fd_, -1)) {}
+
+PrivateReplacement& PrivateReplacement::operator=(PrivateReplacement&& other) noexcept {
+  if (this != &other) {
+    if (fd_ >= 0) (void)::close(fd_);
+    fd_ = std::exchange(other.fd_, -1);
+  }
+  return *this;
+}
+
+PrivateReplacement::~PrivateReplacement() {
+  if (fd_ >= 0) (void)::close(fd_);
+}
+
+std::expected<PrivateReplacement, int> WritePrivateReplacement(int dir, const char* name,
+                                                               std::string_view bytes) {
   const std::string temporary = TemporaryName(name);
   // A crashed write's temporary file, if any, goes first (unlinking a link
   // removes the link, not its target); the new one is made here, never
   // opened through what another left (O_EXCL).
   (void)::unlinkat(dir, temporary.c_str(), 0);
-  std::optional<FileIdentity> made;  // once made: removed again on failure
-  const auto written = [&]() -> std::expected<FileIdentity, int> {
-    Owned fd(::openat(dir, temporary.c_str(),
-                      O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_NOCTTY, 0600));
-    if (fd.get() < 0) {
-      return std::unexpected(errno);
-    }
+  const int opened =
+      ::openat(dir, temporary.c_str(),
+               O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_NOCTTY, 0600);
+  if (opened < 0) {
+    return std::unexpected(errno);
+  }
+  PrivateReplacement made(opened);  // from here on removed again on failure
+  const auto written = [&]() -> std::expected<void, int> {
     struct stat st{};
-    if (::fstat(fd.get(), &st) != 0) {
+    if (::fstat(made.fd(), &st) != 0) {
       return std::unexpected(errno);
     }
-    made = IdentityOf(st, fd.get());
-    if (!S_ISREG(st.st_mode) || ::fchmod(fd.get(), 0600) != 0) {
+    if (!S_ISREG(st.st_mode) || ::fchmod(made.fd(), 0600) != 0) {
       return std::unexpected(EPERM);
     }
     std::size_t at = 0;
     while (at < bytes.size()) {
-      const ssize_t wrote = ::write(fd.get(), bytes.data() + at, bytes.size() - at);
+      const ssize_t wrote = ::write(made.fd(), bytes.data() + at, bytes.size() - at);
       if (wrote < 0) {
         if (errno == EINTR) {
           continue;
@@ -212,43 +220,38 @@ std::expected<FileIdentity, int> WritePrivateReplacement(int dir, const char* na
       }
       at += static_cast<std::size_t>(wrote);
     }
-    if (::fsync(fd.get()) != 0) {
+    if (::fsync(made.fd()) != 0) {
       return std::unexpected(errno);
     }
-    return *made;
+    return {};
   }();
-  if (!written && made) {
-    AbandonPrivateReplacement(dir, name, *made);  // nothing half-written stays
+  if (!written) {
+    AbandonPrivateReplacement(dir, name, made);  // nothing half-written stays
+    return std::unexpected(written.error());
   }
-  return written;
+  return made;
 }
 
 std::expected<void, int> CommitPrivateReplacement(int dir, const char* name,
-                                                  const FileIdentity& written) {
+                                                  const PrivateReplacement& written) {
   const std::string temporary = TemporaryName(name);
-  // Still the file written. Not a link nor any other kind of file (never
-  // one written: removed, which leaves what a link names); not another
-  // regular file put in its place since (another writer's, left to it).
-  // Checked on the file itself; the rename then goes by its name. Its
-  // owner, mode and links are not checked: its identity says it is the one
-  // written (D-105 as amended on 2026-10-09).
+  // Still the file written: compared with its open descriptor, on the
+  // name's own object (a link is not followed). Another regular file put
+  // in its place since is another writer's, left to it. Its owner, mode
+  // and links are not checked: its identity says it is the one written
+  // (D-105 as amended on 2026-10-09). The rename then goes by its name.
   struct stat st{};
-  if (::fstatat(dir, temporary.c_str(), &st, AT_SYMLINK_NOFOLLOW) != 0) {
-    return std::unexpected(errno);
+  const auto same = SameFileAt(dir, temporary, written.fd(), st);
+  if (!same) {
+    // Not looked at: its temporary file (the runtime's own name, holding a
+    // conversation's tokens) does not stay behind.
+    if (same.error() != ENOENT) (void)::unlinkat(dir, temporary.c_str(), 0);
+    return std::unexpected(same.error());
   }
-  if (!S_ISREG(st.st_mode)) {
-    (void)::unlinkat(dir, temporary.c_str(), 0);
-    return std::unexpected(EPERM);
-  }
-  auto found = IdentityAt(dir, temporary, st);
-  if (!found) {
-    return std::unexpected(found.error());
-  }
-  if (*found != written) {
-    return std::unexpected(EPERM);
-  }
-  if (!S_ISREG(st.st_mode)) {
-    (void)::unlinkat(dir, temporary.c_str(), 0);  // the one written, changed since
+  if (!*same) {
+    if (!S_ISREG(st.st_mode)) {
+      (void)::unlinkat(dir, temporary.c_str(), 0);  // a link or special file put in its place
+    }
     return std::unexpected(EPERM);
   }
   if (::renameat(dir, temporary.c_str(), dir, name) != 0) {
@@ -259,10 +262,13 @@ std::expected<void, int> CommitPrivateReplacement(int dir, const char* name,
   return {};
 }
 
-void AbandonPrivateReplacement(int dir, const char* name, const FileIdentity& written) {
+void AbandonPrivateReplacement(int dir, const char* name, const PrivateReplacement& written) {
   const std::string temporary = TemporaryName(name);
   struct stat st{};
-  if (auto found = IdentityAt(dir, temporary, st); found && *found == written) {
+  // Removed when it is the one written, and when it could not be looked at
+  // (as a commit does): nothing it held stays behind for want of a stat.
+  const auto same = SameFileAt(dir, temporary, written.fd(), st);
+  if (same ? *same : same.error() != ENOENT) {
     (void)::unlinkat(dir, temporary.c_str(), 0);
   }
 }

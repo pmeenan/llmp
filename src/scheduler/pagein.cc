@@ -717,8 +717,7 @@ void Scheduler::EndLoad(catalog::ExtentId extent, bool loaded) {
               "settling a page-in's load");
   if (load.receipt)
     load.receipt->End(
-        loaded, false,
-        catalog_.OccupancyOf(catalog_.Describe(extent)->descriptor.domain).Total().value());
+        false, catalog_.OccupancyOf(catalog_.Describe(extent)->descriptor.domain).Total().value());
   if (settings_.observer != nullptr) {
     settings_.observer->Staged(extent, loaded ? PageInEvent::kResident : PageInEvent::kFailed);
   }
@@ -765,8 +764,7 @@ void Scheduler::QuarantineLoad(catalog::ExtentId extent, Fault fault) {
   base::Check(catalog_.FailLoad(load.ticket, false).has_value(), "quarantining a page-in's load");
   if (load.receipt)
     load.receipt->End(
-        false, true,
-        catalog_.OccupancyOf(catalog_.Describe(extent)->descriptor.domain).Total().value());
+        true, catalog_.OccupancyOf(catalog_.Describe(extent)->descriptor.domain).Total().value());
   for (const TaskId waiter : load.waiters) {
     Wake(waiter, true);
   }
@@ -1242,8 +1240,7 @@ void Scheduler::EndEviction(catalog::ExtentId extent, bool evicted) {
               "settling an eviction");
   if (eviction.receipt)
     eviction.receipt->End(
-        evicted, false,
-        catalog_.OccupancyOf(catalog_.Describe(extent)->descriptor.domain).Total().value());
+        false, catalog_.OccupancyOf(catalog_.Describe(extent)->descriptor.domain).Total().value());
   // Only the evictor is told of a refusal: a task materializing the extent
   // finds it resident again.
   for (const TaskId waiter : eviction.waiters) {
@@ -1273,8 +1270,7 @@ void Scheduler::QuarantineEvicting(catalog::ExtentId extent, Fault fault) {
   base::Check(catalog_.QuarantineEviction(eviction.ticket).has_value(), "quarantining an eviction");
   if (eviction.receipt)
     eviction.receipt->End(
-        false, true,
-        catalog_.OccupancyOf(catalog_.Describe(extent)->descriptor.domain).Total().value());
+        true, catalog_.OccupancyOf(catalog_.Describe(extent)->descriptor.domain).Total().value());
   for (const TaskId waiter : eviction.waiters) {
     Wake(waiter, true);
   }
