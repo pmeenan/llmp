@@ -1265,4 +1265,137 @@ TEST(ToolCalls, IncrementalEnvelopeHoldsEverySplitOfDeclaredClosingDelimiter) {
     }
   }
 }
+
+TEST(ToolCalls, ReasoningBlocksOpenersUnlessOpenerEndsReasoning) {
+  auto format = c::GemmaToolCalls();
+  format.reasoning_end = "<channel|>";
+  ASSERT_FALSE(format.opener_ends_reasoning);
+  const auto named = Request({c::ToolChoiceKind::kNamed, "lookup"});
+  c::ToolInterpreter parser(format, named, Limits());
+  parser.Reasoning(true);
+  // While reasoning is active and opener_ends_reasoning is false, tool call markers
+  // in reasoning text are ordinary text rather than tool calls.
+  EXPECT_TRUE(parser.Allows("<|tool_call>call:other{}<tool_call|>"));
+  Output out;
+  ASSERT_TRUE(
+      parser.Push("thinking <|tool_call>call:other{}<tool_call|> done<channel|>"
+                  "<|tool_call>call:lookup{n:1}<tool_call|>",
+                  out.Sink()));
+  ASSERT_TRUE(parser.Finish(c::ToolFinish::kStop, out.Sink()));
+  EXPECT_EQ(out.reasoning_ends, 1U);
+  EXPECT_EQ(out.text, "thinking <|tool_call>call:other{}<tool_call|> done");
+  ASSERT_EQ(out.calls.size(), 1U);
+  EXPECT_EQ(out.calls[0].name, "lookup");
+  EXPECT_EQ(out.calls[0].input_json, R"({"n":1})");
+
+  // Once reasoning has ended, undeclared/wrong-name calls are rejected by Allows.
+  c::ToolInterpreter after_reasoning(format, named, Limits());
+  after_reasoning.Reasoning(true);
+  Output after_out;
+  ASSERT_TRUE(after_reasoning.Push("thought<channel|>", after_out.Sink()));
+  EXPECT_FALSE(after_reasoning.Allows("<|tool_call>call:other{}"));
+  EXPECT_TRUE(after_reasoning.Allows("<|tool_call>call:lookup{}"));
+}
+
+TEST(ToolSampling, SpontaneousOpenerDuringWaitingRespectsOpenerEndsReasoningAndForcesSuffix) {
+  {
+    RawTools raw;
+    const auto open_tok = raw.Add("<tool_call>", tok::TokenKind::kControl);
+    raw.Add("</think>", tok::TokenKind::kControl);
+    auto tokenizer = tok::Tokenizer::Create(std::move(raw.spec));
+    ASSERT_TRUE(tokenizer) << tokenizer.error().ToString();
+    c::ToolSampling sampling(*tokenizer, c::QwenToolCalls(),
+                             Request({c::ToolChoiceKind::kNamed, "lookup"}), Limits(), true, {});
+    sampling.Budget(128, 128);
+    // Spontaneous <tool_call> during reasoning ends waiting and leaves "<function=lookup>"
+    // still forced rather than marking the entire prefix as already forced.
+    ASSERT_TRUE(sampling.Accept(open_tok));
+    std::vector<float> row(tokenizer->size(), 0), scratch;
+    const auto masked = sampling.Mask(row, scratch);
+    EXPECT_TRUE(std::isfinite(masked[static_cast<std::size_t>('<')]));
+    EXPECT_FALSE(std::isfinite(masked[static_cast<std::size_t>('x')]));
+  }
+  {
+    RawTools raw;
+    const auto open_tok = raw.Add("<|tool_call>", tok::TokenKind::kControl);
+    const auto end_tok = raw.Add("<channel|>", tok::TokenKind::kControl);
+    auto tokenizer = tok::Tokenizer::Create(std::move(raw.spec));
+    ASSERT_TRUE(tokenizer) << tokenizer.error().ToString();
+    auto format = c::GemmaToolCalls();
+    format.reasoning_end = "<channel|>";
+    c::ToolSampling sampling(*tokenizer, format, Request({c::ToolChoiceKind::kNamed, "lookup"}),
+                             Limits(), true, {});
+    sampling.Budget(128, 128);
+    // Because opener_ends_reasoning is false for Gemma, <|tool_call> during reasoning
+    // is ordinary reasoning text and does not satisfy or trigger the post-reasoning prefix.
+    ASSERT_TRUE(sampling.Accept(open_tok));
+    std::vector<float> row(tokenizer->size(), 0), scratch;
+    const auto during_reasoning = sampling.Mask(row, scratch);
+    EXPECT_TRUE(std::isfinite(during_reasoning[static_cast<std::size_t>('x')]));
+    ASSERT_TRUE(sampling.Accept(end_tok));
+    const auto after_reasoning = sampling.Mask(row, scratch);
+    EXPECT_TRUE(std::isfinite(after_reasoning[static_cast<std::size_t>(open_tok)]));
+    EXPECT_FALSE(std::isfinite(after_reasoning[static_cast<std::size_t>('x')]));
+  }
+}
+
+TEST(ToolCalls, BlockBoundariesRequireOpenBlockAndAtLeastOneCall) {
+  // Stray block_end outside a block is ordinary text.
+  {
+    c::ToolInterpreter parser(c::QwenToolCalls(), Request(), Limits());
+    Output out;
+    EXPECT_TRUE(parser.Allows("hello </tool_call> world"));
+    ASSERT_TRUE(parser.Push("hello </tool_call> world", out.Sink()));
+    ASSERT_TRUE(parser.Finish(c::ToolFinish::kStop, out.Sink()));
+    EXPECT_EQ(out.text, "hello </tool_call> world");
+    EXPECT_TRUE(out.calls.empty());
+  }
+  // Empty block, nested block opener, and non-whitespace inside a block are rejected.
+  for (const std::string_view bad : {"<tool_call></tool_call>", "<tool_call>\n</tool_call>",
+                                     "<tool_call>\n<tool_call>", "<tool_call>hello"}) {
+    c::ToolInterpreter parser(c::QwenToolCalls(), Request(), Limits());
+    EXPECT_FALSE(parser.Allows(bad)) << bad;
+    Output out;
+    EXPECT_FALSE(parser.Push(bad, out.Sink())) << bad;
+  }
+}
+
+TEST(ToolCalls, ObjectNotationAllowsValidPrefixesAndRejectsMalformedArgumentsDuringSampling) {
+  c::ToolInterpreter parser(c::GemmaToolCalls(), Request(), Limits());
+  Output out;
+  ASSERT_TRUE(parser.Push("<|tool_call>call:lookup{", out.Sink()));
+  for (const std::string_view valid :
+       {"}", "s:<|\"|>hi", "s:<|\"|>hi<|\"|>,n:-12", "obj:{a:[true,null,1.5e-2]}",
+        "s:<|\"|>hi<|\"|>}<tool_call|>"}) {
+    EXPECT_TRUE(parser.Allows(valid)) << valid;
+  }
+  for (const std::string_view invalid :
+       {":1", "s:\"hi\"", "s:truX", "s:01", "s:--1", "s:1,}", "s:1,]", "s:1,,"}) {
+    EXPECT_FALSE(parser.Allows(invalid)) << invalid;
+  }
+
+  RawTools raw;
+  auto tokenizer = tok::Tokenizer::Create(std::move(raw.spec));
+  ASSERT_TRUE(tokenizer) << tokenizer.error().ToString();
+  c::ToolSampling sampling(*tokenizer, c::GemmaToolCalls(), Request({}, false), Limits(), false,
+                           {});
+  sampling.Budget(128, 128);
+  for (const unsigned char ch : std::string("<|tool_call>call:lookup{"))
+    ASSERT_TRUE(sampling.Accept(ch));
+  std::vector<float> row(tokenizer->size(), 0), scratch;
+  const auto at_key = sampling.Mask(row, scratch);
+  const auto colon = static_cast<std::size_t>(*tokenizer->Find(":"));
+  const auto rbrace = static_cast<std::size_t>(*tokenizer->Find("}"));
+  const auto n_tok = static_cast<std::size_t>(*tokenizer->Find("n"));
+  EXPECT_FALSE(std::isfinite(at_key[colon]));
+  EXPECT_TRUE(std::isfinite(at_key[rbrace]));
+  EXPECT_TRUE(std::isfinite(at_key[n_tok]));
+  ASSERT_TRUE(sampling.Accept(static_cast<std::int32_t>(n_tok)));
+  ASSERT_TRUE(sampling.Accept(static_cast<std::int32_t>(colon)));
+  const auto at_val = sampling.Mask(row, scratch);
+  EXPECT_TRUE(std::isfinite(at_val[static_cast<std::size_t>('1')]));
+  EXPECT_TRUE(std::isfinite(at_val[static_cast<std::size_t>('-')]));
+  EXPECT_FALSE(std::isfinite(at_val[rbrace]));
+  EXPECT_FALSE(std::isfinite(at_val[colon]));
+}
 }  // namespace

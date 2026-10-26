@@ -232,7 +232,15 @@ DecodeReport DecodingOrchestrator::Step(std::span<const DecodeWork> work) {
     std::vector<std::size_t> ki, oi;
     ki.reserve(work.size());
     oi.reserve(work.size());
+    DecodeReport result;
+    result.outcomes.resize(work.size());
     for (std::size_t i = 0; i < work.size(); ++i) {
+      if (std::ranges::any_of(work.first(i),
+                              [&](const DecodeWork& o) { return o.slot == work[i].slot; })) {
+        result.outcomes[i].refusal =
+            Refusal(std::format("slot {} has no unit of its own here", work[i].slot));
+        continue;
+      }
       if (work[i].certain.empty()) {
         ordinary.push_back(work[i]);
         oi.push_back(i);
@@ -241,15 +249,13 @@ DecodeReport DecodingOrchestrator::Step(std::span<const DecodeWork> work) {
         ki.push_back(i);
       }
     }
-    DecodeReport result;
-    result.outcomes.resize(work.size());
     const auto merge = [&](DecodeReport report, const auto& indexes) {
       result.steps += report.steps;
       result.speculated = result.speculated || report.speculated;
       for (std::size_t i = 0; i < indexes.size(); ++i)
         result.outcomes[indexes[i]] = std::move(report.outcomes[i]);
     };
-    merge(Certain(known), ki);
+    if (!known.empty()) merge(Certain(known), ki);
     if (!ordinary.empty()) merge(Step(ordinary), oi);
     return result;
   }
@@ -276,6 +282,11 @@ DecodeReport DecodingOrchestrator::Single(std::span<const DecodeWork> work, bool
     const DecodeWork& w = work[i];
     if (w.slot >= slots.slots()) {
       report.outcomes[i].refusal = Refusal(std::format("no slot {}", w.slot));
+      continue;
+    }
+    if (std::ranges::any_of(work.first(i), [&](const DecodeWork& o) { return o.slot == w.slot; })) {
+      report.outcomes[i].refusal =
+          Refusal(std::format("slot {} has no unit of its own here", w.slot));
       continue;
     }
     const std::uint32_t positions = slots.positions(w.slot);
@@ -381,6 +392,12 @@ DecodeReport DecodingOrchestrator::Certain(std::span<const DecodeWork> work) {
   indexes.reserve(work.size());
   for (std::size_t i = 0; i < work.size(); ++i) {
     const auto& unit = work[i];
+    if (std::ranges::any_of(work.first(i),
+                            [&](const DecodeWork& o) { return o.slot == unit.slot; })) {
+      report.outcomes[i].refusal =
+          Refusal(std::format("slot {} has no unit of its own here", unit.slot));
+      continue;
+    }
     if (unit.slot >= slots.slots() || unit.certain.empty() ||
         unit.history.size() != std::size_t{slots.positions(unit.slot)} + 1 ||
         unit.certain.size() >= unit.left || !unit.score.empty()) {

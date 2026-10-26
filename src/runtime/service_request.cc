@@ -298,10 +298,9 @@ bool ChatOutput::Push(std::span<const std::int32_t> fresh) {
   if (pending()) {
     if (!exchange_.Paused() && !Drain() && !exchange_.Yielding() && !exchange_.Paused())
       return false;
-    if (exchange_.Yielding()) return false;
-    if (pending()) {
+    if (exchange_.Yielding() || pending()) {
       state_->unread.insert(state_->unread.end(), fresh.begin(), fresh.end());
-      return exchange_.Paused();
+      return !exchange_.Yielding() && exchange_.Paused();
     }
   }
   state_->unread.assign(fresh.begin(), fresh.end());

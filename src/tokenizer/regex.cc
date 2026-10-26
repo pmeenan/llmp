@@ -811,6 +811,7 @@ std::expected<void, Error> Regex::Split(std::span<const char32_t> text,
     if (!end) return std::unexpected(end.error());
     if (*end == kNoMatch) {
       ++pos;
+      if (!unstable && pos <= text.size() && stable_prefix != nullptr) *stable_prefix = pos;
       continue;
     }
     if (*end == pos) {

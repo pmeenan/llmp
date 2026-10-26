@@ -3353,3 +3353,37 @@ TEST(ForcedSpan, FollowingByteCannotPromoteARepartitionedCanonicalPrefix) {
   EXPECT_TRUE(plan->tokens.empty());
   EXPECT_EQ(plan->held, "ab");
 }
+
+TEST(ForcedSpan, MultiStageSplitPlanAndUnmatchedGapPropagateStablePrefixExactly) {
+  // 1. Regex::Split advances stable_prefix past an unmatched gap when no unstable EOF hit occurred.
+  {
+    auto regex = tok::Regex::Compile("a", tok::RegexDialect::kHuggingFace);
+    ASSERT_TRUE(regex);
+    const std::u32string text = U"axb";
+    std::vector<std::uint32_t> lengths;
+    tok::RegexBudget budget{.remaining = 1024};
+    std::size_t stable_prefix = 0;
+    bool append_may_shrink = false;
+    ASSERT_TRUE(regex->Split(text, lengths, budget, &stable_prefix, &append_may_shrink));
+    EXPECT_EQ(lengths, (std::vector<std::uint32_t>{1, 2}));
+    EXPECT_EQ(stable_prefix, text.size());
+    EXPECT_FALSE(append_may_shrink);
+  }
+  // 2. Multi-stage SplitPlan propagates stable_prefix across all stages instead of overwriting
+  // stage 0's instability with stage 1's local result.
+  {
+    const std::array<std::string, 2> expressions{"[a-z]+", "a"};
+    auto plan = tok::SplitPlan::Compile(expressions, tok::RegexDialect::kHuggingFace);
+    ASSERT_TRUE(plan);
+    const std::u32string text = U"12ab";
+    std::vector<std::uint32_t> lengths;
+    auto budget = plan->Budget(text.size());
+    std::size_t stable_prefix = 0;
+    bool append_may_shrink = false;
+    ASSERT_TRUE(plan->Split(text, lengths, budget, &stable_prefix, &append_may_shrink));
+    EXPECT_EQ(lengths, (std::vector<std::uint32_t>{2, 1, 1}));
+    // Stage 0 ("12" gap, "ab" match touching EOF under [a-z]+) is unstable at offset 2 ("ab"),
+    // even though stage 1 ("a" on "ab") has no EOF-touching match at the end of "ab".
+    EXPECT_EQ(stable_prefix, 2U);
+  }
+}

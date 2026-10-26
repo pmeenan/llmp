@@ -580,7 +580,7 @@ class ObjectReader {
           } else {
             const auto first = at_;
             while (at_ < text_.size() && text_[at_] != ':' && text_[at_] != ',' &&
-                   text_[at_] != '}' && text_[at_] != '{')
+                   text_[at_] != '}' && text_[at_] != '{' && text_[at_] != '[' && text_[at_] != ']')
               ++at_;
             const auto key = Strip(text_.substr(first, at_ - first));
             if (key.empty()) return false;
@@ -614,6 +614,192 @@ class ObjectReader {
   std::size_t at_ = 0;
   std::string out_;
 };
+
+bool NumberPrefix(JoinedText s, bool complete) {
+  std::size_t at = 0;
+  if (at < s.size() && s[at] == '-') ++at;
+  if (at == s.size()) return !complete && !s.empty();
+  if (s[at] == '0') {
+    ++at;
+  } else if (s[at] >= '1' && s[at] <= '9') {
+    while (at < s.size() && s[at] >= '0' && s[at] <= '9') ++at;
+  } else {
+    return false;
+  }
+  if (at < s.size() && s[at] == '.') {
+    ++at;
+    if (at == s.size()) return !complete;
+    if (s[at] < '0' || s[at] > '9') return false;
+    while (at < s.size() && s[at] >= '0' && s[at] <= '9') ++at;
+  }
+  if (at < s.size() && (s[at] == 'e' || s[at] == 'E')) {
+    ++at;
+    if (at < s.size() && (s[at] == '+' || s[at] == '-')) ++at;
+    if (at == s.size()) return !complete;
+    if (s[at] < '0' || s[at] > '9') return false;
+    while (at < s.size() && s[at] >= '0' && s[at] <= '9') ++at;
+  }
+  return at == s.size();
+}
+bool ScalarAllows(JoinedText s, bool complete, std::string_view null_word) {
+  for (const std::string_view word :
+       {std::string_view("true"), std::string_view("false"), std::string_view("null"), null_word}) {
+    if (word.empty()) continue;
+    if (complete ? (s.size() == word.size() && PrefixOf(s, word)) : PrefixOf(s, word)) return true;
+  }
+  return NumberPrefix(s, complete);
+}
+
+class ObjectPrefixReader {
+ public:
+  ObjectPrefixReader(JoinedText text, bool complete, const ToolCallFormat& format,
+                     const j::Limits& limits)
+      : text_(text), complete_(complete), format_(format), limits_(limits) {}
+  bool Valid() {
+    bool closed = false;
+    if (!Value(0, closed)) return false;
+    if (!closed) return !complete_;
+    White();
+    const auto rest = text_.substr(at_);
+    return complete_ ? rest.empty() : PrefixOf(rest, format_.call_end);
+  }
+
+ private:
+  void White() {
+    while (at_ < text_.size() && Space(text_[at_])) ++at_;
+  }
+  bool String(bool& closed) {
+    at_ += format_.quote.size();
+    if (format_.quote == "\"") {
+      bool escaped = false;
+      for (; at_ < text_.size(); ++at_) {
+        const char ch = text_[at_];
+        if (static_cast<unsigned char>(ch) < 0x20) return false;
+        if (!escaped && ch == '"') {
+          ++at_;
+          closed = true;
+          return true;
+        }
+        escaped = !escaped && ch == '\\';
+      }
+      closed = false;
+      return !complete_;
+    }
+    const auto end = text_.find(format_.quote, at_);
+    if (end == std::string_view::npos) {
+      closed = false;
+      return !complete_;
+    }
+    at_ = end + format_.quote.size();
+    closed = true;
+    return true;
+  }
+  bool Value(std::size_t depth, bool& closed) {
+    if (depth > limits_.max_depth) return false;
+    White();
+    if (at_ == text_.size()) {
+      closed = false;
+      return !complete_;
+    }
+    if (depth > 0 && text_.substr(at_).starts_with(format_.quote)) return String(closed);
+    if (depth > 0 && !complete_ && PrefixOf(text_.substr(at_), format_.quote)) {
+      closed = false;
+      return true;
+    }
+    const char begin = text_[at_];
+    if (depth == 0 && begin != '{') return false;
+    if (begin == '{' || begin == '[') {
+      const char end = begin == '{' ? '}' : ']';
+      ++at_;
+      White();
+      if (at_ == text_.size()) {
+        closed = false;
+        return !complete_;
+      }
+      if (text_[at_] == end) {
+        ++at_;
+        closed = true;
+        return true;
+      }
+      for (;;) {
+        White();
+        if (at_ == text_.size()) {
+          closed = false;
+          return !complete_;
+        }
+        if (begin == '{') {
+          if (text_.substr(at_).starts_with(format_.quote)) {
+            bool key_closed = false;
+            if (!String(key_closed)) return false;
+            if (!key_closed) {
+              closed = false;
+              return !complete_;
+            }
+          } else if (!complete_ && PrefixOf(text_.substr(at_), format_.quote)) {
+            closed = false;
+            return true;
+          } else {
+            const auto first = at_;
+            while (at_ < text_.size() && text_[at_] != ':' && text_[at_] != ',' &&
+                   text_[at_] != '}' && text_[at_] != '{' && text_[at_] != '[' && text_[at_] != ']')
+              ++at_;
+            const auto key = Strip(text_.substr(first, at_ - first));
+            if (key.empty()) return false;
+            if (at_ == text_.size()) {
+              closed = false;
+              return !complete_;
+            }
+          }
+          White();
+          if (at_ == text_.size()) {
+            closed = false;
+            return !complete_;
+          }
+          if (text_[at_++] != ':') return false;
+        }
+        bool item_closed = false;
+        if (!Value(depth + 1, item_closed)) return false;
+        if (!item_closed) {
+          closed = false;
+          return !complete_;
+        }
+        White();
+        if (at_ == text_.size()) {
+          closed = false;
+          return !complete_;
+        }
+        const char separator = text_[at_++];
+        if (separator == end) {
+          closed = true;
+          return true;
+        }
+        if (separator != ',') return false;
+      }
+    }
+    const auto first = at_;
+    while (at_ < text_.size() && !Space(text_[at_]) && text_[at_] != ',' && text_[at_] != '}' &&
+           text_[at_] != ']')
+      ++at_;
+    const auto scalar = text_.substr(first, at_ - first);
+    const bool scalar_complete = at_ < text_.size() || complete_;
+    if (scalar.empty() || !ScalarAllows(scalar, scalar_complete, format_.null_word)) return false;
+    closed = at_ < text_.size();
+    return closed || !complete_;
+  }
+
+  JoinedText text_;
+  bool complete_ = false;
+  const ToolCallFormat& format_;
+  const j::Limits& limits_;
+  std::size_t at_ = 0;
+};
+bool ObjectNotationAllows(JoinedText body, bool complete, const ToolCallFormat& format,
+                          const j::Limits& limits) {
+  const auto end = body.find(format.name_end);
+  if (end == std::string_view::npos) return !complete;
+  if (Strip(body.substr(0, end)).empty()) return false;
+  return ObjectPrefixReader(body.substr(end), complete, format, limits).Valid();
+}
 
 struct ParsedCall {
   std::string name, arguments;
@@ -1049,12 +1235,16 @@ bool ToolInterpreter::Allows(std::string_view candidate) const {
   JoinedText pending(pending_, candidate);
   auto envelope = envelope_;
   auto whole_envelope = envelope_whole_;
-  DelimiterScan scan{scan_at_, scan_nesting_, scan_quoted_, scan_escaped_};
+  DelimiterScan scan{scan_at_, {}, scan_quoted_, scan_escaped_};
+  if (in_call_) scan.nesting = scan_nesting_;
   auto phase = tag_phase_;
   auto json = tag_json_;
   auto name_end = tag_name_end_, search = tag_header_search_;
   auto calls = calls_;
+  auto block_calls = block_calls_;
   bool in_call = in_call_;
+  bool in_block = in_block_;
+  bool reasoning_active = reasoning_active_;
   for (;;) {
     if (in_call) {
       if (request_.choice().kind == ToolChoiceKind::kNamed ||
@@ -1075,6 +1265,10 @@ bool ToolInterpreter::Allows(std::string_view candidate) const {
         end = TaggedEnd(pending, format_, request_, scan, phase, json, name_end, search);
       else if (const auto at = Outside(pending, format_.call_end, format_.quote, scan))
         end = TaggedBoundary{*at, format_.call_end.size()};
+      if (format_.arguments == ToolArguments::kObjectNotation &&
+          !ObjectNotationAllows(end ? pending.substr(0, end->at) : pending, end.has_value(),
+                                format_, limits_))
+        return false;
       if (!end) return true;
       bool is_call = true;
       if (format_.bare_envelope) {
@@ -1100,8 +1294,12 @@ bool ToolInterpreter::Allows(std::string_view candidate) const {
       search = 0;
       continue;
     }
-    const std::array<std::string_view, 3> markers{format_.call_begin, format_.block_begin,
-                                                  format_.block_end};
+    const bool allow_openers = !reasoning_active || format_.opener_ends_reasoning;
+    const std::array<std::string_view, 4> markers{
+        allow_openers ? format_.call_begin : std::string_view{},
+        allow_openers ? format_.block_begin : std::string_view{},
+        allow_openers && in_block ? format_.block_end : std::string_view{},
+        reasoning_active ? format_.reasoning_end : std::string_view{}};
     std::size_t found = std::string::npos, marker = 0;
     for (std::size_t i = 0; i < markers.size(); ++i) {
       if (markers[i].empty()) continue;
@@ -1111,11 +1309,42 @@ bool ToolInterpreter::Allows(std::string_view candidate) const {
         marker = i;
       }
     }
-    if (found == std::string::npos) return true;
+    if (found == std::string::npos) {
+      if (in_block) {
+        std::size_t held = 0;
+        for (std::size_t i = 0; i < markers.size(); ++i) {
+          if (i == 2 && calls == block_calls) continue;
+          const auto token = markers[i];
+          for (std::size_t n = 1; n < token.size() && n <= pending.size(); ++n)
+            if (pending.substr(pending.size() - n).starts_with(token.substr(0, n)))
+              held = std::max(held, n);
+        }
+        if (!Strip(pending.substr(0, pending.size() - held)).empty()) return false;
+      }
+      return true;
+    }
+    if (in_block && !Strip(pending.substr(0, found)).empty()) return false;
     pending.remove_prefix(found + markers[marker].size());
+    if (marker == 3) {
+      reasoning_active = false;
+      continue;
+    }
+    if (marker == 2) {
+      if (calls == block_calls) return false;
+      in_block = false;
+      continue;
+    }
+    if (marker == 1) {
+      if (in_block || (!request_.parallel() && calls != 0)) return false;
+      in_block = true;
+      block_calls = calls;
+      if (format_.opener_ends_reasoning) reasoning_active = false;
+      continue;
+    }
     if (marker == 0) {
       if (!format_.bare_envelope && !request_.parallel() && calls != 0) return false;
       in_call = true;
+      if (format_.opener_ends_reasoning) reasoning_active = false;
     }
   }
 }
@@ -1223,8 +1452,11 @@ ToolStatus ToolInterpreter::Drain(bool final, const Sink& sink) {
       continue;
     }
     if (pending_.empty()) return {};
+    const bool allow_openers = !reasoning_active_ || format_.opener_ends_reasoning;
     const std::array<std::string_view, 4> markers{
-        format_.call_begin, format_.block_begin, format_.block_end,
+        allow_openers ? format_.call_begin : std::string_view{},
+        allow_openers ? format_.block_begin : std::string_view{},
+        allow_openers && in_block_ ? format_.block_end : std::string_view{},
         reasoning_active_ ? format_.reasoning_end : std::string_view{}};
     std::size_t found = std::string::npos, marker = 0;
     for (std::size_t i = 0; i < markers.size(); ++i) {
@@ -1270,16 +1502,18 @@ ToolStatus ToolInterpreter::Drain(bool final, const Sink& sink) {
     if (marker == 3) {
       reasoning_active_ = false;
       reasoning_ended_ = true;
-      reasoning_active_ = false;
       if (auto emitted = Emit(ToolReasoningEnd{}, sink); !emitted) return emitted;
       if (paused_) return {};
       continue;
     }
     if (marker == 2) {
+      if (calls_ == block_calls_) return Fail("empty tool call block");
       in_block_ = false;
       continue;
     }
     if (marker == 1) {
+      if (in_block_) return Fail("nested tool call block");
+      if (!request_.parallel() && calls_ != 0) return Fail("parallel tool calls are disabled");
       in_block_ = true;
       block_calls_ = calls_;
     }

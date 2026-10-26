@@ -90,15 +90,16 @@ bool ToolSampling::Transition(std::string_view bytes, Trigger& next) const {
   const auto& f = context_->format;
   const auto opener =
       f.block_begin.empty() ? std::string_view(f.call_begin) : std::string_view(f.block_begin);
-  const auto held = std::max(opener.size(), f.reasoning_end.size());
+  const auto held =
+      std::max(f.opener_ends_reasoning ? opener.size() : std::size_t{0}, f.reasoning_end.size());
   for (const char byte : bytes) {
     if (next.waiting) {
       next.tail += byte;
-      if (next.tail.ends_with(opener)) {
+      if (f.opener_ends_reasoning && !opener.empty() && next.tail.ends_with(opener)) {
         next.waiting = false;
-        next.forced = context_->prefix.size();  // spontaneous opener; lexical name mask applies
+        next.forced = opener.size();
         next.tail.clear();
-      } else if (next.tail.ends_with(f.reasoning_end)) {
+      } else if (!f.reasoning_end.empty() && next.tail.ends_with(f.reasoning_end)) {
         next.waiting = false;
         next.forced = 0;
         next.tail.clear();
@@ -145,13 +146,15 @@ std::span<const float> ToolSampling::Mask(std::span<const float> row,
   const bool can_stop = lexical_.CanStop();
   if (!constrained && can_stop && !trigger_.waiting) return row;
   scratch.assign(row.begin(), row.end());
+  const bool forcing = !trigger_.waiting && trigger_.forced < context_->prefix.size();
   std::expected<std::size_t, tokenizer::Error> cover = std::size_t{0};
-  if (!trigger_.waiting && trigger_.forced < context_->prefix.size()) {
+  if (forcing) {
     tokenizer::ForcedSpanOptions cover_options;
     const auto forced = std::string_view(context_->prefix).substr(trigger_.forced);
     cover_options.encode.max_bytes = forced.size();
     cover = context_->tokenizer->ForcedCoverBytes(forced, cover_options);
   }
+  std::string piece;
   for (std::size_t i = 0; i < row.size(); ++i) {
     const auto token = static_cast<std::int32_t>(i);
     bool allowed = TerminalAllowed(token, can_stop);
@@ -159,18 +162,18 @@ std::span<const float> ToolSampling::Mask(std::span<const float> row,
       if (!allowed) scratch[i] = -std::numeric_limits<float>::infinity();
       continue;
     }
-    std::string piece;
-    auto next = trigger_;
-    if (allowed)
-      allowed = Decode(token, piece) && Transition(piece, next) && lexical_.Allows(piece);
-    // A hidden control cannot advance a forced prefix. Otherwise it could
-    // terminate without ever producing the required opening sequence.
-    if (allowed && !trigger_.waiting && trigger_.forced < context_->prefix.size() && piece.empty())
-      allowed = false;
-    if (allowed && !next.waiting && next.forced < context_->prefix.size())
-      allowed = Plan(token).has_value();
-    if (allowed && !trigger_.waiting && trigger_.forced < context_->prefix.size()) {
+    if (allowed && forcing) {
       allowed = cover && context_->tokenizer->CoversForced(token, *cover);
+    }
+    if (allowed) {
+      piece.clear();
+      auto next = trigger_;
+      allowed = Decode(token, piece) && Transition(piece, next) && lexical_.Allows(piece);
+      // A hidden control cannot advance a forced prefix. Otherwise it could
+      // terminate without ever producing the required opening sequence.
+      if (allowed && forcing && piece.empty()) allowed = false;
+      if (allowed && !next.waiting && next.forced < context_->prefix.size())
+        allowed = Plan(token).has_value();
     }
     if (!allowed) scratch[i] = -std::numeric_limits<float>::infinity();
   }

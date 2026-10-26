@@ -2120,4 +2120,65 @@ TEST_F(FourSlotDecodingTest, DraftWaveMaxExecutesAloneDraftsWhileVerifyJoins) {
   EXPECT_GT(second_catchup_steps, 0U);
 }
 
+TEST_F(DecodingTest, DuplicateSlotsRefusedInSingleCertainAndMixedWaves) {
+  auto plain = Make({.kind = en::DecodingMode::Kind::kPlain});
+  const std::array<std::uint32_t, 2> prompts{10, 12};
+  Prefill(prompts, &plain);
+
+  // 1. Plain Single wave with duplicate slot 0: first unit executes, duplicate is refused.
+  {
+    const std::array<en::DecodeWork, 2> dup_single{
+        en::DecodeWork{.slot = 0, .history = history_[0], .left = kAll},
+        en::DecodeWork{.slot = 0, .history = history_[0], .left = kAll}};
+    const auto report = plain.Step(dup_single);
+    EXPECT_EQ(report.steps, 1U);
+    ASSERT_EQ(report.outcomes.size(), 2U);
+    EXPECT_FALSE(report.outcomes[0].refusal);
+    EXPECT_EQ(report.outcomes[0].kept, 1U);
+    ASSERT_TRUE(report.outcomes[1].refusal);
+    EXPECT_NE(report.outcomes[1].refusal->what.find("no unit of its own"), std::string::npos);
+    EXPECT_EQ(slots().positions(0), 11U);
+    history_[0].push_back(Truth(11));
+  }
+  // 2. Certain wave with duplicate slot 0: first unit executes, duplicate is refused.
+  {
+    const std::array<std::int32_t, 1> certain_toks{Truth(12)};
+    const std::array<en::DecodeWork, 2> dup_certain{
+        en::DecodeWork{.slot = 0, .history = history_[0], .left = kAll, .certain = certain_toks},
+        en::DecodeWork{.slot = 0, .history = history_[0], .left = kAll, .certain = certain_toks}};
+    const auto report = plain.Step(dup_certain);
+    EXPECT_EQ(report.steps, 1U);
+    ASSERT_EQ(report.outcomes.size(), 2U);
+    EXPECT_FALSE(report.outcomes[0].refusal);
+    EXPECT_EQ(report.outcomes[0].kept, 2U);
+    ASSERT_TRUE(report.outcomes[1].refusal);
+    EXPECT_NE(report.outcomes[1].refusal->what.find("no unit of its own"), std::string::npos);
+    EXPECT_EQ(slots().positions(0), 13U);
+    history_[0].push_back(Truth(12));
+    history_[0].push_back(Truth(13));
+  }
+  // 3. Mixed Certain + Single wave with duplicate slot 0 across sub-waves.
+  {
+    const std::array<std::int32_t, 1> certain_toks{Truth(14)};
+    const std::array<en::DecodeWork, 2> dup_mixed{
+        en::DecodeWork{.slot = 0, .history = history_[0], .left = kAll, .certain = certain_toks},
+        en::DecodeWork{.slot = 0, .history = history_[0], .left = kAll}};
+    const auto report = plain.Step(dup_mixed);
+    EXPECT_EQ(report.steps, 1U);
+    ASSERT_EQ(report.outcomes.size(), 2U);
+    EXPECT_FALSE(report.outcomes[0].refusal);
+    EXPECT_EQ(report.outcomes[0].kept, 2U);
+    ASSERT_TRUE(report.outcomes[1].refusal);
+    EXPECT_NE(report.outcomes[1].refusal->what.find("no unit of its own"), std::string::npos);
+    EXPECT_EQ(slots().positions(0), 15U);
+    history_[0].push_back(Truth(14));
+    history_[0].push_back(Truth(15));
+  }
+  // Slot 0 state remains consistent and usable.
+  const auto ok = Unit(plain, {0});
+  EXPECT_EQ(ok.steps, 1U);
+  EXPECT_FALSE(ok.outcomes[0].refusal);
+  EXPECT_EQ(slots().positions(0), 16U);
+}
+
 }  // namespace

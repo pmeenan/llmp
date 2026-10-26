@@ -399,10 +399,20 @@ TEST(ChatCorpus, GemmaRenderersEqualTheirTemplatesOnRandomConversations) {
     std::size_t refused = 0;
     std::size_t unsupported = 0;
     for (std::size_t i = 0; i < conversations.size(); ++i) {
-      const auto mine = native->render(conversations[i]);
-      const auto theirs = chat::RenderInterpreted(*program, conversations[i], facts, kNow);
+      const auto projected = chat::ProjectContent(conversations[i], native->supports_tools);
+      if (!projected) {
+        ++refused;
+        continue;
+      }
+      const auto mine = native->render(*projected);
+      const auto theirs = chat::RenderInterpreted(*program, *projected, facts, kNow, {},
+                                                  native->tool_association_name_only);
       if (!mine && mine.error().rule == chat::Rule::kUnsupported) {
         ++unsupported;
+        continue;
+      }
+      if (!mine && mine.error().reason == "tool result association is ambiguous") {
+        ++refused;
         continue;
       }
       if (theirs) {
