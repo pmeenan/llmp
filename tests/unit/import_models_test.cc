@@ -1180,7 +1180,9 @@ TEST(ImportGgufModelsTest, NormalizesClosedQwen38TargetHeadersWithoutPayloadRead
 class ImportGenericModelsTest : public testing::TestWithParam<const char*> {};
 TEST_P(ImportGenericModelsTest, NativeHeadersProduceAValidStoredSpec) {
   const auto directory = std::filesystem::path("/mnt/llm/checkpoints/hf") / GetParam();
-  if (!Exists(directory / "config.json")) GTEST_SKIP() << directory;
+  if (!Exists(directory / "config.json"))
+    GTEST_FAIL() << "the archived proof checkpoint " << directory
+                 << " is absent (the NAS model archive, docs/model-archive.md)";
   auto source = ReadCheckpoint(directory);
   ASSERT_TRUE(source) << source.error().ToString();
   auto plan = Normalize(std::move(*source), {4ULL << 30U, 1ULL << 48U});
@@ -1205,7 +1207,9 @@ INSTANTIATE_TEST_SUITE_P(
 TEST(ImportGenericModelsTest, NativeMathMetadataCannotDisappearIntoAuxiliaryNamespaces) {
   const auto directory = std::filesystem::path("/mnt/llm/checkpoints/hf/TensorFold/") /
                          "Qwen3.8-27B-MLX-4bit@70ae7fac63274ff2eac54152031433374cb80f2f";
-  if (!Exists(directory / "config.json")) GTEST_SKIP() << directory;
+  if (!Exists(directory / "config.json"))
+    GTEST_FAIL() << "the archived proof checkpoint " << directory
+                 << " is absent (the NAS model archive, docs/model-archive.md)";
   auto source = ReadCheckpoint(directory);
   ASSERT_TRUE(source) << source.error().ToString();
   auto ordinary_axes = *source;

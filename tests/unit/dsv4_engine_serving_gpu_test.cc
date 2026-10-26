@@ -902,34 +902,41 @@ struct TopLogit {
 // The whole-model reference of one fixed prompt: Tokens(0, 1285) (a prompt
 // that crosses CSA and HCA blocks), its head and seven greedy steps' rows
 // (eight rows, the head's first), at the default 4,096-row chunk and 8,704
-// context on the artifact 8a355bfb... (v0), whose v1 import d2046349...
-// executes bit for bit alike.
+// context on the published v1 DeepSeek target.
 //
-// kLegacy: the frozen M3 runner's (the baseline build
+// kLegacyTokens: the frozen M3 runner's greedy tokens (the baseline build
 // ~/.local/share/llmp/m36-baseline/1facc957-fixed, llmp_dsv4_exec --context
 // 8704 --max-rows 4096 --outa-prefill --ds4-hca --outa-partial --generate
-// 8): each row's two largest logits, conditioned on that runner's preceding
-// tokens. Teacher forcing preserves that independent conditioning even when a
-// permitted near tie makes the current engine's free generation diverge.
-// Free generation is checked separately by exact same-source replay, including
-// every returned row and the complete committed state/history. The previous
-// engine-only numeric snapshot was explicitly arithmetic-version dependent.
+// 8), the conditioning of every row. kReference: each row's logits of the two
+// tokens the M3 runner ranked first, conditioned on those tokens, from the
+// same UD-Q2_K_XL checkpoint's reference implementation, llama.cpp v0.6.0
+// (d8123504, the digest-pinned image) with fusion off, F16 caches and flash
+// attention (docs/experiments/m35-f12-frozen/: forced_rows.cc; it ranks
+// the same tokens first in every row, and the M3 runner's values lie within
+// 0.42 of it). The M3 runner's own values were the anchor until GB10's
+// upstream VecQ reduction schedules (425ebf23, 4533033c, 2b3452de) moved a
+// competitor logit 2.05 from them; llama.cpp's own fused and unfused arms
+// differ by up to 1.93 on these rows. Teacher forcing preserves that
+// independent conditioning even when a permitted near tie makes the current
+// engine's free generation diverge. Free generation is checked separately by
+// exact same-source replay, including every returned row and the complete
+// committed state/history.
 constexpr std::array<std::int32_t, 8> kLegacyTokens{563, 42, 509, 818, 5279, 529, 7001, 42};
-constexpr std::array<std::array<TopLogit, 2>, 8> kLegacy{{
-    {{{563, 30.9269F}, {42, 19.6843F}}},
-    {{{42, 38.8520F}, {62684, 22.4839F}}},
-    {{{509, 19.9194F}, {818, 19.4967F}}},
-    {{{818, 23.4615F}, {5279, 21.1966F}}},
-    {{{5279, 28.0338F}, {529, 26.3023F}}},
-    {{{529, 27.3918F}, {7001, 19.5456F}}},
-    {{{7001, 26.3718F}, {17960, 19.5754F}}},
-    {{{42, 26.4342F}, {563, 22.9392F}}},
+constexpr std::array<std::array<TopLogit, 2>, 8> kReference{{
+    {{{563, 30.5178F}, {42, 19.8462F}}},
+    {{{42, 39.0277F}, {62684, 22.7359F}}},
+    {{{509, 20.2417F}, {818, 19.5496F}}},
+    {{{818, 23.8826F}, {5279, 21.5330F}}},
+    {{{5279, 27.8368F}, {529, 26.5539F}}},
+    {{{529, 27.6047F}, {7001, 19.6414F}}},
+    {{{7001, 26.7954F}, {17960, 19.7746F}}},
+    {{{42, 26.2153F}, {563, 23.1771F}}},
 }};
-// Retain the M3 comparison's original bounds: at most 2.0 at each frozen
-// top value, with the original 0.5 legacy-margin rule for a changed argmax.
-// Applying these bounds after consuming a different free-generated token
-// would compare different conditional distributions.
-constexpr float kLegacyBound = 2.0F;
+// The M3 comparison's bounds, kept for the reference: at most 2.0 at each
+// watched logit, with the 0.5 margin rule for a changed argmax. Applying
+// these bounds after consuming a different free-generated token would
+// compare different conditional distributions.
+constexpr float kReferenceBound = 2.0F;
 constexpr float kNearTie = 0.5F;
 
 TEST_F(Dsv4EngineTarget, FixedPromptHeadAndGreedyTokensMatchTheReferences) {
@@ -945,18 +952,18 @@ TEST_F(Dsv4EngineTarget, FixedPromptHeadAndGreedyTokensMatchTheReferences) {
   // Row i predicts the next token from prompt + legacy[0:i]. Check that
   // distribution BEFORE consuming legacy[i], regardless of our own argmax.
   for (std::size_t row = 0; row < kLegacyTokens.size(); ++row) {
-    SCOPED_TRACE(std::format("legacy-conditioned row {}", row));
+    SCOPED_TRACE(std::format("reference-conditioned row {}", row));
     ASSERT_TRUE(Finite(logits));
     ASSERT_EQ(Branch(0).history(), conditioned);
     ASSERT_EQ(Engine().runner().slots().positions(0), conditioned.size());
-    const auto& legacy = kLegacy[row];
+    const auto& reference = kReference[row];
     const auto token = Argmax(logits);
-    const float margin = legacy[0].logit - legacy[1].logit;
-    EXPECT_TRUE(token == kLegacyTokens[row] || (margin <= kNearTie && token == legacy[1].id))
-        << "token " << token << ", the M3 runner's " << kLegacyTokens[row] << " by " << margin;
-    for (const TopLogit& want : legacy)
-      EXPECT_NEAR(logits[static_cast<std::size_t>(want.id)], want.logit, kLegacyBound)
-          << "token " << want.id << " against the same-history M3 runner";
+    const float margin = reference[0].logit - reference[1].logit;
+    EXPECT_TRUE(token == kLegacyTokens[row] || (margin <= kNearTie && token == reference[1].id))
+        << "token " << token << ", the reference's " << kLegacyTokens[row] << " by " << margin;
+    for (const TopLogit& want : reference)
+      EXPECT_NEAR(logits[static_cast<std::size_t>(want.id)], want.logit, kReferenceBound)
+          << "token " << want.id << " against the same-history reference";
     if (row + 1 != kLegacyTokens.size()) {
       // Select only the forced anchor from this synthetic head. Generate's
       // second row is the unmodified real decode result after that anchor;

@@ -56,8 +56,8 @@ struct LlmDecodeObservation {
   };
   static constexpr std::uint64_t BoundedBytes(std::size_t limit, std::size_t token_limit) {
     // Include the outer vector/object, full event storage, per-allocation
-    // slack for three strings and four bounded vectors, and the bounded text
-    // serialization retained by the assistant diagnostic result.
+    // slack for three strings and four bounded vectors, and a bounded text
+    // serialization of the events.
     return 128U + std::uint64_t{kMaxEvents} * sizeof(Event) +
            std::uint64_t{limit} *
                (3U * 64U + token_limit * (3U * sizeof(std::int32_t) + sizeof(std::uint32_t)) +

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -164,6 +165,17 @@ std::expected<void, std::string> ApplyKvCacheEncoding(spec::ModelSpec& model,
         }
       }
   return {};
+}
+
+spec::ModelSpec WithoutKvCacheEncoding(const spec::ModelSpec& model) {
+  auto source = model;
+  for (auto& stage : source.stages)
+    spec::EachComponent(stage, [](spec::ComponentRef& component, const std::string&) {
+      std::erase_if(component.params, [](const spec::Param& p) {
+        return p.name == "kv_encoding" && p.value == spec::ParamValue(std::string("q8_0"));
+      });
+    });
+  return source;
 }
 
 }  // namespace llmp::components

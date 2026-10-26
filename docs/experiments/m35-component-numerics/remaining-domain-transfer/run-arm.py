@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-"""One registered U4 arm. Collection requires a separate reviewed receipt."""
+"""One registered U4 arm. Collection requires a separate reviewed receipt.
+
+Historical: the DISABLED_U4Diagnostic* GoogleTest cases this drove (pins.json
+filters) were removed 2026-10-26 (F12); the script no longer runs.
+"""
 
 from __future__ import annotations
 

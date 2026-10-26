@@ -102,7 +102,10 @@ std::uint64_t OwnMemoryMax() {
 TEST(ImportModelOptModelsTest, ClosedNativeTargetOwnsEverySourceAndPreservesFormats) {
   // NOLINTNEXTLINE(concurrency-mt-unsafe): read-only test environment.
   const char* configured = std::getenv("LLMP_TEST_MODELOPT_SOURCE");
-  if (configured == nullptr) GTEST_SKIP() << "no explicit pinned ModelOpt source";
+  if (configured == nullptr)
+    GTEST_SKIP() << "opt-in confined proof: needs a prepaid 8 GiB memory.max cgroup "
+                    "(tools/job-proof) and LLMP_TEST_MODELOPT_SOURCE, LLMP_TEST_MODELOPT_CLI_STORE "
+                    "(docs/experiments/m35-f12-frozen/README.md, \"Opt-in tests\")";
   ASSERT_EQ(OwnMemoryMax(), kCombined) << "run in prepaid 8 GiB combined memory.max cgroup";
   const auto memory = platform::ReadMemoryPressure();
   ASSERT_TRUE(memory.available);
@@ -495,8 +498,10 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
   // NOLINTNEXTLINE(concurrency-mt-unsafe): read-only test environment.
   const char* destination = std::getenv("LLMP_TEST_MODELOPT_PUBLICATION_STORE");
   if (configured == nullptr || destination == nullptr)
-    GTEST_SKIP() << "the confined publication recipe needs LLMP_TEST_MODELOPT_SOURCE and "
-                    "LLMP_TEST_MODELOPT_PUBLICATION_STORE";
+    GTEST_SKIP() << "opt-in confined proof: needs a prepaid 8 GiB memory.max cgroup "
+                    "(tools/job-proof) and LLMP_TEST_MODELOPT_SOURCE, "
+                    "LLMP_TEST_MODELOPT_PUBLICATION_STORE (docs/experiments/m35-f12-frozen/"
+                    "README.md, \"Opt-in tests\")";
   ASSERT_EQ(OwnMemoryMax(), kCombined);
   const auto memory = platform::ReadMemoryPressure();
   ASSERT_TRUE(memory.available);

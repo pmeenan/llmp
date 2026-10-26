@@ -8,14 +8,17 @@
 // must agree bit for bit; the GGUF publication arm is asserted against its
 // frozen digests (tests/unit/data/v1_frozen/qwen38_gguf.json). No
 // graph/source wrapper or teacher-forced proposals. This small screen is
-// not the 1% migration gate. Each screen skips when its artifacts or the
+// not the 1% migration gate. Each screen fails when its artifacts or the
 // tokenizer assets are absent.
 //
 // Also (label `models`, the ordinary Server with its default options and
-// no diagnostic tuple): the GGUF import's conversations kept across a
-// restart (D-105, D-112) continue exactly (Qwen38GgufKeptGpu, below;
-// kept_restart_serving_checks.h). It skips, naming the artifact, when the
-// GGUF import or the tokenizer assets are absent.
+// no diagnostic tuple): the native target and MTP drafter's two kept
+// conversations adopted by a second Server and continued
+// (NativeC2ServerDefaultOptionsReopen), and the conversations kept across a
+// restart (D-105, D-112) continuing exactly, of the GGUF import
+// (Qwen38GgufKeptGpu, below; kept_restart_serving_checks.h) and of the native
+// target with its MTP drafter (Qwen38MtpKeptGpu). They fail, naming the
+// artifact, when the artifacts or the tokenizer assets are absent.
 
 #include <gtest/gtest.h>
 #include <sys/stat.h>
@@ -23,7 +26,6 @@
 
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -47,27 +49,19 @@
 #include "base/bytes.h"
 #include "base/sha256.h"
 #include "compiler_inventory.h"
-#include "engine/component_source.h"
 #include "engine/paged_weights.h"
-#include "engine/plan_cache.h"
 #include "execution/registry.h"
 #include "kept_restart_serving_checks.h"
 #include "kernels/common/step_program.h"
 #include "kernels/ggml/plan_step.h"
 #include "planner/plan.h"
 #include "platform/host_probe.h"
-#include "platform/kept_files.h"
-#include "runtime/approvals.h"
-#include "runtime/component_admission.h"
 #include "runtime/component_build.h"
 #include "runtime/memory_guard.h"
 #include "runtime/serving.h"
-#include "runtime/snapshot_store.h"
-#include "runtime/state_keeper.h"
 #include "spec/mappings/qwen38.h"
 #include "spec/stored.h"
 #include "tokenizer_fixtures.h"
-#include "u4_diagnostic_export.h"
 #include "v1_frozen.h"
 
 namespace {
@@ -300,7 +294,6 @@ struct Lifetime {
   cfg::NodeConfig config;
   cfg::RuntimeRoles roles;
   rt::ServingOptions options;
-  std::optional<llmp::test_support::U4JsonlFile> diagnostic_log;
   std::unique_ptr<rt::Server> server;
   std::shared_ptr<en::ExecutionMetadataAllowance> observation_payment;
   std::unique_ptr<rt::Llm::PromptSession> restoration;
@@ -308,7 +301,7 @@ struct Lifetime {
   fs::path scratch;
   std::FILE* log = nullptr;
   ~Lifetime() {
-    if (log != nullptr && !diagnostic_log) std::fclose(log);
+    if (log != nullptr) std::fclose(log);
   }
 };
 static_assert(sizeof(Lifetime) <= 16384 && sizeof(rt::Server) <= 65536 && sizeof(rt::Llm) <= 65536);
@@ -365,32 +358,8 @@ std::expected<StateImage, std::string> ReadState(Lifetime& life, rt::Llm& model)
 std::expected<std::unique_ptr<Lifetime>, std::string> Run(
     std::string_view id, bool mtp, bool component, bool rows, std::uint32_t depth,
     Lifetime* previous = nullptr, const fs::path& stored_root = {}, bool publication = false,
-    std::string_view drafter = kMtp, std::optional<std::string> drafter_policy = std::nullopt,
-    const llmp::test_support::U4ManualEnrollment* diagnostic = nullptr) {
+    std::string_view drafter = kMtp, std::optional<std::string> drafter_policy = std::nullopt) {
   auto life = std::make_unique<Lifetime>();
-  std::optional<llmp::test_support::U4DiagnosticExport> export_to;
-  std::optional<llmp::test_support::U4JsonlFile> result_export;
-  if (diagnostic) {
-    if (mtp || !component || !rows || !publication || diagnostic->model != "qwen38-plain" ||
-        diagnostic->transport != "configured-default")
-      return std::unexpected(
-          "Qwen diagnostic requires the registered plain GGUF publication recipe");
-    auto created = llmp::test_support::U4DiagnosticExport::Create(diagnostic->export_directory);
-    if (!created) return std::unexpected(created.error());
-    export_to.emplace(std::move(*created));
-    auto enrolled = llmp::test_support::U4WriteEnrollment(
-        *export_to, diagnostic->model, diagnostic->store.string(), diagnostic->target_id, {},
-        diagnostic->transport, diagnostic->expected_target_policy, {});
-    if (!enrolled) return std::unexpected(enrolled.error());
-    auto results = export_to->Open("results.jsonl");
-    if (!results) return std::unexpected(results.error());
-    result_export.emplace(std::move(*results));
-    auto log = export_to->Open("runtime.log");
-    if (!log) return std::unexpected(log.error());
-    life->diagnostic_log.emplace(std::move(*log));
-    life->log = life->diagnostic_log->Raw();
-    life->options.debug_plans = true;
-  }
   const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
   if (scratch == nullptr) return std::unexpected("no test scratch directory");
   fs::create_directories(scratch);
@@ -422,7 +391,7 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
   life->options.diagnostic_startup_host_bytes = publication ? 0 : kAllowance;
   life->options.diagnostic_auto_startup = publication;
   life->options.diagnostic_budget_cap_bytes = kBudget;
-  if (life->log == nullptr) life->log = std::tmpfile();
+  life->log = std::tmpfile();
   if (!life->log) return std::unexpected("opening test log");
   life->server = std::make_unique<rt::Server>(life->config, life->roles, life->options, life->log);
   rt::Llm* model = nullptr;
@@ -472,7 +441,6 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
     std::array<rt::Llm::Branch*, 1> active{*b};
     if (auto s = life->server->SelectRequestBranches(*model, active); !s) return s;
     auto prompt = Prompt();
-    if (diagnostic) prompt.resize(5);
     if (auto s = (*b)->Prefill(prompt, life->result.heads[0]); !s) return s;
     for (std::size_t turn = 0; turn < 2; ++turn) {
       rt::GenerateOptions options;
@@ -489,10 +457,6 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
         auto state = ReadState(*life, *static_cast<rt::Llm*>(model));
         if (!state) return std::unexpected(state.error());
         life->result.states[turn == 0 ? 0 : 2] = std::move(*state);
-      }
-      if (export_to && turn == 0) {
-        auto snapshot = llmp::test_support::U4WritePlanSnapshot(*model, *export_to, "turn0");
-        if (!snapshot) return std::unexpected(snapshot.error());
       }
       if (turn == 0) {
         // Idle spill retains the actual pending MTP state. Restore through
@@ -529,67 +493,6 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
         if (reused + 1 != next.size()) return std::unexpected("spill resume lost its prefix");
       }
     }
-    if (export_to) {
-      for (const auto& head : life->result.heads)
-        if (head.size() != kVocab ||
-            !std::ranges::all_of(head, [](float value) { return std::isfinite(value); }))
-          return std::unexpected("Qwen diagnostic head is truncated or non-finite");
-      for (const auto& generation : life->result.generations)
-        for (const auto& row : generation.logits)
-          if (row.size() != kVocab ||
-              !std::ranges::all_of(row, [](float value) { return std::isfinite(value); }))
-            return std::unexpected("Qwen diagnostic verify row is truncated or non-finite");
-      auto& out = *result_export;
-      if (!out.Write(std::format("{{\"type\":\"prompt\",\"token_count\":{},"
-                                 "\"sha256\":\"{}\",\"token_ids\":",
-                                 prompt.size(), llmp::test_support::U4Sha256Ints(prompt))) ||
-          !llmp::test_support::U4WriteIntArray(out, prompt) || !out.Line("}"))
-        return std::unexpected("writing Qwen prompt record failed");
-      if (!out.Line("{\"type\":\"envelope\",\"context\":512,\"prefill_chunk\":16,"
-                    "\"max_slots\":1,\"max_tokens_per_turn\":8}"))
-        return std::unexpected("writing Qwen envelope record failed");
-      for (std::size_t turn = 0; turn < 2; ++turn) {
-        const auto& generation = life->result.generations[turn];
-        if (!out.Write(std::format("{{\"type\":\"turn\",\"turn\":{},\"head_width\":{},"
-                                   "\"head_sha256\":\"{}\",\"tokens\":",
-                                   turn, life->result.heads[turn].size(),
-                                   llmp::test_support::U4Sha256Floats(life->result.heads[turn]))) ||
-            !llmp::test_support::U4WriteIntArray(out, generation.tokens) ||
-            !out.Write(std::format(",\"drafted\":{},\"accepted\":{},\"history\":",
-                                   generation.drafted, generation.accepted)) ||
-            !llmp::test_support::U4WriteIntArray(out, life->result.history[turn]) ||
-            !out.Write(",\"verify_rows\":["))
-          return std::unexpected("writing Qwen diagnostic turn record failed");
-        for (std::size_t row = 0; row < generation.logits.size(); ++row) {
-          if (row && !out.Write(",")) return std::unexpected("writing Qwen row separator failed");
-          if (!out.Write(std::format("{{\"row\":{},\"width\":{},\"sha256\":\"{}\"}}", row,
-                                     generation.logits[row].size(),
-                                     llmp::test_support::U4Sha256Floats(generation.logits[row]))))
-            return std::unexpected("writing Qwen verify-row digest failed");
-        }
-        if (!out.Line("]}")) return std::unexpected("writing Qwen turn terminator failed");
-      }
-      for (std::size_t index = 0; index < life->result.states.size(); ++index) {
-        const auto& state = life->result.states[index];
-        if (!out.Write(std::format("{{\"type\":\"state\",\"index\":{},\"positions\":{},"
-                                   "\"sha256\":\"{}\",\"ranges\":[",
-                                   index, state.positions, llmp::base::ToHex(state.digest))))
-          return std::unexpected("writing Qwen state header failed");
-        for (std::size_t range = 0; range < state.ranges.size(); ++range) {
-          if (range && !out.Write(","))
-            return std::unexpected("writing Qwen state separator failed");
-          const auto& coordinate = state.ranges[range];
-          if (!out.Write(std::format("[{}, {}, {}]", coordinate[0], coordinate[1], coordinate[2])))
-            return std::unexpected("writing Qwen state coordinate failed");
-        }
-        if (!out.Line("]}")) return std::unexpected("writing Qwen state terminator failed");
-      }
-      auto snapshot = llmp::test_support::U4WritePlanSnapshot(*model, *export_to, "turn1");
-      if (!snapshot) return std::unexpected(snapshot.error());
-      if (auto closed = result_export->Close(); !closed) return closed;
-      if (!life->diagnostic_log->Flush())
-        return std::unexpected("flushing full Qwen runtime diagnostic log failed");
-    }
     if (component) {
       const auto& engine = *static_cast<rt::Llm*>(model);
       if (engine.runner().coverage().violations != 0)
@@ -609,12 +512,6 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
     const std::string reason = retired.error();
     std::ignore = life.release();
     return std::unexpected(reason + "; complete arm retained");
-  }
-  if (life->diagnostic_log) {
-    if (auto closed = life->diagnostic_log->Close(); !closed)
-      return std::unexpected(closed.error());
-    auto marked = export_to->Complete();
-    if (!marked) return std::unexpected(marked.error());
   }
   // TearDown retired GPU resources; retain the stopped Server/catalog
   // payment with its result through metadata checks and the next admission,
@@ -730,16 +627,6 @@ TEST(Qwen38EngineServingGpu, PublishedGgufMatchesFrozenHeadsStateAndSpill) {
   testing::Test::RecordProperty("restored_owners", 1);
   testing::Test::RecordProperty("native_artifact", id);
   fs::remove_all((*native)->scratch);
-}
-
-TEST(Qwen38EngineServingGpu, DISABLED_U4DiagnosticPlainQwen38) {
-  auto enrollment = llmp::test_support::U4ManualEnrollment::Read("qwen38-plain", false, false);
-  ASSERT_TRUE(enrollment) << (enrollment ? "" : enrollment.error());
-  auto run = ::Run(enrollment->target_id, false, true, true, 2, nullptr, enrollment->store, true,
-                   kMtp, std::nullopt, &*enrollment);
-  ASSERT_TRUE(run) << (run ? "" : run.error());
-  RecordProperty("diagnostic_export", enrollment->export_directory.string());
-  run->reset();
 }
 
 // No artifact, runner registration, model binding or device work is needed
@@ -928,13 +815,9 @@ TEST(Qwen38EngineServingGpu, NativeMtpLadderDrafterKeepsTokens) {
   }
 }
 
-// A manually enabled durable C2 control in the existing real Llm fixture.
-// It uses the same selected implementation in two sequential whole owners.
+// The two-owner MTP Server control's startup payment and its shared session
+// helpers.
 namespace c2 {
-namespace pl = llmp::planner;
-namespace kn = llmp::kernels;
-namespace kept = rt::kept;
-using Digest = llmp::base::Sha256Digest;
 constexpr std::uint64_t kN = llmp::ir::Graph::kMaxNodes;
 constexpr std::uint64_t kT = llmp::ir::Graph::kMaxTensors;
 constexpr std::uint64_t kSaves = 5 * 48 * 2;
@@ -956,394 +839,6 @@ static_assert(kCompile == 4946022912ULL +
                               2 * kT * sizeof(llmp::kernels::ggml::PhysicalRoot));
 static_assert(3 * 2 * 8 * kVocab * sizeof(float) + 32 * kMiB < kObserve);
 
-struct Plan {
-  pl::StepShape shape;
-  std::vector<std::uint64_t> parameters;
-  Digest recipe{};
-  std::uint64_t host = 0, launches = 0, lowered = 0;
-};
-using StateRanges = std::vector<std::array<std::uint64_t, 4>>;
-struct Evidence {
-  std::array<rt::Generation, 2> prefix, final;
-  std::array<std::vector<std::int32_t>, 2> history;
-  std::array<Digest, 2> boundary{}, end{};
-  std::array<StateRanges, 2> boundary_ranges, end_ranges;
-  std::array<kept::Record, 2> records;
-  kept::Identity identity;
-};
-struct Owner {
-  en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
-  rt::RequestMemory tokens{kMiB};
-  std::shared_ptr<en::ExecutionMetadataAllowance> startup, plans;
-  cfg::RuntimeRoles roles;
-  cfg::ModelEntry entry;
-  std::unique_ptr<rt::StateKeeper> keeper;
-  std::unique_ptr<rt::Llm> llm;
-  en::StepSource* source = nullptr;
-  std::vector<Plan> measured;
-  std::vector<pl::StepShape> classes, runnable;
-  std::array<std::unique_ptr<rt::SnapshotStore>, 2> snapshots;
-  std::array<rt::StateSnapshot, 2> saved;
-  std::unique_ptr<rt::SnapshotStore> digest_store;
-  std::vector<en::PagedModel*> entered;
-  std::shared_ptr<Evidence> evidence;
-  std::size_t keeper_model = 0;
-  int directory = -1;
-  std::uint64_t snapshot_bound = 0, plan_bytes = 0, physical = 0;
-  bool admitted = false, attempted = false, retired = false;
-  bool Retire() {
-    if (attempted) return retired;
-    attempted = true;
-    if (node.InRequest(0) && !node.EndRequest(0)) return false;
-    if (keeper && !keeper->Drain(rt::Clock::now() + std::chrono::seconds(30))) return false;
-    snapshots = {};
-    digest_store.reset();
-    if (!node.TearDown(entered)) return false;
-    retired = true;
-    return true;
-  }
-  ~Owner() {
-    llm.reset();
-    keeper.reset();
-    if (directory >= 0) ::close(directory);
-  }
-  rt::Llm::Branch& Branch(std::size_t i) { return **llm->branch(i); }
-};
-struct RetainUnknown {
-  void operator()(Owner* owner) const {
-    if (owner->Retire())
-      delete owner;
-    else
-      ADD_FAILURE() << "retaining the complete unknown C2 owner; no next owner is admitted";
-  }
-};
-using Owned = std::unique_ptr<Owner, RetainUnknown>;
-
-bool AddBytes(std::uint64_t& sum, std::uint64_t bytes) {
-  if (bytes > kBudget - sum) return false;
-  sum += bytes;
-  return true;
-}
-rt::Status Observe(Owner& owner, const kn::LowerInput& in, const kn::StepProgram& program) {
-  if (!in.token || in.token->context != 512 || in.token->shape.stage > 1 ||
-      !in.plan.owner_products.empty() || in.token->step.saves.size() > kSaves ||
-      in.plan.owner_rows_policy_enabled != (in.token->shape.stage == 1))
-    return std::unexpected("C2 source/policy left its declared complete domain");
-  const auto& shape = in.token->shape;
-  if (shape.segments.empty() || shape.segments.size() > 2)
-    return std::unexpected("C2 owner geometry changed");
-  auto parameters = owner.source->ShapeParameters(shape);
-  llmp::base::Sha256 hash;
-  const auto graph = in.plan.graph.Digest();
-  hash.Update(std::as_bytes(std::span(graph)));
-  for (const auto& selected : in.plan.steps) {
-    hash.Update(std::as_bytes(std::span(&selected.implementation, 1)));
-    hash.Update(std::as_bytes(std::span(selected.nodes)));
-  }
-  const auto recipe = hash.Finish();
-  auto at = std::ranges::find(owner.measured, shape, &Plan::shape);
-  if (in.addresses.measuring()) {
-    if (at == owner.measured.end()) {
-      // One record per explicit setup key, plus ModelRunner's three target
-      // commit keys. Other shapes cannot grow an unbounded observer table.
-      if (owner.measured.size() == owner.classes.size() + 3)
-        return std::unexpected("C2 setup emitted an undeclared extra class");
-      owner.measured.push_back({.shape = shape,
-                                .parameters = std::move(parameters),
-                                .recipe = recipe,
-                                .host = program.host_bytes(),
-                                .launches = program.launches()});
-      return {};
-    }
-  } else if (!owner.admitted || at == owner.measured.end() ||
-             std::ranges::find(owner.runnable, shape) == owner.runnable.end()) {
-    return std::unexpected("C2 bound program lacks measured admission");
-  }
-  if (at == owner.measured.end() || at->parameters != parameters || at->recipe != recipe ||
-      program.host_bytes() > at->host || program.launches() > at->launches)
-    return std::unexpected("C2 actual program differs from its paid complete key/selection");
-  if (!in.addresses.measuring()) ++at->lowered;
-  return {};
-}
-
-rt::Status AddClasses(rt::LlmBuildParts& parts, Owner& owner) {
-  auto composer = en::WaveComposer::Make(
-      parts.caps, {{.context = 512, .read_align = 256}, {.context = 512, .read_align = 256}});
-  if (!composer) return std::unexpected(composer.error());
-  owner.classes = parts.config.setup_shapes;
-  const auto add = [&](const pl::StepShape& shape) {
-    if (std::ranges::find(owner.classes, shape) == owner.classes.end())
-      owner.classes.push_back(shape);
-    if (std::ranges::find(owner.runnable, shape) == owner.runnable.end())
-      owner.runnable.push_back(shape);
-  };
-  const auto compose = [&](std::uint16_t stage, pl::Phase phase, std::uint32_t a, std::uint32_t b,
-                           int outputs, bool greedy) -> rt::Status {
-    std::vector<en::PendingWork> work;
-    for (std::uint32_t slot = 0; slot < 2; ++slot) {
-      const auto rows = slot == 0 ? a : b;
-      if (rows)
-        work.push_back({.slot = slot,
-                        .stage = stage,
-                        .phase = phase,
-                        .past = 0,
-                        .rows = rows,
-                        .outputs = outputs < 0 ? rows : static_cast<std::uint32_t>(outputs),
-                        .want_head = outputs != 0,
-                        .greedy = greedy});
-    }
-    auto composed = composer->Compose(work);
-    if (!composed.refused.empty()) return std::unexpected("C2 declared class cannot compose");
-    for (const auto& step : composed.steps) add(step.shape);
-    return {};
-  };
-  // Only the fixed initial prompt uses large rows. Generation's depth two
-  // permits one-to-three verify/replay rows, single or joined as owners finish.
-  for (const auto [a, b] : {std::pair{7U, 0U}, {0U, 5U}})
-    if (auto s = compose(0, pl::Phase::kPrefill, a, b, 1, false); !s) return s;
-  for (const auto [a, b] : {std::pair{6U, 0U}, {0U, 4U}})
-    if (auto s = compose(1, pl::Phase::kDraft, a, b, 0, false); !s) return s;
-  for (std::uint32_t a = 0; a <= 3; ++a)
-    for (std::uint32_t b = 0; b <= 3; ++b) {
-      if (!a && !b) continue;
-      if (auto s = compose(0, pl::Phase::kVerify, a, b, -1, false); !s) return s;
-      if (auto s = compose(1, pl::Phase::kDraft, a, b, 1, true); !s) return s;
-      if (auto s = compose(1, pl::Phase::kDraft, a, b, 0, false); !s) return s;
-      if (a <= 1 && b <= 1)
-        if (auto s = compose(0, pl::Phase::kDecode, a, b, 1, false); !s) return s;
-    }
-  for (std::uint8_t slot = 0; slot < 2; ++slot)
-    for (std::uint32_t rows = 1; rows <= 3; ++rows)
-      add({.stage = 0,
-           .phase = pl::Phase::kCommit,
-           .segments = {{.slot = slot, .rows = rows, .read_cells = 512, .want_head = false}}});
-  parts.config.setup_shapes = owner.classes;
-  return {};
-}
-
-std::expected<rt::ComponentBuildOptions, std::string> Options(Owner& owner) {
-  const auto rules =
-      llmp::spec::PolicyRules(llmp::spec::mappings::Qwen38Mapping(), {"qwen4exp", "safetensors"});
-  if (!rules) return std::unexpected(rules.error());
-  if (rules->empty()) return std::unexpected("native target policy is empty");
-  auto policy = pl::ParsePolicy(rules->front().text);
-  if (!policy) return std::unexpected(policy.error());
-  if (std::erase(policy->enabled, "owner_row_invariant") != 1)
-    return std::unexpected("qualified target mapping policy changed");
-  policy->disabled.emplace_back("owner_row_invariant");
-  pl::Canonicalize(*policy);
-  std::vector<en::NumericalStage> stages;
-  for (std::uint16_t stage = 0; stage < 2; ++stage) {
-    en::NumericalStage s{.stage = stage,
-                         .name = stage ? "mtp" : "target",
-                         .uses = {en::NumericalUse::kPrompt, en::NumericalUse::kDecode,
-                                  en::NumericalUse::kSpeculative},
-                         .phases = {}};
-    const auto add = [&](pl::Phase phase, std::uint32_t rows) {
-      s.phases.push_back(
-          {.phase = phase, .max_owners = 2, .max_owner_rows = rows, .max_total_rows = 2ULL * rows});
-    };
-    if (stage)
-      add(pl::Phase::kDraft, 16);
-    else {
-      add(pl::Phase::kPrefill, 16);
-      add(pl::Phase::kDecode, 1);
-      add(pl::Phase::kVerify, 3);
-      add(pl::Phase::kCommit, 3);
-    }
-    stages.push_back(std::move(s));
-  }
-  auto domain = en::NumericalDomain::Create(std::move(stages));
-  if (!domain) return std::unexpected(domain.error());
-  rt::ComponentBuildOptions options{
-      .target_policy = pl::ToText(*policy),
-      .prefill_lookahead = false,
-      .prepare_state = false,
-      .state_only_prefill = false,
-      .execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*domain))};
-  options.validate_program = [&owner](const auto& in, const auto& program) {
-    return Observe(owner, in, program);
-  };
-  testing::Test::RecordProperty("c2_target_policy", *options.target_policy);
-  const auto mtp_rules = llmp::spec::PolicyRules(llmp::spec::mappings::Qwen38MtpMapping(),
-                                                 {"qwen4exp-mtp", "safetensors"});
-  if (!mtp_rules) return std::unexpected(mtp_rules.error());
-  if (mtp_rules->empty()) return std::unexpected("native drafter policy is empty");
-  testing::Test::RecordProperty("c2_drafter_policy", std::string(mtp_rules->front().text));
-  return options;
-}
-
-rt::Status Setup(Owner& owner, const fs::path& directory, Evidence& evidence, bool reopen,
-                 Owned* previous = nullptr) {
-  owner.node.SetHostFloor(0);
-  if (auto s = owner.node.Open(); !s) return s;
-  auto prepaid = en::ExecutionMetadataAllowance::Admit(
-      owner.node.catalog(), owner.node.domain(),
-      kStartup + en::ExecutionMetadataAllowance::OverheadBytes(),
-      llmp::platform::AvailableMemoryBytes().value_or(0), rt::kUncountedMargin);
-  if (!prepaid) return std::unexpected(prepaid.error());
-  owner.startup = std::move(*prepaid);
-  if (!owner.startup->Charge(kStartup)) return std::unexpected("C2 startup payment refused");
-  if (previous != nullptr) previous->reset();
-  if (auto s = CheckFixture(kModelOpt, true); !s) return s;
-  owner.roles.installed = Store();
-  owner.roles.spill = directory;
-  owner.roles.state = directory;
-  owner.entry.name = "qwen-c2-durable";
-  owner.entry.artifact = kModelOpt;
-  owner.entry.drafter = kMtp;
-  const auto checkpoint = fs::path(llmp::test_support::ModelsDir()) /
-                          "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
-  owner.entry.tokenizer = checkpoint / "tokenizer.json";
-  owner.entry.chat_template = checkpoint / "chat_template.jinja";
-  rt::ModelSettings settings;
-  settings.name = owner.entry.name;
-  settings.architecture = "qwen4exp";
-  settings.container = "safetensors";
-  settings.max_slots.value = 2;
-  settings.context.value = 512;
-  settings.prefill_chunk.value = 16;
-  settings.wave_read_align.value = 256;
-  settings.speculation.value = true;
-  settings.draft_rows.value = 2;
-  settings.draft_vocab.value = 65536;
-  auto options = Options(owner);
-  if (!options) return std::unexpected(options.error());
-  auto build =
-      rt::ComponentLlmBuild(owner.node, owner.roles.installed, owner.entry, 0, std::move(*options));
-  auto inspect = [&owner, build = std::move(build)](const rt::ModelSettings& actual) mutable
-      -> std::expected<rt::LlmBuildParts, std::string> {
-    auto parts = build(actual);
-    if (!parts) return std::unexpected(parts.error());
-    if (parts->config.slots.stages.size() != 2 || parts->mode.drafters.size() != 1 ||
-        parts->mode.row_invariant || parts->logit_width != kVocab)
-      return std::unexpected("C2 factory changed stages/mode/head");
-    const auto width = en::DrafterHeadRows(parts->mode.drafters.front(), kVocab);
-    if (!width || *width != 47172 || !parts->mode.drafters.front().device_tokens)
-      return std::unexpected("C2 factory changed the actual selected device head");
-    owner.source = parts->source.get();
-    if (auto s = AddClasses(*parts, owner); !s) return std::unexpected(s.error());
-    return std::move(*parts);
-  };
-  owner.llm = std::make_unique<rt::Llm>(owner.node, owner.entry, settings, owner.roles, 0,
-                                        std::move(inspect));
-  owner.llm->SetTokenMemory(owner.tokens);
-  owner.llm->set_turn_checkpoints(false);
-  if (auto s = owner.llm->Setup(); !s) {
-    if (owner.llm->has_paged()) owner.entered.push_back(&owner.llm->paged());
-    return s;
-  }
-  owner.entered.push_back(&owner.llm->paged());
-  const auto identity = owner.llm->ExecutionIdentity();
-  if (!identity || !*identity)
-    return std::unexpected("C2 source lacks prepared complete execution identity");
-  std::uint64_t largest = 0;
-  for (const auto& plan : owner.measured) {
-    if (std::ranges::find(owner.runnable, plan.shape) == owner.runnable.end()) continue;
-    if (plan.host > kBudget || plan.launches > (kBudget - plan.host) / en::kGraphNodeHostBytes)
-      return std::unexpected("C2 measured capture payment overflows domain");
-    const auto bytes = plan.host + plan.launches * en::kGraphNodeHostBytes;
-    if (!AddBytes(owner.plan_bytes, bytes))
-      return std::unexpected("C2 measured plans exceed domain");
-    largest = std::max(largest, bytes);
-  }
-  if (!AddBytes(owner.plan_bytes, largest))
-    return std::unexpected("C2 replacement payment overflow");
-  auto paid_plans = en::ExecutionMetadataAllowance::Admit(
-      owner.node.catalog(), owner.node.domain(),
-      owner.plan_bytes + en::ExecutionMetadataAllowance::OverheadBytes(),
-      llmp::platform::AvailableMemoryBytes().value_or(0), rt::kUncountedMargin);
-  if (!paid_plans) return std::unexpected(paid_plans.error());
-  owner.plans = std::move(*paid_plans);
-  if (!owner.plans->Charge(owner.plan_bytes)) return std::unexpected("C2 measured payment refused");
-  // Llm::UsedStateRangesFor forwards LiveState::used_ranges: at
-  // most one descriptor per actual 2 MiB extent, including each final partial
-  // extent. SnapshotStore::Prepare adds its nine-u64 header, cursor, optional
-  // execution digest, adaptive words, ranges, history and actual layout text.
-  // Four max-align paddings cover all header/internal/following alignments.
-  std::uint64_t ranges = 0;
-  for (const auto bytes : owner.llm->KeptLayouts()) {
-    if (!AddBytes(owner.snapshot_bound, bytes)) return std::unexpected("C2 snapshot overflow");
-    ranges += (bytes + en::kPagedExtent - 1) / en::kPagedExtent;
-  }
-  const auto metadata = 9 * sizeof(std::uint64_t) + sizeof(std::uint32_t) +
-                        sizeof(std::optional<Digest>) +
-                        sizeof(std::array<std::uint64_t, llmp::execution::AdaptiveDepth::kWords>) +
-                        4 * alignof(std::max_align_t) + ranges * sizeof(en::LiveState::Range) +
-                        512 * sizeof(std::int32_t) + owner.llm->KeptLayout().size();
-  if (!AddBytes(owner.snapshot_bound, metadata))
-    return std::unexpected("C2 snapshot metadata overflow");
-  const auto snapshot_physical =
-      (owner.snapshot_bound + en::kPagedExtent - 1) / en::kPagedExtent * en::kPagedExtent;
-  for (const auto& [id, extent] : owner.node.catalog().ExtentsOf(owner.node.domain())) {
-    (void)id;
-    if (!AddBytes(owner.physical, extent.descriptor.size.value()))
-      return std::unexpected("C2 full catalog exceeds node");
-  }
-  const auto pool = std::max(owner.llm->pool_needed(), en::kPagedExtent);
-  for (const auto bytes :
-       {owner.llm->activations_needed(), pool, owner.plan_bytes, snapshot_physical,
-        snapshot_physical, snapshot_physical, 2 * en::kPagedExtent})
-    if (!AddBytes(owner.physical, bytes))
-      return std::unexpected("C2 complete physical closure does not fit");
-  const auto available = llmp::platform::AvailableMemoryBytes().value_or(0);
-  if (!available || owner.physical > available || rt::kUncountedMargin > available - owner.physical)
-    return std::unexpected("C2 complete future closure lacks physical headroom");
-  owner.admitted = true;
-  if (auto s = owner.node.MapWorkspace(owner.llm->activations_needed(), pool); !s) return s;
-  if (auto s = owner.node.Start(llmp::base::Bytes(kBudget)); !s) return s;
-  auto dir = llmp::platform::OpenPrivateDirectory(-1, directory.c_str());
-  if (!dir) return std::unexpected(std::format("C2 private directory: errno {}", dir.error()));
-  owner.directory = *dir;
-  owner.keeper = std::make_unique<rt::StateKeeper>(1, rt::StateKeeper::Log{});
-  const int worker_dir = ::dup(owner.directory);
-  if (worker_dir < 0) return std::unexpected("C2 keeper directory duplication failed");
-  owner.keeper_model = owner.keeper->AddModel(worker_dir);
-  kept::Identity expected{.build = "qwen-c2-owned-durable-v1",
-                          .artifact = std::string(kModelOpt),
-                          .drafter = std::string(kMtp),
-                          .layout = owner.llm->KeptLayout()};
-  rt::Llm::Kept state{.keeper = owner.keeper.get(),
-                      .model = owner.keeper_model,
-                      .directory = owner.directory,
-                      .identity = expected,
-                      .adopt = {}};
-  if (reopen) {
-    if (expected != evidence.identity)
-      return std::unexpected("C2 fresh execution/layout identity differs");
-    for (std::uint32_t slot = 0; slot < 2; ++slot) {
-      auto& record = evidence.records[slot];
-      kept::Expected check{.version = owner.llm->KeptVersion(),
-                           .identity = expected,
-                           .slot = slot,
-                           .regions = owner.llm->KeptRegions(),
-                           .layouts = owner.llm->KeptLayouts(),
-                           .context = 512,
-                           .vocabulary = kVocab,
-                           .now_unix_ms = record.used_unix_ms,
-                           .retention_ms = 60000};
-      if (auto s = kept::Check(record, check); !s) return s;
-      if (const auto why = rt::VerifyKeptState(owner.directory, record); !why.empty())
-        return std::unexpected(why);
-      if (record.files.size() != 2) return std::unexpected("C2 record omitted a stage file");
-      state.adopt.push_back(slot);
-      auto& files = state.files.emplace_back();
-      for (const auto& file : record.files) files.push_back(file.id);
-    }
-  } else
-    evidence.identity = expected;
-  owner.llm->set_kept(std::move(state));
-  if (auto s = owner.llm->Register(); !s) return s;
-  owner.node.Run();
-  if (auto s = owner.llm->Bind(); !s) return s;
-  owner.digest_store = std::make_unique<rt::SnapshotStore>(owner.node, owner.snapshot_bound);
-  testing::Test::RecordProperty(reopen ? "c2_reopened_plans_bytes" : "c2_initial_plans_bytes",
-                                std::to_string(owner.plan_bytes));
-  testing::Test::RecordProperty(reopen ? "c2_reopened_physical_bytes" : "c2_initial_physical_bytes",
-                                std::to_string(owner.physical));
-  return {};
-}
-
 // Sessions must close even when a later owner/session or wave refuses.
 // These callbacks return only at completed units; production owns retirement.
 template <class Session>
@@ -1356,24 +851,6 @@ struct FinishSession {
 };
 template <class Session>
 using SessionOwner = std::unique_ptr<Session, FinishSession<Session>>;
-rt::Status Request(Owner& owner, const std::function<rt::Status()>& body) {
-  const std::array<rt::Llm::Branch*, 2> branches{&owner.Branch(0), &owner.Branch(1)};
-  if (auto s = owner.llm->SelectBranches(branches); !s) return s;
-  return owner.node.WithRequest(0, owner.llm->request_closure(), "C2 durable control", body);
-}
-std::expected<Digest, std::string> StateDigest(Owner& owner, std::size_t slot) {
-  auto snapshot = owner.Branch(slot).CaptureState(*owner.digest_store);
-  if (!snapshot) return std::unexpected(snapshot.error());
-  return owner.digest_store->Digest(*snapshot);
-}
-StateRanges Coordinates(Owner& owner, std::size_t slot) {
-  StateRanges result;
-  for (std::size_t stage = 0; stage < 2; ++stage)
-    for (const auto& range :
-         owner.llm->runner().slots().live(static_cast<std::uint32_t>(slot), stage).used_ranges())
-      result.push_back({stage, range.region, range.offset, range.bytes});
-  return result;
-}
 rt::Status Complete(const rt::Generation& out, std::size_t count, bool keep_logits = true) {
   if (out.tokens.size() != count ||
       (keep_logits ? out.logits.size() != count : !out.logits.empty()) || !out.drafted ||
@@ -1418,203 +895,14 @@ rt::Status Generate(OwnerLike& owner, const std::array<std::vector<float>, 2>& h
   }
   return {};
 }
-rt::Status Initial(Owner& owner, Evidence& evidence) {
-  return Request(owner, [&]() -> rt::Status {
-    auto first = Prompt(), second = Prompt();
-    second.resize(5);
-    for (auto& token : second) token += 17;
-    const std::array<std::vector<std::int32_t>, 2> prompts{std::move(first), std::move(second)};
-    std::array<SessionOwner<rt::Llm::PromptSession>, 2> sessions;
-    std::array<std::vector<float>, 2> heads;
-    for (std::size_t i = 0; i < 2; ++i) {
-      auto session = owner.Branch(i).BeginPrompt(prompts[i]);
-      if (!session) return std::unexpected(session.error());
-      sessions[i].reset(session->release());
-      while (!sessions[i]->done()) {
-        const auto unit = sessions[i]->NextUnit();
-        if (!unit) return std::unexpected(unit.error());
-        if (unit->phase == rt::Llm::PromptSession::Phase::kChunk) break;
-        if (auto s = sessions[i]->Advance(); !s) return s;
-      }
-    }
-    // Llm's prompt-cohort API is plain-only. The ordinary session advance
-    // owns speculative companion prefill; joined generation follows below.
-    for (auto& session : sessions)
-      if (!session->done())
-        if (auto s = session->Advance(); !s) return s;
-    for (std::size_t i = 0; i < 2; ++i) {
-      if (!sessions[i]->done()) return std::unexpected("C2 bounded prompt did not finish");
-      heads[i] = sessions[i]->last();
-      if (auto s = sessions[i]->Finish(); !s) return s;
-      sessions[i].reset();
-    }
-    if (auto s = Generate(owner, heads, evidence.prefix, 4, false); !s) return s;
-    for (std::size_t i = 0; i < 2; ++i) {
-      owner.snapshots[i] = std::make_unique<rt::SnapshotStore>(owner.node, owner.snapshot_bound);
-      auto saved = owner.Branch(i).CaptureState(*owner.snapshots[i]);
-      if (!saved) return std::unexpected(saved.error());
-      owner.saved[i] = std::move(*saved);
-      auto digest = owner.snapshots[i]->Digest(owner.saved[i]);
-      if (!digest) return std::unexpected(digest.error());
-      evidence.boundary[i] = *digest;
-      evidence.boundary_ranges[i] = Coordinates(owner, i);
-      evidence.history[i] = owner.Branch(i).history();
-    }
-    evidence.final = evidence.prefix;
-    if (auto s = Generate(owner, {}, evidence.final, 8, true); !s) return s;
-    for (std::size_t i = 0; i < 2; ++i) {
-      auto digest = StateDigest(owner, i);
-      if (!digest) return std::unexpected(digest.error());
-      evidence.end[i] = *digest;
-      evidence.end_ranges[i] = Coordinates(owner, i);
-      if (auto s = owner.Branch(i).RestoreState(*owner.snapshots[i], owner.saved[i]); !s) return s;
-      if (owner.Branch(i).history() != evidence.history[i])
-        return std::unexpected("C2 snapshot lost its history boundary");
-      digest = StateDigest(owner, i);
-      if (!digest || *digest != evidence.boundary[i] ||
-          Coordinates(owner, i) != evidence.boundary_ranges[i])
-        return std::unexpected("C2 restored boundary initialized state differs");
-    }
-    if (!owner.llm->counts().joined_waves)
-      return std::unexpected("C2 did not join generation owners");
-    return {};
-  });
-}
-rt::Status Keep(Owner& owner, Evidence& evidence) {
-  owner.snapshots = {};
-  owner.digest_store.reset();
-  for (std::size_t i = 0; i < 2; ++i)
-    if (auto s = owner.llm->SpillIdle(owner.Branch(i)); !s) return s;
-  if (!owner.keeper->Drain(rt::Clock::now() + std::chrono::seconds(30)))
-    return std::unexpected("C2 keeper did not retire record writes");
-  for (std::uint32_t slot = 0; slot < 2; ++slot) {
-    if (!owner.keeper->Kept(owner.keeper_model, slot))
-      return std::unexpected("C2 keeper omitted a complete owner record");
-    const auto name = kept::RecordFileName(slot);
-    auto text =
-        llmp::platform::ReadPrivateFile(owner.directory, name.c_str(), kept::kMostRecordBytes);
-    if (!text) return std::unexpected(std::format("C2 kept record read: errno {}", text.error()));
-    auto record = kept::Decode(*text);
-    if (!record) return std::unexpected(record.error());
-    if (record->files.size() != 2 || record->tokens != evidence.history[slot])
-      return std::unexpected("C2 kept record lost a stage/history");
-    if (const auto why = rt::VerifyKeptState(owner.directory, *record); !why.empty())
-      return std::unexpected(why);
-    evidence.records[slot] = std::move(*record);
-  }
-  owner.llm->PreserveKeptFiles();
-  return {};
-}
-rt::Status Reopen(Owner& owner, Evidence& evidence) {
-  for (std::uint32_t slot = 0; slot < 2; ++slot) {
-    rt::MemoryCharge charge;
-    if (!charge.Add(owner.tokens, evidence.records[slot].tokens.capacity() * sizeof(std::int32_t)))
-      return std::unexpected("C2 adopted token payment refused");
-    if (auto s = owner.llm->Adopt(owner.Branch(slot), evidence.records[slot], charge); !s) return s;
-    const auto& slots = owner.llm->runner().slots();
-    if (!slots.restorable(slot) || slots.usable(slot) || slots.CheckActive(slot))
-      return std::unexpected("C2 cold adopted state became executable before hydration");
-  }
-  return Request(owner, [&]() -> rt::Status {
-    const auto before = owner.llm->counts();
-    const auto graphs = owner.llm->runner().graph_stats();
-    for (std::uint32_t slot = 0; slot < 2; ++slot) {
-      auto begun = owner.Branch(slot).BeginPrompt(evidence.history[slot], 0, false, true);
-      if (!begun) return std::unexpected(begun.error());
-      SessionOwner<rt::Llm::PromptSession> session(begun->release());
-      const auto unit = session->NextUnit();
-      if (!unit || unit->phase != rt::Llm::PromptSession::Phase::kReuse)
-        return std::unexpected("C2 cold history did not begin with reuse");
-      if (auto s = session->Advance({}, true); !s) return s;
-      if (!session->done() || session->reused() != evidence.history[slot].size())
-        return std::unexpected("C2 cold hydration attempted prefix recomputation");
-      if (auto s = session->Finish(); !s) return s;
-      session.reset();
-      auto digest = StateDigest(owner, slot);
-      if (!digest || *digest != evidence.boundary[slot] ||
-          Coordinates(owner, slot) != evidence.boundary_ranges[slot])
-        return std::unexpected("C2 durable hydrated initialized state differs");
-    }
-    const auto after = owner.llm->counts();
-    const auto now = owner.llm->runner().graph_stats();
-    if (before.joined_prefill_steps != after.joined_prefill_steps ||
-        before.speculative_units != after.speculative_units || graphs.eager != now.eager ||
-        graphs.replayed != now.replayed)
-      return std::unexpected("C2 hydrate executed a model prefix");
-    auto continued = evidence.prefix;
-    if (auto s = Generate(owner, {}, continued, 8, true); !s) return s;
-    for (std::size_t slot = 0; slot < 2; ++slot) {
-      const auto& got = continued[slot];
-      const auto& want = evidence.final[slot];
-      if (got.tokens != want.tokens || got.drafted != want.drafted || got.accepted != want.accepted)
-        return std::unexpected("same-selected C2 durable continuation differs");
-      for (std::size_t row = 0; row < got.logits.size(); ++row)
-        if (std::memcmp(got.logits[row].data(), want.logits[row].data(), kVocab * sizeof(float)))
-          return std::unexpected("same-selected C2 durable complete target head differs");
-      auto digest = StateDigest(owner, slot);
-      if (!digest || *digest != evidence.end[slot] ||
-          Coordinates(owner, slot) != evidence.end_ranges[slot])
-        return std::unexpected("same-selected C2 final initialized state differs");
-    }
-    return {};
-  });
-}
-
-class DurableCase : public testing::Test {
-  void TestBody() override {
-    const char* root = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
-    ASSERT_NE(root, nullptr);
-    fs::create_directories(root);
-    auto path = (fs::path(root) / "qwen-c2-XXXXXX").string();
-    ASSERT_NE(::mkdtemp(path.data()), nullptr);
-    auto observations = std::make_shared<Evidence>();
-    auto& evidence = *observations;
-    Owned first(new Owner);
-    first->evidence = observations;
-    auto result = ::c2::Setup(*first, path, evidence, false);
-    ASSERT_TRUE(result) << (result ? "" : result.error());
-    result = Initial(*first, evidence);
-    ASSERT_TRUE(result) << (result ? "" : result.error());
-    result = Keep(*first, evidence);
-    ASSERT_TRUE(result) << (result ? "" : result.error());
-    ASSERT_TRUE(first->Retire()) << "unknown first-owner completion; reopening is forbidden";
-    // Retain the old host payment until the fresh startup allowance exists.
-    // Its GPU/source domain is positively retired before the second opens.
-    Owned second(new Owner);
-    second->evidence = observations;
-    result = ::c2::Setup(*second, path, evidence, true, &first);
-    ASSERT_TRUE(result) << (result ? "" : result.error());
-    result = Reopen(*second, evidence);
-    ASSERT_TRUE(result) << (result ? "" : result.error());
-    ASSERT_TRUE(second->Retire());
-    RecordProperty("durable_owners", 2);
-    RecordProperty("durable_stage_files", 4);
-    RecordProperty("durable_hydrated_without_prefix", 2);
-    RecordProperty("durable_complete_target_heads", 16);
-    RecordProperty("durable_same_selected_final_states", 2);
-    RecordProperty("durable_snapshot_bytes", std::to_string(second->snapshot_bound));
-    evidence = {};
-    second.reset();
-    fs::remove_all(path);
-  }
-};
-// Opt-in manual case: ordinary CTest discovery does not register this captured
-// two-owner experiment or turn a missing fixture into a skipped qualification.
-[[maybe_unused]] const auto* durable_case = []() -> testing::TestInfo* {
-  if (std::getenv("LLMP_QWEN_C2_DURABLE") == nullptr)
-    return nullptr;  // NOLINT(concurrency-mt-unsafe)
-  return testing::RegisterTest("Qwen38EngineServingGpu", "NativeC2DurablePendingReopen", nullptr,
-                               nullptr, __FILE__, __LINE__,
-                               []() -> testing::Test* { return new DurableCase; });
-}();
-
 }  // namespace c2
 
 }  // namespace
 
-// The actual Server route uses its ordinary options and keeper. The detailed
-// within-selected state oracle above remains shared evidence, not a second
-// persistence implementation in this adapter control.
+// The native ModelOpt target and its MTP drafter, two owners, through the
+// ordinary Server with its default options and keeper: both conversations
+// spilled and kept, then adopted by a second Server and continued with no
+// prefix recomputation (NativeC2ServerDefaultOptionsReopen).
 namespace c2_server {
 constexpr std::uint64_t kStartupExtent = ((c2::kStartup + 2 * kMiB - 1) / (2 * kMiB)) * (2 * kMiB);
 static_assert(kStartupExtent >= c2::kStartup && kStartupExtent - c2::kStartup < 2 * kMiB);
@@ -1661,8 +949,7 @@ struct RetainUnknown {
 };
 using Owned = std::unique_ptr<Owner, RetainUnknown>;
 
-rt::Status Setup(Owner& owner, const fs::path& root, bool reopen, Owned* previous,
-                 bool component = true) {
+rt::Status Setup(Owner& owner, const fs::path& root, bool reopen, Owned* previous) {
   if (auto s = CheckFixture(kModelOpt, true); !s) return s;
   auto& life = owner.life;
   life.scratch = root;
@@ -1699,18 +986,15 @@ rt::Status Setup(Owner& owner, const fs::path& root, bool reopen, Owned* previou
   if (auto s = life.server->Start(false); !s) return s;
   if (previous != nullptr) previous->reset();
   owner.llm = dynamic_cast<rt::Llm*>(life.server->Find("qwen-server-c2"));
-  auto* shared = dynamic_cast<rt::Llm*>(owner.llm);
   if (!owner.llm || owner.llm->generation_wave_capacity() != 2 ||
-      (shared != nullptr) != component || (shared && shared->runner().slots().stages() != 2))
+      owner.llm->runner().slots().stages() != 2)
     return std::unexpected("Server did not build the declared C2 implementation");
-  if (shared) {
-    auto identity = shared->ExecutionIdentity();
-    if (!identity || !*identity) return std::unexpected("Server omitted its prepared identity");
-    if (reopen && **identity != owner.evidence->identity)
-      return std::unexpected("Server reopened another selected execution");
-    owner.evidence->identity = **identity;
-    testing::Test::RecordProperty("server_execution_identity", llmp::base::ToHex(**identity));
-  }
+  auto identity = owner.llm->ExecutionIdentity();
+  if (!identity || !*identity) return std::unexpected("Server omitted its prepared identity");
+  if (reopen && **identity != owner.evidence->identity)
+    return std::unexpected("Server reopened another selected execution");
+  owner.evidence->identity = **identity;
+  testing::Test::RecordProperty("server_execution_identity", llmp::base::ToHex(**identity));
   if (life.server->budget() != kBudget)
     return std::unexpected("Server changed the admitted budget");
   testing::Test::RecordProperty("server_plan_floor_bytes",
@@ -1720,15 +1004,21 @@ rt::Status Setup(Owner& owner, const fs::path& root, bool reopen, Owned* previou
 
 rt::Status Run(Owner& owner, bool reopen) {
   auto& server = *owner.life.server;
-  auto& llm = *dynamic_cast<rt::Llm*>(owner.llm);
+  auto& llm = *owner.llm;
   auto& evidence = *owner.evidence;
   const std::array<rt::Llm::Branch*, 2> branches{&owner.Branch(0), &owner.Branch(1)};
   if (reopen) {
+    // Adopted cold: its spill files hold the conversation, healthy and
+    // restorable, until the prompt below hydrates it.
     for (std::uint32_t slot = 0; slot < 2; ++slot)
-      if (owner.Branch(slot).history() != evidence.history[slot] ||
-          !llm.runner().slots().restorable(slot) || llm.runner().slots().usable(slot) ||
-          owner.Branch(slot).turn_checkpoints() != 1)
-        return std::unexpected("Server did not adopt both pending stages and the turn checkpoint");
+      if (owner.Branch(slot).history() != evidence.history[slot] || !owner.Branch(slot).spilled() ||
+          !llm.runner().slots().restorable(slot) || owner.Branch(slot).turn_checkpoints() != 1)
+        return std::unexpected(std::format(
+            "Server did not adopt both pending stages and the turn checkpoint (slot {}: history "
+            "{}/{} tokens, spilled {}, restorable {}, turn checkpoints {})",
+            slot, owner.Branch(slot).history().size(), evidence.history[slot].size(),
+            owner.Branch(slot).spilled(), llm.runner().slots().restorable(slot),
+            owner.Branch(slot).turn_checkpoints()));
   }
   rt::SwapParts parts;
   if (auto s = server.Activate(llm, parts); !s) return s;
@@ -1787,209 +1077,33 @@ rt::Status Run(Owner& owner, bool reopen) {
   return {};
 }
 
-class ServerCase : public testing::Test {
-  void TestBody() override {
-    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
-    ASSERT_NE(scratch, nullptr);
-    fs::create_directories(scratch);
-    auto root = (fs::path(scratch) / "qwen-server-c2-XXXXXX").string();
-    ASSERT_NE(::mkdtemp(root.data()), nullptr);
-    Owned first(new Owner);
-    first->evidence = std::make_shared<Evidence>();
-    auto result = ::c2_server::Setup(*first, root, false, nullptr);
-    ASSERT_TRUE(result) << (result ? "" : result.error());
-    result = ::c2_server::Run(*first, false);
-    ASSERT_TRUE(result) << (result ? "" : result.error());
-    ASSERT_TRUE(first->Retire()) << "unknown Server completion forbids another owner";
-    Owned second(new Owner);
-    second->evidence = first->evidence;
-    result = ::c2_server::Setup(*second, root, true, &first);
-    ASSERT_TRUE(result) << (result ? "" : result.error());
-    result = ::c2_server::Run(*second, true);
-    ASSERT_TRUE(result) << (result ? "" : result.error());
-    ASSERT_TRUE(second->Retire());
-    RecordProperty("server_owners", 2);
-    RecordProperty("server_hydrated_conversations", 2);
-    RecordProperty("server_kept_turn_checkpoints", 2);
-    RecordProperty("server_fresh_continuation_heads", 8);
-    second.reset();
-    fs::remove_all(root);
-  }
-};
-const bool registered = [] {
-  if (std::getenv("LLMP_QWEN_C2_SERVER") == nullptr) return false;  // NOLINT(concurrency-mt-unsafe)
-  testing::RegisterTest("Qwen38EngineServingGpu", "NativeC2ServerDefaultOptionsReopen", nullptr,
-                        nullptr, __FILE__, __LINE__,
-                        []() -> testing::Test* { return new ServerCase; });
-  return true;
-}();
-
-// One coarse whole-implementation timing screen, using the same Server owner
-// and public sessions. The existing durable/default tests remain unchanged.
-constexpr std::string_view kSpeedIdsSha =
-    "3cd946c3876501eccbe079b9d2700e542e66242be241a8549546df8d9b23e468";
-using SpeedIds = std::array<std::array<std::int32_t, 255>, 4>;
-rt::Status ReadSpeedIds(SpeedIds& ids) {
-  static_assert(std::endian::native == std::endian::little && sizeof(ids) == 4080);
-  const char* path = std::getenv("LLMP_QWEN_C2_SPEED_IDS");  // NOLINT(concurrency-mt-unsafe)
-  if (!path) return std::unexpected("missing authenticated natural speed inputs");
-  auto* file = std::fopen(path, "rb");
-  if (!file) return std::unexpected("opening natural speed inputs");
-  struct stat st{};
-  bool valid = fstat(fileno(file), &st) == 0 && S_ISREG(st.st_mode) &&
-               st.st_size == static_cast<off_t>(sizeof(ids));
-  valid = valid && std::fread(ids.data(), 1, sizeof(ids), file) == sizeof(ids) &&
-          std::fgetc(file) == EOF && std::ferror(file) == 0;
-  valid = std::fclose(file) == 0 && valid;
-  llmp::base::Sha256 hash;
-  hash.Update(std::as_bytes(std::span(ids)));
-  if (!valid || llmp::base::ToHex(hash.Finish()) != kSpeedIdsSha)
-    return std::unexpected("natural speed input identity mismatch");
-  for (const auto& document : ids)
-    for (const auto id : document)
-      if (id < 0 || std::cmp_greater_equal(id, kVocab))
-        return std::unexpected("natural speed token outside source vocabulary");
-  return {};
+TEST(Qwen38EngineServingGpu, NativeC2ServerDefaultOptionsReopen) {
+  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  ASSERT_NE(scratch, nullptr);
+  fs::create_directories(scratch);
+  auto root = (fs::path(scratch) / "qwen-server-c2-XXXXXX").string();
+  ASSERT_NE(::mkdtemp(root.data()), nullptr);
+  Owned first(new Owner);
+  first->evidence = std::make_shared<Evidence>();
+  auto result = ::c2_server::Setup(*first, root, false, nullptr);
+  ASSERT_TRUE(result) << (result ? "" : result.error());
+  result = ::c2_server::Run(*first, false);
+  ASSERT_TRUE(result) << (result ? "" : result.error());
+  ASSERT_TRUE(first->Retire()) << "unknown Server completion forbids another owner";
+  Owned second(new Owner);
+  second->evidence = first->evidence;
+  result = ::c2_server::Setup(*second, root, true, &first);
+  ASSERT_TRUE(result) << (result ? "" : result.error());
+  result = ::c2_server::Run(*second, true);
+  ASSERT_TRUE(result) << (result ? "" : result.error());
+  ASSERT_TRUE(second->Retire());
+  RecordProperty("server_owners", 2);
+  RecordProperty("server_hydrated_conversations", 2);
+  RecordProperty("server_kept_turn_checkpoints", 2);
+  RecordProperty("server_fresh_continuation_heads", 8);
+  second.reset();
+  fs::remove_all(root);
 }
-rt::Status SpeedPass(Owner& owner, const SpeedIds& ids, bool measured) {
-  auto& server = *owner.life.server;
-  auto& llm = *owner.llm;
-  const std::array<rt::Llm::Branch*, 2> branches{&owner.Branch(0), &owner.Branch(1)};
-  if (auto selected = server.SelectRequestBranches(llm, branches); !selected) return selected;
-  // Clear invalidates kept records and checkpoints through the ordinary
-  // branch API. Retain only warmed program/weight residency between passes.
-  for (auto* branch : branches) {
-    if (auto cleared = branch->Clear(); !cleared) return cleared;
-    if (!branch->history().empty() || branch->turn_checkpoints())
-      return std::unexpected("speed pass retained conversation reuse");
-  }
-  std::array<std::vector<float>, 2> heads;
-  std::uint32_t prefilled = 0, reused = 0, chunks = 0;
-  const auto started = rt::Clock::now();
-  for (std::size_t slot = 0; slot < 2; ++slot) {
-    const auto& prompt = ids[(measured ? 2U : 0U) + slot];
-    auto begun = owner.Branch(slot).BeginPrompt(prompt, 16, false, false);
-    if (!begun) return std::unexpected(begun.error());
-    c2::SessionOwner<rt::Llm::PromptSession> session(begun->release());
-    while (!session->done())
-      if (auto advanced = session->Advance(); !advanced) return advanced;
-    reused += session->reused();
-    prefilled += session->run().end - session->reused();
-    chunks += session->run().chunks;
-    heads[slot] = session->last();
-    if (auto finished = session->Finish(); !finished) return finished;
-  }
-  const auto prompted = rt::Clock::now();
-  if (reused || prefilled != 510)
-    return std::unexpected("speed pass omitted fresh natural prefill");
-  std::uint32_t checkpoints = 0;
-  for (const auto* branch : branches) {
-    if (branch->turn_checkpoints() != 1)
-      return std::unexpected("speed pass omitted a default turn checkpoint");
-    ++checkpoints;
-  }
-  std::array<rt::Generation, 2> output;
-  // stop=false fixes completed work; greedy token-only is the normal fast
-  // path. Full-head observation is confined to the separate quality controls.
-  const auto generation_started = rt::Clock::now();
-  if (auto generated = c2::Generate(owner, heads, output, 64, false, false); !generated)
-    return generated;
-  const auto generated = rt::Clock::now();
-  const auto prefix = measured ? "measured" : "warm";
-  const auto property = [&](std::string_view key, auto value) {
-    testing::Test::RecordProperty(std::format("{}_{}", prefix, key), std::to_string(value));
-  };
-  property("prefill_ns",
-           std::chrono::duration_cast<std::chrono::nanoseconds>(prompted - started).count());
-  property(
-      "generation_ns",
-      std::chrono::duration_cast<std::chrono::nanoseconds>(generated - generation_started).count());
-  property("prefilled", prefilled);
-  property("reused", reused);
-  property("chunks", chunks);
-  property("turn_checkpoints", checkpoints);
-  std::uint64_t tokens = 0, drafted = 0, accepted = 0, steps = 0;
-  for (std::size_t slot = 0; slot < 2; ++slot) {
-    const auto& result = output[slot];
-    tokens += result.tokens.size();
-    drafted += result.drafted;
-    accepted += result.accepted;
-    steps += result.steps;
-    llmp::base::Sha256 hash;
-    hash.Update(std::as_bytes(std::span(result.tokens)));
-    testing::Test::RecordProperty(std::format("{}_tokens{}_sha256", prefix, slot),
-                                  llmp::base::ToHex(hash.Finish()));
-  }
-  property("tokens", tokens);
-  property("drafted", drafted);
-  property("accepted", accepted);
-  property("branch_steps", steps);
-  const auto graphs = llm.graphs();
-  property("graphs_captured", graphs.captured);
-  property("graphs_replayed", graphs.replayed);
-  if (auto* shared = dynamic_cast<rt::Llm*>(&llm)) {
-    const auto ahead = shared->runner().lookahead_stats();
-    property("future_built", ahead.built);
-    property("future_captured", ahead.captured_ahead + ahead.captured_first);
-    property("future_prepared", ahead.prepared);
-  }
-  if (auto ended = server.EndRequestBranches(llm); !ended) return ended;
-  if (!server.DrainKept(rt::Clock::now() + std::chrono::seconds(30)))
-    return std::unexpected("speed pass keeper did not retire");
-  return {};
-}
-class SpeedCase : public testing::Test {
- public:
-  explicit SpeedCase(bool component) : component_(component) {}
-
- private:
-  void TestBody() override {
-    SpeedIds ids{};
-    auto read = ReadSpeedIds(ids);
-    ASSERT_TRUE(read) << (read ? "" : read.error());
-    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
-    ASSERT_NE(scratch, nullptr);
-    fs::create_directories(scratch);
-    auto root = (fs::path(scratch) / "qwen-c2-speed-XXXXXX").string();
-    ASSERT_NE(::mkdtemp(root.data()), nullptr);
-    Owned owner(new Owner);
-    owner->evidence = std::make_shared<Evidence>();
-    const auto started = rt::Clock::now();
-    auto status = ::c2_server::Setup(*owner, root, false, nullptr, component_);
-    ASSERT_TRUE(status) << (status ? "" : status.error());
-    const auto setup = rt::Clock::now();
-    rt::SwapParts parts;
-    status = owner->life.server->Activate(*owner->llm, parts);
-    ASSERT_TRUE(status) << (status ? "" : status.error());
-    const auto ready = rt::Clock::now();
-    RecordProperty("speed_arm", component_ ? "shared" : "legacy");
-    RecordProperty("speed_inputs_sha256", std::string(kSpeedIdsSha));
-    RecordProperty(
-        "speed_setup_ns",
-        std::to_string(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(setup - started).count()));
-    RecordProperty(
-        "speed_materialize_ns",
-        std::to_string(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(ready - setup).count()));
-    status = SpeedPass(*owner, ids, false);
-    ASSERT_TRUE(status) << (status ? "" : status.error());
-    status = SpeedPass(*owner, ids, true);
-    ASSERT_TRUE(status) << (status ? "" : status.error());
-    ASSERT_TRUE(owner->Retire());
-    owner.reset();
-    fs::remove_all(root);
-  }
-  bool component_;
-};
-const bool speed_registered = [] {
-  if (std::getenv("LLMP_QWEN_C2_SPEED") == nullptr) return false;  // NOLINT(concurrency-mt-unsafe)
-  testing::RegisterTest("Qwen38EngineServingGpu", "NativeC2SpeedLegacy", nullptr, nullptr, __FILE__,
-                        __LINE__, []() -> testing::Test* { return new SpeedCase(false); });
-  testing::RegisterTest("Qwen38EngineServingGpu", "NativeC2SpeedShared", nullptr, nullptr, __FILE__,
-                        __LINE__, []() -> testing::Test* { return new SpeedCase(true); });
-  return true;
-}();
 }  // namespace c2_server
 
 // The GGUF import's conversations kept across a restart (D-105, D-112),
@@ -2011,17 +1125,19 @@ class Qwen38GgufKeptGpu : public testing::Test {
   fs::path scratch;
   std::FILE* log = nullptr;
   bool retirement_failed = false;
+  bool mtp = false;  // the native target with its MTP drafter (a per-row tap)
 
   void SetUp() override {
     const auto checkpoint = fs::path(llmp::test_support::ModelsDir()) /
                             "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
+    const std::string_view id = mtp ? kModelOpt : kGguf;
     std::error_code error;
-    if (!fs::exists(Store() / kGguf, error))
-      GTEST_FAIL() << "no Qwen3.8 GGUF artifact " << kGguf << " in " << Store();
+    if (!fs::exists(Store() / id, error))
+      GTEST_FAIL() << "no Qwen3.8 artifact " << id << " in " << Store();
     if (!fs::exists(checkpoint / "tokenizer.json", error) ||
         !fs::exists(checkpoint / "chat_template.jinja", error))
       GTEST_FAIL() << "no Qwen3.8 tokenizer assets in " << checkpoint;
-    const auto fixed = CheckFixture(kGguf, false);
+    const auto fixed = CheckFixture(id, mtp);
     ASSERT_TRUE(fixed) << (fixed ? "" : fixed.error());
     // Spill files need direct I/O: scratch in the build tree.
     const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
@@ -2039,7 +1155,8 @@ class Qwen38GgufKeptGpu : public testing::Test {
     }
     cfg::ModelEntry entry;
     entry.name = "qwen";
-    entry.artifact = kGguf;
+    entry.artifact = id;
+    if (mtp) entry.drafter = kMtp;
     entry.tokenizer = checkpoint / "tokenizer.json";
     entry.chat_template = checkpoint / "chat_template.jinja";
     entry.overrides["context"] = std::int64_t{2048};
@@ -2174,6 +1291,46 @@ TEST_F(Qwen38GgufKeptGpu, ConversationKeptAcrossARestartContinuesExactly) {
   ASSERT_TRUE(started) << (started ? "" : started.error());
   llmp::test::KeptRestartPlan plan;
   plan.vocab = kVocab;
+  plan.tokens = [](std::uint32_t owner, std::size_t count) {
+    std::vector<std::int32_t> out;
+    out.reserve(count);
+    for (std::size_t p = 0; p < count; ++p)
+      out.push_back(static_cast<std::int32_t>(100 + ((p * 7919U + 13U + owner * 17U) % 150000U)));
+    return out;
+  };
+  const auto r = llmp::test::CheckKeptRestart(harness, plan);
+  ASSERT_TRUE(r) << (r ? "" : r.error());
+  EXPECT_EQ(Engine().runner().coverage().violations, 0U);
+}
+
+// The same with the native target and its MTP drafter, whose feature tap is
+// a cell per chunk row (its held positions are host bookkeeping beside the
+// kept state).
+class Qwen38MtpKeptGpu : public Qwen38GgufKeptGpu {
+ protected:
+  Qwen38MtpKeptGpu() { mtp = true; }
+};
+TEST_F(Qwen38MtpKeptGpu, ConversationKeptAcrossARestartContinuesExactly) {
+  struct Harness {
+    Qwen38GgufKeptGpu& test;
+    rt::Server& server() { return *test.life->server; }
+    rt::Llm& model() { return *test.model; }
+    rt::Llm::Branch& Branch(std::uint32_t id) { return test.Branch(id); }
+    std::expected<llmp::base::Sha256Digest, std::string> StateHash(std::uint32_t slot) {
+      return test.StateHash(slot);
+    }
+    std::string Log() const { return test.Log(); }
+    rt::Status Restart() {
+      test.life->server->Persist(rt::Clock::now() + std::chrono::seconds(120), {});
+      if (auto r = test.Retire(); !r) return r;
+      return test.Start();
+    }
+  } harness{*this};
+  const auto started = Start();
+  ASSERT_TRUE(started) << (started ? "" : started.error());
+  llmp::test::KeptRestartPlan plan;
+  plan.vocab = kVocab;
+  plan.expect_drafts = true;
   plan.tokens = [](std::uint32_t owner, std::size_t count) {
     std::vector<std::int32_t> out;
     out.reserve(count);

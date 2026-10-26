@@ -23,6 +23,7 @@
 #include "artifact/schema.h"
 #include "base/json_stream.h"
 #include "base/sha256.h"
+#include "components/state_encoding.h"
 #include "components/step.h"
 #include "kernels/common/lower.h"
 #include "kernels/common/step_program.h"
@@ -835,7 +836,11 @@ AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
   if (!OriginsWellFormed(origins) || model.stages.empty() ||
       std::ranges::none_of(admitted_semantic, [](std::uint8_t byte) { return byte != 0; }))
     return Refused("numerical source facts differ from the active admitted source");
-  if (model.stages.size() == 1 && model.Digest() != admitted_semantic)
+  // A single stage is the admitted spec itself, or it under the alias-wide
+  // Q8_0 KV encoding (the one per-alias transform, which no numerical site
+  // reads); a composition's semantic is its canonical spec's.
+  if (model.stages.size() == 1 && model.Digest() != admitted_semantic &&
+      components::WithoutKvCacheEncoding(model).Digest() != admitted_semantic)
     return Refused("numerical semantic identity differs from the admitted spec");
   for (const auto& tensor : source.tensors)
     if (!Admissible(tensor)) return Refused(kRefusedInventory);

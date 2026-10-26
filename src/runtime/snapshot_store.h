@@ -16,6 +16,7 @@
 
 #include "base/sha256.h"
 #include "engine/live_state.h"
+#include "engine/tap_rows.h"
 #include "execution/adaptive_depth.h"
 #include "runtime/score_rows.h"
 
@@ -43,6 +44,8 @@ class StateSnapshot {
   friend class SnapshotStore;
   friend class Llm;
   ScoreRows score_rows_;  // request publication ownership, never a native payload copy
+  // The slot's drafter tap bookkeeping beside the captured state (fixed size).
+  engine::SlotTapRows taps_;
   std::weak_ptr<SnapshotControl> control_;
   std::uint64_t generation_ = 0;
 };

@@ -390,20 +390,24 @@ TEST(ImportMlxNormalizeModelsTest,
   EXPECT_GT(stage_layout->bytes, 0U);
   RecordProperty("stage_layout_bytes", std::to_string(stage_layout->bytes));
 
+  // The publication half writes the whole 106 GB checkpoint: an opt-in proof
+  // (docs/experiments/m35-f12-frozen/README.md, "Opt-in tests"), after the
+  // normalization checks above, which every models run makes.
   // NOLINTNEXTLINE(concurrency-mt-unsafe): read-only test environment.
   const char* store_root = std::getenv("LLMP_TEST_MLX_PUBLICATION_STORE");
-  if (store_root == nullptr || *store_root == '\0') {
-    RecordProperty("published", "false");
-    return;
-  }
+  if (store_root == nullptr || *store_root == '\0')
+    GTEST_SKIP() << "normalization checked; the opt-in 106 GB publication half needs "
+                    "LLMP_TEST_MLX_PUBLICATION_STORE (a scratch store directory)";
   const std::filesystem::path scratch(store_root);
   std::filesystem::remove_all(scratch, ec);
   std::filesystem::create_directories(scratch, ec);
 
+  // `llmp import`'s default budget: 4 GiB, less what normalization used.
+  ASSERT_LT(bound->metadata_bytes, std::uint64_t{4} << 30U);
   WriteOptions options{
       .store = scratch / "mlx-qwen38-v1",
       .build = "test",
-      .metadata_bytes = std::max(bound->metadata_bytes, std::uint64_t{1} << 30U),
+      .metadata_bytes = (std::uint64_t{4} << 30U) - bound->metadata_bytes,
   };
   auto published = WriteArtifact(*plan, options);
   ASSERT_TRUE(published) << published.error().ToString();

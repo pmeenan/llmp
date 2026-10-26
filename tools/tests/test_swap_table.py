@@ -28,6 +28,13 @@ st = importlib.util.module_from_spec(spec)
 sys.modules["swap_table"] = st
 spec.loader.exec_module(st)
 
+
+def pinned_v1(name):
+    """The pinned in-tree map's v1 ID for `name` (what the models tests serve)."""
+    data = json.loads((ROOT / "tests/unit/data/v1_frozen/v1-ids.json").read_text())
+    return next(data["artifacts"][key] for key, named in data["names"].items() if named == name)
+
+
 GIB = 1 << 30
 H1, H2 = "a1" * 32, "b2" * 32
 
@@ -72,7 +79,7 @@ def make_report(case_name, pairs=None, **kw):
             "problems": [], "positioning": [], "rows": rows}
 
 
-def control_line(pin=st.sg.IMAGE_PIXELS_SHA256):
+def control_line(pin=st.IMAGE_PIN):
     return f"== image <-> deepseek (image as A)\ncontrol: image generated, pixels {pin}\n"
 
 
@@ -343,15 +350,19 @@ class Configuration(unittest.TestCase):
         self.assertTrue(q["tokenizer"].startswith("/share/models/"))
         self.assertEqual(cfg["models"]["image"], {"composition": st.sg.IMAGE_V1})
 
+    def test_the_image_pin_is_the_published_compositions_frozen_pixels(self):
+        frozen = json.loads((ROOT / "tests/unit/data/v1_frozen/qwen_image.json").read_text())
+        self.assertEqual(st.IMAGE_PIN, frozen["digests"]["pixels.1024x1024.40"])
+
     def test_the_default_ids_are_the_v1_imports(self):
-        v1 = {"gemma2": "92bbb574", "gemma3": "5d4674ce", "gemma26": "23f6b7c1",
-              "gemma31": "91580585"}
-        for name, prefix in v1.items():
-            self.assertTrue(st.load_ids(None)[name]["artifact"].startswith(prefix), name)
         ids = st.load_ids(None)
-        self.assertEqual((ids["deepseek"]["artifact"][:8], ids["deepseek"]["drafter"][:8],
-                          ids["qwen3.8"]["artifact"][:8], ids["qwen3.8"]["drafter"][:8]),
-                         ("d2046349", "6b1b9dca", "02354af1", "2cb4cdb8"))
+        for name, published in (("gemma2", "gemma2"), ("gemma3", "gemma3"),
+                                ("gemma26", "gemma26"), ("gemma31", "gemma31")):
+            self.assertEqual(ids[name]["artifact"], pinned_v1(published), name)
+        self.assertEqual((ids["deepseek"]["artifact"], ids["deepseek"]["drafter"],
+                          ids["qwen3.8"]["artifact"], ids["qwen3.8"]["drafter"]),
+                         (pinned_v1("deepseek"), pinned_v1("dspark"),
+                          pinned_v1("qwen38-modelopt"), pinned_v1("qwen38-modelopt-mtp")))
         self.assertEqual(ids["image"], {"composition": st.sg.IMAGE_V1})
         cfg = tomllib.loads(st.render_config(st.CASES["m3"], ids, "/store", "/data", "/share"))
         self.assertEqual(cfg["models"]["deepseek"]["artifact"], st.sg.DSV4_V1)
@@ -437,7 +448,7 @@ class PlanAndRun(Fixture):
                                   "/out/m3-1/enrollment", "swap-table", "--pairs"])
         joined = " ".join(m3)
         for part in ("--context-tokens 8192", "--continue 16", "--cycles 2", "--zero-context on",
-                     "--handoff on", "--image-expect " + st.sg.IMAGE_PIXELS_SHA256,
+                     "--handoff on", "--image-expect " + st.IMAGE_PIN,
                      "--image-noise /share/references/qwen-image-2.1/native/ref1/"
                      "latents_init.bf16", "--report /out/m3-1/report.json"):
             self.assertIn(part, joined)

@@ -43,6 +43,38 @@
 
 namespace llmp::import {
 namespace {
+
+// Where a models test publishes: LLMP_TEST_PUBLICATION_STORE, else the
+// test scratch (LLMP_TEST_SCRATCH, else CTest's working directory's
+// scratch/, as the GPU tests' is), removed when the test ends.
+struct PublicationRoot {
+  std::filesystem::path path;
+  bool owned = false;
+  explicit PublicationRoot(const char* name) {
+    const char* given = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
+    if (given != nullptr && *given != '\0') {
+      path = given;
+      return;
+    }
+    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    std::error_code ec;
+    const std::filesystem::path root = scratch != nullptr && *scratch != '\0'
+                                           ? std::filesystem::path(scratch)
+                                           : std::filesystem::current_path(ec) / "scratch";
+    if (ec) return;
+    // One directory a test: CTest runs these in parallel.
+    const auto* info = testing::UnitTest::GetInstance()->current_test_info();
+    path = root / ("publication-" + std::string(info != nullptr ? info->name() : "test"));
+    owned = true;
+  }
+  PublicationRoot(const PublicationRoot&) = delete;
+  PublicationRoot& operator=(const PublicationRoot&) = delete;
+  ~PublicationRoot() {
+    std::error_code ec;
+    if (owned) std::filesystem::remove_all(path, ec);
+  }
+};
+
 namespace rt = llmp::runtime;
 namespace fm = llmp::format;
 
@@ -529,7 +561,6 @@ TEST(ImportDrafterNormalizeTest, AssistantParentDimensionsMustMatchTheSuppliedTa
 
 TEST(ImportDrafterNormalizeModelsTest,
      Gemma4AssistantRealCheckpointsNormalizePublishAndAdmitWithTargetComposition) {
-  bool unpublished = false;
   for (const std::uint32_t size : {26U, 31U}) {
     const char* env_var =
         size == 26 ? "LLMP_GEMMA4_26B_ASSISTANT_GGUF" : "LLMP_GEMMA4_31B_ASSISTANT_GGUF";
@@ -578,14 +609,11 @@ TEST(ImportDrafterNormalizeModelsTest,
     EXPECT_EQ(plan->spec().stages[1].stream.width, 1024U);
     EXPECT_EQ(plan->routes().size(), 49U);
 
-    const char* store_root = std::getenv("LLMP_TEST_PUBLICATION_STORE");
-    if (store_root == nullptr || *store_root == '\0') {
-      unpublished = true;
-      continue;
-    }
+    const PublicationRoot store_root("LLMP_TEST_PUBLICATION_STORE");
+    ASSERT_FALSE(store_root.path.empty()) << "no publication store (LLMP_TEST_PUBLICATION_STORE "
+                                             "or LLMP_TEST_SCRATCH)";
     const std::filesystem::path scratch =
-        std::filesystem::path(store_root) /
-        ("import-gemma4-assistant-" + std::to_string(size) + "-models-test");
+        store_root.path / ("import-gemma4-assistant-" + std::to_string(size) + "-models-test");
     std::filesystem::remove_all(scratch, ec);
     std::filesystem::create_directories(scratch, ec);
 
@@ -630,7 +658,6 @@ TEST(ImportDrafterNormalizeModelsTest,
 
     std::filesystem::remove_all(scratch, ec);
   }
-  if (unpublished) RecordProperty("published", "false");
 }
 
 TEST(ImportDrafterNormalizeModelsTest,
@@ -673,13 +700,10 @@ TEST(ImportDrafterNormalizeModelsTest,
   EXPECT_EQ(plan->spec().stages[1].role, spec::StageRole::kDrafter);
   EXPECT_EQ(plan->spec().stages[1].artifact, 1U);
 
-  const char* store_root = std::getenv("LLMP_TEST_PUBLICATION_STORE");
-  if (store_root == nullptr || *store_root == '\0') {
-    RecordProperty("published", "false");
-    return;
-  }
-  const std::filesystem::path scratch =
-      std::filesystem::path(store_root) / "import-dspark-models-test";
+  const PublicationRoot store_root("LLMP_TEST_PUBLICATION_STORE");
+  ASSERT_FALSE(store_root.path.empty())
+      << "no publication store (LLMP_TEST_PUBLICATION_STORE or LLMP_TEST_SCRATCH)";
+  const std::filesystem::path scratch = store_root.path / "import-dspark-models-test";
   std::filesystem::remove_all(scratch, ec);
   std::filesystem::create_directories(scratch, ec);
 

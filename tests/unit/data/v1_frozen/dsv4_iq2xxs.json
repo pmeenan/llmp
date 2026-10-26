@@ -1,17 +1,17 @@
 {
  "digests": {
-  "heads.0": "731183c1c139c07109435c7680c44306058c3a9798820a283292955d5c46f7ba",
-  "heads.1": "29624115af1996ebb1e0016988ce0bba314e433e4bb94e2365e1ecd13fb34de4",
-  "history.0": "28e299c73b382738c810c5eb1d256e2bf4f65f9c96195a548177b6305bf1f13e",
-  "history.1": "41eea46d2254f1a21b098b6df39081a6eab5dd6c10afd9d979050b17f7590473",
-  "logits.0": "c2d9f2dc75912362705593acdbc08fe261b30315d733578f7760cc6d9edc3518",
-  "logits.1": "7dc0ad5dade04ee665e265b834c8613565a111944df275df302cc2201c9153dd",
-  "state.0": "caa01204c8a4939fa2ab8effa377e4291ece6d73e9079060e7a3fcf89790eabc:2567:35",
-  "state.1": "caa01204c8a4939fa2ab8effa377e4291ece6d73e9079060e7a3fcf89790eabc:2567:35",
-  "state.2": "d46d4323121a82eb8aa42e74552e3e68dde6533bf834fcce1482d69fec8d2a1b:2575:35",
-  "tokens.0": "223,22,16,23,201,223,128822,201",
-  "tokens.1": "3648,303,1300,5719,4715,1959,428,666"
+  "heads.0": "294db80b73f033e5bedf7ef29e95cff536583297c1ed9ee90ceed3ae41d926f8",
+  "heads.1": "618180a489c2c80bed8faa7d12b26b88ae157aced68dc551f173daa485b8ed5b",
+  "history.0": "a0632750bfeba11bb80d7889f6cda92bc3ce49c46b17ad62aa34ccfe34161251",
+  "history.1": "efa2d7728c9e5a5f46fb158050b426336290c2243ba38cde14c56bd9274f51f0",
+  "logits.0": "685edad3a3f5f61333ee0a07246bf45a01ff0e7a6bfb7633c7a0e41058995aa5",
+  "logits.1": "cc3895a475f69fefa2e1c1ca62f30b3242e7772a8beb18e74739acc452fada0c",
+  "state.0": "568b7f315de0fd2cfb6ee03557767d0043923491db89b46c465a0c58cb3d6837:2567:35",
+  "state.1": "568b7f315de0fd2cfb6ee03557767d0043923491db89b46c465a0c58cb3d6837:2567:35",
+  "state.2": "2e16a96da5c18c8907c1e650600be7dd85acb98353338a616dc60f13a2669152:2575:35",
+  "tokens.0": "223,22,16,23,16,27,16,19",
+  "tokens.1": "16,20,16,22,16,23,16,27"
  },
  "family": "dsv4_iq2xxs",
- "provenance": "Reviewed numerical refresh 2026-10-18 on Spark B (spark-c4e2, GB10) from r7-model-controls-30c789d8-B.raw.log; v1 e7c0d0e453aab30765c884ab610835936e80312646f18383538bd4d9b428dc59 (llmp import of antirez/deepseek-v4-gguf@f71f23d5 DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf; its M3 v0 artifact cd39d504dc2dbfe911a4a521fa8efc8053dc3e80e99738a9b25fa6b70c97a1ac). Only heads.0 and logits.0 (whose first row is heads.0) change from the narrowed single-row output head using the qualified single-row Q8_1 vector reduction; all generated tokens, histories, continuation head/logits, and complete state/spill/restore digests remain exact."
+ "provenance": "Re-recorded 2026-10-26 on spark (GB10, spark-native build of main 2e38631c plus slice F12), identical over three runs. The bits moved with the accepted GB10 VecQ reduction schedules: 425ebf23 (scalar Q8_0 one-token rows, DeepSeek target, DSpark and IQ2_XXS), 4533033c (every scalar VecQ encoding, Qwen GGUF) and 2b3452de (multi-column 2..8 schedules), each bisected (docs/experiments/m35-f12-frozen/README.md). Quality: the scored-passage control is unchanged for Qwen GGUF (996 targets, 2.8432114726 nats, same scores digest) and 2.7937082602 against 2.7968790810 nats before the change for DeepSeek (966 targets); U4's head/state/transport controls passed with these schedules. A change that legitimately moves bits re-records these."
 }

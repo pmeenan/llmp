@@ -1,17 +1,17 @@
 {
  "digests": {
-  "heads.0": "03dbc76485c368cc1554739502e2ae2b6d881c07d41694b955077fd4f4936a3b",
-  "heads.1": "54437e384a80717f2dd06f4182441cf844b42800417c0d486f27e4a77f9c40ed",
+  "heads.0": "e5508d8f2656337d0f18eb4496f8099433ebb00daa746e27f82f15a65a4fca4d",
+  "heads.1": "85b74fe3402ebb4075ebe1bcc7b0c50304595bf673b87ee50273759acefec8b2",
   "history.0": "67e89a52b9f4479483a827a35ad640d9ffa1d5b7ec74dc8a29be03f20e54c12a",
   "history.1": "aed7848b3e510b508c51e96490298836bb6288dd1a2fa011cc574430869b91ce",
-  "logits.0": "a3704b0d4d21dd1f574c59853e62ad9b15033c3db325c091c3efed8b486fe458",
-  "logits.1": "b38051fe32b3985f896a73326c09afad2bd92669c02d2b5d9fd42821cb9faffe",
-  "state.0": "b508306fbfd4f474544eab40b2a70f8a8418b1a1a2a89c3f51d2c98d111532b5:14:64",
-  "state.1": "b508306fbfd4f474544eab40b2a70f8a8418b1a1a2a89c3f51d2c98d111532b5:14:64",
-  "state.2": "8b42b3415cc84739f71a5ee41c40477fcaef27c5ac52bb3e6b827971c7ea1648:22:64",
+  "logits.0": "2aaffe90ce081ce4f56e45998c2f56d0da559c28bd08b5d9d432a4542e9c3415",
+  "logits.1": "5f29d060d86c96bc728870a1a413610386ed5171b2b0b89281ac77604f2011ab",
+  "state.0": "2fa82b668c9171ccd13370cf5c682b944644928e760f1262647fa68d040600ee:14:64",
+  "state.1": "2fa82b668c9171ccd13370cf5c682b944644928e760f1262647fa68d040600ee:14:64",
+  "state.2": "7e7621866205aefccf689578aa934799c93511df4bdde8067e040bb0f7ceb50f:22:64",
   "tokens.0": "30,220,248046,198,248045,74455,198,248068",
   "tokens.1": "198,760,1156,579,1876,369,4847,7132"
  },
  "family": "qwen38_gguf",
- "provenance": "Reviewed numerical refresh 2026-10-18 from integrated R7+R8 on Spark B (spark-c4e2, GB10), verified in r7-model-controls-30c789d8-B.raw.log. Original frozen assertions and raw failures retained outside the repository. Existing same-checkpoint bounded quality classification, changed reduction/selection evidence and live spill/restore/continuation checks support this refresh; generated token/history changes are explicit. No numerical grant broadened. Qwen GGUF Prompt7 ranking ambiguity and all six raw quality-pair failures remain retained; no seven-row VecQ grant."
+ "provenance": "Re-recorded 2026-10-26 on spark (GB10, spark-native build of main 2e38631c plus slice F12), identical over three runs. The bits moved with the accepted GB10 VecQ reduction schedules: 425ebf23 (scalar Q8_0 one-token rows, DeepSeek target, DSpark and IQ2_XXS), 4533033c (every scalar VecQ encoding, Qwen GGUF) and 2b3452de (multi-column 2..8 schedules), each bisected (docs/experiments/m35-f12-frozen/README.md). Quality: the scored-passage control is unchanged for Qwen GGUF (996 targets, 2.8432114726 nats, same scores digest) and 2.7937082602 against 2.7968790810 nats before the change for DeepSeek (966 targets); U4's head/state/transport controls passed with these schedules. A change that legitimately moves bits re-records these."
 }

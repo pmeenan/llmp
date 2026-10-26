@@ -23,6 +23,12 @@ RETIRED = ("GREEDY_NATIVE_RETIRED profile=31 mode=unit32 C=1 P=64 prefill_query=
            "endpoint=96 warm=1 quality=2 timed=2")
 
 
+def pinned_v1(name):
+    """The pinned in-tree map's v1 ID for `name` (what the models tests serve)."""
+    data = json.loads((ROOT / "tests/unit/data/v1_frozen/v1-ids.json").read_text())
+    return next(data["artifacts"][key] for key, named in data["names"].items() if named == name)
+
+
 def log(first, repeat, retired=RETIRED):
     done = "GREEDY32_COMPLETED mode=unit32 phase={} emitted=32 endpoint=96 verified=46 drafted=34 "
     return "\n".join([
@@ -105,10 +111,8 @@ class Steps(unittest.TestCase):
                          "--inputs", "/i", "--blocks", "1"])
             self.assertIn(f"/s/old/{ag.DEFAULT_TARGET} /s/old/{ag.DEFAULT_ASSISTANT}",
                           text.getvalue().splitlines()[1])
-            self.assertEqual(ag.DEFAULT_TARGET,
-                             "915805856724410ee650dd95e15b5815ceb08eedf1536007d11ce5bbebd8e01c")
-            self.assertEqual(ag.DEFAULT_ASSISTANT,
-                             "f931e7a0c9b995ac99062c3ae73bacb90960e6e1b8e155db5407c169663f0197")
+            self.assertEqual(ag.DEFAULT_TARGET, pinned_v1("gemma31"))
+            self.assertEqual(ag.DEFAULT_ASSISTANT, pinned_v1("gemma31-assistant"))
 
 
 class Parse(unittest.TestCase):

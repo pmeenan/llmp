@@ -24,6 +24,7 @@
 #include "artifact_writer.h"
 #include "base/bytes.h"
 #include "base/sha256.h"
+#include "components/state_encoding.h"
 #include "components/step.h"
 #include "dsv4_gguf_normalization_fixture.h"
 #include "expected_error.h"
@@ -413,6 +414,44 @@ TEST_F(ComponentAdmissionTest, NumericalProjectionAuthenticatesAndRetainsPaidSto
   EXPECT_TRUE(payer.expired());
   EXPECT_EQ(owner->used, 0U);
   EXPECT_EQ(owner->releases, 1U);
+}
+
+// The alias-wide Q8_0 KV encoding is applied after admission (component
+// build) and touches no numerical site: the encoded spec projects the same
+// grants under the admitted identity, which a Q8_0 alias was once refused
+// ("numerical semantic identity differs"). Any other change is still refused.
+TEST_F(ComponentAdmissionTest, AliasQ8KvEncodingKeepsTheAdmittedNumericalIdentity) {
+  auto owner = std::make_shared<NumericalOwner>();
+  const auto funder = NumericalFunder(owner);
+  const auto semantic = model.Digest();
+  const auto bind = [&](const sp::ModelSpec& projected) {
+    return rt::AdmittedNumerics(projected, source, origins, nullptr, semantic,
+                                {.context = 8192, .slots = 4}, 0, NumericalDevice(), funder);
+  };
+  auto encoded = model;
+  const auto bytes = llmp::components::KvCacheEncodingBytes(encoded, fm::Encoding::kQ8_0);
+  ASSERT_TRUE(bytes) << bytes.error();
+  ASSERT_TRUE(llmp::components::ApplyKvCacheEncoding(encoded, fm::Encoding::kQ8_0, *bytes));
+  ASSERT_NE(encoded.Digest(), semantic);
+  EXPECT_EQ(llmp::components::WithoutKvCacheEncoding(encoded), model);
+  auto plain = bind(model);
+  auto q8 = bind(encoded);
+  ASSERT_TRUE(plain && *plain) << (plain ? "" : plain.error());
+  ASSERT_TRUE(q8 && *q8) << (q8 ? "" : q8.error());
+  EXPECT_EQ((*plain)->digest(), (*q8)->digest());
+  for (const auto& entry : (*q8)->entries()) EXPECT_EQ(entry.semantic, semantic);
+  // Another change to the encoded spec is not the admitted spec.
+  auto other = encoded;
+  other.stages.front().context /= 2;
+  auto refused = bind(other);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().find("numerical semantic identity differs"), std::string::npos);
+  // An explicit F16 setting is not the admitted spec either.
+  for (auto& layer : encoded.stages.front().layers)
+    for (auto& component : layer.components)
+      for (auto& p : component.params)
+        if (p.name == "kv_encoding") p.value = std::string("f16");
+  EXPECT_FALSE(bind(encoded));
 }
 
 class NumericalBackendOwner final : public llmp::kernels::BackendOwner {

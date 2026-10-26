@@ -2374,7 +2374,10 @@ through a synchronous bounded row codec. An alias's `kv_cache_encoding` override
 validates the complete authenticated target spec and pays parameter storage
 before mutation (`src/components/state_encoding.h`: `KvCacheEncodingBytes`,
 `ApplyKvCacheEncoding`); the same transformed spec drives settings, graph/state layout
-and kept identity. There is no resident weight transcode or second model copy.
+and kept identity. Numerical grants stay bound to the admitted spec's identity:
+`AdmittedNumerics` accepts the transformed spec as that spec under the alias
+encoding (`WithoutKvCacheEncoding`), which no numerical site reads. There is no
+resident weight transcode or second model copy.
 
 The public values are `"f16"` (default) and `"q8_0"`. Calibration never selects
 the lossy choice, and settings report its source and lossiness. Unsupported

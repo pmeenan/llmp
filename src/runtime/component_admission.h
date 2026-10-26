@@ -216,8 +216,10 @@ std::expected<ImageAdmission, std::string> ReadImageAdmission(
 
 // Uses the backend's existing paid construction token, independently of
 // execution-domain declarations, and retains its exact charge/refund lifetime.
-// Called after ordinary admission, before per-alias state transformations or
-// composition: exact verified source/spec identity is checked once here.
+// `admitted_semantic` is the admitted spec's identity, taken before
+// composition and per-alias state transformations; a single-stage `model` must
+// be that spec or it under the alias-wide Q8_0 KV encoding, which no numerical
+// site reads. Exact verified source/spec identity is checked once here.
 std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::string>
 AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
                  std::span<const artifact::Source> origins, const Approval* approval,

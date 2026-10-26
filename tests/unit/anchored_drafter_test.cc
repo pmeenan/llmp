@@ -632,4 +632,53 @@ TEST_F(ChunkFeatureTest, CheckpointReplacementRefusesAnUnrestoredLogicalTapSpan)
   ExpectFeatures(0, 4, 2);
 }
 
+// A restore of exactly the captured state may put back the tap bookkeeping
+// recorded with it: the tap's cells are state the checkpoint restores, so the
+// drafter catches up from the captured features, as it would have before the
+// capture (the swap table's continuation after a diagnostic snapshot restore
+// drafted otherwise without them, and so differed in its logits' bits).
+TEST_F(ChunkFeatureTest, CheckpointRestoreWithItsTapRowsReadsTheCapturedFeatures) {
+  ASSERT_TRUE(Target(0, 4));
+  std::vector<en::LiveState::Range> footprint;
+  for (std::size_t stage = 0; stage < runner_->slots().stages(); ++stage) {
+    for (auto range : runner_->slots().live(0, stage).used_ranges()) {
+      range.region = stage;
+      footprint.push_back(range);
+    }
+  }
+  auto pages = runner_->slots().CheckpointRanges(0, 4);
+  ASSERT_TRUE(pages);
+  std::uint64_t bytes = 0;
+  for (const auto& page : *pages) bytes += page.bytes;
+  std::vector<llmp::catalog::ExtentId> staging;
+  auto host = node_.Pinned(bytes, 0, staging);
+  ASSERT_TRUE(host);
+  ASSERT_TRUE(runner_->slots().CopyState(0, *host, *pages, true));
+  const auto taps = runner_->SaveTapRows(0);
+  ASSERT_EQ(taps.stages, runner_->slots().stages());
+  EXPECT_EQ(taps.positions, 4U);
+  ASSERT_TRUE(runner_->OldestTapFeature(0, kAssistant));
+  const auto oldest = *runner_->OldestTapFeature(0, kAssistant);
+  // A later chunk overwrites the tap's cells, then the restore puts them back.
+  ASSERT_TRUE(Target(0, 3));
+  ExpectFeatures(0, 6, 1);
+  ASSERT_TRUE(runner_->slots().PrepareRestore(0, 4, footprint, runner_->slots().kept_layout_id()));
+  ASSERT_TRUE(runner_->slots().CopyState(0, *host, *pages, false));
+  ASSERT_TRUE(runner_->slots().CompleteRestore(0, 4));
+  ASSERT_TRUE(node_.FreePinned(*host));
+  EXPECT_FALSE(runner_->OldestTapFeature(0, kAssistant));
+  // Recorded for another state: refused, nothing put back.
+  auto other = taps;
+  other.positions = 5;
+  EXPECT_FALSE(runner_->RestoreTapRows(0, other));
+  EXPECT_FALSE(runner_->RestoreTapRows(1, taps));
+  EXPECT_FALSE(runner_->OldestTapFeature(0, kAssistant));
+  ASSERT_TRUE(runner_->RestoreTapRows(0, taps));
+  EXPECT_EQ(runner_->SaveTapRows(0), taps);
+  ASSERT_TRUE(runner_->OldestTapFeature(0, kAssistant));
+  EXPECT_EQ(*runner_->OldestTapFeature(0, kAssistant), oldest);
+  ExpectFeatures(0, 3, 1);
+  ExpectFeatures(0, 0, 4);
+}
+
 }  // namespace

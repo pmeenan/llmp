@@ -70,6 +70,7 @@
 #include "engine/specialization.h"
 #include "engine/step_ahead.h"
 #include "engine/step_runs.h"
+#include "engine/tap_rows.h"
 #include "engine/unproven_work.h"
 #include "format/encoding.h"
 #include "format/tensor_format.h"
@@ -530,6 +531,14 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
   // read from there on (EmitFeatureCopies). None: the stage has no tap, or
   // it holds nothing of the slot's.
   std::optional<std::uint32_t> OldestTapFeature(std::uint32_t slot, std::uint16_t stage) const;
+  // The slot's tap bookkeeping on every stage (engine/tap_rows.h). A restore
+  // forgets it with the carried features (content_changed), since the tap's
+  // cells it describes are replaced; RestoreTapRows puts back what
+  // SaveTapRows recorded when the restored state is exactly the one captured
+  // with it (the same committed positions), so the next draft catches up from
+  // the same target features as it would have at the capture.
+  SlotTapRows SaveTapRows(std::uint32_t slot) const;
+  Status RestoreTapRows(std::uint32_t slot, const SlotTapRows& saved);
   // Whether `stage`'s steps read their owners' token histories (side-row
   // lookups): a step of a stage that does not needs none.
   bool ReadsHistory(std::uint16_t stage) const;
@@ -574,9 +583,6 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
                          CopySink& into) const;
   std::uint64_t CarryAddress(std::uint32_t slot, std::size_t stage) const;
   void ForgetCarry(std::uint32_t slot);
-  struct TapRows {
-    std::uint32_t first = 0, count = 0, preceding = 0;
-  };
   TapRows HeldTapRows(std::uint32_t slot, std::size_t stage) const;
   std::expected<std::vector<RunCopy>, std::string> TapCarries(
       const planner::StepShape& shape) const;

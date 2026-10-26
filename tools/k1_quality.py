@@ -26,6 +26,8 @@ import sys
 import time
 
 sys.dont_write_bytecode = True
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import speed_gate  # noqa: E402  (the published v1 IDs)
 
 PORT = 18114
 DEFAULT_SHARE = "~/.local/share/llmp"
@@ -50,17 +52,17 @@ def resolve_store(store: str, share: pathlib.Path) -> str:
     if store == V1_STORE and (share / "artifacts").is_dir():
         return "artifacts"
     return store
-DSV4 = "d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f"
-DSPARK = "6b1b9dcafe85e07e37a0b14007280da85cd0406158eaf73a658bbaf1574eec41"
-QWEN = "02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9"
-QWEN_MTP = "2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef"
-QWEN_GGUF = "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027"
-GEMMA2 = "92bbb574ec219595d5942f05d1cce9480229b4bac5b7e22205af74499133ab4e"
-GEMMA3 = "5d4674ce19e5783cea12775502f7ca23cbb2e6f2111efa2346c58bcd53482ece"
-GEMMA26 = "23f6b7c1bfe2d80569107b07a1e3ddee7e310caca346b7937dfa3713a7e41027"
-GEMMA26_ASSISTANT = "2e3767959ef6ad30a86e7ccfcf5cb98db8d2b371100e81808e05bac49cefa70d"
-GEMMA31 = "915805856724410ee650dd95e15b5815ceb08eedf1536007d11ce5bbebd8e01c"
-GEMMA31_ASSISTANT = "f931e7a0c9b995ac99062c3ae73bacb90960e6e1b8e155db5407c169663f0197"
+DSV4 = speed_gate.DSV4_V1
+DSPARK = speed_gate.DSPARK_V1
+QWEN = speed_gate.QWEN_V1
+QWEN_MTP = speed_gate.QWEN_MTP_V1
+QWEN_GGUF = speed_gate.QWEN_GGUF_V1
+GEMMA2 = speed_gate.GEMMA2_V1
+GEMMA3 = speed_gate.GEMMA3_V1
+GEMMA26 = speed_gate.GEMMA26_V1
+GEMMA26_ASSISTANT = speed_gate.GEMMA26_ASSISTANT_V1
+GEMMA31 = speed_gate.GEMMA31_V1
+GEMMA31_ASSISTANT = speed_gate.GEMMA31_ASSISTANT_V1
 QWEN_TOKENIZER = "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6"
 
 

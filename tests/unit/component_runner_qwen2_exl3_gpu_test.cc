@@ -2000,8 +2000,6 @@ TEST(ComponentRunnerExl3Gpu, OptimizedKeptStateAdoptsIntoFreshOwner) {
   auto proof = std::make_shared<KeptRestart>();
   RunControl(true, false, false, true, true, proof);
   ASSERT_FALSE(testing::Test::HasFailure());
-  // The first run skipped (its sealed inputs are absent): nothing to adopt.
-  if (testing::Test::IsSkipped()) return;
   ASSERT_TRUE(proof->retired);
   ASSERT_EQ(proof->oracle.size(), kFullOracleBytes);
   RunControl(true, false, false, true, true, proof, true);
@@ -2012,8 +2010,6 @@ TEST(ComponentRunnerExl3Gpu, MixedRateOptimizedKeptStateAdoptsIntoFreshOwner) {
   auto proof = std::make_shared<KeptRestart>();
   RunControl(true, false, true, true, true, proof);
   ASSERT_FALSE(testing::Test::HasFailure());
-  // The first run skipped (its sealed inputs are absent): nothing to adopt.
-  if (testing::Test::IsSkipped()) return;
   ASSERT_TRUE(proof->retired);
   ASSERT_EQ(proof->oracle.size(), kFullOracleBytes);
   RunControl(true, false, true, true, true, proof, true);
@@ -2026,8 +2022,6 @@ void RunReloadControl(bool mixed_rate, bool optimized) {
   auto proof = std::make_shared<KeptRestart>();
   RunControl(true, false, mixed_rate, true, optimized, proof, false, true);
   ASSERT_FALSE(testing::Test::HasFailure());
-  // The first run skipped (its sealed inputs are absent): nothing to adopt.
-  if (testing::Test::IsSkipped()) return;
   ASSERT_TRUE(proof->retired);
   ASSERT_EQ(proof->oracle.size(), kFullOracleBytes);
   RunControl(true, false, mixed_rate, true, optimized, proof, true, true);

@@ -601,6 +601,7 @@ class Llm final : public Served {
     MemoryCharge saved_history_charge_;
     std::vector<std::int32_t> saved_history_;
     std::uint32_t saved_cursor_ = 0;
+    engine::SlotTapRows saved_taps_;  // the drafter taps beside the saved state
     std::vector<engine::LiveState::Range> saved_ranges_;
     bool saved_valid_ = false;
     std::optional<execution::SamplingParams> sampling_;

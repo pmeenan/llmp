@@ -198,19 +198,31 @@ class Family:
     score_chars: int = 4000
 
 
-# The v1 imports of every family (`u2-v1-artifacts` / `artifacts`, D-118).
-DSV4_V1 = "d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f"
-DSPARK_V1 = "6b1b9dcafe85e07e37a0b14007280da85cd0406158eaf73a658bbaf1574eec41"
-QWEN_V1 = "02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9"
-QWEN_MTP_V1 = "2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef"
-QWEN_GGUF_V1 = "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027"
-GEMMA2_V1 = "92bbb574ec219595d5942f05d1cce9480229b4bac5b7e22205af74499133ab4e"
-GEMMA3_V1 = "5d4674ce19e5783cea12775502f7ca23cbb2e6f2111efa2346c58bcd53482ece"
-GEMMA26_V1 = "23f6b7c1bfe2d80569107b07a1e3ddee7e310caca346b7937dfa3713a7e41027"
-GEMMA26_ASSISTANT_V1 = "2e3767959ef6ad30a86e7ccfcf5cb98db8d2b371100e81808e05bac49cefa70d"
-GEMMA31_V1 = "915805856724410ee650dd95e15b5815ceb08eedf1536007d11ce5bbebd8e01c"
-GEMMA31_ASSISTANT_V1 = "f931e7a0c9b995ac99062c3ae73bacb90960e6e1b8e155db5407c169663f0197"
-IMAGE_V1 = "62497918eae947b8d4327bf8e0771318118d581c59c2c0574208345ed7cc6518"
+# The v1 imports of every family (`u2-v1-artifacts` / `artifacts`, D-118), by
+# name from the pinned in-tree map the models tests read
+# (tests/unit/data/v1_frozen/v1-ids.json), so a re-import changes one file.
+V1_IDS = pathlib.Path(__file__).resolve().parent.parent / "tests/unit/data/v1_frozen/v1-ids.json"
+
+
+def published_ids(path: pathlib.Path = V1_IDS) -> dict[str, str]:
+    """Each published name's v1 ID (a composition's own ID for the image)."""
+    data = json.loads(path.read_text())
+    return {name: data["artifacts"][key] for key, name in data["names"].items()}
+
+
+_PUBLISHED = published_ids()
+DSV4_V1 = _PUBLISHED["deepseek"]
+DSPARK_V1 = _PUBLISHED["dspark"]
+QWEN_V1 = _PUBLISHED["qwen38-modelopt"]
+QWEN_MTP_V1 = _PUBLISHED["qwen38-modelopt-mtp"]
+QWEN_GGUF_V1 = _PUBLISHED["qwen38-gguf"]
+GEMMA2_V1 = _PUBLISHED["gemma2"]
+GEMMA3_V1 = _PUBLISHED["gemma3"]
+GEMMA26_V1 = _PUBLISHED["gemma26"]
+GEMMA26_ASSISTANT_V1 = _PUBLISHED["gemma26-assistant"]
+GEMMA31_V1 = _PUBLISHED["gemma31"]
+GEMMA31_ASSISTANT_V1 = _PUBLISHED["gemma31-assistant"]
+IMAGE_V1 = _PUBLISHED["qwen-image"]
 V1_STORE = "u2-v1-artifacts"
 
 

@@ -1632,6 +1632,7 @@ Status Llm::SaveState(Branch& branch, void* host) {
     ReleaseTokens(branch.saved_history_, branch.saved_history_charge_);
   }
   branch.saved_cursor_ = CursorFor(branch);
+  branch.saved_taps_ = runner_->SaveTapRows(Slot(branch));
   branch.saved_score_rows_ = branch.score_rows_;
   SaveDecodingStateFor(branch);
   branch.saved_valid_ = true;
@@ -1671,6 +1672,9 @@ Status Llm::RestoreState(Branch& branch, void* host) {
   branch.turn_checkpoints_.clear();  // a full diagnostic restore may replace the branch
   branch.history_used_ = Clock::now();
   RestoreDecodingStateFor(branch);
+  // As RestoreState from a SnapshotStore: the saved tap cells, described.
+  if (branch.saved_taps_.stages != 0)
+    std::ignore = runner_->RestoreTapRows(Slot(branch), branch.saved_taps_);
   branch.needs_clear_ = false;
   return {};
 }
@@ -1717,6 +1721,7 @@ std::expected<StateSnapshot, std::string> Llm::CaptureState(Branch& branch, Snap
   }
   auto snapshot = store.Publish();
   snapshot.score_rows_ = branch.score_rows_;
+  snapshot.taps_ = runner_->SaveTapRows(Slot(branch));
   return snapshot;
 }
 
@@ -1760,6 +1765,12 @@ Status Llm::RestoreState(Branch& branch, SnapshotStore& store, const StateSnapsh
   branch.turn_checkpoints_.clear();
   branch.history_used_ = Clock::now();
   RestoreTurnDecodingStateFor(branch, captured->decoding);
+  // The restored tap cells are the captured ones: the drafter catches up
+  // from them as it would have at the capture (the swap table's exact
+  // continuation). A refusal (another slot shape) leaves them forgotten,
+  // which costs only draft acceptance.
+  if (snapshot.taps_.stages != 0)
+    std::ignore = runner_->RestoreTapRows(Slot(branch), snapshot.taps_);
   branch.needs_clear_ = false;
   return {};
 }

@@ -922,7 +922,7 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
 - [ ] **F10 Hygiene, docs and final checks:** raw experiment dumps and unused
       scripts removed, one test-store resolver, `m35-record.md`, doc drift, then
       the full Spark check set and a speed confirmation of every family.
-- [ ] **F12 Known model-test failures and swap continuation:** every model
+- [x] **F12 Known model-test failures and swap continuation:** every model
       test that already failed at `265c821a` (stale frozen digests, a Gemma Q8
       cache admission, Gemma 4 tool rendering, the gemma2 store artifact
       refused at admission, the Qwen3.8 quantized-head tests) is fixed,

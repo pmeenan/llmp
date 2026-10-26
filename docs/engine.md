@@ -496,7 +496,12 @@ then the launch, then the memory they name. A step (`RunStep`):
    (an output marked `features`) carried to its slots' carries after its
    run, both in its job outside any recording (their sources move with the
    positions); a carry survives ordinary spill/restore and is forgotten
-   when the slot's logical state is replaced or cleared;
+   when the slot's logical state is replaced or cleared, as is which
+   positions each per-row tap holds (`TapRows`), except that a state
+   snapshot records the latter beside the state it captures and its restore
+   puts it back (`ModelRunner::SaveTapRows`, `RestoreTapRows`): the tap's
+   cells are state the checkpoint restores, so the next draft catches up
+   from the captured features and continues exactly as it would have;
 4. the futures (`StepAhead`): deduplicated against the shape and each
    other and protected by `Find` before any funding; a recording made
    ahead whose staging differs is dropped; the capture decision (second

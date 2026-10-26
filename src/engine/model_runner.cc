@@ -774,6 +774,31 @@ std::optional<std::uint32_t> ModelRunner::OldestTapFeature(std::uint32_t slot,
   return held.first > held.preceding ? held.first - held.preceding : 0U;
 }
 
+SlotTapRows ModelRunner::SaveTapRows(std::uint32_t slot) const {
+  SlotTapRows saved;
+  if (slot >= slots_.slots() || slots_.stages() > SlotTapRows::kStages) return saved;
+  saved.stages = static_cast<std::uint32_t>(slots_.stages());
+  saved.positions = slots_.positions(slot);
+  for (std::size_t stage = 0; stage < slots_.stages(); ++stage) {
+    const std::size_t at = (std::size_t{slot} * slots_.stages()) + stage;
+    saved.held[stage] = tap_rows_.at(at);
+    saved.previous[stage] = previous_tap_rows_.at(at);
+  }
+  return saved;
+}
+
+Status ModelRunner::RestoreTapRows(std::uint32_t slot, const SlotTapRows& saved) {
+  if (slot >= slots_.slots() || saved.stages != slots_.stages() ||
+      saved.positions != slots_.positions(slot))
+    return Error("tap rows were recorded for another slot state");
+  for (std::size_t stage = 0; stage < saved.stages; ++stage) {
+    const std::size_t at = (std::size_t{slot} * slots_.stages()) + stage;
+    tap_rows_.at(at) = saved.held[stage];
+    previous_tap_rows_.at(at) = saved.previous[stage];
+  }
+  return {};
+}
+
 bool ModelRunner::ReadsHistory(std::uint16_t stage) const {
   if (stage < stage_facts_.size() ? stage_facts_[stage].uses_side_rows
                                   : source_->UsesSideRows(stage))
@@ -783,7 +808,7 @@ bool ModelRunner::ReadsHistory(std::uint16_t stage) const {
   });
 }
 
-ModelRunner::TapRows ModelRunner::HeldTapRows(std::uint32_t slot, std::size_t stage) const {
+TapRows ModelRunner::HeldTapRows(std::uint32_t slot, std::size_t stage) const {
   const std::size_t at = (std::size_t{slot} * slots_.stages()) + stage;
   const std::uint32_t committed = slots_.positions(slot);
   TapRows held = tap_rows_.at(at);

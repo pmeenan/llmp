@@ -677,14 +677,20 @@ TEST_P(Gemma4ServingGpu, LiteralTeacherForcingAndChatRefusalsUseTheTargetRoute) 
                         .reasoning_content = {},
                         .tool_calls = {}});
   model->Defaults(c);
-  ASSERT_TRUE(model->RenderChat(c));
+  const auto plain = model->RenderChat(c);
+  ASSERT_TRUE(plain) << plain.error();
   c.enable_thinking = true;
   EXPECT_FALSE(model->RenderChat(c));
   c.enable_thinking = false;
+  // Declared tools render through the template since Chat Completions tool
+  // intake (c7b1b142): the tool's declaration joins the prompt.
   auto tool = llmp::base::json::Parse(R"({"type":"function","function":{"name":"test"}})");
   ASSERT_TRUE(tool);
   c.tools.push_back(tool->root());
-  EXPECT_FALSE(model->RenderChat(c));
+  const auto declared = model->RenderChat(c);
+  ASSERT_TRUE(declared) << declared.error();
+  EXPECT_GT(declared->size(), plain->size());
+  EXPECT_NE(model->Detokenize(*declared).find("declaration:test"), std::string::npos);
   EXPECT_TRUE(server->RetireRequestBranches(*model, true).references_retired);
 }
 

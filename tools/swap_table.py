@@ -91,6 +91,13 @@ M3_PAIRS = ("qwen3.8:deepseek", "qwen3.8:image", "deepseek:image", "deepseek:qwe
 PREPARED_LIMIT = 20.0  # seconds: the bound for previously prepared swaps
 FIRST_USE_LIMIT = 40.0  # seconds: first use is no worse than about twice the bound
 JOB_SECONDS = 600
+# The published image composition's pixels, the pin its frozen test holds
+# (tests/unit/data/v1_frozen/qwen_image.json, docs/model-support.md): the image
+# A's control and regenerations must equal it. speed_gate's IMAGE_PIXELS_SHA256
+# stays the M3.6 protocol's frozen old-arm pin.
+IMAGE_PIN = json.loads((pathlib.Path(__file__).resolve().parent.parent /
+                        "tests/unit/data/v1_frozen/qwen_image.json").read_text())[
+    "digests"]["pixels.1024x1024.40"]
 
 QWEN_FILES = {"tokenizer": f"{{share}}/{sg.QWEN_TOKENIZER}/tokenizer.json",
               "chat_template": f"{{share}}/{sg.QWEN_TOKENIZER}/chat_template.jinja"}
@@ -270,7 +277,7 @@ def swap_command(case: Case, args: argparse.Namespace, run_dir: pathlib.Path, pa
     if case.name == "m3":
         command += ["--short-prompt", SHORT_PROMPT, "--image-prompt", sg.IMAGE_PROMPT,
                     "--image-noise", str(share / sg.IMAGE_NOISE),
-                    "--image-expect", args.image_pin or sg.IMAGE_PIXELS_SHA256]
+                    "--image-expect", args.image_pin or IMAGE_PIN]
     else:
         command += ["--plain"]
     return command + ["--report", str(run_dir / "report.json")]
@@ -422,7 +429,7 @@ def check(dirs: list[str], case_name: str, prepared_limit: float = PREPARED_LIMI
           first_use_limit: float = FIRST_USE_LIMIT, image_pin: str | None = None,
           partial: bool = False) -> dict:
     case = CASES[case_name]
-    pin = image_pin or sg.IMAGE_PIXELS_SHA256
+    pin = image_pin or IMAGE_PIN
     problems: list[str] = []
     rows: list[dict] = []
     runtimes, contexts = set(), set()
@@ -558,7 +565,7 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--store", help="the installed-artifacts directory")
         p.add_argument("--out", required=True)
         p.add_argument("--ids", help="JSON of artifact IDs by model name, over the defaults")
-        p.add_argument("--image-pin", help="the expected pixels SHA-256 (default: the M3 pin)")
+        p.add_argument("--image-pin", help="the expected pixels SHA-256 (default: the published composition's frozen pin)")
         p.add_argument("--share", default=DEFAULT_SHARE)
         p.add_argument("--inputs", help="the context texts (default SHARE/m36-baselines/inputs)")
         p.add_argument("--config-template",

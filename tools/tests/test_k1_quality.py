@@ -22,6 +22,12 @@ sys.modules["k1_quality"] = k1
 spec.loader.exec_module(k1)
 
 
+def pinned_v1(name):
+    """The pinned in-tree map's v1 ID for `name` (what the models tests serve)."""
+    data = json.loads((ROOT / "tests/unit/data/v1_frozen/v1-ids.json").read_text())
+    return next(data["artifacts"][key] for key, named in data["names"].items() if named == name)
+
+
 class TestK1Quality(unittest.TestCase):
     def test_families_coverage(self):
         expected = {
@@ -56,13 +62,10 @@ class TestK1Quality(unittest.TestCase):
         self.assertIn('kv_cache_encoding = "q8_0"', cfg_q8)
 
     def test_every_family_serves_its_v1_import(self):
-        v1 = {"gemma2": "92bbb574ec219595d5942f05d1cce9480229b4bac5b7e22205af74499133ab4e",
-              "gemma3": "5d4674ce19e5783cea12775502f7ca23cbb2e6f2111efa2346c58bcd53482ece",
-              "gemma26": "23f6b7c1bfe2d80569107b07a1e3ddee7e310caca346b7937dfa3713a7e41027",
-              "gemma31": "915805856724410ee650dd95e15b5815ceb08eedf1536007d11ce5bbebd8e01c",
-              "qwen38": "02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9",
-              "qwen38-gguf": "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027",
-              "deepseek": "d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f"}
+        v1 = {name: pinned_v1(published) for name, published in (
+            ("gemma2", "gemma2"), ("gemma3", "gemma3"), ("gemma26", "gemma26"),
+            ("gemma31", "gemma31"), ("qwen38", "qwen38-modelopt"),
+            ("qwen38-gguf", "qwen38-gguf"), ("deepseek", "deepseek"))}
         for name, artifact in v1.items():
             with self.subTest(name=name):
                 self.assertEqual(k1.FAMILIES[name].store, "u2-v1-artifacts")
@@ -73,14 +76,12 @@ class TestK1Quality(unittest.TestCase):
     def test_assistant_families(self):
         fam26 = k1.FAMILIES["gemma26-assistant"]
         self.assertIn(k1.GEMMA26_ASSISTANT, fam26.models_toml)
-        self.assertEqual(k1.GEMMA26_ASSISTANT,
-                         "2e3767959ef6ad30a86e7ccfcf5cb98db8d2b371100e81808e05bac49cefa70d")
+        self.assertEqual(k1.GEMMA26_ASSISTANT, pinned_v1("gemma26-assistant"))
         self.assertIn("speculation = true", fam26.models_toml)
 
         fam31 = k1.FAMILIES["gemma31-assistant"]
         self.assertIn(k1.GEMMA31_ASSISTANT, fam31.models_toml)
-        self.assertEqual(k1.GEMMA31_ASSISTANT,
-                         "f931e7a0c9b995ac99062c3ae73bacb90960e6e1b8e155db5407c169663f0197")
+        self.assertEqual(k1.GEMMA31_ASSISTANT, pinned_v1("gemma31-assistant"))
         self.assertIn("speculation = true", fam31.models_toml)
 
     def test_passage(self):

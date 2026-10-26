@@ -2,8 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // A model-fixture check of the selected Q4_1 head's existing scalar/joined
-// VecQ kernels. The supervised recipe authenticates flat operands captured
-// from Draft, never raw checkpoint data, before setting the fixture path.
+// VecQ kernels over flat operands captured from Draft (never raw checkpoint
+// data), authenticated here by their pinned SHA-256. The fixture is the
+// standing models directory's references/qwen-q4-head/operand-fixture-v2
+// (LLMP_TEST_MODELS, else $HOME/.local/share/llmp, as v1_frozen.h's
+// StandingModelsDir), or LLMP_Q4_HEAD_FIXTURE; a models run without it fails.
+// v2 is v1 (docs/experiments/qwen38-quantized-draft-head/) with its two
+// expected head files re-recorded from these kernels after GB10's upstream
+// scalar VecQ schedule for Q4_1 (4533033c) moved them by at most 1.9e-6 with
+// every argmax unchanged (docs/experiments/m35-f12-frozen/README.md).
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
@@ -19,11 +26,13 @@
 #include <fstream>
 #include <memory>
 #include <span>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
 
 #include "base/bytes.h"
+#include "base/sha256.h"
 #include "ggml.h"
 #include "kernels/ggml/dsv4_fast.h"
 #include "kernels/ggml/launch.h"
@@ -37,6 +46,33 @@ namespace kg = llmp::kernels::ggml;
 namespace dv = llmp::providers;
 constexpr std::int64_t kWidth = 2560, kRows = 47172, kColumns = 3;
 
+struct Operand {
+  const char* name;
+  std::string_view sha256;
+};
+constexpr std::array<Operand, 8> kFixture{{
+    {"changed.drafts.i32", "22a5e793639fadd15bfa5b576b650da43b86e7f156dc6768c6cc9aa94e0bfc85"},
+    {"changed.inputs.f32", "2d23849502549394d398b19150da6113ac600d2a2d0cdc22c06c80a0011df3b0"},
+    {"changed.logits.f32", "24a456336cd65c3a19176fd8f43ba57f195a6b8f9356c86836bb969f37a920b3"},
+    {"first.drafts.i32", "cf5ee42bff610642f1c599365bde44911bade35b6830e845611d01024aa07977"},
+    {"first.inputs.f32", "62c81e30104247cdffc8033b13bb0402e29fffb02a471ec46d412ebe10b9079a"},
+    {"first.logits.f32", "e54fa85d073357114c871ac01d717267c3962aad5803e548f2f31ef38c2e4531"},
+    {"head.ids.i32", "cfbfa2466c5c2b0246cdf62ca0ca2b6e7b94f72091fe650f62004909b1ac14b3"},
+    {"head.q4_1", "18a5c8af022b5edd7ef0e13d624aa5c386349a6ea4245e4f313ffdc82990b51b"},
+}};
+
+std::filesystem::path FixtureDir() {
+  const char* explicit_path = std::getenv("LLMP_Q4_HEAD_FIXTURE");  // NOLINT(concurrency-mt-unsafe)
+  if (explicit_path != nullptr && explicit_path[0] != '\0') return explicit_path;
+  const char* models = std::getenv("LLMP_TEST_MODELS");  // NOLINT(concurrency-mt-unsafe)
+  const char* home = std::getenv("HOME");                // NOLINT(concurrency-mt-unsafe)
+  const std::filesystem::path base = models != nullptr && models[0] != '\0' ? models
+                                     : home != nullptr
+                                         ? std::filesystem::path(home) / ".local/share/llmp"
+                                         : std::filesystem::path();
+  return base / "references/qwen-q4-head/operand-fixture-v2";
+}
+
 class Qwen38QuantHeadTest : public ::testing::Test {
  protected:
   std::unique_ptr<dv::DeviceExecution> execution;
@@ -49,10 +85,23 @@ class Qwen38QuantHeadTest : public ::testing::Test {
   std::filesystem::path fixture;
 
   void SetUp() override {
-    const char* path = std::getenv("LLMP_Q4_HEAD_FIXTURE");
-    if (path == nullptr) GTEST_SKIP() << "needs the authenticated selected-head model fixture";
-    fixture = path;
-    ASSERT_TRUE(std::filesystem::is_directory(fixture));
+    fixture = FixtureDir();
+    ASSERT_TRUE(std::filesystem::is_directory(fixture))
+        << "no selected-head operand fixture at " << fixture << " (LLMP_Q4_HEAD_FIXTURE)";
+    for (const Operand& operand : kFixture) {
+      std::ifstream file(fixture / operand.name, std::ios::binary);
+      ASSERT_TRUE(file) << "no operand " << operand.name << " in " << fixture;
+      llmp::base::Sha256 hash;
+      std::vector<char> chunk(1 << 20);
+      while (file.read(chunk.data(), static_cast<std::streamsize>(chunk.size())) ||
+             file.gcount() > 0) {
+        hash.Update(
+            std::as_bytes(std::span(chunk.data(), static_cast<std::size_t>(file.gcount()))));
+        if (file.eof()) break;
+      }
+      ASSERT_EQ(llmp::base::ToHex(hash.Finish()), operand.sha256)
+          << operand.name << " is not the authenticated operand";
+    }
     auto opened = dv::cuda::OpenDeviceExecution(0);
     ASSERT_TRUE(opened);
     execution = std::move(*opened);

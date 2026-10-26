@@ -808,8 +808,12 @@ Status Table::Pair(Served& a, Served& b) {
       if (!ba.exact) {
         problems_.push_back(
             std::format("{} {}: {} of {} continued steps' logits differ from the "
-                        "unswapped continuation's",
-                        pair, ba.name, differing, continued.logits.size()));
+                        "unswapped continuation's (tokens {}; steps/drafted/accepted {}/{}/{} "
+                        "against {}/{}/{})",
+                        pair, ba.name, differing, continued.logits.size(),
+                        continued.tokens == reference.tokens ? "equal" : "differ", continued.steps,
+                        continued.drafted, continued.accepted, reference.steps, reference.drafted,
+                        reference.accepted));
       }
     } else {
       // At 0 context: a short prompt from a cleared state.

@@ -1679,7 +1679,6 @@ std::expected<StepReport, StepRefusal> StepTransaction::Publish(Frame& frame) {
   auto& outputs = frame.outputs;
   auto& capture_first = frame.capture_first;
   auto& report = frame.report;
-  using TapRows = ModelRunner::TapRows;
   // A deferred request is consumed only after actual routed use either made
   // its recording or proved it uncapturable. A graph-payment refusal leaves
   // the intent for a later use and never counts as a capture ahead.

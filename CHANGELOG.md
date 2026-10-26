@@ -169,6 +169,20 @@ The entries below record each change; the record of the milestone is
   `--corpus=tests/unit/data/import_fuzz --iterations=10000`, seed `20261021`,
   20 seeds, 4.77 s on `spark-b` `spark-native`, 2026-10-26, 0 failures
   (100,000 iterations: 46.8 s, 0 failures).
+- A model with `kv_cache_encoding = "q8_0"` starts again: its numerical
+  admission accepts the alias's Q8_0 K/V encoding of the admitted spec instead
+  of refusing "numerical semantic identity differs from the admitted spec".
+- A state snapshot's restore keeps which positions the drafters' feature taps
+  hold, so a speculative continuation after it drafts, and so computes, exactly
+  as the unrestored one: the swap table's DeepSeek → Qwen3.8 8K continuation
+  is exact again (15 of 16 logit rows differed since the drafter-progress
+  ledger's removal).
+- `tools/speed_gate.py`, `swap_table.py`, `k1_quality.py` and
+  `assistant_gate.py` take the published artifact IDs from the pinned
+  `tests/unit/data/v1_frozen/v1-ids.json` instead of stale copies, which
+  named Gemma2, Gemma3, Qwen GGUF, DeepSeek and the assistants' superseded
+  imports (Gemma2's refused "stored stage folds disagree with preprocessing
+  receipts").
 - Output already generated is host-only work: a cohort whose members only
   wait for their clients to read no longer swaps its model back in (or fails
   a finished reply when that swap is refused), a member whose generation is
