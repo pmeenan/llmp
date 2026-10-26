@@ -329,12 +329,12 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
         return Failure(err, {.rule = import::Rule::kConfig,
                              .reason = "--reuse-component names an unknown image component role"});
     }
-    auto bound = import::ImagePipelineBound(*input);
+    auto bound = import::ImagePipelineBound(*input, {metadata, UINT64_MAX});
     if (!bound) return Failure(err, bound.error());
     if (!funded(*bound))
       return Failure(err, {.rule = import::Rule::kBounds,
                            .reason = "normalization exceeds the requested metadata budget"});
-    auto plan = import::PlanImagePipeline(*input);
+    auto plan = import::PlanImagePipeline(*input, {bound->metadata_bytes, bound->work_units});
     if (!plan) return Failure(err, plan.error());
 
     const auto& comp_files = plan->files.empty() ? input->files : plan->files;

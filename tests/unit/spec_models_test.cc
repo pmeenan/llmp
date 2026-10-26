@@ -156,8 +156,10 @@ TEST(SpecModelsTest, Gemma4SpecsFromTheirArtifacts) {
     const auto spec = StoredSpec(*a);
     ASSERT_TRUE(spec.has_value()) << spec.error();
     EXPECT_TRUE(spec->stages[0].folds.empty());
-    const auto table = Synthesize(*mapping, test_support::Gemma4Source(size), *values);
+    auto table = Synthesize(*mapping, test_support::Gemma4Source(size), *values);
     ASSERT_TRUE(table.has_value()) << table.error();
+    table->stages[0].sampling =
+        SamplingDefaults{.temperature = 1.0, .top_p = static_cast<double>(0.95F), .top_k = 64};
     EXPECT_EQ(*table, *spec);
     const Stage& s = spec->stages[0];
     resolves(*a, *s.embedding, {});

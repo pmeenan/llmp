@@ -36,10 +36,21 @@ std::expected<void, Error> ValidateImageComponentReuse(
   // all are priced before StoredSpec/SourceOf or copied lookup inventories.
   std::uint64_t objects = 0;
   bool quoted = false;
+  bool escaped = false;
   for (const char c : *text) {
+    if (quoted) {
+      if (escaped) {
+        escaped = false;
+      } else if (c == '\\') {
+        escaped = true;
+      } else if (c == '"') {
+        quoted = false;
+      }
+      continue;
+    }
     if (c == '"')
-      quoted = !quoted;
-    else if (!quoted && c == '{')
+      quoted = true;
+    else if (c == '{')
       ++objects;
   }
   const auto record = std::max({sizeof(spec::Stage), sizeof(spec::ComponentRef),

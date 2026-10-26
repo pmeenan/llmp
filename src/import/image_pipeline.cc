@@ -118,45 +118,6 @@ std::expected<spec::ModelSpec, Error> Family(const Checkpoint& source,
   return std::move(*family);
 }
 
-// A component's plan: the tensors its family names (at the family's
-// dtype and shape), each copied whole; the checkpoint's others its mapping
-// names as left out (a text encoder's vision tower and output head, a
-// VAE's encoder: what text to image generation does not run) are not
-// imported, and any other is refused.
-// Each tensor's group, as the component's own structure divides it (its
-// spec binds every tensor in one spatial layer): the text encoder's token
-// table and one group a layer; the denoiser's globals and one group a
-// block; the VAE's up blocks one group each, the rest of its decoder one.
-std::vector<ComponentGroup> GroupsOf(std::string_view kind,
-                                     std::span<const model::ImageTensor> tensors,
-                                     const model::ImageProfile& p, const model::ImageNames& names) {
-  using Kind = ComponentGroup::Kind;
-  std::vector<ComponentGroup> out(tensors.size());
-  if (kind == spec::kImageTextKind) {
-    constexpr auto kPerLayer = static_cast<std::size_t>(model::TextTensor::kCount);
-    for (std::size_t i = 0; i < tensors.size(); ++i)
-      out[i] = i == 0 ? ComponentGroup{.kind = Kind::kTable}
-                      : ComponentGroup{.kind = Kind::kLayer,
-                                       .layer = static_cast<std::uint32_t>((i - 1) / kPerLayer)};
-  } else if (kind == spec::kImageFlowKind) {
-    constexpr auto kGlobals = static_cast<std::size_t>(model::DenoiserGlobal::kCount);
-    constexpr auto kPerBlock = static_cast<std::size_t>(model::BlockTensor::kCount);
-    for (std::size_t i = kGlobals; i < tensors.size(); ++i)
-      out[i] = {.kind = Kind::kLayer,
-                .layer = static_cast<std::uint32_t>((i - kGlobals) / kPerBlock)};
-  } else {
-    const auto pattern = names.vae.up_block;
-    const auto at = pattern.find("{layer}");
-    for (std::size_t i = 0; i < tensors.size(); ++i)
-      for (std::uint32_t b = 0; b < p.vae.dim_mult.size() && at != std::string_view::npos; ++b) {
-        const auto prefix = std::string(pattern.substr(0, at)) + std::to_string(b) +
-                            std::string(pattern.substr(at + 7)) + ".";
-        if (tensors[i].name.starts_with(prefix)) out[i] = {.kind = Kind::kLayer, .layer = b};
-      }
-  }
-  return out;
-}
-
 }  // namespace
 
 bool IsImagePipeline(const Checkpoint& source) {
@@ -376,31 +337,77 @@ std::expected<ComponentPlan, Error> PlanSpatialComponent(const Checkpoint& compo
                                               mapping.ignored_tensor_prefixes, expanded->tensors);
 }
 
-std::expected<NormalizationCost, Error> ImagePipelineBound(const Checkpoint& source) {
+std::expected<NormalizationCost, Error> ImagePipelineBound(const Checkpoint& source,
+                                                           NormalizationLimits limits) {
   if (!IsImagePipeline(source)) {
     return Bad("not a diffusers pipeline with an image mapping", Rule::kContainer);
   }
+  const auto& mapping = *spec::FindImageMapping(source.architecture);
   std::uint64_t total_payload = 0;
   std::uint64_t total_tensors = 0;
   for (const auto& comp : source.components) {
+    const auto rule =
+        std::ranges::find(mapping.components, comp.role, &spec::ImageComponentRule::role);
     for (const auto& t : comp.tensors) {
+      if (rule != mapping.components.end() &&
+          std::ranges::any_of(rule->ignored_tensors, [&](std::string_view pat) {
+            return spec::IgnoredImageTensor(pat, t.name);
+          })) {
+        continue;
+      }
       if (__builtin_add_overflow(total_payload, t.extent.bytes, &total_payload) ||
           __builtin_add_overflow(total_tensors, std::uint64_t{1}, &total_tensors)) {
         return Bad("image pipeline payload exceeds 64-bit bounds", Rule::kBounds);
       }
     }
   }
+  std::uint64_t metadata_bytes = 65536;
+  std::uint64_t tensor_meta = 0;
+  std::uint64_t file_meta = 0;
+  if (__builtin_mul_overflow(total_tensors, std::uint64_t{2048}, &tensor_meta) ||
+      __builtin_mul_overflow(static_cast<std::uint64_t>(source.files.size()), std::uint64_t{4096},
+                             &file_meta) ||
+      __builtin_add_overflow(metadata_bytes, tensor_meta, &metadata_bytes) ||
+      __builtin_add_overflow(metadata_bytes, file_meta, &metadata_bytes)) {
+    return Bad("image pipeline metadata bound overflows", Rule::kBounds);
+  }
+  std::uint64_t work_units = total_tensors;
+  if (source.components.size() == mapping.components.size() && !source.files.empty()) {
+    std::vector<SourceFile> pipeline_files = source.files;
+    if (auto family = Family(source, mapping, pipeline_files)) {
+      for (const auto& rule : mapping.components) {
+        if (rule.recipe == nullptr) {
+          return Bad("an image component has no mapping-owned stage recipe");
+        }
+        const auto* comp = FindComponent(source, rule.role);
+        if (comp == nullptr) continue;
+        auto preflight =
+            PreflightStageRecipe(*rule.recipe, *family, limits.metadata_bytes, comp->metadata);
+        if (!preflight) {
+          return Bad("image stage recipe exceeds the metadata budget", Rule::kBounds);
+        }
+        const std::uint64_t recipe_work = preflight->visited_steps + preflight->tensor_bindings;
+        if (__builtin_add_overflow(metadata_bytes, preflight->metadata_bytes, &metadata_bytes) ||
+            __builtin_add_overflow(work_units, recipe_work, &work_units)) {
+          return Bad("image pipeline recipe bound overflows", Rule::kBounds);
+        }
+      }
+    }
+  }
+  if (metadata_bytes > limits.metadata_bytes || work_units > limits.work_units) {
+    return Bad("image pipeline exceeds normalization limits", Rule::kBounds);
+  }
   return NormalizationCost{
-      .metadata_bytes = std::uint64_t{512} << 20U,
-      .work_units = total_tensors,
+      .metadata_bytes = metadata_bytes,
+      .work_units = work_units,
       .payload_bytes = total_payload,
   };
 }
 
-std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& source) {
-  if (!IsImagePipeline(source)) {
-    return Bad("not a diffusers pipeline with an image mapping", Rule::kContainer);
-  }
+std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& source,
+                                                          NormalizationLimits limits) {
+  auto bound = ImagePipelineBound(source, limits);
+  if (!bound) return std::unexpected(bound.error());
   const auto& mapping = *spec::FindImageMapping(source.architecture);
   std::set<std::string_view> mapped_roles;
   for (const auto& component : source.components) {
@@ -412,20 +419,7 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
   std::vector<SourceFile> pipeline_files = source.files;
   auto family = Family(source, mapping, pipeline_files);
   if (!family) return std::unexpected(family.error());
-  auto profile = spec::ImageProfileOf(*family, mapping);
-  if (!profile) return Bad("the family spec does not read back");
-  const auto& p = *profile;
-  const auto& names = mapping.names;
-
-  // Each component's tensors and a spec of it at a minimal geometry (one
-  // prompt row; one latent row; a one-row VAE latent that its spatial
-  // factor makes whole): what binds its tensors into groups.
-  const auto text_tensors = model::TextEncoderTensors(p.text, names.text);
-  auto text_spec = spec::ImageTextSpec(p.text, 1, 0, text_tensors);
-  if (!text_spec) return Bad("cannot build the text encoder's spec");
-  const auto vae_tensors = model::VaeDecoderTensors(p.vae, names.vae);
-  auto vae_spec = spec::ImageDecodeTemplate(p.vae, vae_tensors);
-  if (!vae_spec) return Bad("cannot build the VAE's spec");
+  if (!spec::ImageProfileOf(*family, mapping)) return Bad("the family spec does not read back");
 
   ImagePipelinePlan out;
   out.files = std::move(pipeline_files);
@@ -436,40 +430,28 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
     if (!std::ranges::contains(rule.containers, comp->container))
       return Bad("an image component uses a container its mapping does not allow",
                  Rule::kContainer);
-    std::vector<model::ImageTensor> expected_tensors;
-    std::vector<ComponentGroup> groups;
-    std::vector<spec::RecipeExpansion::Tensor> recipe_inventory;
-    spec::ModelSpec component_spec;
-    const auto kind = rule.kinds.front();
-    if (rule.recipe != nullptr) {
-      auto expanded = ExpandStageRecipe(*rule.recipe, *family, std::uint64_t{512} << 20U);
-      if (!expanded) return Bad("cannot expand the mapping's component stage recipe");
-      expected_tensors.reserve(expanded->tensors.size());
-      groups.reserve(expanded->tensors.size());
-      for (auto& tensor : expanded->tensors) {
-        expected_tensors.push_back(
-            {.name = tensor.name, .dtype = {}, .shape = tensor.shape, .part = tensor.part});
-        const auto group_kind =
-            tensor.group == spec::RecipeGroupKind::kTable   ? ComponentGroup::Kind::kTable
-            : tensor.group == spec::RecipeGroupKind::kLayer ? ComponentGroup::Kind::kLayer
-                                                            : ComponentGroup::Kind::kGlobal;
-        groups.push_back({.kind = group_kind, .layer = tensor.layer});
-      }
-      recipe_inventory = std::move(expanded->tensors);
-      component_spec = {.pipeline = spec::PipelineKind::kImage,
-                        .stages = {std::move(expanded->stage)}};
-      spec::Canonicalize(component_spec);
-    } else if (kind == spec::kImageTextKind) {
-      expected_tensors = text_tensors;
-      component_spec = text_spec->spec;
-      groups = GroupsOf(kind, expected_tensors, p, names);
-    } else if (kind == spec::kImageVaeKind) {
-      expected_tensors = vae_tensors;
-      component_spec = *vae_spec;
-      groups = GroupsOf(kind, expected_tensors, p, names);
-    } else {
+    if (rule.recipe == nullptr) {
       return Bad("an image component has no mapping-owned stage recipe");
     }
+    auto expanded = ExpandStageRecipe(*rule.recipe, *family, limits.metadata_bytes, comp->metadata);
+    if (!expanded) return Bad("cannot expand the mapping's component stage recipe");
+    std::vector<model::ImageTensor> expected_tensors;
+    std::vector<ComponentGroup> groups;
+    expected_tensors.reserve(expanded->tensors.size());
+    groups.reserve(expanded->tensors.size());
+    for (auto& tensor : expanded->tensors) {
+      expected_tensors.push_back(
+          {.name = tensor.name, .dtype = {}, .shape = tensor.shape, .part = tensor.part});
+      const auto group_kind =
+          tensor.group == spec::RecipeGroupKind::kTable   ? ComponentGroup::Kind::kTable
+          : tensor.group == spec::RecipeGroupKind::kLayer ? ComponentGroup::Kind::kLayer
+                                                          : ComponentGroup::Kind::kGlobal;
+      groups.push_back({.kind = group_kind, .layer = tensor.layer});
+    }
+    std::vector<spec::RecipeExpansion::Tensor> recipe_inventory = std::move(expanded->tensors);
+    spec::ModelSpec component_spec = {.pipeline = spec::PipelineKind::kImage,
+                                      .stages = {std::move(expanded->stage)}};
+    spec::Canonicalize(component_spec);
     auto plan = image_pipeline_detail::PlanComponent(*comp, expected_tensors, rule.ignored_tensors,
                                                      component_spec, std::move(groups), {},
                                                      recipe_inventory);

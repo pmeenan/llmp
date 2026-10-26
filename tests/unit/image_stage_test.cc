@@ -208,15 +208,24 @@ TEST(ImageStage, ImportedTemplatesPreserveSourceGraphsAcrossRequestGeometries) {
   const auto& names = spec::mappings::QwenImage21Mapping().names;
   const auto vae_tensors = model::VaeDecoderTensors(profile.vae, names.vae);
   const auto flow_tensors = model::DenoiserTensors(profile.denoiser, names.denoiser);
-  auto vae = spec::ImageDecodeTemplate(profile.vae, vae_tensors);
-  auto flow = spec::ImageFlowTemplate(profile.denoiser, flow_tensors);
+  auto vae = spec::ImageDecodeSpec(profile.vae, 1, 1, vae_tensors);
+  auto flow = spec::ImageFlowSpec(profile.denoiser, 1, 1, flow_tensors);
   ASSERT_TRUE(vae) << Failed(vae).value_or("");
   ASSERT_TRUE(flow) << Failed(flow).value_or("");
+  vae->spec.stages[0].scalar_bindings = {{1, "height", "latent_height"},
+                                         {1, "width", "latent_width"}};
+  const auto output_slice = static_cast<std::uint16_t>(15 + 6 * profile.denoiser.blocks);
+  flow->spec.stages[0].scalar_bindings = {
+      {8, "input_rows", "latent_rows"},           {8, "rows", "latent_rows"},
+      {11, "prefix_rows", "text_rows"},           {12, "prefix_rows", "text_rows"},
+      {13, "prefix_rows", "text_rows"},           {14, "prefix_rows", "text_rows"},
+      {output_slice, "input_rows", "joint_rows"}, {output_slice, "rows", "latent_rows"},
+      {output_slice, "start", "text_rows"}};
   for (const auto geometry : {ImageStageGeometry{6, 4, 5, 2}, ImageStageGeometry{4, 8, 7, 1}}) {
     auto dimensions = ImageStageDimensionsOf(profile, geometry);
     ASSERT_TRUE(dimensions);
-    auto decoded = BindImageStage(*vae, profile, geometry);
-    auto denoised = BindImageStage(*flow, profile, geometry);
+    auto decoded = BindImageStage(vae->spec, profile, geometry);
+    auto denoised = BindImageStage(flow->spec, profile, geometry);
     auto old_decode =
         spec::ImageDecodeSpec(profile.vae, dimensions->height, dimensions->width, vae_tensors);
     auto old_flow = spec::ImageFlowSpec(profile.denoiser, dimensions->text_rows, dimensions->rows,

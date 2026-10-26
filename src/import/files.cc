@@ -47,6 +47,9 @@ std::expected<void, Error> CreateImportDirectory(const fs::path& path, bool pare
   std::error_code error;
   auto absolute = fs::absolute(path, error);
   if (error || path.empty()) return Fail(Rule::kIo, "invalid publication directory", kNoItem);
+  while (!absolute.has_filename() && absolute != absolute.root_path()) {
+    absolute = absolute.parent_path();
+  }
   std::vector<fs::path> missing;
   auto at = absolute;
   for (;;) {
@@ -69,9 +72,6 @@ std::expected<void, Error> CreateImportDirectory(const fs::path& path, bool pare
       return Fail(Rule::kIo, "cannot persist publication directory ancestry", kNoItem);
     return {};
   };
-  // Also cover retry after an earlier parent fsync failed: that last created
-  // entry may now exist but its parent still needs to be persisted.
-  if (auto ok = sync(at.parent_path()); !ok) return ok;
   for (auto next = missing.rbegin(); next != missing.rend(); ++next) {
     // The environment's umask may remove owner access, but must never expose
     // a newly created directory. Do not change a path another creator supplied.

@@ -74,11 +74,5 @@ std::expected<std::uint64_t, std::string> ImageFlowSpecBound(
 std::expected<SpatialComposition, std::string> ImageFlowSpec(
     const model::ImageDenoiserProfile& profile, std::uint32_t text_rows, std::uint32_t image_rows,
     std::span<const model::ImageTensor> tensors);
-// Import-time topology with explicit request scalar bindings. Runtime binds
-// these stored graphs; it does not regenerate their component wiring.
-std::expected<ModelSpec, std::string> ImageFlowTemplate(
-    const model::ImageDenoiserProfile& profile, std::span<const model::ImageTensor> tensors);
-std::expected<ModelSpec, std::string> ImageDecodeTemplate(
-    const model::ImageVaeProfile& profile, std::span<const model::ImageTensor> tensors);
 }  // namespace llmp::spec
 #endif  // LLMP_SPEC_IMAGE_SPATIAL_H_

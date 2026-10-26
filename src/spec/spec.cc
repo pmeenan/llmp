@@ -1218,17 +1218,23 @@ void Canonicalize(ModelSpec& spec) {
 std::expected<ModelSpec, std::string> BindStageScalars(const ModelSpec& spec,
                                                        std::span<const StageScalar> scalars) {
   if (auto valid = Validate(spec); !valid) return std::unexpected(valid.error());
+  if (scalars.size() > kMaxNamed)
+    return Refuse("scalars", std::format("more than {} scalars", kMaxNamed));
   for (std::size_t i = 0; i < scalars.size(); ++i) {
     if (!IsName(scalars[i].name)) return Refuse("scalars", "invalid source name");
     if (i && scalars[i - 1].name >= scalars[i].name)
       return Refuse("scalars", "names not sorted or a name supplied twice");
   }
+  std::vector<bool> used(scalars.size(), false);
   for (const auto& stage : spec.stages)
     for (const auto& binding : stage.scalar_bindings) {
       const auto value = std::ranges::lower_bound(scalars, binding.source, {}, &StageScalar::name);
       if (value == scalars.end() || value->name != binding.source)
         return Refuse(binding.source, "required stage scalar is absent");
+      used[static_cast<std::size_t>(value - scalars.begin())] = true;
     }
+  for (std::size_t i = 0; i < scalars.size(); ++i)
+    if (!used[i]) return Refuse(scalars[i].name, "unused stage scalar");
   auto bound = spec;
   for (auto& stage : bound.stages) {
     std::size_t id = 0, binding_at = 0;
@@ -1241,11 +1247,14 @@ std::expected<ModelSpec, std::string> BindStageScalars(const ModelSpec& spec,
           const auto value =
               std::ranges::lower_bound(scalars, binding.source, {}, &StageScalar::name);
           auto parameter = std::ranges::find(component.params, binding.parameter, &Param::name);
+          if (parameter == component.params.end())
+            return Refuse(binding.parameter, "bound parameter is absent");
           parameter->value = value->value;
         }
       }
     stage.scalar_bindings.clear();
   }
+  if (auto valid = Validate(bound); !valid) return std::unexpected(valid.error());
   return bound;
 }
 

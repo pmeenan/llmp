@@ -8,7 +8,9 @@
 #include <charconv>
 #include <cstddef>
 #include <format>
+#include <limits>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -48,15 +50,19 @@ const PartAssembly* PartOf(const TensorAssembly& a, PartRole role) {
 
 // The relaid-out table of `gate` (with `up` stacked after it, expert by
 // expert, when given).
-TensorAssembly Relaid(const TensorAssembly& gate, const TensorAssembly* up, std::string name) {
+std::expected<TensorAssembly, Error> Relaid(const TensorAssembly& gate, const TensorAssembly* up,
+                                            std::string name) {
   TensorAssembly out{.name = std::move(name), .format = gate.format};
   out.format.layout = Layout::kScaleAtoms;
   out.format.params.tensor_scale = false;
   out.relayout_from = Layout::kSplit;
   if (up != nullptr) {
+    if (out.format.shape.ne[1] > std::numeric_limits<std::uint64_t>::max() / 2)
+      return Bad("stacked expert table height overflows");
     out.format.stacked = 2;
     out.format.shape.ne[1] *= 2;
   }
+  if (!format::PartsOf(out.format)) return Bad("relaid expert table format has invalid parts");
   for (const PartRole role : {PartRole::kCodes, PartRole::kBlockScales}) {
     const PartAssembly* g = PartOf(gate, role);
     PartAssembly part{.part = role, .kind = PartAssemblyKind::kMatrices, .sources = {}};
@@ -82,20 +88,34 @@ std::string ExpandPattern(std::string_view pattern, std::uint32_t layer) {
                      pattern.substr(at + spec::kLayerField.size()));
 }
 
-std::string StackedNameFromMapping(const spec::Mapping& m, std::string_view name,
-                                   std::string_view role, std::uint32_t layer,
-                                   bool require_weight_suffix) {
+std::string StackedNameFromRules(std::span<const spec::TensorRule> tensors, std::string_view name,
+                                 std::string_view role, std::uint32_t layer,
+                                 bool require_weight_suffix) {
   const std::string_view stacked_role =
       role == "routed_gate" ? "routed_gate_up" : "gate_up_experts";
-  for (const auto& r : m.tensors) {
+  for (const auto& r : tensors) {
     if (r.role != role || ExpandPattern(r.pattern, layer) != name) continue;
-    for (const auto& s : m.tensors) {
+    for (const auto& s : tensors) {
       if (s.slot != r.slot || s.role != stacked_role ||
           (s.part != PartRole::kCodes && s.part != PartRole::kData))
         continue;
       if (require_weight_suffix && !s.pattern.ends_with(".weight")) continue;
       return ExpandPattern(s.pattern, layer);
     }
+  }
+  return {};
+}
+
+std::string StackedNameFromMapping(const spec::Mapping& m, std::string_view name,
+                                   std::string_view role, std::uint32_t layer,
+                                   bool require_weight_suffix) {
+  if (auto s = StackedNameFromRules(m.tensors, name, role, layer, require_weight_suffix);
+      !s.empty())
+    return s;
+  for (const auto& d : m.dialects) {
+    if (auto s = StackedNameFromRules(d.tensors, name, role, layer, require_weight_suffix);
+        !s.empty())
+      return s;
   }
   return {};
 }
@@ -144,9 +164,10 @@ std::optional<std::uint32_t> MatchLayer(std::string_view pattern, std::string_vi
   return layer;
 }
 
-std::optional<ExpertTable> MatchInMapping(const spec::Mapping& m, std::string_view name,
-                                          std::uint32_t output) {
-  for (const auto& r : m.tensors) {
+std::optional<ExpertTable> MatchInRules(const spec::Mapping& m,
+                                        std::span<const spec::TensorRule> tensors,
+                                        std::string_view name, std::uint32_t output) {
+  for (const auto& r : tensors) {
     if (r.part != PartRole::kData && r.part != PartRole::kCodes) continue;
     ExpertProjection proj = ExpertProjection::kOther;
     if (r.role == "gate_experts" || r.role == "routed_gate")
@@ -160,7 +181,7 @@ std::optional<ExpertTable> MatchInMapping(const spec::Mapping& m, std::string_vi
     if (slot == m.slots.end() || slot->kind != "ffn.moe") continue;
     const auto layer = MatchLayer(r.pattern, name);
     if (!layer) continue;
-    const std::uint32_t moe_base = m.role == spec::StageRole::kDrafter ? 10000U : 0U;
+    const std::uint32_t moe_base = m.role == spec::StageRole::kDrafter ? (1U << 16U) : 0U;
     return ExpertTable{.output = output,
                        .projection = proj,
                        .moe = moe_base + *layer,
@@ -169,6 +190,15 @@ std::optional<ExpertTable> MatchInMapping(const spec::Mapping& m, std::string_vi
                                       ? ResolveStackedName(&m, name, r.role, *layer)
                                       : "",
                        .scales = std::string(name) + "_scale_2"};
+  }
+  return std::nullopt;
+}
+
+std::optional<ExpertTable> MatchInMapping(const spec::Mapping& m, std::string_view name,
+                                          std::uint32_t output) {
+  if (auto t = MatchInRules(m, m.tensors, name, output)) return t;
+  for (const auto& d : m.dialects) {
+    if (auto t = MatchInRules(m, d.tensors, name, output)) return t;
   }
   return std::nullopt;
 }
@@ -294,8 +324,8 @@ std::expected<ExpertRelayoutSummary, Error> RelayoutExpertTables(
   rewritten.reserve(outputs.size());
   const auto add_scales = [&](const TensorAssembly& a, const ExpertTable& t) {
     const PartAssembly* part = PartOf(a, PartRole::kTensorScale);
-    if (part == nullptr) return true;
-    if (t.scales.empty()) return false;
+    if (part == nullptr) return !a.format.params.tensor_scale;
+    if (t.scales.empty() || part->sources.size() != a.format.shape.ne[2]) return false;
     TensorAssembly v{.name = t.scales,
                      .format = {.encoding = Encoding::kF32,
                                 .layout = Layout::kDense,
@@ -327,7 +357,9 @@ std::expected<ExpertRelayoutSummary, Error> RelayoutExpertTables(
     if (!add_scales(outputs[i], *t) || (up != nullptr && !add_scales(*up, *listed[*partner[i]])))
       return Bad("an expert table's tensor scales have no vector name");
     if (up != nullptr && t->stacked.empty()) return Bad("a stacked gate and up table has no name");
-    rewritten.push_back(Relaid(outputs[i], up, up != nullptr ? t->stacked : t->name));
+    auto relaid = Relaid(outputs[i], up, up != nullptr ? t->stacked : t->name);
+    if (!relaid) return std::unexpected(relaid.error());
+    rewritten.push_back(std::move(*relaid));
     ++summary.tables;
     if (up != nullptr) ++summary.stacked;
   }

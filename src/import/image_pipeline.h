@@ -40,9 +40,11 @@ struct ImagePipelinePlan {
 // Whether a pipeline checkpoint's architecture has an image mapping.
 bool IsImagePipeline(const Checkpoint& source);
 
-std::expected<NormalizationCost, Error> ImagePipelineBound(const Checkpoint& source);
+std::expected<NormalizationCost, Error> ImagePipelineBound(
+    const Checkpoint& source, NormalizationLimits limits = {std::uint64_t{512} << 20U, UINT64_MAX});
 
-std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& source);
+std::expected<ImagePipelinePlan, Error> PlanImagePipeline(
+    const Checkpoint& source, NormalizationLimits limits = {std::uint64_t{512} << 20U, UINT64_MAX});
 
 // A configured spatial checkpoint (no pipeline model_index.json): its
 // mapping-owned import recipe expands into one ordinary image component

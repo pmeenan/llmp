@@ -449,6 +449,9 @@ std::expected<Source, std::string> SourceOf(const artifact::Artifact& artifact) 
       return Refuse(r.name, "no tensor format");  // every v1 resource has one
     }
     for (const std::string& role : r.roles) {
+      if (s.tensors.size() >= kMaxSourceTensors) {
+        return Refuse("source", std::format("more than {} tensors", kMaxSourceTensors));
+      }
       s.tensors.push_back({.name = role,
                            .format = *r.format,
                            .part = r.part,
@@ -459,6 +462,9 @@ std::expected<Source, std::string> SourceOf(const artifact::Artifact& artifact) 
   for (const artifact::ExpertArray& a : artifact.expert_arrays()) {
     if (!a.format || a.format->shape.rank > 2) {
       return Refuse(a.name, "no slice format of at most two dimensions");
+    }
+    if (s.tensors.size() >= kMaxSourceTensors) {
+      return Refuse("source", std::format("more than {} tensors", kMaxSourceTensors));
     }
     format::TensorFormat f = *a.format;
     f.shape.ne[2] = a.count;

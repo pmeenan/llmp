@@ -416,6 +416,11 @@ std::expected<Checkpoint, Error> Assemble(
   if (arch == meta.end() && !configured_architecture) {
     return Fail(Rule::kContainer, "no general.architecture", 0);
   }
+  if (arch != meta.end() && configured_architecture &&
+      std::get<std::string>(arch->second) != *configured_architecture) {
+    return Fail(Rule::kConfig, "GGUF general.architecture conflicts with config.json architecture",
+                0);
+  }
   c.architecture = arch == meta.end() ? std::string(*configured_architecture)
                                       : std::get<std::string>(arch->second);
   std::size_t total = 0;
@@ -508,9 +513,13 @@ std::expected<ConfiguredGgufSelection, Error> SelectConfiguredGguf(
   std::error_code error;
   std::vector<std::string> gguf_names;
   bool competing_safetensors = false;
+  std::size_t entries = 0;
   for (std::filesystem::directory_iterator it(directory, error), end; it != end;
        it.increment(error)) {
     if (error) return Fail(Rule::kIo, "cannot list a configured GGUF component directory", 0);
+    if (++entries > artifact::kMaxDirectoryEntries)
+      return Fail(Rule::kBounds,
+                  "more entries in a configured GGUF directory than the reader's cap", 0);
     const auto name = it->path().filename().string();
     if (!name.ends_with(".gguf") && !name.ends_with(".safetensors") &&
         !name.ends_with(".safetensors.index.json"))
@@ -555,14 +564,15 @@ std::expected<ConfiguredGgufSelection, Error> SelectConfiguredGguf(
 
 bool ValidArchitecture(std::string_view name) {
   return !name.empty() && name.size() <= kMaxArchitecture &&
-         std::ranges::none_of(name, [](unsigned char c) { return c < 0x20U || c == 0x7fU; });
+         !json::FirstInvalidUtf8(name).has_value() && NoControlCharacters(name);
 }
 
 }  // namespace
 
 static std::expected<Checkpoint, Error> ReadGgufImpl(
     const std::filesystem::path& path,
-    std::optional<std::string_view> configured_architecture = std::nullopt) {
+    std::optional<std::string_view> configured_architecture = std::nullopt,
+    std::span<const std::string> expected_files = {}) {
   std::vector<SourceFile> sources;
   Budget budget;
   // One file's header, its file open only while it is read.
@@ -616,6 +626,15 @@ static std::expected<Checkpoint, Error> ReadGgufImpl(
       }
       files.push_back(std::move(*file));
     }
+  }
+  if (!expected_files.empty()) {
+    if (sources.size() != expected_files.size())
+      return Fail(Rule::kShards,
+                  "configured GGUF filename inventory differs from its declared split set", 0);
+    for (std::size_t i = 0; i < expected_files.size(); ++i)
+      if (sources[i].name != expected_files[i])
+        return Fail(Rule::kShards,
+                    "configured GGUF filename inventory differs from its declared split set", i);
   }
   std::uint64_t total = 0;
   for (const File& f : files) {
@@ -683,9 +702,12 @@ bool ClaimsConfiguredGgufDirectory(const std::filesystem::path& path) {
   if (!std::filesystem::is_directory(path, error) || error ||
       !std::filesystem::exists(path / "config.json", error) || error)
     return false;
+  std::size_t entries = 0;
   for (std::filesystem::directory_iterator it(path, error), end; !error && it != end;
-       it.increment(error))
+       it.increment(error)) {
+    if (++entries > artifact::kMaxDirectoryEntries) return false;
     if (it->path().extension() == ".gguf") return true;
+  }
   return false;
 }
 
@@ -716,21 +738,16 @@ std::expected<Checkpoint, Error> ReadConfiguredGgufDirectory(
   auto config_metadata = FlattenMetadata(root_value);
   if (!config_metadata) return std::unexpected(config_metadata.error());
 
-  auto checkpoint = ReadGgufImpl(selected->first, architecture->string());
+  auto checkpoint = ReadGgufImpl(selected->first, architecture->string(), selected->files);
   if (!checkpoint) return std::unexpected(checkpoint.error());
-  if (checkpoint->files.size() != selected->files.size())
-    return Fail(Rule::kShards,
-                "configured GGUF filename inventory differs from its declared split set", 0);
-  for (std::size_t i = 0; i < selected->files.size(); ++i)
-    if (checkpoint->files[i].name != selected->files[i])
-      return Fail(Rule::kShards,
-                  "configured GGUF filename inventory differs from its declared split set", i);
   std::map<std::string, MetaValue, std::less<>> merged;
   for (const auto& item : checkpoint->metadata) merged.emplace(item.key, item.value);
   for (const auto& item : *config_metadata) {
     const auto [found, inserted] = merged.emplace(item.key, item.value);
-    if (!inserted && found->second != item.value)
+    if (!inserted && !SameValue(found->second, item.value))
       return Fail(Rule::kConfig, "component config and GGUF metadata disagree", 0);
+    if (merged.size() > kMaxMetadata)
+      return Fail(Rule::kBounds, "more metadata keys than the reader's cap", 0);
   }
   checkpoint->metadata.clear();
   checkpoint->metadata.reserve(merged.size());

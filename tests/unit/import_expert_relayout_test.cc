@@ -536,5 +536,27 @@ TEST(ImportExpertRelayoutTest, RelayoutExpertTablesWithSpec) {
   EXPECT_EQ(outputs[0].format.layout, Layout::kScaleAtoms);
 }
 
+TEST(ImportExpertRelayoutTest, RejectsMissingOrMismatchedTensorScaleSources) {
+  const std::array<ExpertTable, 1> down{{{.output = 0,
+                                          .projection = ExpertProjection::kDown,
+                                          .name = "blk.0.ffn_down_exps.weight",
+                                          .scales = "s"}}};
+  std::vector<TensorAssembly> missing_scale(1);
+  missing_scale[0] = {.name = "blk.0.ffn_down_exps.weight", .format = Split(64, 128, 2)};
+  for (const auto role : {PartRole::kCodes, PartRole::kBlockScales})
+    missing_scale[0].parts.push_back(
+        {.part = role, .kind = PartAssemblyKind::kMatrices, .sources = {0, 1}});
+  EXPECT_FALSE(RelayoutExpertTables(missing_scale, down));
+
+  std::vector<TensorAssembly> wrong_count(1);
+  wrong_count[0] = {.name = "blk.0.ffn_down_exps.weight", .format = Split(64, 128, 2)};
+  for (const auto role : {PartRole::kCodes, PartRole::kBlockScales})
+    wrong_count[0].parts.push_back(
+        {.part = role, .kind = PartAssemblyKind::kMatrices, .sources = {0, 1}});
+  wrong_count[0].parts.push_back(
+      {.part = PartRole::kTensorScale, .kind = PartAssemblyKind::kMatrices, .sources = {0}});
+  EXPECT_FALSE(RelayoutExpertTables(wrong_count, down));
+}
+
 }  // namespace
 }  // namespace llmp::import

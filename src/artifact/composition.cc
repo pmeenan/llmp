@@ -31,6 +31,7 @@
 #include "artifact/schema.h"
 #include "base/bytes.h"
 #include "base/sha256.h"
+#include "platform/files.h"
 
 namespace llmp::artifact {
 
@@ -144,11 +145,20 @@ std::expected<std::string, Error> ReadFile(int dir, const char* name,
   if (size && *size > limit) {
     return Fail(Rule::kFileSize, "document larger than its cap", item);
   }
-  const int fd = ::openat(dir, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | O_NOCTTY);
-  if (fd < 0) {
+  auto pinned = platform::OpenPathReference(dir, name, false);
+  if (!pinned) {
     return Fail(Rule::kFileType, "cannot open a listed file as a regular file", item);
   }
-  const FileDescriptor owned(fd);
+  const FileDescriptor reference(*pinned);
+  auto opened = platform::ReopenRegularFileForRead(reference.get());
+  if (!opened) {
+    if (opened.error() == EIO || opened.error() == EBADF) {
+      return Fail(Rule::kIo, "cannot examine a pinned listed file", item);
+    }
+    return Fail(Rule::kFileType, "cannot open a listed file as a regular file", item);
+  }
+  const FileDescriptor owned(*opened);
+  const int fd = owned.get();
   struct stat status{};
   if (::fstat(fd, &status) != 0) {
     return Fail(Rule::kIo, "fstat failed", item);

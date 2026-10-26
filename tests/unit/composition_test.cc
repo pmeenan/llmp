@@ -160,6 +160,14 @@ TEST_F(CompositionTest, RefusesEachBrokenRuleByName) {
                                               r / "meta" / "link.json");
                          })),
             "file-type");
+  EXPECT_EQ(RuleOf(Build({},
+                         [this](const fs::path& r) {
+                           Write(base_ / "external_manifest.json", "{}");
+                           fs::remove(r / "manifest.json");
+                           fs::create_symlink(base_ / "external_manifest.json",
+                                              r / "manifest.json");
+                         })),
+            "file-type");
   // A hard-linked kept file is read as any file, and the root may be a
   // link (D-056 as amended on 2026-10-09).
   EXPECT_EQ(RuleOf(Build({},

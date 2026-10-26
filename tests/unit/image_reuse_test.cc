@@ -173,5 +173,24 @@ TEST_F(ImageReuseTest, CliRefusesDuplicateMalformedAndUnknownSelectionsBeforePub
       << unknown.second;
   EXPECT_FALSE(std::filesystem::exists(dir_ / "store"));
 }
+TEST_F(ImageReuseTest, HandlesEscapedQuotesInsideConfigJsonStrings) {
+  Write(dir_ / "source/config.json",
+        "{\n  \"_class_name\": \"ToyImageDecoder\",\n  \"note\": \"a \\\"quoted value\\\" with "
+        "spaces\"\n}\n");
+  auto checkpoint = ReadSafetensors(dir_ / "source");
+  ASSERT_TRUE(checkpoint) << Failed(checkpoint, &Error::ToString).value_or("");
+  checkpoint->role = "vae";
+  auto plan = Plan(*checkpoint);
+  ASSERT_TRUE(plan) << Failed(plan, &Error::ToString).value_or("");
+  const auto identities = Identities(*checkpoint);
+  auto written = WriteArtifact(*plan, {.store = dir_ / "store",
+                                       .build = "test",
+                                       .expected = identities,
+                                       .metadata_bytes = kMetadata});
+  ASSERT_TRUE(written) << Failed(written, &Error::ToString).value_or("");
+  auto opened = artifact::Artifact::Open(written->path);
+  ASSERT_TRUE(opened) << Failed(opened, &artifact::Error::ToString).value_or("");
+  EXPECT_TRUE(ValidateImageComponentReuse(*plan, *opened, identities, kMetadata));
+}
 }  // namespace
 }  // namespace llmp::import

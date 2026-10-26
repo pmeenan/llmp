@@ -171,6 +171,37 @@ bool IsDrafter(const spec::ModelSpec& model) {
   return model.stages.size() == 2 && model.stages[1].role == spec::StageRole::kDrafter &&
          model.stages[1].artifact == 1;
 }
+bool ValidatePublicationSpec(const spec::ModelSpec& model,
+                             std::span<const spec::SourceTensor> tensors) {
+  if (!IsDrafter(model)) {
+    return components::ValidateSpec(model, tensors, components::ValidationPurpose::kImport)
+        .has_value();
+  }
+  if (!spec::Validate(model)) return false;
+  const spec::Stage& drafter = model.stages[1];
+  const auto check_component = [&](const spec::ComponentRef& c) {
+    for (const auto& w : c.weights) {
+      if (!w.stage.empty() && w.stage != drafter.name) continue;
+      if (!std::ranges::any_of(tensors, [&](const spec::SourceTensor& t) {
+            return t.name == w.tensor && t.part == w.part && t.experts == w.experts;
+          }))
+        return false;
+    }
+    return true;
+  };
+  if (drafter.embedding && !check_component(*drafter.embedding)) return false;
+  if (drafter.stream.mixing && !check_component(*drafter.stream.mixing)) return false;
+  for (const auto& side : drafter.side)
+    if (!check_component(side.source)) return false;
+  for (const auto& layer : drafter.layers)
+    for (const auto& c : layer.components)
+      if (!check_component(c)) return false;
+  if (drafter.heads.final_norm && !check_component(*drafter.heads.final_norm)) return false;
+  if (drafter.heads.output && !check_component(*drafter.heads.output)) return false;
+  for (const auto& mtp : drafter.heads.mtp)
+    if (!check_component(mtp)) return false;
+  return true;
+}
 struct Copy {
   // `source_tensor`: the checkpoint's tensor it streams, whose block scales
   // are checked as they stream (format::FirstUndefinedScale).
@@ -463,10 +494,8 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
       tensors.size() * sizeof(spec::SourceTensor) + tensor_name_bytes;
   if (funding < bound) return Bad("artifact metadata has not been funded", Rule::kBounds);
   const bool is_drafter = IsDrafter(plan.spec());
-  if (!is_drafter) {
-    if (!components::ValidateSpec(plan.spec(), tensors, components::ValidationPurpose::kImport))
-      return Bad("publication spec does not bind canonical tensors", Rule::kConfig);
-  }
+  if (!ValidatePublicationSpec(plan.spec(), tensors))
+    return Bad("publication spec does not bind canonical tensors", Rule::kConfig);
   std::map<std::string, GroupKey, std::less<>> owners;
   const auto bind = [&](const spec::ComponentRef& component, GroupKey key) {
     for (const auto& w : component.weights) {
@@ -1144,9 +1173,7 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
   if (!stored || *stored != plan.spec())
     return Bad("the produced artifact has an invalid embedded spec", Rule::kConfig);
   auto stored_source = spec::SourceOf(*opened);
-  if (!stored_source ||
-      (!is_drafter && !components::ValidateSpec(*stored, stored_source->tensors,
-                                                components::ValidationPurpose::kImport)))
+  if (!stored_source || !ValidatePublicationSpec(*stored, stored_source->tensors))
     return Bad("the produced artifact does not bind its embedded spec", Rule::kConfig);
   if (auto ok = Deep(job, *opened); !ok) return std::unexpected(ok.error());
   for (const auto& directory : {job / "data", job / "meta", job}) {
@@ -1160,9 +1187,7 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
     auto prev_stored = spec::StoredSpec(*previous);
     if (!prev_stored || *prev_stored != plan.spec()) return Bad("the existing artifact is damaged");
     auto prev_source = spec::SourceOf(*previous);
-    if (!prev_source ||
-        (!is_drafter && !components::ValidateSpec(*prev_stored, prev_source->tensors,
-                                                  components::ValidationPurpose::kImport)))
+    if (!prev_source || !ValidatePublicationSpec(*prev_stored, prev_source->tensors))
       return Bad("the existing artifact is damaged");
     return WriteResult{id, destination, true};
   };
@@ -1432,8 +1457,16 @@ std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions
 
   const auto destination = options.store / id;
   const auto verify_existing = [&]() -> std::expected<WriteResult, Error> {
-    auto previous = artifact::OpenComposition(destination);
+    auto previous = artifact::OpenComposition(destination, id);
     if (!previous) return Bad("the existing composition is damaged");
+    if (options.spec) {
+      const auto stored = previous->spec_json();
+      auto parsed = stored ? spec::FromJson(*stored)
+                           : std::expected<spec::ModelSpec, std::string>(std::unexpected("none"));
+      if (!parsed || *parsed != *options.spec) return Bad("the existing composition is damaged");
+    } else if (previous->spec_json().has_value()) {
+      return Bad("the existing composition is damaged");
+    }
     return WriteResult{id, destination, true};
   };
   const bool exists = fs::exists(destination, error);

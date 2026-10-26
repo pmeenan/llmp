@@ -227,8 +227,15 @@ TEST(ImageFamily, QwenFlowRecipeMatchesTheFrozenSpatialEmitter) {
   auto profile = sp::ImageProfileOf(*family, mapping);
   ASSERT_TRUE(profile) << profile.error();
   auto tensors = md::DenoiserTensors(profile->denoiser, mapping.names.denoiser);
-  auto oracle = sp::ImageFlowTemplate(profile->denoiser, tensors);
+  auto oracle = sp::ImageFlowSpec(profile->denoiser, 1, 1, tensors);
   ASSERT_TRUE(oracle) << oracle.error();
+  const auto output_slice = static_cast<std::uint16_t>(15 + 6 * profile->denoiser.blocks);
+  oracle->spec.stages[0].scalar_bindings = {
+      {8, "input_rows", "latent_rows"},           {8, "rows", "latent_rows"},
+      {11, "prefix_rows", "text_rows"},           {12, "prefix_rows", "text_rows"},
+      {13, "prefix_rows", "text_rows"},           {14, "prefix_rows", "text_rows"},
+      {output_slice, "input_rows", "joint_rows"}, {output_slice, "rows", "latent_rows"},
+      {output_slice, "start", "text_rows"}};
   auto expanded =
       llmp::import::ExpandStageRecipe(*flow->recipe, *family, std::uint64_t{512} << 20U);
   ASSERT_TRUE(expanded) << expanded.error();
@@ -236,7 +243,7 @@ TEST(ImageFamily, QwenFlowRecipeMatchesTheFrozenSpatialEmitter) {
                        .stages = {std::move(expanded->stage)}};
   sp::Canonicalize(actual);
   ASSERT_EQ(actual.stages[0].layers[0].components.size(),
-            oracle->stages[0].layers[0].components.size());
+            oracle->spec.stages[0].layers[0].components.size());
   const auto describe = [](const sp::ComponentRef& c) {
     std::string out = c.kind;
     for (const auto& p : c.params)
@@ -258,15 +265,16 @@ TEST(ImageFamily, QwenFlowRecipeMatchesTheFrozenSpatialEmitter) {
   };
   for (std::size_t i = 0; i < actual.stages[0].layers[0].components.size(); ++i) {
     SCOPED_TRACE(i);
-    EXPECT_EQ(actual.stages[0].layers[0].components[i], oracle->stages[0].layers[0].components[i])
+    EXPECT_EQ(actual.stages[0].layers[0].components[i],
+              oracle->spec.stages[0].layers[0].components[i])
         << "actual " << describe(actual.stages[0].layers[0].components[i]) << "; expected "
-        << describe(oracle->stages[0].layers[0].components[i]);
+        << describe(oracle->spec.stages[0].layers[0].components[i]);
   }
-  ASSERT_EQ(actual.stages[0].links.size(), oracle->stages[0].links.size());
+  ASSERT_EQ(actual.stages[0].links.size(), oracle->spec.stages[0].links.size());
   for (std::size_t i = 0; i < actual.stages[0].links.size(); ++i) {
     SCOPED_TRACE(i);
     const auto& a = actual.stages[0].links[i];
-    const auto& e = oracle->stages[0].links[i];
+    const auto& e = oracle->spec.stages[0].links[i];
     EXPECT_EQ(a.input, e.input);
     EXPECT_EQ(a.auxiliary, e.auxiliary);
     EXPECT_EQ(a.input_port, e.input_port);
@@ -274,8 +282,8 @@ TEST(ImageFamily, QwenFlowRecipeMatchesTheFrozenSpatialEmitter) {
     EXPECT_EQ(a.carry, e.carry);
     EXPECT_EQ(a.carry_port, e.carry_port);
   }
-  EXPECT_EQ(actual.stages[0].exports, oracle->stages[0].exports);
-  EXPECT_EQ(actual.stages[0].scalar_bindings, oracle->stages[0].scalar_bindings);
+  EXPECT_EQ(actual.stages[0].exports, oracle->spec.stages[0].exports);
+  EXPECT_EQ(actual.stages[0].scalar_bindings, oracle->spec.stages[0].scalar_bindings);
   ASSERT_EQ(expanded->tensors.size(), tensors.size());
   auto actual_tensors = expanded->tensors;
   auto expected_tensors = tensors;
@@ -298,15 +306,17 @@ TEST(ImageFamily, QwenVaeRecipeMatchesTheFrozenSpatialEmitter) {
   auto profile = sp::ImageProfileOf(*family, mapping);
   ASSERT_TRUE(profile) << profile.error();
   const auto tensors = md::VaeDecoderTensors(profile->vae, mapping.names.vae);
-  auto oracle = sp::ImageDecodeTemplate(profile->vae, tensors);
+  auto oracle = sp::ImageDecodeSpec(profile->vae, 1, 1, tensors);
   ASSERT_TRUE(oracle) << oracle.error();
+  oracle->spec.stages[0].scalar_bindings = {{1, "height", "latent_height"},
+                                            {1, "width", "latent_width"}};
   auto expanded = llmp::import::ExpandStageRecipe(*vae->recipe, *family, std::uint64_t{512} << 20U);
   ASSERT_TRUE(expanded) << expanded.error();
   sp::ModelSpec actual{.pipeline = sp::PipelineKind::kImage,
                        .stages = {std::move(expanded->stage)}};
   sp::Canonicalize(actual);
   ASSERT_EQ(actual.stages[0].layers[0].components.size(),
-            oracle->stages[0].layers[0].components.size());
+            oracle->spec.stages[0].layers[0].components.size());
   const auto describe = [](const sp::ComponentRef& c) {
     std::string out = c.kind;
     for (const auto& p : c.params)
@@ -328,15 +338,16 @@ TEST(ImageFamily, QwenVaeRecipeMatchesTheFrozenSpatialEmitter) {
   };
   for (std::size_t i = 0; i < actual.stages[0].layers[0].components.size(); ++i) {
     SCOPED_TRACE(i);
-    EXPECT_EQ(actual.stages[0].layers[0].components[i], oracle->stages[0].layers[0].components[i])
+    EXPECT_EQ(actual.stages[0].layers[0].components[i],
+              oracle->spec.stages[0].layers[0].components[i])
         << "actual " << describe(actual.stages[0].layers[0].components[i]) << "; expected "
-        << describe(oracle->stages[0].layers[0].components[i]);
+        << describe(oracle->spec.stages[0].layers[0].components[i]);
   }
-  ASSERT_EQ(actual.stages[0].links.size(), oracle->stages[0].links.size());
+  ASSERT_EQ(actual.stages[0].links.size(), oracle->spec.stages[0].links.size());
   for (std::size_t i = 0; i < actual.stages[0].links.size(); ++i) {
     SCOPED_TRACE(i);
     const auto& a = actual.stages[0].links[i];
-    const auto& e = oracle->stages[0].links[i];
+    const auto& e = oracle->spec.stages[0].links[i];
     EXPECT_EQ(a.input, e.input);
     EXPECT_EQ(a.auxiliary, e.auxiliary);
     EXPECT_EQ(a.input_port, e.input_port);
@@ -344,8 +355,8 @@ TEST(ImageFamily, QwenVaeRecipeMatchesTheFrozenSpatialEmitter) {
     EXPECT_EQ(a.carry, e.carry);
     EXPECT_EQ(a.carry_port, e.carry_port);
   }
-  EXPECT_EQ(actual.stages[0].exports, oracle->stages[0].exports);
-  EXPECT_EQ(actual.stages[0].scalar_bindings, oracle->stages[0].scalar_bindings);
+  EXPECT_EQ(actual.stages[0].exports, oracle->spec.stages[0].exports);
+  EXPECT_EQ(actual.stages[0].scalar_bindings, oracle->spec.stages[0].scalar_bindings);
   ASSERT_EQ(expanded->tensors.size(), tensors.size());
   auto actual_tensors = expanded->tensors;
   auto expected_tensors = tensors;

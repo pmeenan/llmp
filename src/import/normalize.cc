@@ -73,17 +73,23 @@ std::optional<Key> Classify(const spec::Mapping& t, std::string_view container,
       ((container == "exl3" || container == "safetensors" || container == "mlx") &&
        key == "model_type"))
     return Key{.kind = MetadataClass::kStructural, .canonical = key};
+  std::string_view nested = key;
+  if (!m.source_key_prefix.empty() && nested.starts_with(m.source_key_prefix))
+    nested.remove_prefix(m.source_key_prefix.size());
   std::string_view stripped = key;
   const bool has_key_prefix = !m.key_prefix.empty() && key.size() > m.key_prefix.size() &&
                               key.starts_with(m.key_prefix) && key[m.key_prefix.size()] == '.';
   if (has_key_prefix) stripped = key.substr(m.key_prefix.size() + 1);
   if (is_null && (std::ranges::contains(t.null_semantics, key) ||
+                  (nested != key && std::ranges::contains(t.null_semantics, nested)) ||
                   (has_key_prefix && std::ranges::contains(t.null_semantics, stripped))))
     return Key{.auxiliary = static_cast<std::uint32_t>(t.auxiliary.size())};
   auto canonical = key;
   bool aliased = false;
   for (const auto& alias : t.key_aliases) {
-    if ((m.key_prefix.empty() && key == alias.source) ||
+    if ((m.key_prefix.empty() &&
+         (key == alias.source ||
+          (nested != key && alias.unless_present.empty() && nested == alias.source))) ||
         (has_key_prefix && stripped == alias.source)) {
       if (!alias.unless_present.empty() && source && source->FindValue(alias.unless_present))
         continue;
@@ -98,8 +104,10 @@ std::optional<Key> Classify(const spec::Mapping& t, std::string_view container,
   };
   const auto unprefixed = spec::UnprefixedKey(m, canonical);
   for (const auto& requirement : t.tensor_presence)
-    if (canonical == requirement.flag)
-      return Key{.kind = MetadataClass::kSelected, .canonical = canonical, .types = nd::kFlag};
+    if (canonical == requirement.flag ||
+        (m.key_prefix.empty() && nested != key && nested == requirement.flag))
+      return Key{
+          .kind = MetadataClass::kSelected, .canonical = requirement.flag, .types = nd::kFlag};
   for (const auto& requirement : t.requirements)
     if (match_key(requirement.key) &&
         (requirement.require_equal || !requirement.equals_key.empty() || requirement.positive ||
@@ -114,9 +122,6 @@ std::optional<Key> Classify(const spec::Mapping& t, std::string_view container,
   for (const auto& list : t.lists)
     if (match_key(list.key))
       return Key{.kind = MetadataClass::kSelected, .canonical = unprefixed, .types = nd::kIntegers};
-  std::string_view nested = key;
-  if (!m.source_key_prefix.empty() && nested.starts_with(m.source_key_prefix))
-    nested.remove_prefix(m.source_key_prefix.size());
   const auto auxiliary_match = [&](std::string_view candidate, std::string_view prefix) {
     return prefix.ends_with('.') ? candidate.starts_with(prefix) : candidate == prefix;
   };
@@ -223,9 +228,12 @@ std::optional<ResolvedName> TensorName(const spec::Mapping& t, std::string_view 
                                        format::PartRole source_part = format::PartRole::kData,
                                        bool prefixed = true) {
   const auto& m = t;
-  if (prefixed && !m.tensor_prefix.empty()) {
-    if (!name.starts_with(m.tensor_prefix)) return std::nullopt;
-    name.remove_prefix(m.tensor_prefix.size());
+  if (prefixed) {
+    if (!m.tensor_prefix.empty()) {
+      if (!name.starts_with(m.tensor_prefix)) return std::nullopt;
+      name.remove_prefix(m.tensor_prefix.size());
+    }
+    name = spec::StripSourceTensorPrefix(m, name);
   }
   std::optional<ResolvedName> found;
   for (const auto& rule : m.tensors) {
@@ -279,8 +287,10 @@ bool IgnoredTensor(const spec::Mapping& table, std::string_view name, std::uint3
   if (std::ranges::any_of(table.ignored_tensor_prefixes,
                           [&](auto prefix) { return name.starts_with(prefix); }))
     return true;
+  const auto stripped = spec::StripSourceTensorPrefix(table, name);
   return std::ranges::any_of(table.ignored_tensors, [&](const auto pattern) {
-    return nd::Match(pattern, name, layers).has_value();
+    return nd::Match(pattern, name, layers).has_value() ||
+           (stripped != name && nd::Match(pattern, stripped, layers).has_value());
   });
 }
 std::string Expand(ResolvedName n) {
@@ -388,8 +398,10 @@ bool SourceDescriptor(const Tensor& tensor) {
 }
 
 const spec::SemanticTensorRule* SemanticTensor(const spec::Mapping& m, std::string_view name) {
+  const auto stripped = spec::StripSourceTensorPrefix(m, name);
   const auto found = std::ranges::find_if(m.semantic_tensors, [&](const auto& rule) {
-    return nd::Match(rule.tensor, name, nd::kLayerLimit).has_value();
+    return nd::Match(rule.tensor, name, nd::kLayerLimit).has_value() ||
+           (stripped != name && nd::Match(rule.tensor, stripped, nd::kLayerLimit).has_value());
   });
   return found == m.semantic_tensors.end() ? nullptr : &*found;
 }
@@ -789,7 +801,8 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const spec::M
       t.role != spec::StageRole::kDrafter &&
       !(t.stage_recipe != nullptr && options.draft_head_rows == 0 && options.component == t.stage))
     return Bad("draft options require a drafter mapping", Rule::kUnsupported);
-  if (options.draft_head_rows > kMaxTensors)
+  if (options.draft_head_rows > kMaxTensors / 2 || s.tensors.size() > kMaxTensors ||
+      2 * options.draft_head_rows > kMaxTensors - s.tensors.size())
     return Bad("draft head row count exceeds tensor bounds", Rule::kBounds);
   if (auto table = ValidateImportMapping(t, s.container); !table)
     return std::unexpected(table.error());
@@ -948,7 +961,14 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const spec::M
   }
   const auto tensor_for = [&](std::string_view canonical) -> const Tensor* {
     const auto find_with_prefix = [&](std::string_view suffix) -> const Tensor* {
-      if (m.tensor_prefix.empty()) return s.FindTensor(suffix);
+      if (m.tensor_prefix.empty()) {
+        if (const auto* found = s.FindTensor(suffix)) return found;
+        if (!m.source_key_prefix.empty()) {
+          for (const auto& tensor : s.tensors)
+            if (spec::StripSourceTensorPrefix(m, tensor.name) == suffix) return &tensor;
+        }
+        return nullptr;
+      }
       for (const auto& tensor : s.tensors)
         if (tensor.name.size() == m.tensor_prefix.size() + suffix.size() &&
             tensor.name.starts_with(m.tensor_prefix) &&
@@ -1291,8 +1311,9 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const spec::M
   // Requested storage ledger: canonical data, selected scalar/layer lists,
   // synthesis and validation. Count even mutually exclusive layer slots. Conservatively
   // count all synthesis and component-validation families simultaneously.
-  const auto T = std::uint64_t{s.tensors.size()}, M = std::uint64_t{s.metadata.size()};
-  const auto F = std::uint64_t{s.files.size()};
+  const auto T = a.Add(std::uint64_t{s.tensors.size()}, a.Mul(2, options.draft_head_rows));
+  const auto M = std::uint64_t{s.metadata.size()};
+  const auto F = a.Add(std::uint64_t{s.files.size()}, options.draft_head_rows != 0 ? 1 : 0);
   std::uint64_t C = 0;
   for (const auto& slot : m.slots) {
     if (!slot.count_key.empty()) {
@@ -1343,10 +1364,8 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const spec::M
     // The shared resolver caps the combined rule table at kMaxMappingRules.
     charge(V(spec::kMaxMappingRules, 256));
   }
-  const bool has_imported_folds = m.role != spec::StageRole::kDrafter &&
-                                  std::ranges::any_of(m.folds, [&](const spec::FoldRule& f) {
-                                    return f.imported && f.container == s.container;
-                                  });
+  const bool has_imported_folds = std::ranges::any_of(
+      m.folds, [&](const spec::FoldRule& f) { return f.imported && f.container == s.container; });
   if (has_imported_folds) charge(a.Add(65536, a.Mul(T, 2048)));
   // Three classification scans plus selected-key duplicate, width and constraint
   // scans total at most 2048 bounded key comparisons per metadata entry.
@@ -1355,13 +1374,27 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const spec::M
   effort(a.Mul(a.Mul(M, 2048), kMaxKeyBytes));
   effort(a.Mul(a.Mul(maximum, T), 256));
   effort(a.Mul(a.Mul(a.Mul(C, 64), 128), 256));
-  effort(a.Mul(a.Mul(4 * T, static_cast<std::uint64_t>(std::bit_width(T))), 512));
+  effort(a.Mul(a.Mul(a.Mul(4, T), static_cast<std::uint64_t>(std::bit_width(T))), 512));
   effort(a.Mul(a.Mul(F, F), 4096));
   effort(a.Mul(a.Mul(C, 64), a.Mul(layers, 8)));
   if (m.role == spec::StageRole::kDrafter)
     effort(a.Mul(a.Mul(spec::kMaxMappingRules, spec::kMaxMappingRules), spec::kMaxText));
   effort(64ULL * 64 * 1024 * 256 + 1024ULL * 1024 * 256);
   if (has_imported_folds) effort(a.Mul(T, 4096));
+  if (IndexedSource(s) || has_imported_folds) {
+    const auto O = std::min<std::uint64_t>(kMaxTensors, a.Mul(T, 2));
+    const auto Mem = T;
+    charge(a.Add(65536 + 8 * 64,
+                 a.Add(a.Mul(T, 2 * sizeof(std::uint32_t) + sizeof(SourceDisposition) + 1),
+                       a.Add(a.Mul(O, sizeof(IndexedOutput) + sizeof(std::uint32_t) +
+                                          2 * (kMaxNameBytes + 1) + 64),
+                             a.Mul(Mem, sizeof(IndexedMember) + sizeof(std::uint32_t))))));
+    const auto indexed_n = a.Add(T, O);
+    const auto indexed_width =
+        std::max<std::uint64_t>(1, static_cast<std::uint64_t>(std::bit_width(indexed_n)));
+    effort(a.Add(a.Mul(a.Mul(F, F), 4096),
+                 a.Mul(a.Mul(a.Mul(64, indexed_n), indexed_width), kMaxNameBytes + 1)));
+  }
   if (m.role == spec::StageRole::kTarget) {
     auto sampling = SamplingDefaultsBound(s);
     if (!sampling) return std::unexpected(sampling.error());
@@ -1590,6 +1623,8 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const spec::Mapp
     // authorized only by this validated selection, never by a name prefix.
     const auto file = static_cast<std::uint32_t>(plan.source_.files.size());
     plan.source_.files.push_back(head.file);
+    if (plan.source_.tensors.size() > kMaxTensors || plan.source_.files.size() >= kMaxSourceFiles)
+      return Bad("selected head exceeds importer bounds", ItemKind::kNone, kNoItem, Rule::kBounds);
     selected_ids =
         spec::SourceTensor{.name = std::string(table.draft->head_ids),
                            .format = {.encoding = format::Encoding::kI32,
@@ -1661,6 +1696,13 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const spec::Mapp
       for (auto& tensor : plan.source_.tensors) tensor.extent.file = file_ids[tensor.extent.file];
       for (auto& generated : plan.generated_) generated.file = file_ids[generated.file];
       plan.source_.files = std::move(files);
+      std::uint64_t routed_payload = 0;
+      for (std::size_t ti = 0; ti < plan.source_.tensors.size(); ++ti) {
+        if (assembled->dispositions[ti].kind == SourceDispositionKind::kRouted)
+          routed_payload += plan.source_.tensors[ti].extent.bytes;
+      }
+      for (const auto& generated : plan.generated_) routed_payload += generated.bytes.size();
+      plan.cost_.payload_bytes = routed_payload;
     }
     CanonicalParts(assembled->outputs, plan.canonical_, plan.bindings_);
   }
@@ -1930,6 +1972,10 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const spec::Mapp
         dispositions[route.source_tensor] = {SourceDispositionKind::kRouted, 0U};
       auto indexed_cost = IndexedPartPlan::Bound(plan.source_, outputs);
       if (!indexed_cost) return std::unexpected(indexed_cost.error());
+      if (indexed_cost->metadata_bytes > limits.metadata_bytes ||
+          indexed_cost->work_units > limits.work_units)
+        return Bad("normalization reservation is insufficient", ItemKind::kNone, kNoItem,
+                   Rule::kBounds);
       auto parts =
           IndexedPartPlan::Make(std::move(plan.source_), outputs, dispositions, *indexed_cost);
       if (!parts) return std::unexpected(parts.error());

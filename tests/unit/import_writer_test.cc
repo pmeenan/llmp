@@ -2047,17 +2047,25 @@ TEST_F(ImportWriterTest, ImagePipelineValidationAndBound) {
   missing_comp.components.push_back({.role = "text_encoder"});
   EXPECT_FALSE(PlanImagePipeline(missing_comp));
 
-  // Bound calculation sums tensor bytes
+  // Bound calculation sums tensor bytes and skips ignored_tensors
   Checkpoint pipeline{.container = "diffusers", .architecture = "QwenImage21Pipeline"};
   Checkpoint comp{.role = "text_encoder"};
   comp.tensors.push_back({.name = "t1", .extent = {.bytes = 100}});
   comp.tensors.push_back({.name = "t2", .extent = {.bytes = 200}});
   pipeline.components.push_back(comp);
+  Checkpoint vae_comp{.role = "vae"};
+  vae_comp.tensors.push_back({.name = "decoder.conv_in.weight", .extent = {.bytes = 50}});
+  vae_comp.tensors.push_back({.name = "encoder.conv_in.weight", .extent = {.bytes = 400}});
+  pipeline.components.push_back(vae_comp);
   auto bound = ImagePipelineBound(pipeline);
   ASSERT_TRUE(bound);
-  EXPECT_EQ(bound->payload_bytes, 300U);
-  EXPECT_EQ(bound->work_units, 2U);
-  EXPECT_EQ(bound->metadata_bytes, 512U << 20U);
+  EXPECT_EQ(bound->payload_bytes, 350U);
+  EXPECT_EQ(bound->work_units, 3U);
+  EXPECT_EQ(bound->metadata_bytes, 65536U + 3U * 2048U);
+  EXPECT_FALSE(ImagePipelineBound(
+      pipeline, {.metadata_bytes = bound->metadata_bytes - 1, .work_units = bound->work_units}));
+  EXPECT_FALSE(ImagePipelineBound(
+      pipeline, {.metadata_bytes = bound->metadata_bytes, .work_units = bound->work_units - 1}));
 }
 
 TEST_F(ImportWriterTest, DiffusersArchiveEventRecorded) {
@@ -2236,7 +2244,17 @@ class ImportDrafterWriterTest : public ImportWriterTest {
     spec::ModelSpec model;
     model.stages.resize(2);
     model.stages[0].name = "target";
-    model.stages[1] = {.name = "mtp", .role = spec::StageRole::kDrafter, .artifact = 1};
+    model.stages[0].stream.width = 4;
+    model.stages[0].layers.resize(1);
+    model.stages[0].layers[0].components.push_back(
+        {.kind = "x.y", .weights = {{.role = "w", .tensor = "target.norm"}}});
+    model.stages[0].taps = {{.name = "features", .layer = 0}};
+    model.stages[1] = {.name = "mtp",
+                       .role = spec::StageRole::kDrafter,
+                       .artifact = 1,
+                       .drafting = spec::MtpDraft{}};
+    model.stages[1].stream.width = 4;
+    model.stages[1].reads = {{.stage = "target", .kind = spec::ReadKind::kTap, .name = "features"}};
     model.stages[1].layers.resize(1);
     model.stages[1].layers[0].components.push_back(
         {.kind = "x.y", .weights = {{.role = "w", .tensor = "fc.weight"}}});
@@ -2244,6 +2262,7 @@ class ImportDrafterWriterTest : public ImportWriterTest {
         spec::ComponentRef{.kind = "head.linear",
                            .weights = {{.role = "ids", .tensor = "draft_output.ids"},
                                        {.role = "weight", .tensor = "draft_output.weight"}}};
+    spec::Canonicalize(model);
     if (executable) {
       canonical.tensors.insert(canonical.tensors.end() - 1,
                                {.name = "projection.weight", .format = projection_format});
@@ -2573,6 +2592,20 @@ TEST_F(ImportWriterTest, CompositionIsPrivateAndPreservesExistingModes) {
   EXPECT_FALSE(WriteComposition(options));
   for (const auto& entry : std::filesystem::directory_iterator(options.store / ".staging"))
     EXPECT_EQ(entry.path().filename(), "native-import.lock");
+}
+
+TEST_F(ImportWriterTest, CreateImportDirectoryHandlesTrailingSlashesOnExistingDirectories) {
+  const auto existing = dir_ / "existing-public";
+  ASSERT_TRUE(std::filesystem::create_directory(existing));
+  ASSERT_EQ(::chmod(existing.c_str(), 0755), 0);
+  EXPECT_TRUE(CreateImportDirectory(existing, 0700));
+  EXPECT_TRUE(CreateImportDirectory(existing.string() + "/", 0700));
+  EXPECT_TRUE(CreateImportDirectory(existing.string() + "///", 0700));
+  ExpectMode(existing, 0755);
+
+  const auto created = dir_ / "created-with-slash";
+  EXPECT_TRUE(CreateImportDirectory(created.string() + "/", 0700));
+  ExpectMode(created, 0700);
 }
 
 }  // namespace

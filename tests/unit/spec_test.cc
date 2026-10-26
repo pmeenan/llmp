@@ -1687,5 +1687,43 @@ TEST(SpecTest, DraftingContractIsCanonicalShapeSpecificAndChangesIdentity) {
   }
 }
 
+TEST(SpecTest, BindStageScalarsRejectsUnknownScalarsAndExcessScalarCount) {
+  ModelSpec spec{.pipeline = PipelineKind::kImage};
+  Stage flow{.name = "flow", .role = StageRole::kDenoiser};
+  flow.stream.width = 4;
+  flow.layers = {{{{.kind = "spatial.pad", .params = {{"height", std::int64_t{8}}}}}}};
+  Stage vae{.name = "vae", .role = StageRole::kVae};
+  vae.stream.width = 4;
+  vae.layers = {{{{.kind = "spatial.pad", .params = {{"height", std::int64_t{8}}}}}}};
+  vae.links = {{0, {}}};
+  vae.exports = {1};
+  vae.scalar_bindings = {{.component = 1, .parameter = "height", .source = "image_height"}};
+  spec.stages = {std::move(flow), std::move(vae)};
+  Canonicalize(spec);
+  ASSERT_TRUE(Validate(spec)) << Validate(spec).error();
+
+  // Unknown scalar name (missing required "image_height") is rejected.
+  const std::array<StageScalar, 1> unknown{{{.name = "unknown_scalar", .value = 16}}};
+  EXPECT_FALSE(BindStageScalars(spec, unknown));
+
+  // Extra unreferenced scalar alongside a required scalar is rejected.
+  const std::array<StageScalar, 2> extra{
+      {{.name = "extra_scalar", .value = 32}, {.name = "image_height", .value = 16}}};
+  EXPECT_FALSE(BindStageScalars(spec, extra));
+
+  // Exceeding kMaxNamed scalars is rejected.
+  std::vector<StageScalar> too_many(kMaxNamed + 1,
+                                    StageScalar{.name = "image_height", .value = 16});
+  EXPECT_FALSE(BindStageScalars(spec, too_many));
+
+  // Valid scalar binding succeeds and clears scalar_bindings on the bound stage.
+  const std::array<StageScalar, 1> valid_scalar{{{.name = "image_height", .value = 16}}};
+  const auto bound = BindStageScalars(spec, valid_scalar);
+  ASSERT_TRUE(bound) << bound.error();
+  EXPECT_TRUE(bound->stages.back().scalar_bindings.empty());
+  EXPECT_EQ(std::get<std::int64_t>(bound->stages.back().layers[0].components[0].params[0].value),
+            16);
+}
+
 }  // namespace
 }  // namespace llmp::spec

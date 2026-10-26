@@ -22,6 +22,7 @@
 #include "components/spatial.h"
 #include "components/step.h"
 #include "spec/mapping.h"
+#include "spec/names.h"
 
 namespace llmp::import {
 namespace {
@@ -29,8 +30,45 @@ namespace {
 using namespace llmp::spec;
 
 // Index names belong to the mapping-owned recipe AST for the full expansion
-// call. Borrow those names so preflight never allocates an unbudgeted copy.
-using Indices = std::map<std::string_view, std::uint64_t, std::less<>>;
+// call. Borrow those names in a flat stack so preflight and repeat iterations
+// never allocate per-iteration map nodes.
+struct Indices {
+  using Entry = std::pair<std::string_view, std::uint64_t>;
+  std::vector<Entry> entries{};
+
+  const Entry* begin() const { return entries.data(); }
+  const Entry* end() const { return entries.data() + entries.size(); }
+  Entry* begin() { return entries.data(); }
+  Entry* end() { return entries.data() + entries.size(); }
+
+  const Entry* find(std::string_view key) const {
+    for (const auto& entry : entries) {
+      if (entry.first == key) return &entry;
+    }
+    return end();
+  }
+  Entry* find(std::string_view key) {
+    for (auto& entry : entries) {
+      if (entry.first == key) return &entry;
+    }
+    return end();
+  }
+  std::uint64_t& operator[](std::string_view key) {
+    if (auto* it = find(key); it != end()) return it->second;
+    entries.emplace_back(key, 0);
+    return entries.back().second;
+  }
+  void erase(std::string_view key) {
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+      if (entries[i].first == key) {
+        entries[i] = entries.back();
+        entries.pop_back();
+        return;
+      }
+    }
+  }
+  void clear() { entries.clear(); }
+};
 struct BoundValue {
   std::uint16_t id = 0;
   std::optional<std::uint16_t> host_port{};
@@ -420,7 +458,9 @@ std::expected<std::uint64_t, std::string> NodeMetadataBound(
     if (!payload || !AddBound(*payload, bound))
       return std::unexpected(payload ? "recipe parameter metadata bound overflows"
                                      : payload.error());
-    if (!parameter.request_scalar.empty() && !add_string(parameter.request_scalar, 1, bound))
+    if (!parameter.request_scalar.empty() &&
+        (!AddBound(sizeof(StageScalarBinding) + 64, bound) ||
+         !add_string(parameter.name, 1, bound) || !add_string(parameter.request_scalar, 1, bound)))
       return std::unexpected("recipe scalar metadata bound overflows");
   }
   for (const auto& weight : node.weights) {
@@ -691,6 +731,8 @@ std::expected<void, std::string> CheckRecipeSteps(std::span<const RecipeStep> st
           if (auto checked = CheckRefTemplate(step.node->carry, indices); !checked) return checked;
         for (const auto& param : step.node->params) {
           if (auto checked = CheckTemplate(param.name, indices); !checked) return checked;
+          if (!param.request_scalar.empty() && !names::IsName(param.request_scalar))
+            return std::unexpected("recipe request scalar source name is invalid");
           if (auto checked_value =
                   CheckExpression(param.value, family, source_values, active_values);
               !checked_value)
@@ -850,6 +892,7 @@ struct Expander {
       return std::unexpected("recipe exceeds the stage component/value-id bound");
     ComponentRef component{.kind = std::string(node.component_kind), .version = node.version};
     component.params.reserve(node.params.size());
+    const auto scalars_before = stage.scalar_bindings.size();
     for (const auto& parameter : node.params) {
       auto key = Substitute(parameter.name, indices);
       auto value = Eval(parameter.value, family, source_values, indices);
@@ -998,9 +1041,11 @@ struct Expander {
     auto output_geometry = components::InferSpatialOutput(*instance, *input_geometry,
                                                           auxiliary_geometry, carry_geometry);
     if (!output_geometry) return std::unexpected(output_geometry.error());
+    const auto node_scalars = stage.scalar_bindings.size() - scalars_before;
     if (!Charge(sizeof(ComponentRef) + sizeof(GraphLink) + name->size() +
                 component.params.size() * sizeof(Param) +
-                component.weights.size() * sizeof(WeightBinding)))
+                component.weights.size() * sizeof(WeightBinding) +
+                node_scalars * sizeof(StageScalarBinding)))
       return std::unexpected("recipe exceeds its paid metadata bound");
     stage.layers[0].components.push_back(std::move(component));
     stage.links.push_back(link);

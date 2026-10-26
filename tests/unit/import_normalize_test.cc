@@ -2751,5 +2751,40 @@ TEST(ImportNormalizeSafetensorsTest, Qwen35MlxNormsAreConverterFoldedAndHfNormsA
   }
 }
 
+TEST(ImportNormalizeTest, ValidateImportMappingDetectsSymmetricPatternOverlap) {
+  const auto* base_mapping = spec::FindMapping("gemma2");
+  ASSERT_NE(base_mapping, nullptr);
+  auto mapping = *base_mapping;
+  std::vector<spec::TensorRule> rules(mapping.tensors.begin(), mapping.tensors.end());
+  const spec::TensorRule wildcard{
+      .pattern = "blk.{layer}.attn_q.{expert}.weight", .slot = "attention", .role = "q"};
+  const spec::TensorRule literal{
+      .pattern = "blk.{layer}.attn_q.1.weight", .slot = "attention", .role = "k"};
+  auto forward = rules;
+  forward.push_back(wildcard);
+  forward.push_back(literal);
+  mapping.tensors = forward;
+  EXPECT_FALSE(ValidateImportMapping(mapping, "gguf"));
+
+  auto reverse = rules;
+  reverse.push_back(literal);
+  reverse.push_back(wildcard);
+  mapping.tensors = reverse;
+  EXPECT_FALSE(ValidateImportMapping(mapping, "gguf"));
+}
+
+TEST(ImportNormalizeTest, NormalizationBoundChargesDraftHeadRowsAndEnforcesTensorCap) {
+  auto input = AssistantCheckpoint(26);
+  const auto* mapping = spec::FindMapping("gemma4-assistant");
+  ASSERT_NE(mapping, nullptr);
+  const auto base_bound = nd::Bound(input, *mapping);
+  ASSERT_TRUE(base_bound) << base_bound.error().ToString();
+  const auto head_bound = nd::Bound(input, *mapping, {.draft_head_rows = 16});
+  ASSERT_TRUE(head_bound) << head_bound.error().ToString();
+  EXPECT_GT(head_bound->metadata_bytes, base_bound->metadata_bytes);
+  EXPECT_GT(head_bound->work_units, base_bound->work_units);
+  EXPECT_FALSE(nd::Bound(input, *mapping, {.draft_head_rows = kMaxTensors}));
+}
+
 }  // namespace
 }  // namespace llmp::import

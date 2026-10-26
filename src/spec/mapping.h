@@ -729,6 +729,14 @@ constexpr bool MatchesCanonicalKey(const Mapping& mapping, std::string_view rule
   return UnprefixedKey(mapping, rule_key) == UnprefixedKey(mapping, candidate_key);
 }
 
+constexpr std::string_view StripSourceTensorPrefix(const Mapping& mapping, std::string_view name) {
+  if (!mapping.tensor_prefix.empty() || mapping.source_key_prefix.empty()) return name;
+  if (name.starts_with("language_model.")) return name.substr(15);
+  if (name.starts_with("model.language_model.lm_head.")) return name.substr(21);
+  if (name.starts_with("model.language_model.")) return name.substr(15);
+  return name;
+}
+
 // The effective serving recipe for `mapping`: its explicit `serving` recipe
 // when set, or `kDefaultServingRecipe` for any target LLM mapping.
 constexpr const ServingRecipe* ServingRecipeOf(const Mapping& mapping) {

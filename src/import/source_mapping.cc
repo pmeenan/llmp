@@ -48,7 +48,7 @@ std::string_view TailAfterFields(std::string_view pattern) {
 }
 // Bounded finite pattern language: at most 1024 decimal layer values. Prefix
 // and suffix rejection makes unrelated compiled rules constant-time.
-bool Overlap(std::string_view a, std::string_view b) {
+bool OverlapOneWay(std::string_view a, std::string_view b) {
   if (a == b) return true;
   std::array<char, spec::kMaxText> sec_buf{};
   const auto at = a.find(spec::kLayerField), bt = b.find(spec::kLayerField);
@@ -72,6 +72,9 @@ bool Overlap(std::string_view a, std::string_view b) {
       return true;
   }
   return false;
+}
+bool Overlap(std::string_view a, std::string_view b) {
+  return OverlapOneWay(a, b) || OverlapOneWay(b, a);
 }
 bool Structural(std::string_view key) {
   return key == "general.architecture" || key == "general.alignment" || key == "split.no" ||

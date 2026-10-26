@@ -863,6 +863,8 @@ TEST_F(ImportGgufFilesTest, OpensRegularFiles) {
 TEST_F(ImportGgufFilesTest, ReadsConfiguredGgufComponentAndRetainsConfigReceipt) {
   Write(dir_ / "config.json", R"({"_class_name":"QwenImage21Transformer2DModel","num_layers":1})");
   Write(dir_ / "weights.gguf", Gguf()
+                                   .Remove("general.architecture")
+                                   .Str("general.architecture", "QwenImage21Transformer2DModel")
                                    .Str("qwen_image.general.architecture", "qwen_image")
                                    .U32("qwen_image.block_count", 1)
                                    .Tensor("weight", kBF16, {4, 4})
@@ -900,7 +902,7 @@ TEST_F(ImportGgufFilesTest, ConfiguredComponentUsesConfigArchitectureWithoutInve
 }
 
 TEST_F(ImportGgufFilesTest, ConfiguredDirectoryConsumesItsCompleteTwoFileSplitSet) {
-  Write(dir_ / "config.json", R"({"_class_name":"QwenImage21Transformer2DModel"})");
+  Write(dir_ / "config.json", R"({"_class_name":"test"})");
   const auto split = Splits(2);
   for (std::size_t i = 0; i < split.size(); ++i)
     Write(dir_ / SplitFile(static_cast<int>(i) + 1, 2), split[i]);
@@ -912,6 +914,23 @@ TEST_F(ImportGgufFilesTest, ConfiguredDirectoryConsumesItsCompleteTwoFileSplitSe
   EXPECT_EQ(checkpoint->files[1].name, SplitFile(2, 2));
   EXPECT_EQ(checkpoint->files[2].name, "config.json");
   EXPECT_EQ(checkpoint->tensors.size(), 4U);
+}
+
+TEST_F(ImportGgufFilesTest, ConfiguredDirectoryRejectsConflictingArchitectureAndMetadata) {
+  Write(dir_ / "config.json", R"({"_class_name":"QwenImage21Transformer2DModel","num_layers":1})");
+  Write(dir_ / "weights.gguf",
+        Gguf().U32("qwen_image.block_count", 1).Tensor("weight", kBF16, {4, 4}).Build());
+  EXPECT_EQ(RuleOf(ReadCheckpoint(dir_)), Rule::kConfig);
+
+  Write(dir_ / "weights.gguf", Gguf()
+                                   .Remove("general.architecture")
+                                   .U32("num_layers", 2)
+                                   .Tensor("weight", kBF16, {4, 4})
+                                   .Build());
+  EXPECT_EQ(RuleOf(ReadCheckpoint(dir_)), Rule::kConfig);
+
+  Write(dir_ / "config.json", "{\"_class_name\":\"bad\\nname\"}");
+  EXPECT_EQ(RuleOf(ReadCheckpoint(dir_)), Rule::kConfig);
 }
 
 TEST_F(ImportGgufFilesTest, ConfiguredDirectoryRejectsHeadersThatDropOrDisagreeWithSelectedFiles) {
