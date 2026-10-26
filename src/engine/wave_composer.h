@@ -200,6 +200,19 @@ struct WaveReport {
 using AheadFor =
     std::function<StepAhead(const ComposedStep& step, std::span<const std::size_t> pending)>;
 
+// Head rows read back for greedy pending work (HeadRowReadback), by its
+// pending index, with its rows' tokens (its SegmentWork's): each step's
+// right after that step, before the wave's next.
+struct WaveReadback {
+  std::function<std::optional<std::uint32_t>(std::size_t pending,
+                                             std::span<const std::int32_t> tokens,
+                                             std::span<const std::byte> outputs)>
+      want;
+  std::function<void(std::size_t pending, std::uint32_t row,
+                     std::expected<std::span<const std::byte>, std::string> logits)>
+      take;
+};
+
 // Runs `pending` (with `work`, its host data, by index) on `runner`,
 // composing, admitting and isolating as above; every step advances its
 // owners' positions (`advance`; a verify's and a draft's do not).
@@ -207,7 +220,7 @@ WaveReport RunWave(ModelRunner& runner, const WaveComposer& composer,
                    std::span<const PendingWork> pending, std::span<const SegmentWork> work,
                    bool advance = true, const AheadFor& ahead = {},
                    std::span<const StepAuthorization> authorization = {},
-                   const PromptBatch& batch = {});
+                   const PromptBatch& batch = {}, const WaveReadback& readback = {});
 
 }  // namespace llmp::engine
 

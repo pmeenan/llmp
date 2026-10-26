@@ -31,6 +31,12 @@ target_link_libraries(llmp_lanes_bench PRIVATE llmp_scheduler llmp_warnings)
 add_executable(llmp_sampling_bench sampling_bench.cc)
 target_link_libraries(llmp_sampling_bench PRIVATE llmp_sampling llmp_warnings)
 
+# The tool-call sampler's host cost a generated token on the served
+# vocabularies (chat/tool_sampling.h; docs/experiments/tool-sampling-speed/).
+add_executable(llmp_tool_mask_bench tool_mask_bench.cc)
+target_link_libraries(llmp_tool_mask_bench PRIVATE llmp_chat llmp_sampling llmp_tokenizer
+                                                   llmp_json llmp_warnings)
+
 # The importer's container readers, the reference decoder of what they
 # describe, spec synthesis/validation/normalization/planning, and the v1
 # artifact/composition readers as a fuzzing entry (import/, spec/, components/,

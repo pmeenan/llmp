@@ -13,9 +13,13 @@ does: arguments are not validated against their schema (M7's constrained
 output).
 
 `ToolRequest` owns normalized definitions and their JSON documents. Its neutral
-choice is auto, none, required or named, with a parallel-call flag. Named
-selection supplies only that definition to the template; the complete request
-still knows its declarations. The template receives each client function
+choice is auto, none, required or named, with a parallel-call flag. Every
+declared definition reaches the template whatever the choice (as OpenAI and
+vLLM render them), so a later turn that changes the choice keeps the
+conversation's rendered prefix (and its kept state); sampling enforces the
+choice. Under `none` a template with a verified tool format renders the tools
+and the sampler refuses a call's opener; without one nothing renders. The
+template receives each client function
 object as sent (no field the client omitted is printed). Duplicate names and
 missing required/named declarations fail before generation; both name lookups
 and result association are hash-based, linear in the request. Active names must
@@ -81,11 +85,18 @@ constrained reply on to its token allowance; the probe allows the close and
 the request is refused at once (500 `tool_output_invalid`, the error starting
 `the closed tool call is invalid:`).
 
-In unconstrained auto mode (parallel calls allowed) no token is refused: only
-terminals are masked while a call is open, and the output parser alone judges
-the reply. Required/named choices mask terminal tokens during reasoning and
-force the opening after the declared reasoning end, or immediately outside
-reasoning. When the template leaves reasoning to the model (the generation
+In unconstrained auto mode no token is refused: only terminals are masked
+while a call is open, and the output parser alone judges the reply. Auto with
+parallel calls disabled is unconstrained until its first call closes (only a
+second call can then be refused, so the grammar masks from there on). `none`
+refuses only call openers. Required/named choices mask terminal tokens during
+reasoning and force the opening after the declared reasoning end, or
+immediately outside reasoning. The forced opener spells the template's own
+whitespace around it (`ToolSpellingFor`, read from the template's rendering of
+a probe call when the template is chosen): Qwen3.8 forces
+`</think>\n\n<tool_call>\n<function=NAME>\n`, as its renderer writes the call,
+so the model continues the layout it was trained on and the next turn
+re-renders the reply byte for byte. When the template leaves reasoning to the model (the generation
 prompt neither opens nor closes it, as Gemma 4's thinking turn), the model may
 open reasoning first; the opener is forced after it ends. Every candidate's
 decoded bytes pass the same grammar before both sampling and speculative
@@ -101,6 +112,39 @@ declared as continued route stops bypass legacy route-only stopping; model/EOS
 stops and client stop strings retain their own meaning.
 Speculative judging ends at the first accepted natural terminator, before
 later verified rows could reopen or reject the already completed tool stream.
+
+**A step costs what it restricts.** A greedy step keeps the device's own
+choices and verify verdict wherever no forced span is pending
+(`Llm::DeviceChooses`): the host checks each chosen ID with `Allowed` (an
+allowed argmax is the masked argmax, so the choice is exact) and accepts it.
+A device choice the constraint refuses is made on the host from its own row,
+which the runner reads back right after the step (`DecodingPolicy::readback`,
+the head logits the device chose from, [engine](engine.md)): a plain step
+then chooses from that row as a host step would, and a device verify keeps its
+rows up to the refused one and makes that row's choice from it, which ends the
+verdict there. Without a readback (a runner that keeps no head rows) only a
+step that restricts nothing (`ToolSampling::Identity`: unconstrained, able to
+stop, no forced span pending) keeps the device path, and a refused verify row
+ends the verdict before it. Forced spans and sampled steps return rows. A
+joined wave still takes one result kind: rows for every owner while any
+owner's step needs them (per-owner kinds, `Batching::mixed_greedy`, measured
+slower for tool-call waves and stay a diagnostic). Where a host step does
+restrict, it judges lazily: greedy takes the row's argmax when
+`Allowed` passes it; top-k sampling judges the row's leading tokens until it
+has the k best allowed ones, all the masked distribution keeps; temperature
+alone keeps an allowed draw and redraws a refused one from the masked row by
+an independent stream (rejection sampling). Only top-p or min-p without top-k,
+and a greedy argmax the constraint refuses, mask the whole row. A full mask
+judges every plain token of a state at once: where the grammar's state treats
+all bytes it does not attend to alike (answer text, reasoning, a raw or string
+value: `ToolInterpreter::PlainVerdict`), a token made only of such bytes takes
+that one verdict without a probe. A name check stops once the name has ended.
+While a forced span is owed only tokens starting with its next byte are
+probed, and one canonical plan answers for all of its prefix candidates
+(`Tokenizer::PlanForcedPrefixes`) instead of one plan each. When the token
+after a stable span is the held tail's only candidate, sampling could choose
+nothing else: it joins the span as a certain token instead of a sampled step.
+[The measurements](experiments/tool-sampling-speed/README.md).
 
 The [canonical span planner](tokenizer.md) finds an exact cover before the selecting token is
 published. Forced spans use marked encoding: the format markers' control tokens

@@ -468,10 +468,92 @@ std::expected<std::span<const float>, std::string> Llm::ConstrainedRow(
   return filtered;
 }
 
+namespace {
+// Lazy constrained choices judge at most this many of a row's leading
+// tokens, for a top-k of at most kLazyTopK; beyond either the row is masked.
+constexpr std::size_t kLazyRanked = 1024;
+constexpr std::size_t kLazyTopK = 256;
+// A temperature-only draw the constraint refuses is redrawn from the masked
+// row by this stream, independent of the first draw's.
+constexpr std::uint64_t kRedrawStream = std::uint64_t{1} << 62U;
+}  // namespace
+
+bool Llm::LeadingAllowed(Branch& branch, std::span<const float> row, const chat::ToolSampling& mask,
+                         std::size_t k) {
+  if (k == 0 || k > kLazyTopK) return false;
+  std::array<std::int32_t, kLazyRanked> ranked{};
+  std::array<std::int32_t, kLazyTopK> ids{};
+  std::size_t count = 0;
+  for (std::size_t want = std::min(kLazyRanked, std::max<std::size_t>(4 * k, 64));;
+       want = std::min(kLazyRanked, 4 * want)) {
+    execution::Ranked(row, want, branch.scratch_);
+    const auto n = branch.scratch_.size();
+    for (std::size_t i = 0; i < n; ++i) ranked[i] = branch.scratch_[i].id;
+    count = mask.AllowedOf(std::span(ranked).first(n), std::span(ids).first(k));
+    // k found, or every finite token judged: what the masked row's top-k keeps.
+    if (count == k || n < want) break;
+    if (want == kLazyRanked) return false;
+  }
+  if (count == 0) return false;  // the whole row then decides the refusal
+  std::sort(ids.begin(), ids.begin() + static_cast<std::ptrdiff_t>(count));
+  branch.constrained_logits_.resize(count);
+  branch.lazy_ids_.assign(ids.begin(), ids.begin() + static_cast<std::ptrdiff_t>(count));
+  for (std::size_t i = 0; i < count; ++i)
+    branch.constrained_logits_[i] = row[static_cast<std::size_t>(ids[i])];
+  return true;
+}
+
+std::expected<std::optional<std::int32_t>, std::string> Llm::LazyChoice(Branch& branch,
+                                                                        std::span<const float> row,
+                                                                        chat::ToolSampling& mask,
+                                                                        std::uint64_t position) {
+  if (auto valid = execution::ValidateLogits(row); !valid)
+    return Error(std::string(execution::SamplingErrorName(valid.error())));
+  if (!branch.sampling_) {
+    // The masked argmax is the row's own wherever the constraint allows it.
+    auto chosen = execution::Greedy(row);
+    if (!chosen) return Error(std::string(execution::SamplingErrorName(chosen.error())));
+    if (mask.Allowed(*chosen)) return *chosen;
+    return std::nullopt;
+  }
+  const auto& params = *branch.sampling_;
+  if (auto prepared = PrepareSamplingScratchFor(branch, row.size()); !prepared)
+    return std::unexpected(prepared.error());
+  const execution::SamplingKey key{.seed = branch.seed_, .stream = 0, .position = position};
+  if (params.top_k != 0) {
+    // Top-k keeps only the k best allowed tokens of the masked row.
+    if (!LeadingAllowed(branch, row, mask, params.top_k)) return std::nullopt;
+    auto index = execution::Sample(branch.constrained_logits_, params, key, branch.scratch_);
+    if (!index)
+      return Error(std::format("sampling: {}", execution::SamplingErrorName(index.error())));
+    return branch.lazy_ids_[static_cast<std::size_t>(*index)];
+  }
+  if (params.top_p < 1 || params.min_p > 0) return std::nullopt;
+  // Temperature alone: a draw from the row that the constraint allows is
+  // distributed as the masked row's (rejection sampling).
+  auto token = execution::Sample(row, params, key, branch.scratch_);
+  if (!token)
+    return Error(std::format("sampling: {}", execution::SamplingErrorName(token.error())));
+  if (mask.Allowed(*token)) return *token;
+  auto masked = ConstrainedRow(branch, row, &mask);
+  if (!masked) return std::unexpected(masked.error());
+  auto redrawn = execution::Sample(
+      *masked, params, {.seed = branch.seed_, .stream = kRedrawStream, .position = position},
+      branch.scratch_);
+  if (!redrawn)
+    return Error(std::format("sampling: {}", execution::SamplingErrorName(redrawn.error())));
+  return *redrawn;
+}
+
 std::expected<std::int32_t, std::string> Llm::Choose(Branch& branch, std::span<const float> row,
                                                      std::uint64_t position,
                                                      chat::ToolSampling* constraint) {
   CheckBranch(branch);
+  if (auto* mask = constraint ? constraint : branch.tool_sampling_; mask && !mask->Identity()) {
+    auto lazy = LazyChoice(branch, row, *mask, position);
+    if (!lazy) return std::unexpected(lazy.error());
+    if (*lazy) return **lazy;
+  }
   auto constrained = ConstrainedRow(branch, row, constraint);
   if (!constrained) return std::unexpected(constrained.error());
   row = *constrained;
@@ -495,6 +577,35 @@ std::expected<bool, std::string> Llm::Keep(Branch& branch, std::span<const float
                                            std::int32_t draft, std::uint64_t position,
                                            std::int32_t& next, chat::ToolSampling* constraint) {
   CheckBranch(branch);
+  if (auto* mask = constraint ? constraint : branch.tool_sampling_; mask && !mask->Identity()) {
+    if (auto valid = execution::ValidateLogits(row); !valid)
+      return Error(std::string(execution::SamplingErrorName(valid.error())));
+    if (!branch.sampling_) {
+      auto chosen = execution::Greedy(row);
+      if (!chosen) return Error(std::string(execution::SamplingErrorName(chosen.error())));
+      if (mask->Allowed(*chosen)) {
+        next = *chosen;
+        return next == draft;
+      }
+    } else if (branch.sampling_->top_k != 0) {
+      if (auto prepared = PrepareSamplingScratchFor(branch, row.size()); !prepared)
+        return std::unexpected(prepared.error());
+      if (LeadingAllowed(branch, row, *mask, branch.sampling_->top_k)) {
+        // The draft's index among the kept tokens (absent: probability 0).
+        const auto at = std::ranges::lower_bound(branch.lazy_ids_, draft);
+        const auto index = at != branch.lazy_ids_.end() && *at == draft
+                               ? static_cast<std::int32_t>(at - branch.lazy_ids_.begin())
+                               : -1;
+        auto verdict = execution::VerifyDraft(
+            branch.constrained_logits_, index, *branch.sampling_,
+            {.seed = branch.seed_, .stream = 0, .position = position}, branch.scratch_);
+        if (!verdict)
+          return Error(std::format("sampling: {}", execution::SamplingErrorName(verdict.error())));
+        next = branch.lazy_ids_[static_cast<std::size_t>(verdict->token)];
+        return verdict->accepted;
+      }
+    }
+  }
   auto constrained = ConstrainedRow(branch, row, constraint);
   if (!constrained) return std::unexpected(constrained.error());
   row = *constrained;
@@ -517,6 +628,7 @@ std::expected<bool, std::string> Llm::Keep(Branch& branch, std::span<const float
 namespace {
 struct ChatTemplateCandidate {
   std::optional<chat::ChatTemplate> chosen;
+  chat::ToolOpenerSpelling spelling;
   std::vector<std::int32_t> stops;
   std::size_t longest = 1, render_bytes = 0;
 };
@@ -534,6 +646,9 @@ std::expected<ChatTemplateCandidate, std::string> MakeChatTemplate(
   auto chosen = chat::ChatTemplate::ForText(text, chat::TokenFacts::From(tokenizer), limits);
   if (!chosen) return Error(chosen.error());
   out.chosen = std::move(*chosen);
+  // Probe renderings, within the template construction's probe scratch.
+  if (const auto* format = out.chosen->tool_calls())
+    out.spelling = chat::ToolSpellingFor(*out.chosen, *format);
   auto stops = chat::StopTokens(out.chosen->stop(), tokenizer);
   if (!stops) return Error(stops.error().ToString());
   out.stops.assign(stops->begin(), stops->end());
@@ -556,6 +671,7 @@ Status Llm::UseTemplate(std::string_view text) {
   auto candidate = MakeChatTemplate(*tokenizer_, context_, text);
   if (!candidate) return Error(candidate.error());
   template_.swap(candidate->chosen);
+  std::swap(tool_spelling_, candidate->spelling);
   stops_.swap(candidate->stops);
   longest_token_ = candidate->longest;
   render_bytes_ = candidate->render_bytes;
@@ -667,10 +783,12 @@ Status Llm::UseChatAssets(const ja::Artifact& artifact, const config::ModelEntry
   // and its independent charge, keeping old+new funded through the last swap.
   static_assert(std::is_nothrow_swappable_v<decltype(template_)>);
   static_assert(std::is_nothrow_swappable_v<Setting<std::string>>);
+  static_assert(std::is_nothrow_swappable_v<chat::ToolOpenerSpelling>);
   using std::swap;
   chat_charge_.swap(candidate.charge);
   tokenizer_.swap(candidate.tokenizer);
   template_.swap(candidate.chat.chosen);
+  swap(tool_spelling_, candidate.chat.spelling);
   stops_.swap(candidate.chat.stops);
   swap(longest_token_, candidate.chat.longest);
   swap(render_bytes_, candidate.chat.render_bytes);

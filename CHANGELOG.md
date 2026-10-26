@@ -197,6 +197,25 @@ The entries below record each change; the record of the milestone is
   tool result's `name`; result association and name checks are linear in the
   request ([tool calls](docs/tool-calls.md)).
 
+- Tool-call speed (M3.5 review B3, B4, B9, B10). A greedy tools request
+  keeps the device's choices and verify verdict at every step with no forced
+  span pending (no longer losing them for the whole reply): the host checks
+  each chosen token against the constraint and makes only a refused one
+  itself, from the head row the runner reads back right after the step.
+  `tool_choice: none` decodes as fast as auto with the same prompt. A host
+  step checks the row's argmax (or, for top-k, its leading tokens) before
+  masking anything; a full mask judges plain tokens once a state and plans a
+  forced span once a step. Auto without parallel calls is unconstrained until
+  its first call closes. Required and named replies on Qwen3.8 decode 2.3 to
+  2.9 times faster (17–20 to 39–54 tokens a second on spark-b), auto replies
+  up to 5% faster, greedy outputs unchanged
+  ([measurements](docs/experiments/tool-sampling-speed/README.md)). A forced
+  opener now spells the template's own whitespace
+  (`</think>\n\n<tool_call>\n<function=NAME>\n` for Qwen3.8), and every declared
+  tool renders whatever `tool_choice` says (under `none` the sampler refuses
+  calls), so a turn that changes the choice keeps the conversation's prefix
+  ([tool calls](docs/tool-calls.md), D-097 amended). The forced-span
+  planner's unused options and plan fields are gone.
 - Each step shape is planned once and lowered once again. U6's exact-site
   recipe comparison ran on every GGML plan miss (a second discovery plan,
   then a replan and a full relowering per fused site) against a table no

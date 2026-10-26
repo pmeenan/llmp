@@ -1615,10 +1615,13 @@ bool Tokenizer::CoversForced(TokenId candidate, std::size_t cover,
 namespace {
 // The planner's encoding: forced bytes continue a stream, so SentencePiece
 // adds no dummy prefix, unless the span is declared to start the stream.
-EncodeOptions ForcedEncoding(const ForcedSpanOptions& options, std::size_t max_tokens) {
+// Forced text of n bytes encodes to at most n + 1 tokens: every token
+// covers at least one byte, and the planner refuses text its normalization
+// changes, so that is the encoding's whole reservation.
+EncodeOptions ForcedEncoding(const ForcedSpanOptions& options, std::size_t bytes) {
   auto encode = options.encode;
   encode.continuation = encode.continuation || !options.decode.remove_space_prefix;
-  encode.max_tokens = max_tokens;
+  encode.max_tokens = bytes + 1;
   return encode;
 }
 }  // namespace
@@ -1643,8 +1646,7 @@ std::expected<std::size_t, Error> Tokenizer::ForcedCoverBytes(
   // Bytes that finish an already published character have no canonical
   // encoding of their own, so they prove no cover.
   if (orphan != 0 || forced.empty() || complete != forced.size()) return 0;
-  const auto encode =
-      ForcedEncoding(options, static_cast<std::size_t>(OutputTokensBound(forced.size())));
+  const auto encode = ForcedEncoding(options, forced.size());
   if (auto valid = impl_->Preflight(forced, encode); !valid) return std::unexpected(valid.error());
   std::vector<char32_t> cps;
   if (auto valid = unicode::DecodeUtf8(forced, cps); !valid) return std::unexpected(valid.error());
@@ -1652,7 +1654,7 @@ std::expected<std::size_t, Error> Tokenizer::ForcedCoverBytes(
   // prefix plus a space attached to the next word. Do not impose that cover.
   if (unicode::IsWhiteSpace(cps.back())) return 0;
   const auto special = options.marked ? SpecialTokens::kUserDefinedOnly : options.encode.special;
-  auto blocks = impl_->TraceBlocks(forced, options.specials, special, options.terminal);
+  auto blocks = impl_->TraceBlocks(forced, options.specials, special, false);
   if (!blocks) return std::unexpected(blocks.error());
   // A token for an open block alone is not a cover proof: a higher-priority
   // crossing merge can turn ab + c into a / bc. Failed earlier regex branches
@@ -1670,6 +1672,79 @@ std::expected<std::size_t, Error> Tokenizer::ForcedCoverBytes(
     return std::unexpected(
         Error{Rule::kUnsupported, "canonical forced token does not reproduce its bytes"});
   return ids.size() == 1 ? forced.size() : 0;
+}
+
+// What PlanForcedSpan and PlanForcedPrefixes share: the planned text's
+// canonical encoding, its stable blocks, and the canonical prefix that
+// both bound and the actual allowance let a plan commit.
+struct Tokenizer::ForcedTrace {
+  bool continuation = false;  // the text finishes an already published character
+  std::vector<TokenId> committed;
+  std::size_t bytes = 0;         // the committed tokens' decoded bytes
+  bool limited = false;          // the real token/context allowance cut them
+  std::optional<TokenId> first;  // the canonical encoding's first token
+};
+
+std::expected<Tokenizer::ForcedTrace, Error> Tokenizer::TraceForced(
+    std::string_view text, std::span<const SpecialSpan> spans,
+    const ForcedSpanOptions& options) const {
+  ForcedTrace out;
+  const auto orphan = ContinuationBytes(text);
+  if (orphan > 3) return std::unexpected(Error{Rule::kInvalidUtf8, "ill-formed UTF-8", 3});
+  const auto complete = orphan + unicode::CompleteUtf8Prefix(text.substr(orphan));
+  const auto available = text.substr(0, complete);
+  if (auto valid = unicode::ValidateUtf8(available.substr(orphan)); !valid)
+    return std::unexpected(
+        Error{valid.error().rule, valid.error().reason, valid.error().item + orphan});
+  if (auto checked = impl_->CheckSpans(available, spans); !checked)
+    return std::unexpected(checked.error());
+  if (orphan != 0) {
+    // The text finishes a character whose lead byte is already published, so
+    // it has no canonical encoding from here: an unchanged sampler choice on
+    // the forced bytes continues the character.
+    out.continuation = true;
+    return out;
+  }
+  const auto special = options.marked ? SpecialTokens::kUserDefinedOnly : options.encode.special;
+  const auto encode = ForcedEncoding(options, available.size());
+  std::vector<TokenId> canonical;
+  if (auto encoded = options.marked ? EncodeMarked(available, spans, encode, canonical)
+                                    : Encode(available, encode, canonical);
+      !encoded)
+    return std::unexpected(encoded.error());
+  std::string reproduced;
+  if (auto decoded = Decode(canonical, options.decode, reproduced); !decoded)
+    return std::unexpected(decoded.error());
+  if (reproduced != available)
+    return std::unexpected(
+        Error{Rule::kUnsupported, "canonical forced span does not reproduce its bytes"});
+  auto blocks = impl_->TraceBlocks(available, spans, special, false);
+  if (!blocks) return std::unexpected(blocks.error());
+  const std::size_t cut = blocks->stable;
+  // Check canonical IDs for the complete known span, not an independently
+  // encoded short prefix. This includes healing an unpublished sampled ID.
+  // Canonicalization is funded by input bytes; publication is independently
+  // clipped to the actual token/context allowance, never inside a token.
+  const auto allowance =
+      std::min({options.remaining_tokens, options.remaining_context, options.encode.max_tokens});
+  out.committed.reserve(std::min(canonical.size(), allowance));
+  std::string token_bytes;
+  for (std::size_t i = 0; i < canonical.size(); ++i) {
+    token_bytes.clear();
+    auto decode = options.decode;
+    decode.remove_space_prefix = decode.remove_space_prefix && i == 0;
+    if (auto decoded = Decode(std::span(&canonical[i], 1), decode, token_bytes); !decoded)
+      return std::unexpected(decoded.error());
+    if (out.bytes + token_bytes.size() > cut) break;
+    if (out.committed.size() == allowance) {
+      out.limited = true;
+      break;
+    }
+    out.committed.push_back(canonical[i]);
+    out.bytes += token_bytes.size();
+  }
+  if (!canonical.empty()) out.first = canonical.front();
+  return out;
 }
 
 std::expected<ForcedSpanPlan, Error> Tokenizer::PlanForcedSpan(
@@ -1711,167 +1786,67 @@ std::expected<ForcedSpanPlan, Error> Tokenizer::PlanForcedSpan(
     own.insert(own.end(), rest.begin(), rest.end());
     spans = own;
   }
-  const auto orphan = ContinuationBytes(text);
-  if (orphan > 3) return std::unexpected(Error{Rule::kInvalidUtf8, "ill-formed UTF-8", 3});
-  const auto complete = orphan + unicode::CompleteUtf8Prefix(std::string_view(text).substr(orphan));
-  if (options.terminal && complete != text.size())
-    return std::unexpected(
-        Error{Rule::kInvalidUtf8, "terminal forced span ends inside UTF-8", complete});
-  const auto available = std::string_view(text).substr(0, complete);
-  if (auto valid = unicode::ValidateUtf8(available.substr(orphan)); !valid)
-    return std::unexpected(
-        Error{valid.error().rule, valid.error().reason, valid.error().item + orphan});
-  if (auto checked = impl_->CheckSpans(available, spans); !checked)
-    return std::unexpected(checked.error());
-  if (orphan != 0) {
-    // The text finishes a character whose lead byte is already published, so
-    // it has no canonical encoding from here. Hold all of it: an unchanged
-    // sampler choice on the forced bytes continues the character.
+  auto trace = TraceForced(text, spans, options);
+  if (!trace) return std::unexpected(trace.error());
+  if (trace->continuation) {
+    // Hold all of it: an unchanged sampler choice continues the character.
     out.selected_covered = !selected;
     out.selected_matches_canonical_prefix = selected.has_value();
-    out.held = std::move(text);
     return out;
   }
-  const auto special = options.marked ? SpecialTokens::kUserDefinedOnly : options.encode.special;
-  // Canonicalization is funded by input bytes. Publication is independently
-  // clipped to the actual token/context allowance, never inside a token.
-  const auto encode =
-      ForcedEncoding(options, static_cast<std::size_t>(OutputTokensBound(available.size())));
-  const auto encode_text = [&](std::string_view bytes, const EncodeOptions& with,
-                               std::vector<TokenId>& ids) {
-    return options.marked ? EncodeMarked(bytes, spans, with, ids) : Encode(bytes, with, ids);
-  };
-  std::vector<TokenId> canonical;
-  if (auto encoded = encode_text(available, encode, canonical); !encoded)
-    return std::unexpected(encoded.error());
-  std::string reproduced;
-  if (auto decoded = Decode(canonical, options.decode, reproduced); !decoded)
-    return std::unexpected(decoded.error());
-  if (reproduced != available)
-    return std::unexpected(
-        Error{Rule::kUnsupported, "canonical forced span does not reproduce its bytes"});
-  auto blocks =
-      impl_->TraceBlocks(available, spans, special, options.terminal && complete == text.size());
-  if (!blocks) return std::unexpected(blocks.error());
-  std::size_t cut = blocks->stable;
-  if (complete == text.size() && !options.terminal && options.following_known &&
-      !options.following_bytes.empty() &&
-      std::ranges::all_of(options.following_bytes, [](std::uint8_t byte) { return byte < 0x80; })) {
-    // Every allowed ASCII byte is a complete code point. For non-ASCII next
-    // bytes, retain the conservative open prefix, never representative chars.
-    std::size_t proven = available.size();
-    for (const auto byte : options.following_bytes) {
-      std::string extended(available);
-      extended.push_back(static_cast<char>(byte));
-      auto future = impl_->TraceBlocks(extended, spans, special, false);
-      if (!future) return std::unexpected(future.error());
-      proven = std::min(proven, future->stable);
-      while (proven != 0) {
-        const auto current = std::upper_bound(blocks->ends.begin(), blocks->ends.end(), proven);
-        if (current == blocks->ends.begin()) {
-          proven = 0;
-          break;
-        }
-        proven = *std::prev(current);
-        if (std::ranges::binary_search(future->ends, proven)) break;
-        --proven;
-      }
-      // A common endpoint is insufficient: lookahead may repartition the
-      // prefix (ab(?=c)|a), enabling a merge absent from the original text.
-      const auto before_end = std::upper_bound(blocks->ends.begin(), blocks->ends.end(), proven);
-      const auto after_end = std::upper_bound(future->ends.begin(), future->ends.end(), proven);
-      if (!std::equal(blocks->ends.begin(), before_end, future->ends.begin(), after_end)) {
-        proven = 0;
-        continue;
-      }
-      auto future_encode = encode;
-      future_encode.max_bytes = extended.size();
-      future_encode.max_tokens = static_cast<std::size_t>(OutputTokensBound(extended.size()));
-      std::vector<TokenId> future_ids;
-      if (auto encoded = encode_text(extended, future_encode, future_ids); !encoded)
-        return std::unexpected(encoded.error());
-      std::string future_text;
-      if (auto decoded = Decode(future_ids, options.decode, future_text); !decoded)
-        return std::unexpected(decoded.error());
-      if (future_text != extended) {
-        proven = 0;
-        continue;
-      }
-      std::size_t prefix_bytes = 0;
-      std::string piece;
-      for (std::size_t i = 0; i < canonical.size() && prefix_bytes < proven; ++i) {
-        piece.clear();
-        auto decode = options.decode;
-        decode.remove_space_prefix = decode.remove_space_prefix && i == 0;
-        if (auto decoded = Decode(std::span(&canonical[i], 1), decode, piece); !decoded)
-          return std::unexpected(decoded.error());
-        if (i >= future_ids.size() || canonical[i] != future_ids[i] ||
-            piece.size() > proven - prefix_bytes) {
-          proven = 0;
-          break;
-        }
-        prefix_bytes += piece.size();
-      }
-      if (prefix_bytes != proven) proven = 0;
-    }
-    cut = std::max(cut, proven);
-  }
-  // Check canonical IDs for the complete known span, not an independently
-  // encoded short prefix. This includes healing an unpublished sampled ID.
-  const auto allowance =
-      std::min({options.remaining_tokens, options.remaining_context, options.encode.max_tokens});
-  out.tokens.reserve(std::min(canonical.size(), allowance));
-  std::size_t bytes = 0;
-  std::string token_bytes;
-  for (std::size_t i = 0; i < canonical.size(); ++i) {
-    token_bytes.clear();
-    auto decode = options.decode;
-    decode.remove_space_prefix = decode.remove_space_prefix && i == 0;
-    if (auto decoded = Decode(std::span(&canonical[i], 1), decode, token_bytes); !decoded)
-      return std::unexpected(decoded.error());
-    if (bytes + token_bytes.size() > cut) break;
-    if (out.tokens.size() == allowance) {
-      out.limited = true;
-      break;
-    }
-    out.tokens.push_back(canonical[i]);
-    bytes += token_bytes.size();
-  }
-  if (selected && bytes < selected_bytes) {
+  out.limited = trace->limited;
+  out.selected_matches_canonical_prefix = selected && trace->first == selected;
+  if (selected && trace->bytes < selected_bytes) {
     // The selected token has not been published. Retain all of it until one
     // canonical candidate covers it; never publish a partial replacement.
-    out.tokens.clear();
-    bytes = 0;
+    out.selected_covered = false;
+    return out;
   }
-  out.committed_bytes = bytes;
-  out.consumed_forced_bytes = bytes > selected_bytes ? bytes - selected_bytes : 0;
-  out.selected_covered = !selected || bytes >= selected_bytes;
-  out.replaces_selected = selected && !out.tokens.empty() && out.tokens.front() != *selected;
-  out.selected_matches_canonical_prefix =
-      selected && !canonical.empty() && canonical.front() == *selected;
-  out.held = text.substr(bytes);
-  if (!out.held.empty()) {
-    auto cover_options = options;
-    // A held tail begins after the original first token's dummy-space policy.
-    if (bytes != 0) cover_options.decode.remove_space_prefix = false;
-    // The held tail keeps its own spans; committed ones end at token boundaries.
-    std::vector<SpecialSpan> held_spans;
-    if (options.marked) {
-      held_spans.reserve(spans.size());
-      for (const auto& span : spans) {
-        if (span.offset + span.length <= bytes) continue;
-        if (span.offset < bytes)
-          return std::unexpected(
-              Error{Rule::kSpecialToken, "a committed token boundary splits a span"});
-        held_spans.push_back({.offset = span.offset - bytes, .length = span.length});
-      }
-      cover_options.specials = held_spans;
-    }
-    auto cover = ForcedCoverBytes(out.held, cover_options);
-    if (!cover) return std::unexpected(cover.error());
-    out.cover_bytes = *cover;
-  }
+  out.selected_covered = true;
+  out.tokens = std::move(trace->committed);
   return out;
+}
+
+std::expected<ForcedPrefixPlan, Error> Tokenizer::PlanForcedPrefixes(
+    std::string_view forced, const ForcedSpanOptions& options) const {
+  if (options.encode.add_bos_eos)
+    return std::unexpected(
+        Error{Rule::kUnsupported, "forced spans cannot insert postprocessor tokens"});
+  if (!options.marked && !options.specials.empty())
+    return std::unexpected(Error{Rule::kUnsupported, "special spans require marked planning"});
+  if (forced.size() > options.encode.max_bytes)
+    return std::unexpected(Error{Rule::kInputTooLarge, "forced span exceeds max_bytes"});
+  if (options.specials.size() > forced.size())
+    return std::unexpected(Error{Rule::kSpecialToken, "more spans than planned bytes"});
+  auto trace = TraceForced(forced, options.specials, options);
+  if (!trace) return std::unexpected(trace.error());
+  return ForcedPrefixPlan{.continuation = trace->continuation,
+                          .committed_bytes = trace->bytes,
+                          .limited = trace->limited,
+                          .first = trace->first};
+}
+
+std::string_view Tokenizer::Piece(TokenId id, const DecodeOptions& options) const {
+  if (id < 0 || static_cast<std::size_t>(id) >= impl_->tokens.size()) return {};
+  const auto u = static_cast<std::size_t>(id);
+  switch (impl_->kinds[u]) {
+    case TokenKind::kUnused:
+      if (!impl_->ModelToken(id)) return {};
+      [[fallthrough]];
+    case TokenKind::kByte:
+    case TokenKind::kNormal: {
+      std::string_view piece = impl_->decoded[u];
+      if (impl_->add_space_prefix && options.remove_space_prefix && piece.starts_with(' '))
+        piece.remove_prefix(1);
+      return piece;
+    }
+    case TokenKind::kUserDefined:
+      return impl_->decode_added_whitespace ? impl_->decoded[u] : impl_->tokens[u];
+    case TokenKind::kControl:
+      if (!options.control_tokens) return {};
+      return impl_->decode_added_whitespace ? impl_->decoded[u] : impl_->tokens[u];
+  }
+  return {};
 }
 
 std::expected<void, Error> Tokenizer::Decode(std::span<const TokenId> tokens,

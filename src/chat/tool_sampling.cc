@@ -9,13 +9,15 @@ namespace llmp::chat {
 ToolSampling::ToolSampling(const tokenizer::Tokenizer& tokenizer, ToolCallFormat format,
                            ToolRequest request, base::json::Limits limits, bool reasoning,
                            std::span<const std::int32_t> terminals,
-                           std::span<const std::int32_t> route_stops, bool may_reason)
+                           std::span<const std::int32_t> route_stops, bool may_reason,
+                           const ToolOpenerSpelling& spelling)
     : lexical_(format, request, limits), decoder_(tokenizer, {.control_tokens = true}) {
   auto context =
       std::make_shared<Context>(Context{.tokenizer = &tokenizer,
                                         .format = std::move(format),
                                         .request = std::move(request),
                                         .prefix = {},
+                                        .opener_at = 0,
                                         .specials = {},
                                         .terminals = {terminals.begin(), terminals.end()},
                                         .error = std::nullopt});
@@ -28,6 +30,7 @@ ToolSampling::ToolSampling(const tokenizer::Tokenizer& tokenizer, ToolCallFormat
   }
   // Format markers are encoded with their control tokens; the client's name
   // is always text, whatever control-token text it contains (marked spans).
+  // The template's whitespace around them is text too.
   const auto marker = [&](std::string_view text) {
     if (auto spans = tokenizer.ControlSpans(text)) {
       for (auto span : *spans) {
@@ -41,18 +44,23 @@ ToolSampling::ToolSampling(const tokenizer::Tokenizer& tokenizer, ToolCallFormat
   };
   const auto trigger = ToolTriggerFor(context->format, context->request);
   if (trigger.required) {
+    const auto& f = context->format;
+    context->prefix += reasoning ? spelling.after_reasoning : spelling.lead;
+    context->opener_at = context->prefix.size();
     marker(trigger.begin);
+    if (!f.block_begin.empty()) context->prefix += spelling.inner;
     if (trigger.name) {
-      if (!context->format.block_begin.empty()) marker(context->format.call_begin);
-      if (context->format.bare_envelope) {
+      if (!f.block_begin.empty()) marker(f.call_begin);
+      if (f.bare_envelope) {
         std::string key;
-        base::json::AppendQuoted(context->format.name_key, key);
+        base::json::AppendQuoted(f.name_key, key);
         marker(key + ":");
         base::json::AppendQuoted(*trigger.name, context->prefix);
         marker(",");
       } else {
         context->prefix += *trigger.name;
-        marker(context->format.name_end);
+        marker(f.name_end);
+        context->prefix += spelling.after_name;
       }
     }
   }
@@ -65,9 +73,19 @@ ToolSampling::ToolSampling(const tokenizer::Tokenizer& tokenizer, ToolCallFormat
   lexical_.Reasoning(reasoning);
 }
 bool ToolSampling::constrained() const {
-  const auto kind = context_->request.choice().kind;
-  return kind == ToolChoiceKind::kNamed || kind == ToolChoiceKind::kRequired ||
-         (kind != ToolChoiceKind::kNone && !context_->request.parallel());
+  switch (context_->request.choice().kind) {
+    case ToolChoiceKind::kNamed:
+    case ToolChoiceKind::kRequired:
+    case ToolChoiceKind::kNone:  // calls are refused
+      return true;
+    case ToolChoiceKind::kAuto:
+      // Without parallel calls only a second call can be refused.
+      return !context_->request.parallel() && lexical_.calls() != 0;
+  }
+  return true;
+}
+bool ToolSampling::Identity() const {
+  return !constrained() && !trigger_.waiting && !trigger_.choice && lexical_.CanStop();
 }
 bool ToolSampling::Preserves(std::int32_t token) const {
   if (token < 0 || std::cmp_greater_equal(token, context_->tokenizer->size())) return false;
@@ -101,12 +119,13 @@ bool ToolSampling::TerminalAllowed(std::int32_t token, bool can_stop) const {
   return std::ranges::find(context_->terminals, token) == context_->terminals.end();
 }
 // The token's own bytes, for matching the forced prefix and planning.
-bool ToolSampling::Raw(std::int32_t token, std::string& out) const {
+bool ToolSampling::Raw(std::int32_t token, std::string_view& out) const {
+  out = {};
   if (token < 0 || std::cmp_greater_equal(token, context_->tokenizer->size())) return false;
   if (context_->tokenizer->Kind(token) == tokenizer::TokenKind::kControl && !Preserves(token))
     return true;
-  return context_->tokenizer->Decode(std::span(&token, 1), {.control_tokens = true}, out)
-      .has_value();
+  out = context_->tokenizer->Piece(token, {.control_tokens = true});
+  return true;
 }
 // The bytes the output parser receives for this token (ChatOutput's decoder).
 bool ToolSampling::Lexical(std::int32_t token, tokenizer::StreamDecoder& decoder,
@@ -115,6 +134,18 @@ bool ToolSampling::Lexical(std::int32_t token, tokenizer::StreamDecoder& decoder
   if (context_->tokenizer->Kind(token) == tokenizer::TokenKind::kControl && !Preserves(token))
     return true;
   return decoder.Push(token, out).has_value();
+}
+// Bytes the grammar treats alike in a PlainVerdict state: none it attends
+// to, and complete UTF-8 (the decoder then passes them on unchanged).
+bool ToolSampling::Plain(std::string_view piece) const {
+  if (piece.empty()) return false;
+  bool high = false;
+  for (const char c : piece) {
+    const auto byte = static_cast<unsigned char>(c);
+    if (lexical_.Attends(byte)) return false;
+    high = high || byte >= 0x80;
+  }
+  return !high || !base::json::FirstInvalidUtf8(piece);
 }
 bool ToolSampling::Transition(std::string_view bytes, Trigger& next) const {
   if (context_->prefix.empty()) return true;
@@ -146,8 +177,9 @@ bool ToolSampling::Transition(std::string_view bytes, Trigger& next) const {
     } else if (next.waiting) {
       next.tail += byte;
       if (f.opener_ends_reasoning && !opener.empty() && next.tail.ends_with(opener)) {
+        // The model wrote the opener itself: what follows it is forced.
         next.waiting = false;
-        next.forced = opener.size();
+        next.forced = context_->opener_at + opener.size();
         next.tail.clear();
       } else if (!f.reasoning_end.empty() && next.tail.ends_with(f.reasoning_end)) {
         next.waiting = false;
@@ -176,13 +208,26 @@ std::vector<tokenizer::SpecialSpan> ToolSampling::Spans(std::size_t from, std::s
   }
   return out;
 }
+tokenizer::ForcedSpanOptions ToolSampling::PlanOptions(
+    std::size_t bytes, std::span<const tokenizer::SpecialSpan> spans) const {
+  tokenizer::ForcedSpanOptions options;
+  options.encode.special = tokenizer::SpecialTokens::kUserDefinedOnly;
+  options.encode.max_bytes = bytes;
+  options.encode.max_tokens = tokens_left_;
+  options.marked = true;
+  options.specials = spans;
+  options.remaining_tokens = tokens_left_;
+  options.remaining_context = context_left_;
+  return options;
+}
 std::expected<ToolSampling::Selection, std::string> ToolSampling::PlanOnce(
     std::int32_t selected) const {
   if (!constrained()) return Selection{.tokens = {selected}};
   if (context_->error) return std::unexpected(*context_->error);
   if (!TerminalAllowed(selected, lexical_.CanStop()))
     return std::unexpected("selected terminal would leave an incomplete tool call");
-  std::string piece, bytes;
+  std::string_view piece;
+  std::string bytes;
   auto decoder = decoder_;
   auto next = trigger_;
   if (!Raw(selected, piece) || !Lexical(selected, decoder, bytes) || !Transition(piece, next) ||
@@ -193,15 +238,8 @@ std::expected<ToolSampling::Selection, std::string> ToolSampling::PlanOnce(
   const auto forced = std::string_view(context_->prefix).substr(next.forced);
   const auto start = trigger_.waiting ? std::size_t{0} : trigger_.forced;
   const auto spans = Spans(next.forced, piece.size(), std::min(piece.size(), next.forced - start));
-  tokenizer::ForcedSpanOptions options;
-  options.encode.special = tokenizer::SpecialTokens::kUserDefinedOnly;
-  options.encode.max_bytes = piece.size() + forced.size();
-  options.encode.max_tokens = tokens_left_;
-  options.marked = true;
-  options.specials = spans;
-  options.remaining_tokens = tokens_left_;
-  options.remaining_context = context_left_;
-  auto planned = context_->tokenizer->PlanForcedSpan(selected, forced, options);
+  auto planned = context_->tokenizer->PlanForcedSpan(
+      selected, forced, PlanOptions(piece.size() + forced.size(), spans));
   if (!planned) return std::unexpected(planned.error().ToString());
   if (!planned->selected_covered || planned->tokens.empty()) {
     // The final open block remains ordinary target sampling. This is a local
@@ -214,60 +252,141 @@ std::expected<ToolSampling::Selection, std::string> ToolSampling::PlanOnce(
   }
   return Selection{.kind = Selection::Kind::kStableSpan, .tokens = std::move(planned->tokens)};
 }
+// After a stable span, the forced text's held tail is sampled again. Where
+// that step's mask could allow only one token, sampling would choose it in
+// any mode: its plan joins this span now, a certain token instead of a
+// sampled step.
+void ToolSampling::Extend(Selection& selection) const {
+  auto tentative = *this;
+  tentative.certain_.clear();
+  for (const auto token : selection.tokens)
+    if (!tentative.Accept(token)) return;
+  const auto vocabulary = static_cast<std::int32_t>(context_->tokenizer->size());
+  while (selection.tokens.size() < tokens_left_ && selection.tokens.size() < context_left_) {
+    tentative.Budget(tokens_left_ - selection.tokens.size(),
+                     context_left_ - selection.tokens.size());
+    if (tentative.trigger_.waiting || tentative.trigger_.choice ||
+        tentative.trigger_.forced >= context_->prefix.size())
+      return;
+    auto step = tentative.Facts();
+    std::optional<std::int32_t> only;
+    for (std::int32_t token = 0; token < vocabulary; ++token) {
+      if (!tentative.Judge(token, step)) continue;
+      if (only) return;  // a choice remains
+      only = token;
+    }
+    if (!only) return;
+    auto next = tentative.PlanOnce(*only);
+    if (!next) return;
+    for (const auto token : next->tokens)
+      if (!tentative.Accept(token)) return;
+    selection.kind = Selection::Kind::kStableSpan;
+    selection.tokens.insert(selection.tokens.end(), next->tokens.begin(), next->tokens.end());
+  }
+}
 std::expected<ToolSampling::Selection, std::string> ToolSampling::Plan(
     std::int32_t selected) const {
   auto planned = PlanOnce(selected);
-  if (!planned) Refuse();
+  if (!planned) {
+    Refuse();
+    return planned;
+  }
+  if (planned->kind == Selection::Kind::kStableSpan) Extend(*planned);
   return planned;
+}
+ToolSampling::Step ToolSampling::Facts() const {
+  Step step;
+  step.constrained = constrained();
+  step.can_stop = lexical_.CanStop();
+  step.forcing = !trigger_.waiting && !trigger_.choice && trigger_.forced < context_->prefix.size();
+  if (step.forcing) {
+    step.forced = std::string_view(context_->prefix).substr(trigger_.forced);
+    step.spans = Spans(trigger_.forced, 0, 0);
+  }
+  return step;
+}
+// Mask's verdict on one token: the terminals, the trigger's forced or
+// chosen bytes, the grammar (plain bytes by their state's one verdict) and
+// a forced span's canonical cover.
+bool ToolSampling::Judge(std::int32_t token, Step& step) const {
+  if (!TerminalAllowed(token, step.can_stop)) return false;
+  if (!step.constrained) return true;
+  const auto& tokenizer = *context_->tokenizer;
+  if (step.forcing) {
+    if (!step.cover)
+      step.cover =
+          tokenizer.ForcedCoverBytes(step.forced, PlanOptions(step.forced.size(), step.spans));
+    if (!*step.cover || !tokenizer.CoversForced(token, **step.cover)) return false;
+  }
+  std::string_view piece;
+  if (!Raw(token, piece)) return false;
+  // A hidden control cannot advance a forced prefix (or the choice of one).
+  // Otherwise it could end without ever producing the opener.
+  if ((step.forcing || trigger_.choice) && piece.empty()) return false;
+  if (step.forcing && piece.front() != step.forced.front()) return false;
+  if (!step.forcing && !trigger_.choice) {
+    // The trigger is done or waits for reasoning's end (whose bytes attend):
+    // it takes every plain token alike.
+    if (!step.plain)
+      step.plain.emplace(decoder_.holding() ? std::optional<bool>() : lexical_.PlainVerdict());
+    if (*step.plain && tokenizer.Kind(token) != tokenizer::TokenKind::kControl && Plain(piece))
+      return **step.plain && piece.size() <= lexical_.room();
+  }
+  auto next = trigger_;
+  if (!Transition(piece, next)) return false;
+  std::string_view bytes = piece;
+  if (!piece.empty() && (decoder_.holding() || base::json::FirstInvalidUtf8(piece))) {
+    auto decoder = decoder_;
+    step.bytes.clear();
+    if (!Lexical(token, decoder, step.bytes)) return false;
+    bytes = step.bytes;
+  }
+  if (!lexical_.Allows(bytes)) return false;
+  if (next.waiting || next.choice || next.forced >= context_->prefix.size()) return true;
+  if (step.forcing && tokenizer.Kind(token) != tokenizer::TokenKind::kControl) {
+    // A byte prefix of the forced text: the step's one plan answers for it.
+    if (context_->error) return false;
+    if (!step.prefixes)
+      step.prefixes =
+          tokenizer.PlanForcedPrefixes(step.forced, PlanOptions(step.forced.size(), step.spans));
+    return *step.prefixes && (*step.prefixes)->Allows(token, piece.size());
+  }
+  return PlanOnce(token).has_value();
+}
+bool ToolSampling::Allowed(std::int32_t token) const {
+  auto step = Facts();
+  return Judge(token, step);
+}
+std::size_t ToolSampling::AllowedOf(std::span<const std::int32_t> ranked,
+                                    std::span<std::int32_t> out) const {
+  auto step = Facts();
+  std::size_t count = 0;
+  for (const auto token : ranked) {
+    if (count == out.size()) break;
+    if (Judge(token, step)) out[count++] = token;
+  }
+  return count;
 }
 std::span<const float> ToolSampling::Mask(std::span<const float> row,
                                           std::vector<float>& scratch) const {
-  const bool constrained = this->constrained();
-  const bool can_stop = lexical_.CanStop();
-  if (!constrained && can_stop && !trigger_.waiting && !trigger_.choice) return row;
+  auto step = Facts();
+  if (!step.constrained && step.can_stop && !trigger_.waiting && !trigger_.choice) return row;
   scratch.assign(row.begin(), row.end());
-  const bool forcing =
-      !trigger_.waiting && !trigger_.choice && trigger_.forced < context_->prefix.size();
-  std::expected<std::size_t, tokenizer::Error> cover = std::size_t{0};
-  std::vector<tokenizer::SpecialSpan> cover_spans;
-  if (forcing) {
-    tokenizer::ForcedSpanOptions cover_options;
-    const auto forced = std::string_view(context_->prefix).substr(trigger_.forced);
-    cover_spans = Spans(trigger_.forced, 0, 0);
-    cover_options.encode.special = tokenizer::SpecialTokens::kUserDefinedOnly;
-    cover_options.encode.max_bytes = forced.size();
-    cover_options.marked = true;
-    cover_options.specials = cover_spans;
-    cover = context_->tokenizer->ForcedCoverBytes(forced, cover_options);
+  constexpr float kRefused = -std::numeric_limits<float>::infinity();
+  if (!step.constrained) {
+    // Only terminals are restricted, while a call is open.
+    for (const auto token : context_->terminals)
+      if (token >= 0 && std::cmp_less(token, row.size()) && !TerminalAllowed(token, step.can_stop))
+        scratch[static_cast<std::size_t>(token)] = kRefused;
+    return scratch;
   }
-  std::string piece, bytes;
-  for (std::size_t i = 0; i < row.size(); ++i) {
-    const auto token = static_cast<std::int32_t>(i);
-    bool allowed = TerminalAllowed(token, can_stop);
-    if (!constrained) {
-      if (!allowed) scratch[i] = -std::numeric_limits<float>::infinity();
-      continue;
-    }
-    if (allowed && forcing) allowed = cover && context_->tokenizer->CoversForced(token, *cover);
-    if (allowed) {
-      piece.clear();
-      bytes.clear();
-      auto decoder = decoder_;
-      auto next = trigger_;
-      allowed = Raw(token, piece) && Lexical(token, decoder, bytes) && Transition(piece, next) &&
-                lexical_.Allows(bytes);
-      // A hidden control cannot advance a forced prefix (or the choice of
-      // one). Otherwise it could end without ever producing the opener.
-      if (allowed && (forcing || trigger_.choice) && piece.empty()) allowed = false;
-      if (allowed && !next.waiting && !next.choice && next.forced < context_->prefix.size())
-        allowed = PlanOnce(token).has_value();
-    }
-    if (!allowed) scratch[i] = -std::numeric_limits<float>::infinity();
-  }
+  for (std::size_t i = 0; i < row.size(); ++i)
+    if (!Judge(static_cast<std::int32_t>(i), step)) scratch[i] = kRefused;
   return scratch;
 }
 ToolStatus ToolSampling::Accept(std::int32_t token) {
-  std::string piece, bytes;
+  std::string_view piece;
+  std::string bytes;
   if (!constrained()) {
     // Unconstrained auto: nothing is refused per token. The cursor follows the
     // output so terminals stay masked inside an open call; a reply outside

@@ -279,9 +279,25 @@ Status Llm::GenerationSession::FailAfterAnchor(std::string error) {
   return ran_;
 }
 
+bool Llm::ToolsUnrestricted(const Branch& branch) {
+  return branch.tool_sampling_ == nullptr ||
+         (branch.tool_sampling_->certain().empty() && branch.tool_sampling_->Identity());
+}
+
 bool Llm::GreedyWithoutRows(const PreparedGeneration& unit) {
   return unit.branch != nullptr && unit.session != nullptr && !unit.step.need_logits &&
-         !unit.branch->sampling_.has_value() && unit.branch->tool_sampling_ == nullptr;
+         !unit.step.forced && !unit.branch->sampling_.has_value() &&
+         ToolsUnrestricted(*unit.branch);
+}
+
+bool Llm::DeviceChooses(const Branch& branch) const {
+  const auto* mask = branch.tool_sampling_;
+  return mask == nullptr || (mask->certain().empty() && (head_rows_ || mask->Identity()));
+}
+
+bool Llm::DeviceGreedy(const PreparedGeneration& unit) const {
+  return unit.branch != nullptr && unit.session != nullptr && !unit.step.need_logits &&
+         !unit.step.forced && !unit.branch->sampling_.has_value() && DeviceChooses(*unit.branch);
 }
 
 Status Llm::GenerationSession::ApplyChosen(std::int32_t token) {

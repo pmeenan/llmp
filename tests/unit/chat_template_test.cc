@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -23,6 +24,7 @@
 #include "base/json.h"
 #include "chat/chat.h"
 #include "chat/jinja.h"
+#include "chat/tool_calls.h"
 #include "expected_error.h"
 #include "tokenizer_fixtures.h"
 
@@ -594,6 +596,53 @@ TEST(ChatTemplates, NativeRefusalsFallBackToTheTemplate) {
   const auto refused = gemma->Render(big);
   ASSERT_FALSE(refused.has_value());
   EXPECT_TRUE(refused.error().bound);
+}
+
+// A forced opener spells the template's own whitespace (B9): what the model
+// was trained on, and what the next turn re-renders around the same call.
+TEST(ToolSpelling, ForcedOpenersMatchTheTemplatesRenderingOfTheCall) {
+  struct Case {
+    std::string_view name;
+    chat::TokenFacts facts;
+    const chat::ToolCallFormat* format;
+  };
+  const std::array<Case, 3> cases{{{"qwen3.8", QwenFacts(), &chat::QwenToolCalls()},
+                                   {"deepseek-v4-0731", DeepSeekFacts(), &chat::DsmlToolCalls()},
+                                   {"gemma-4", GemmaFacts(), &chat::GemmaToolCalls()}}};
+  for (const auto& c : cases) {
+    auto t = chat::ChatTemplate::ForText(Template(c.name), c.facts);
+    ASSERT_TRUE(t.has_value()) << c.name;
+    const auto spelling = chat::ToolSpellingFor(*t, *c.format);
+    const auto& f = *c.format;
+    // The named opener as the sampler forces it, after the reasoning's end.
+    std::string opener = spelling.after_reasoning;
+    opener += f.block_begin.empty() ? f.call_begin : f.block_begin + spelling.inner + f.call_begin;
+    opener += "lookup" + f.name_end + spelling.after_name;
+    // The template's rendering of a reply calling `lookup` holds it as is.
+    const auto arguments = json::Parse(R"({"s":"x"})");
+    ASSERT_TRUE(arguments.has_value());
+    chat::Conversation reply;
+    reply.enable_thinking = true;
+    reply.add_generation_prompt = false;
+    reply.messages.push_back({chat::Role::kUser, "go", std::nullopt, {}});
+    reply.messages.push_back(
+        {chat::Role::kAssistant, "", std::string("hm"), {{"lookup", arguments->root()}}});
+    const auto rendered = t->Render(reply);
+    ASSERT_TRUE(rendered.has_value()) << c.name;
+    const std::string after = f.reasoning_end.empty() ? std::string() : f.reasoning_end;
+    EXPECT_NE(rendered->text.find(after + opener), std::string::npos)
+        << c.name << ": " << rendered->text;
+    if (c.name == "qwen3.8") {
+      EXPECT_EQ(spelling.after_reasoning, "\n\n");
+      EXPECT_EQ(spelling.lead, "");
+      EXPECT_EQ(spelling.inner, "\n");
+      EXPECT_EQ(spelling.after_name, "\n");
+    }
+    if (c.name == "deepseek-v4-0731") {
+      EXPECT_EQ(spelling.inner, "\n");
+      EXPECT_EQ(spelling.after_name, "\n");
+    }
+  }
 }
 
 }  // namespace

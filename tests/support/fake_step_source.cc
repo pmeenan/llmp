@@ -88,6 +88,7 @@ struct SegmentPlan {
   // A drafter's features: its rows' (an input) and its next ones (an
   // output), a cell's bytes each.
   std::uint64_t features = 0, next = 0, feature_bytes = 0;
+  std::uint64_t kept = 0;  // a greedy logits head's rows, left in the workspace
 };
 
 void* CellTensor::At(std::uint64_t cell) const {
@@ -137,6 +138,8 @@ class FakeProgram final : public kn::StepProgram {
   std::uint64_t launches() const override { return launches_; }
   std::span<const kn::InputSlot> inputs() const override { return inputs_; }
   std::span<const kn::OutputSlot> outputs() const override { return outputs_; }
+  std::span<const kn::OutputSlot> retained() const override { return retained_; }
+  void SetRetained(std::vector<kn::OutputSlot> retained) { retained_ = std::move(retained); }
   std::span<const kn::TensorUse> tensors() const override { return uses_; }
   bool capturable() const override { return !options_->positioned; }
 
@@ -301,6 +304,15 @@ class FakeProgram final : public kn::StepProgram {
       }
       for (std::uint32_t o = 0; o < s.outputs; ++o) {
         const std::uint32_t r = s.rows - s.outputs + o;
+        if (s.greedy && s.kept != 0) {
+          // The logits its choice came from stay in the workspace.
+          std::vector<float> row(s.logits, 0.0F);
+          row[static_cast<std::size_t>(choice(r))] = 1.0F;
+          if (options.transform_logits)
+            options.transform_logits(phase, s.slot, position_of(r), row);
+          std::memcpy(At<void>(s.kept + (std::uint64_t{o} * s.logits * sizeof(float))), row.data(),
+                      row.size() * sizeof(float));
+        }
         if (s.greedy) {
           std::int32_t chosen = options.native_token && (!options.native_token_phase ||
                                                          *options.native_token_phase == phase)
@@ -336,6 +348,7 @@ class FakeProgram final : public kn::StepProgram {
   std::vector<SegmentPlan> segments_;
   std::vector<kn::InputSlot> inputs_;
   std::vector<kn::OutputSlot> outputs_;
+  std::vector<kn::OutputSlot> retained_;
   std::vector<kn::TensorUse> uses_;
   std::vector<std::size_t> extra_;
   std::uint64_t scratch_ = 0, host_ = 0, launches_ = 0;
@@ -448,7 +461,7 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
   };
   std::vector<SegmentPlan> segments;
   std::vector<kn::InputSlot> inputs;
-  std::vector<kn::OutputSlot> outputs;
+  std::vector<kn::OutputSlot> outputs, retained;
   std::vector<kn::TensorUse> uses;
   const std::uint32_t total = shape.rows();
   std::uint64_t joined_tokens = 0, joined_positions = 0;
@@ -584,6 +597,13 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
       s.out = place(bytes);
       outputs.push_back(
           {.device_address = s.out, .bytes = bytes, .tensor = {}, .segment = segment});
+      if (seg.greedy && options_.logits != 0 && options_.retained) {
+        const std::uint64_t kept = std::uint64_t{seg.outputs} * options_.logits * sizeof(float);
+        s.kept = place(kept);
+        retained.push_back(
+            {.device_address = s.kept, .bytes = kept, .tensor = {}, .segment = segment});
+        uses.push_back({.address = s.kept, .bytes = kept, .role = ir::Role::kActivation});
+      }
     }
     segments.push_back(s);
   }
@@ -646,6 +666,7 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
       options_.host_bytes, options_.launches, addresses.measuring(), &options_, queued_, executed_,
       positioned_, shape.phase);
   program->SetExtra(std::move(extra));
+  program->SetRetained(std::move(retained));
   if (options_.construction_owner && !program->HoldConstruction(options_.construction_owner()))
     return Refuse("fake construction owner was not admitted");
   return program;

@@ -163,6 +163,7 @@ Status Llm::Setup() {
   if (!retained) return Error(retained.error());
   runner_ = std::move(*retained);
   if (auto set = runner_->Setup(); !set) return set;
+  head_rows_ = device_greedy_ && runner_->retains_head_rows();
   auto identity = runner_->ExecutionIdentity();
   if (!identity) return Error(identity.error());
   execution_identity_ = *identity;
@@ -174,8 +175,14 @@ Status Llm::Setup() {
   auto composer = en::WaveComposer::For(caps_, runner_->slots());
   if (!composer) return Error(std::format("model {}: {}", name_, composer.error()));
   composer_.emplace(std::move(*composer));
-  auto plain = en::DecodingOrchestrator::Make(*runner_, *composer_,
-                                              {.kind = en::DecodingMode::Kind::kPlain}, {});
+  // A plain step's policy reads back the head rows of refused device choices.
+  auto plain_policy = Policy();
+  plain_policy.propose = {};
+  plain_policy.judge = {};
+  plain_policy.depth = {};
+  plain_policy.observe = {};
+  auto plain = en::DecodingOrchestrator::Make(
+      *runner_, *composer_, {.kind = en::DecodingMode::Kind::kPlain}, std::move(plain_policy));
   if (!plain) return Error(std::format("model {}: {}", name_, plain.error()));
   plain_.emplace(std::move(*plain));
   if (speculate) {
@@ -297,11 +304,11 @@ std::string Llm::violations() const {
 
 std::string Llm::extra() const {
   return std::format(
-      R"({{"engine":"component","architecture":"{}","slots":{},"speculative":{},"verify_rows":{},"joined_prefill_steps":{},"joined_prefill_rows":{},"joined_causal_steps":{},"joined_causal_rows":{},"joined_waves":{},"joined_units":{},"speculative_units":{},"drafted":{},"accepted":{},"discarded":{},"greedy_tokens":{},"runner":{}}})",
+      R"({{"engine":"component","architecture":"{}","slots":{},"speculative":{},"verify_rows":{},"joined_prefill_steps":{},"joined_prefill_rows":{},"joined_causal_steps":{},"joined_causal_rows":{},"joined_waves":{},"joined_units":{},"speculative_units":{},"drafted":{},"accepted":{},"discarded":{},"greedy_tokens":{},"head_rows":{},"reads_head_rows":{},"runner":{}}})",
       architecture_, slots_, speculate_, verify_rows_, counts_.joined_prefill_steps,
       counts_.joined_prefill_rows, counts_.joined_causal_steps, counts_.joined_causal_rows,
       counts_.joined_waves, counts_.joined_units, counts_.speculative_units, counts_.drafted,
-      counts_.accepted, counts_.discarded, counts_.greedy_tokens,
+      counts_.accepted, counts_.discarded, counts_.greedy_tokens, counts_.head_rows, head_rows_,
       runner_ ? runner_->report_json() : std::string("{}"));
 }
 
@@ -515,18 +522,8 @@ en::DecodingPolicy Llm::Policy() {
       for (const auto token : tokens)
         if (token < 0 || std::cmp_greater_equal(token, logit_width_))
           return Error("a verify returned a token outside the target vocabulary");
-      // As the logits judge: kept drafts stop at the first natural stop
-      // token, which is then the verdict's last token, no row after it kept.
-      const auto* session = (*branch)->generation_session_;
-      std::size_t accepted = 0;
-      while (accepted + 1 < verified.size() && tokens[accepted] == verified[accepted + 1] &&
-             !(session && session->IsStop(verified[accepted + 1], nullptr)))
-        ++accepted;
-      en::Verdict verdict{.keep = static_cast<std::uint32_t>(accepted + 1), .tokens = {}};
-      verdict.tokens.assign(verified.begin() + 1,
-                            verified.begin() + 1 + static_cast<std::ptrdiff_t>(accepted));
-      verdict.tokens.push_back(tokens[accepted]);
-      return verdict;
+      const auto& read = read_rows_.at(slot);
+      return DeviceVerdict(**branch, verified, tokens, read ? &*read : nullptr, nullptr);
     }
     auto rows = HeadRows(outputs);
     if (!rows) return std::unexpected(rows.error());
@@ -592,6 +589,37 @@ en::DecodingPolicy Llm::Policy() {
     verdict.tokens.push_back(next);
     return verdict;
   };
+  // A refused device choice's head row, read back right after its step
+  // (DeviceVerdict names it), for the host to choose from.
+  policy.readback = [this](std::uint32_t slot, std::span<const std::int32_t> tokens,
+                           std::span<const std::byte> outputs) -> std::optional<std::uint32_t> {
+    auto branch = this->branch(slot);
+    if (!head_rows_ || !branch || (*branch)->tool_sampling_ == nullptr || tokens.empty() ||
+        outputs.size() != tokens.size() * sizeof(std::int32_t))
+      return std::nullopt;
+    std::vector<std::int32_t> chosen(tokens.size());
+    std::memcpy(chosen.data(), outputs.data(), outputs.size());
+    for (const auto token : chosen)
+      if (token < 0 || std::cmp_greater_equal(token, logit_width_)) return std::nullopt;
+    std::optional<std::uint32_t> refused;
+    (void)DeviceVerdict(**branch, tokens, chosen, nullptr, &refused);
+    return refused;
+  };
+  policy.read = [this](std::uint32_t slot, std::uint32_t row,
+                       std::expected<std::span<const std::byte>, std::string> logits) {
+    auto& read = read_rows_.at(slot);
+    read.emplace(HeadRow{.row = row});
+    if (!logits) {
+      read->logits = std::unexpected(std::move(logits.error()));
+    } else if (logits->size() != std::size_t{logit_width_} * sizeof(float)) {
+      read->logits = Error(std::format("{}'s head row read back {} bytes, not {} logits", name_,
+                                       logits->size(), logit_width_));
+    } else {
+      read->logits->resize(logit_width_);
+      std::memcpy(read->logits->data(), logits->data(), logits->size());
+    }
+    ++counts_.head_rows;
+  };
   if (branch_depth_ && !drafter_specs_.empty()) {
     policy.depth = [this](std::uint32_t slot, std::size_t) {
       const auto b = branch(slot);
@@ -606,6 +634,68 @@ en::DecodingPolicy Llm::Policy() {
     };
   }
   return policy;
+}
+
+std::expected<en::Verdict, std::string> Llm::DeviceVerdict(Branch& branch,
+                                                           std::span<const std::int32_t> verified,
+                                                           std::span<const std::int32_t> tokens,
+                                                           const HeadRow* row,
+                                                           std::optional<std::uint32_t>* refused) {
+  if (verified.empty() || tokens.size() != verified.size())
+    return Error("a device verdict needs one choice a row");
+  // As the logits judge: kept drafts stop at the first natural stop token,
+  // which is then the verdict's last token, no row after it kept. Each
+  // row's device choice is the masked choice where the tool constraint (on
+  // a copy, as the rows are kept) allows it; the first it refuses is made on
+  // the host from that row's read-back logits, which ends the verdict there.
+  // Without them the verdict ends before that row, whose choice the next
+  // unit makes on the host (none kept at all is an error: row 0's state
+  // is the branch's own, which DeviceChooses admitted).
+  const auto* session = branch.generation_session_;
+  std::optional<chat::ToolSampling> tentative;
+  if (branch.tool_sampling_) tentative = *branch.tool_sampling_;
+  const auto verdict = [&](std::size_t kept, std::optional<std::int32_t> last) {
+    en::Verdict out{.keep = static_cast<std::uint32_t>(kept + (last ? 1 : 0)), .tokens = {}};
+    out.tokens.assign(verified.begin() + 1,
+                      verified.begin() + 1 + static_cast<std::ptrdiff_t>(kept));
+    if (last) out.tokens.push_back(*last);
+    return out;
+  };
+  for (std::size_t m = 0;; ++m) {
+    if (tentative && !tentative->Allowed(tokens[m])) {
+      if (refused != nullptr) {
+        *refused = static_cast<std::uint32_t>(m);
+        return verdict(m, std::nullopt);
+      }
+      if (row != nullptr && row->row == m) {
+        if (!row->logits) return Error(row->logits.error());
+        const std::uint64_t position =
+            std::uint64_t{runner_->slots().positions(Slot(branch))} + m + 1;
+        auto chosen = Choose(branch, *row->logits, position, &*tentative);
+        if (!chosen) return std::unexpected(chosen.error());
+        return verdict(m, *chosen);
+      }
+      if (m == 0) return Error("a device verify chose a token its tool constraint refuses");
+      return verdict(m, std::nullopt);
+    }
+    if (m + 1 >= verified.size() || tokens[m] != verified[m + 1]) return verdict(m, tokens[m]);
+    if (tentative) {
+      auto plan = tentative->Plan(verified[m + 1]);
+      if (!plan) {
+        branch.tool_sampling_->Refuse();  // the request's refusal (B5)
+        return Error(plan.error());
+      }
+      // Its span is planned again as the last kept token.
+      if (plan->tokens.size() != 1 || plan->tokens.front() != verified[m + 1])
+        return verdict(m, verified[m + 1]);
+      if (auto accepted = tentative->Accept(verified[m + 1]); !accepted) {
+        branch.tool_sampling_->Refuse();
+        return Error(accepted.error());
+      }
+    }
+    if (session && session->IsStop(verified[m + 1], tentative ? &*tentative : nullptr))
+      return verdict(m, verified[m + 1]);
+  }
 }
 
 void Llm::ResetDrafters(std::uint32_t slot) {
@@ -626,16 +716,18 @@ void Llm::RunPlain(std::span<PreparedGeneration> units) {
   std::vector<en::DecodeWork> work;
   std::vector<bool> greedy;
   work.reserve(units.size());
-  // The accepted policy uses homogeneous outputs. The internal measured
-  // candidate preserves each owner's requested device-token or row result.
+  // The accepted policy uses homogeneous outputs (per-owner kinds measured
+  // slower for tool-call waves, docs/experiments/tool-sampling-speed). The
+  // internal measured candidate preserves each owner's requested device-token
+  // or row result.
   const bool device =
-      device_greedy_ && std::ranges::all_of(units, [](const PreparedGeneration& unit) {
-        return GreedyWithoutRows(unit);
+      device_greedy_ && std::ranges::all_of(units, [this](const PreparedGeneration& unit) {
+        return DeviceGreedy(unit);
       });
   for (PreparedGeneration& unit : units) {
     unit.chosen.reset();
-    const bool owner_device =
-        caps_.mixed_greedy ? device_greedy_ && GreedyWithoutRows(unit) : device;
+    read_rows_.at(Slot(*unit.branch)).reset();
+    const bool owner_device = caps_.mixed_greedy ? device_greedy_ && DeviceGreedy(unit) : device;
     greedy.push_back(owner_device);
     work.push_back({.slot = Slot(*unit.branch),
                     .history = unit.step.all,
@@ -665,6 +757,20 @@ void Llm::RunPlain(std::span<PreparedGeneration> units) {
       if (token < 0 || std::cmp_greater_equal(token, logit_width_)) {
         unit.result = Error(std::format("{}'s greedy step chose token {}", name_, token));
         unit.anchor_processed = true;
+        continue;
+      }
+      if (auto& read = read_rows_.at(Slot(*unit.branch)); read) {
+        // The tool constraint refused the device's choice: the host
+        // chooses from the row it was made from (ApplyPlain).
+        auto logits = std::move(read->logits);
+        read.reset();
+        if (!logits) {
+          unit.result = Error(logits.error());
+          unit.anchor_processed = true;
+          continue;
+        }
+        unit.row = std::move(*logits);
+        unit.result = {};
         continue;
       }
       unit.chosen = token;
@@ -706,12 +812,12 @@ void Llm::RunSpeculative(std::span<PreparedGeneration> units) {
   // still supplies sampling state, and need_logits supplies output intent.
   const auto device_for = [this](const PreparedGeneration& unit) {
     return device_verify_ && unit.branch != nullptr && &unit.branch->model() == this &&
-           !unit.step.need_logits && !sampling(*unit.branch) &&
-           unit.branch->tool_sampling_ == nullptr;
+           !unit.step.need_logits && !sampling(*unit.branch) && DeviceChooses(*unit.branch);
   };
   const bool device = std::ranges::all_of(units, device_for);
   for (PreparedGeneration& unit : units) {
     const std::uint32_t slot = Slot(*unit.branch);
+    read_rows_.at(slot).reset();
     const bool owner_device = caps_.mixed_greedy ? device_for(unit) : device;
     verify_tokens_.at(slot) = owner_device;
     want_rows_.at(slot) = unit.step.need_logits;
@@ -965,10 +1071,10 @@ Status Llm::RunPrefill(std::span<PreparedPrefill> prepared) {
          .remaining = unit.session ? unit.session->continuation_rows() : std::nullopt,
          .decode_greedy = device_greedy_ && unit.session &&
                           !unit.session->continuation_sampling().value_or(true) &&
-                          unit.branch->tool_sampling_ == nullptr,
+                          DeviceChooses(*unit.branch),
          .verify_greedy = device_verify_ && unit.session &&
                           !unit.session->continuation_sampling().value_or(true) &&
-                          unit.branch->tool_sampling_ == nullptr,
+                          DeviceChooses(*unit.branch),
          .all_outputs = scoring,
          .generation_expected = unit.session && unit.session->has_continuation(),
          .sampling = unit.session && unit.session->continuation_sampling().value_or(false)});
@@ -990,12 +1096,11 @@ Status Llm::RunPrefill(std::span<PreparedPrefill> prepared) {
                   .rows = 1,
                   .outputs = 1,
                   .want_head = true,
-                  .greedy =
-                      device_greedy_ && !sampling(*branch) && branch->tool_sampling_ == nullptr,
+                  .greedy = device_greedy_ && !sampling(*branch) && DeviceChooses(*branch),
                   .row_invariant = speculative_ && speculative_->mode().row_invariant,
                   .alone = false},
          .ready = true,
-         .verify_greedy = device_verify_ && !sampling(*branch) && branch->tool_sampling_ == nullptr,
+         .verify_greedy = device_verify_ && !sampling(*branch) && DeviceChooses(*branch),
          .sampling = sampling(*branch),
          .remaining = RemainingGenerationRowsFor(*branch)});
   }

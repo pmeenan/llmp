@@ -238,6 +238,7 @@ class LlmFixture : public ::testing::Test {
       ts::FakeSourceOptions o;
       for (const auto& s : stages) o.layouts.push_back(s.layout);
       o.logits = score_width_;
+      o.retained = retained_rows_;
       o.features = native_outputs_;
       if (score_workspace_) {
         o.extra_inputs = [](const pl::StepShape& shape) {
@@ -270,6 +271,17 @@ class LlmFixture : public ::testing::Test {
                             .drop_plans = {}};
       parts.config.setup_shapes = {Wide(0, pl::Phase::kPrefill, private_score_ ? 1U : chunk_rows_,
                                         256, context_rows_, slot_count_)};
+      if (retained_rows_) {
+        const auto greedy = [](pl::StepShape shape) {
+          for (auto& segment : shape.segments) segment.greedy = true;
+          return shape;
+        };
+        parts.config.setup_shapes.push_back(
+            greedy(Wide(0, pl::Phase::kDecode, 1, 256, context_rows_, slot_count_)));
+        if (drafters)
+          parts.config.setup_shapes.push_back(
+              greedy(Wide(0, pl::Phase::kVerify, kVerifyRows, 256, context_rows_, slot_count_)));
+      }
       if (drafters) {
         parts.config.setup_shapes.push_back(
             Wide(0, pl::Phase::kVerify, kVerifyRows, 256, context_rows_, slot_count_));
@@ -539,6 +551,9 @@ class LlmFixture : public ::testing::Test {
   std::optional<llmp::execution::AdaptiveWaveMode> wave_mode_;
   bool native_outputs_ = false, mixed_causal_ = false;
   bool device_greedy_ = true;
+  // Greedy logits heads keep their rows for a readback (FakeSourceOptions::
+  // retained), measured by greedy decode (and verify) setup shapes.
+  bool retained_rows_ = false;
   std::uint32_t prefill_lookahead_ = 2;
   std::optional<std::uint32_t> wave_capacity_;
   bool private_score_ = false, score_workspace_ = false, mixed_outputs_ = false;

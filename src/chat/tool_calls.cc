@@ -1080,15 +1080,6 @@ class Grammar {
   template <class Out>
   std::expected<bool, std::string> Advance(ToolCursor& s, JoinedText all, bool final,
                                            Out& out) const {
-    if (request_.choice().kind == ToolChoiceKind::kNone) {
-      const auto rest = all.substr(s.start);
-      if (rest.empty()) return false;
-      auto bytes = TextBytes(rest, final);
-      if (!bytes) return std::unexpected(bytes.error());
-      if (*bytes == 0) return false;
-      s.start += *bytes;
-      return out.Text(rest.substr(0, *bytes));
-    }
     for (;;) {
       if (s.in_call) {
         auto step = CallStep(s, all, final, out);
@@ -1137,8 +1128,13 @@ class Grammar {
   Stepped CallStep(ToolCursor& s, JoinedText all, bool final, Out& out) const {
     const auto body = all.substr(s.start);
     const bool bare_auto = format_.bare_envelope && request_.choice().kind == ToolChoiceKind::kAuto;
+    // Once the name has ended (and passed), no later byte can change this
+    // check's answer: it reads only the name and its end.
+    const bool name_open = format_.arguments == ToolArguments::kTaggedParameters
+                               ? s.tag_phase == 0
+                               : s.tag_name_end == std::string::npos;
     if (Constrained(request_) && !format_.bare_envelope &&
-        format_.arguments != ToolArguments::kJsonEnvelope) {
+        format_.arguments != ToolArguments::kJsonEnvelope && name_open) {
       const auto header = static_cast<std::string>(
           body.substr(0, std::min(body.size(), request_.NameBytes() + format_.name_end.size())));
       if (!request_.NamePrefix(header, format_.name_end))
@@ -1298,11 +1294,14 @@ class Grammar {
     const auto rest = all.substr(s.start);
     if (rest.empty()) return Next::kMore;
     const bool allow_openers = !s.reasoning_active || format_.opener_ends_reasoning;
+    // tool_choice none: the same answer and reasoning grammar, with calls
+    // refused (a bare envelope's opener is then only answer text).
+    const bool none = request_.choice().kind == ToolChoiceKind::kNone;
     const bool opens_reasoning =
         !s.started && !s.reasoning_active && !s.reasoning_ended && !format_.reasoning_begin.empty();
     // Markers: 0 call, 1 block, 2 block end, 3 reasoning end, 4 reasoning begin.
     const std::array<std::string_view, 5> markers{
-        allow_openers && !(format_.bare_envelope && s.content)
+        allow_openers && !(format_.bare_envelope && (s.content || none))
             ? std::string_view(format_.call_begin)
             : std::string_view{},
         allow_openers ? std::string_view(format_.block_begin) : std::string_view{},
@@ -1381,12 +1380,14 @@ class Grammar {
         s.in_block = false;
         return Next::kAgain;
       case 1:
+        if (none) return Bad("tool_choice none refuses tool calls");
         if (s.in_block) return Bad("nested tool call block");
         if (!request_.parallel() && s.calls != 0) return Bad("parallel tool calls are disabled");
         s.in_block = true;
         s.block_calls = s.calls;
         break;
       default:
+        if (none) return Bad("tool_choice none refuses tool calls");
         if (!format_.bare_envelope && !request_.parallel() && s.calls != 0)
           return Bad("parallel tool calls are disabled");
         s.in_call = true;
@@ -1562,10 +1563,8 @@ const ToolRequest::Definition* ToolRequest::Find(std::string_view name) const {
 }
 bool ToolRequest::Declared(std::string_view name) const { return Find(name) != nullptr; }
 std::size_t ToolRequest::TemplateBytes() const {
-  if (choice().kind == ToolChoiceKind::kNone) return 0;
   std::size_t bytes = 0;
-  for (const auto& d : data_->definitions)
-    if (choice().kind != ToolChoiceKind::kNamed || d.name == choice().name) bytes += d.bytes;
+  for (const auto& d : data_->definitions) bytes += d.bytes;
   return bytes;
 }
 std::size_t ToolRequest::NameBytes() const {
@@ -1621,10 +1620,8 @@ std::optional<j::Value> ToolRequest::Parameter(std::string_view name, std::strin
 }
 std::vector<j::Value> ToolRequest::TemplateTools() const {
   std::vector<j::Value> out;
-  if (data_->choice.kind == ToolChoiceKind::kNone) return out;
-  for (const auto& d : data_->definitions)
-    if (data_->choice.kind != ToolChoiceKind::kNamed || data_->choice.name == d.name)
-      out.push_back(d.owner->root());
+  out.reserve(data_->definitions.size());
+  for (const auto& d : data_->definitions) out.push_back(d.owner->root());
   return out;
 }
 
@@ -1700,6 +1697,65 @@ ToolTrigger ToolTriggerFor(const ToolCallFormat& format, const ToolRequest& requ
       .ends_reasoning = format.opener_ends_reasoning};
 }
 
+ToolOpenerSpelling ToolSpellingFor(const ChatTemplate& chat_template,
+                                   const ToolCallFormat& format) {
+  ToolOpenerSpelling out;
+  auto arguments = j::Parse("{}");
+  if (!arguments) return out;
+  const auto owner = std::make_shared<const j::Document>(std::move(*arguments));
+  constexpr std::string_view kName = "llmp_probe";
+  const std::string_view opener =
+      format.block_begin.empty() ? std::string_view(format.call_begin) : format.block_begin;
+  const auto space = [](std::string_view text) { return std::ranges::all_of(text, Space); };
+  // With and without the template's thinking: one shows the opener after the
+  // reasoning's end, the other at the reply's start.
+  for (const bool thinking : {false, true}) {
+    Conversation prompt;
+    prompt.messages.push_back({.role = Role::kUser, .content = Content("llmp probe")});
+    prompt.enable_thinking = thinking;
+    prompt.max_render_bytes = std::size_t{64} << 10U;
+    Conversation reply = prompt;
+    reply.add_generation_prompt = false;
+    reply.messages.push_back({.role = Role::kAssistant,
+                              .content = Content(std::nullopt),
+                              .tool_calls = {ToolCall{.name = std::string(kName),
+                                                      .arguments = owner->root(),
+                                                      .id = "call_0",
+                                                      .owner = owner}}});
+    const auto asked = chat_template.Render(prompt);
+    const auto answered = chat_template.Render(reply);
+    if (!asked || !answered || !answered->text.starts_with(asked->text)) continue;
+    const auto generated = std::string_view(answered->text).substr(asked->text.size());
+    const auto at = generated.find(opener);
+    if (opener.empty() || at == std::string_view::npos) continue;
+    auto before = generated.substr(0, at);
+    bool reasoned = false;
+    if (!format.reasoning_end.empty()) {
+      if (const auto end = before.rfind(format.reasoning_end); end != std::string_view::npos) {
+        before.remove_prefix(end + format.reasoning_end.size());
+        reasoned = true;
+      }
+    }
+    if (!space(before)) continue;
+    (reasoned ? out.after_reasoning : out.lead) = before;
+    auto rest = generated.substr(at + opener.size());
+    if (!format.block_begin.empty()) {
+      const auto call = rest.find(format.call_begin);
+      if (call == std::string_view::npos || !space(rest.substr(0, call))) continue;
+      out.inner = rest.substr(0, call);
+      rest.remove_prefix(call + format.call_begin.size());
+    }
+    if (format.bare_envelope || !rest.starts_with(kName) ||
+        !rest.substr(kName.size()).starts_with(format.name_end))
+      continue;
+    rest.remove_prefix(kName.size() + format.name_end.size());
+    std::size_t blank = 0;
+    while (blank < rest.size() && Space(rest[blank])) ++blank;
+    out.after_name = rest.substr(0, blank);
+  }
+  return out;
+}
+
 ToolInterpreter::ToolInterpreter(ToolCallFormat format, ToolRequest request, j::Limits limits)
     : format_(std::move(format)), request_(std::move(request)), limits_(limits) {
   if (!ToolOutputBytes(format_, limits_.max_bytes))
@@ -1741,6 +1797,28 @@ ToolInterpreter::ToolInterpreter(ToolCallFormat format, ToolRequest request, j::
   }
   for (const auto& marker : format_.continued_route_stops)
     if (marker.empty()) error_ = "empty continued route stop";
+  // A marker can only begin at its first byte (one already begun is held,
+  // and PlainVerdict then has none), so only first bytes attend.
+  const auto attend = [this](std::string_view text) {
+    if (!text.empty()) attention_.set(static_cast<unsigned char>(text.front()));
+  };
+  for (const auto* text :
+       {&format_.block_begin, &format_.block_end, &format_.call_begin, &format_.call_end,
+        &format_.name_end, &format_.parameter_begin, &format_.parameter_name_end,
+        &format_.parameter_end, &format_.string_suffix, &format_.json_suffix,
+        &format_.reasoning_end, &format_.reasoning_begin, &format_.quote})
+    attend(*text);
+  for (const auto& alias : format_.call_end_aliases) attend(alias);
+  for (const auto& header : format_.parameter_aliases) {
+    attend(header.begin);
+    attend(header.name_end);
+  }
+  // Structural JSON; space matters only where PlainVerdict has no verdict
+  // (a block, a name, between parameters, a scalar). Tab, CR and LF are
+  // control characters, which attend (JSON strings refuse them raw).
+  for (const char c : std::string_view("{}[]\",:\\")) attention_.set(static_cast<unsigned char>(c));
+  for (unsigned c = 0; c < 0x20; ++c) attention_.set(c);
+  attention_.set(0x7F);
 }
 
 bool ToolInterpreter::CanStop() const {
@@ -1753,6 +1831,42 @@ bool ToolInterpreter::CanStop() const {
   if (cursor.in_call || (cursor.in_block && cursor.block_calls == cursor.calls)) return false;
   return cursor.calls != 0 || !Constrained(request_);
 }
+std::optional<bool> ToolInterpreter::PlainVerdict() const {
+  if (error_ || ended_) return false;
+  const auto& s = cursor_;
+  // Bytes held back (a marker's prefix, a character's start) are judged
+  // with the candidate's: probe each then.
+  const auto held = [&](std::size_t stepped) { return s.start + stepped < pending_.size(); };
+  // Outside a call no marker can start in plain bytes (every marker's first
+  // byte attends): answer text and reasoning take them all. A calls block
+  // takes only space, which plain bytes may hold or not.
+  if (!s.in_call) {
+    if (s.in_block || held(0)) return std::nullopt;
+    return true;
+  }
+  switch (format_.arguments) {
+    case ToolArguments::kTaggedParameters:
+      // A value's start or its bytes (raw or JSON): Outside only steps them.
+      if ((s.tag_phase == 2 || s.tag_phase == 3) && !held(s.scan.at)) return true;
+      return std::nullopt;
+    case ToolArguments::kObjectNotation: {
+      if (s.tag_name_end == std::string::npos) return std::nullopt;
+      // Bytes held before the object cursor (a call end's prefix) are
+      // stepped with the candidate, in whatever state they lead to.
+      if (held(s.tag_name_end + s.object.at)) return std::nullopt;
+      using S = ToolObjectCursor::State;
+      if ((s.object.state == S::kQuoted && s.object.matched == 0) || s.object.state == S::kBareKey)
+        return true;
+      if (s.object.state == S::kJsonString && s.object.escape == 0 && !s.object.high_surrogate)
+        return true;
+      return std::nullopt;
+    }
+    case ToolArguments::kJsonEnvelope:
+      return std::nullopt;
+  }
+  return std::nullopt;
+}
+
 bool ToolInterpreter::Allows(std::string_view candidate) const {
   if (error_ || ended_ || candidate.size() > limits_.max_bytes - received_) return false;
   auto cursor = cursor_;

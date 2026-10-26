@@ -128,8 +128,13 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
     structured = structured || message.content.parts() != nullptr;
     text += message.content.PayloadBytes() + (message.reasoning ? message.reasoning->size() : 0);
   }
+  // Every declared tool renders whatever the choice, so the conversation's
+  // prefix stays the same when a later turn changes it; sampling enforces
+  // the choice (none refuses calls). None needs no tool format: without one
+  // nothing renders and nothing is enforced.
   const bool tools =
-      request.tools && request.tools->request.choice().kind != chat::ToolChoiceKind::kNone;
+      request.tools && request.tools->request.size() != 0 &&
+      (request.tools->request.choice().kind != chat::ToolChoiceKind::kNone || model.tool_format());
   if (tools && !model.tool_format())
     return std::unexpected(Failure(400, "this template has no verified generated tool-call format",
                                    "tools_unsupported", "tools"));
@@ -324,7 +329,7 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
     const auto extra = model.ChatStops();
     owner->sampling = std::make_shared<chat::ToolSampling>(
         model.tokenizer(), format, request.tools->request, owner->limits, result.reasoning,
-        terminals, extra, result.may_reason);
+        terminals, extra, result.may_reason, model.tool_spelling());
     owner->sampling->Budget(result.max_tokens, usable - prompt);
     result.tools = std::move(owner);
   }

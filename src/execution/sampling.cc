@@ -374,6 +374,13 @@ std::int32_t Draw(const std::vector<SamplingCandidate>& scratch, Kept kept, doub
 
 }  // namespace
 
+void Ranked(std::span<const float> logits, std::size_t count, std::vector<SamplingCandidate>& out) {
+  out.clear();
+  if (count == 0) return;
+  TopK(logits, count, out);
+  std::sort(out.begin(), out.end(), Before);
+}
+
 std::expected<std::int32_t, SamplingError> Sample(std::span<const float> logits,
                                                   const SamplingParams& p, const SamplingKey& key,
                                                   std::vector<SamplingCandidate>& scratch) {

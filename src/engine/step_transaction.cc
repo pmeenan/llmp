@@ -1606,6 +1606,70 @@ std::expected<void, StepRefusal> StepTransaction::Settle(Frame& frame) {
   return {};
 }
 
+// The head rows the request's greedy owners ask for, from the logits the
+// completed step left in the workspace (StepProgram::retained), each copied
+// by a job of its own through the output staging, which the published
+// outputs no longer need. Nothing has run since: the step's own job
+// retired, and no later one reuses the workspace before this returns. A
+// readback whose retirement is unknown leaves this transaction unproven
+// (the staging may still be written), so the runner takes no further step
+// until its stream is fenced.
+void StepTransaction::ReadBack(Frame& frame) {
+  const auto& request = *frame.request;
+  const auto& readback = *request.readback;
+  const auto& program = *frame.entry->planned->program;
+  const auto retained = program.retained();
+  for (std::size_t s = 0; s < request.shape.segments.size(); ++s) {
+    const pl::Segment& segment = request.shape.segments[s];
+    if (!segment.greedy || segment.outputs == 0) continue;
+    const HostBuffer outputs = frame.report.outputs.at(s);
+    const auto wanted = readback.want(s, std::span(outputs.data(), outputs.size()));
+    if (!wanted) continue;
+    const auto row = *wanted;
+    const auto kept = std::ranges::find_if(
+        retained, [&](const kn::OutputSlot& slot) { return slot.segment == s; });
+    const auto fail = [&](std::string why) {
+      readback.take(s, row, std::unexpected(std::move(why)));
+    };
+    if (kept == retained.end() || kept->bytes % segment.outputs != 0) {
+      fail("the step kept no head logits for its greedy owner");
+      continue;
+    }
+    const std::uint64_t bytes = kept->bytes / segment.outputs;
+    if (row >= segment.outputs || bytes == 0 || frame.output_base == nullptr ||
+        bytes > frame.output_bytes) {
+      fail("a head row's readback exceeds its step's outputs or staging");
+      continue;
+    }
+    const std::uint64_t from = kept->device_address + (std::uint64_t{row} * bytes);
+    std::string failure;
+    JobReport job;
+    const auto before = retirement_;
+    Queued();
+    const auto posted = runner_.node_.Job(
+        runner_.slots_.execution(),
+        [&](providers::NativeStream native) {
+          const auto copied =
+              providers::CopyAsync(native, frame.output_base, support::Pointer(from), bytes,
+                                   providers::CopyKind::kDeviceToHost);
+          if (copied.ok()) return sc::JobResult::kQueued;
+          failure = std::format("a head row's readback: {}", copied.text());
+          return sc::JobResult::kUnknown;
+        },
+        "a head row's readback", runner_.stream_, {}, &job);
+    retirement_ =
+        job.retirement == JobReport::Retirement::kUnproven ? Retirement::kUnproven : before;
+    if (!posted || !failure.empty() || job.retirement != JobReport::Retirement::kRetired) {
+      runner_.slots_.CheckFailedJob();
+      fail(!failure.empty() ? failure
+           : !posted        ? posted.error()
+                            : std::string("a head row's readback did not retire"));
+      continue;
+    }
+    readback.take(s, row, std::span<const std::byte>(frame.output_base, bytes));
+  }
+}
+
 std::expected<StepReport, StepRefusal> StepTransaction::Publish(Frame& frame) {
   const auto& request = *frame.request;
   const auto& shape = request.shape;
@@ -1705,6 +1769,8 @@ std::expected<StepReport, StepRefusal> StepTransaction::Publish(Frame& frame) {
         !published)
       return refuse_publication(published.error());
   }
+  if (request.readback != nullptr && request.readback->want && request.readback->take)
+    ReadBack(frame);
   if (const auto& sink = runner_.config_.plan_report_sink; sink) {
     // A paid install (including lookahead) is not evidence of use. Emit
     // only after positive completion and successful state publication.

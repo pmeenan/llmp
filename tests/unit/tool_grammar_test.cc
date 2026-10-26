@@ -589,6 +589,11 @@ TEST(ToolGrammar, FuzzedOutputKeepsParserAndProbeInAgreement) {
                                         "\\u00e9",  "\\ud83d",
                                         "\\ude00",  "\\\"",
                                         "\\n",      "lo"};
+  // Candidates for plain bytes (each format drops those it attends to).
+  const std::vector<std::string> plain_pieces{"q", "w", "y", "z", "Q",  "W",  "7", "0", "#", "%",
+                                              "&", "~", "^", "é", "世", "ß",  "!", "?", "e", "t",
+                                              "a", "o", "n", "l", "k",  "p",  ">", "=", "|", "/",
+                                              "-", "1", "u", "s", " ",  "  ", " x"};
   const std::vector<Grammar> grammars{
       {&c::QwenToolCalls(),
        {"<tool_call>", "</tool_call>", "<function=", "</function>", "<parameter=", "</parameter>",
@@ -602,9 +607,11 @@ TEST(ToolGrammar, FuzzedOutputKeepsParserAndProbeInAgreement) {
         "<|tool_", "<|\""}},
       {&c::JsonToolCalls(), {"{\"name\":", "\"parameters\":", "\"lookup\"", "{}", "\"arguments\""}},
   };
-  const std::vector<c::ToolChoice> choices{
-      {}, {c::ToolChoiceKind::kRequired, {}}, {c::ToolChoiceKind::kNamed, "lookup"}};
-  std::size_t checked = 0;
+  const std::vector<c::ToolChoice> choices{{},
+                                           {c::ToolChoiceKind::kRequired, {}},
+                                           {c::ToolChoiceKind::kNamed, "lookup"},
+                                           {c::ToolChoiceKind::kNone, {}}};
+  std::size_t checked = 0, plain_checked = 0;
   for (const std::uint32_t seed : {20261026U, 1U, 2U, 3U}) {
     std::mt19937 random(seed);
     for (const auto& grammar : grammars) {
@@ -631,6 +638,26 @@ TEST(ToolGrammar, FuzzedOutputKeepsParserAndProbeInAgreement) {
                   piece.resize(
                       std::uniform_int_distribution<std::size_t>(1, piece.size() - 1)(random));
                 chunk += piece;
+              }
+              // Where the state has one verdict for plain candidates, every
+              // plain candidate gets it from the probe too.
+              if (const auto verdict = parser.PlainVerdict()) {
+                std::string plain;
+                const auto count = std::uniform_int_distribution<int>(1, 4)(random);
+                for (int p = 0; p < count; ++p) {
+                  const auto& piece = plain_pieces[std::uniform_int_distribution<std::size_t>(
+                      0, plain_pieces.size() - 1)(random)];
+                  if (std::ranges::none_of(piece, [&](char ch) {
+                        return parser.Attends(static_cast<unsigned char>(ch));
+                      }))
+                    plain += piece;
+                }
+                if (!plain.empty() && plain.size() <= parser.room()) {
+                  ASSERT_EQ(parser.Allows(plain), *verdict)
+                      << "seed " << seed << " format " << grammar.format->call_begin << " after "
+                      << Escaped(all) << " plain " << Escaped(plain);
+                  ++plain_checked;
+                }
               }
               const bool allows = parser.Allows(chunk);
               auto attempt = parser;
@@ -682,5 +709,183 @@ TEST(ToolGrammar, FuzzedOutputKeepsParserAndProbeInAgreement) {
     }
   }
   EXPECT_GT(checked, 120000U);
+  EXPECT_GT(plain_checked, 20000U);
 }
+// ---- What a step restricts (B3, B4, B9 and B10 of the review) ------------
+std::vector<std::int32_t> Tokens(const tok::Tokenizer& tokenizer, std::string_view text) {
+  std::vector<std::int32_t> ids;
+  EXPECT_TRUE(tokenizer.Encode(text, {.special = tok::SpecialTokens::kParse}, ids));
+  return ids;
+}
+// Mask agrees with Allowed token by token, and Identity with an untouched row.
+testing::AssertionResult MaskAgrees(const c::ToolSampling& sampling, std::size_t vocabulary) {
+  std::vector<float> row(vocabulary, 0), scratch;
+  const auto masked = sampling.Mask(row, scratch);
+  if (sampling.Identity() != (masked.data() == row.data()))
+    return testing::AssertionFailure() << "Identity " << sampling.Identity();
+  for (std::size_t i = 0; i < vocabulary; ++i)
+    if (std::isfinite(masked[i]) != sampling.Allowed(static_cast<std::int32_t>(i)))
+      return testing::AssertionFailure() << "token " << i;
+  return testing::AssertionSuccess();
+}
+
+TEST(ToolSampling, AutoWithoutParallelCallsIsUnrestrictedUntilItsFirstCallCloses) {
+  Vocabulary vocabulary;
+  const auto eos = vocabulary.Add("<eos>", tok::TokenKind::kControl);
+  auto tokenizer = tok::Tokenizer::Create(std::move(vocabulary.spec));
+  ASSERT_TRUE(tokenizer) << tokenizer.error().ToString();
+  c::ToolSampling sampling(*tokenizer, c::QwenToolCalls(), Request({}, false), Limits(), false,
+                           std::array{eos});
+  sampling.Budget(256, 256);
+  EXPECT_FALSE(sampling.constrained());
+  EXPECT_TRUE(sampling.Identity());
+  EXPECT_TRUE(MaskAgrees(sampling, tokenizer->size()));
+  for (const auto token : Tokens(*tokenizer, "<tool_call>\n<function=lookup>\n")) {
+    ASSERT_TRUE(sampling.Accept(token));
+    EXPECT_FALSE(sampling.constrained());
+  }
+  // Inside the call only terminals are restricted.
+  EXPECT_FALSE(sampling.Identity());
+  EXPECT_FALSE(sampling.Allowed(eos));
+  EXPECT_TRUE(sampling.Allowed('x'));
+  EXPECT_TRUE(MaskAgrees(sampling, tokenizer->size()));
+  for (const auto token : Tokens(*tokenizer, "</function>\n</tool_call>\n<tool_call")) {
+    ASSERT_TRUE(sampling.Accept(token));
+  }
+  // The first call closed: a second opener is refused, anything else not.
+  EXPECT_TRUE(sampling.constrained());
+  EXPECT_FALSE(sampling.Identity());
+  EXPECT_FALSE(sampling.Allowed('>'));
+  EXPECT_TRUE(sampling.Allowed('x'));
+  EXPECT_TRUE(MaskAgrees(sampling, tokenizer->size()));
+}
+
+TEST(ToolSampling, OneTokensVerdictIsTheMasksInEveryStateAndChoice) {
+  Vocabulary vocabulary;
+  const auto eos = vocabulary.Add("<eos>", tok::TokenKind::kControl);
+  vocabulary.Add("<tool_call>", tok::TokenKind::kUserDefined);
+  vocabulary.Merge("l", "o");
+  vocabulary.Merge("lo", "o");
+  auto tokenizer = tok::Tokenizer::Create(std::move(vocabulary.spec));
+  ASSERT_TRUE(tokenizer) << tokenizer.error().ToString();
+  const std::vector<std::string> texts{
+      "",
+      "I think",
+      "I think</think>",
+      "I think</think>\n\n<tool_call>\n<function=lo",
+      "I think</think>\n\n<tool_call>\n<function=lookup>\n<parameter=s>\nab",
+      "I think</think>\n\n<tool_call>\n<function=lookup>\n<parameter=n>\n1",
+      "I think</think>\n\n<tool_call>\n<function=lookup>\n</function>\n</tool_call>\nok"};
+  std::size_t states = 0;
+  for (const auto& choice : {c::ToolChoice{}, c::ToolChoice{c::ToolChoiceKind::kRequired, {}},
+                             c::ToolChoice{c::ToolChoiceKind::kNamed, "lookup"},
+                             c::ToolChoice{c::ToolChoiceKind::kNone, {}}})
+    for (const bool parallel : {true, false})
+      for (const auto& text : texts) {
+        c::ToolSampling sampling(*tokenizer, c::QwenToolCalls(), Request(choice, parallel),
+                                 Limits(), true, std::array{eos});
+        sampling.Budget(256, 256);
+        // Follow the text while the constraint takes it (forced spans
+        // included: they are taken from the plan when it offers one).
+        bool followed = true;
+        for (const auto token : Tokens(*tokenizer, text)) {
+          if (!sampling.Allowed(token)) {
+            followed = false;
+            break;
+          }
+          ASSERT_TRUE(sampling.Accept(token));
+        }
+        EXPECT_TRUE(MaskAgrees(sampling, tokenizer->size()))
+            << "choice " << static_cast<int>(choice.kind) << " text " << Escaped(text);
+        states += followed ? 1 : 0;
+      }
+  EXPECT_GT(states, 20U);
+}
+
+TEST(ToolSampling, ForcedOpenersSpellTheTemplatesWhitespace) {
+  Vocabulary vocabulary;
+  const auto eos = vocabulary.Add("<eos>", tok::TokenKind::kControl);
+  vocabulary.Add("<tool_call>", tok::TokenKind::kUserDefined);
+  auto tokenizer = tok::Tokenizer::Create(std::move(vocabulary.spec));
+  ASSERT_TRUE(tokenizer) << tokenizer.error().ToString();
+  // Qwen3.8's template (ToolSpellingFor reads it from the template).
+  const c::ToolOpenerSpelling spelling{
+      .lead = "", .after_reasoning = "\n\n", .inner = "\n", .after_name = "\n"};
+  for (const bool named : {false, true}) {
+    c::ToolSampling sampling(*tokenizer, c::QwenToolCalls(),
+                             Request(named ? c::ToolChoice{c::ToolChoiceKind::kNamed, "lookup"}
+                                           : c::ToolChoice{c::ToolChoiceKind::kRequired, {}}),
+                             Limits(), true, std::array{eos}, {}, false, spelling);
+    sampling.Budget(256, 256);
+    for (const auto token : Tokens(*tokenizer, "hm</think>")) ASSERT_TRUE(sampling.Accept(token));
+    // Follow the forced span: the first allowed candidate, then its plan.
+    std::string decoded;
+    std::vector<float> row(tokenizer->size(), 0), scratch;
+    const std::string forced = named ? "\n\n<tool_call>\n<function=lookup>\n" : "\n\n<tool_call>\n";
+    for (int step = 0; step < 64 && decoded.size() < forced.size(); ++step) {
+      std::vector<std::int32_t> next;
+      if (!sampling.certain().empty()) {
+        next.assign(sampling.certain().begin(), sampling.certain().end());
+        sampling.Certain({});
+      } else {
+        const auto masked = sampling.Mask(row, scratch);
+        const auto found = std::ranges::find_if(masked, [](float v) { return std::isfinite(v); });
+        ASSERT_NE(found, masked.end());
+        auto plan = sampling.Plan(static_cast<std::int32_t>(found - masked.begin()));
+        ASSERT_TRUE(plan) << plan.error();
+        next.push_back(plan->tokens.front());
+        sampling.Certain({plan->tokens.begin() + 1, plan->tokens.end()});
+      }
+      for (const auto token : next) {
+        ASSERT_TRUE(sampling.Accept(token));
+        ASSERT_TRUE(tokenizer->Decode(std::span(&token, 1), {.control_tokens = true}, decoded));
+      }
+    }
+    EXPECT_EQ(decoded.substr(0, forced.size()), forced) << Escaped(decoded);
+  }
+}
+
+TEST(ToolSampling, AHeldTailWithOneCandidateJoinsTheStableSpan) {
+  Vocabulary vocabulary;
+  const auto atom = vocabulary.Add("<t>", tok::TokenKind::kUserDefined);
+  vocabulary.Add("<t>x", tok::TokenKind::kUserDefined);  // so "<t>" at the end stays held
+  auto tokenizer = tok::Tokenizer::Create(std::move(vocabulary.spec));
+  ASSERT_TRUE(tokenizer) << tokenizer.error().ToString();
+  auto format = c::GemmaToolCalls();
+  format.call_begin = "ab<t>";
+  c::ToolSampling sampling(*tokenizer, format, Request({c::ToolChoiceKind::kRequired, {}}),
+                           Limits(), false, {});
+  sampling.Budget(64, 64);
+  // After "ab", only "<t>" can be sampled ("<t>x" would start a name no
+  // tool has, a shorter prefix has no canonical cover): it is certain now.
+  auto plan = sampling.Plan('a');
+  ASSERT_TRUE(plan) << plan.error();
+  EXPECT_EQ(plan->kind, c::ToolSampling::Selection::Kind::kStableSpan);
+  ASSERT_EQ(plan->tokens.size(), 3U);
+  EXPECT_EQ(plan->tokens.back(), atom);
+  std::string text;
+  ASSERT_TRUE(tokenizer->Decode(plan->tokens, {}, text));
+  EXPECT_EQ(text, "ab<t>");
+}
+
+TEST(ToolSampling, NoneRefusesOnlyACallsOpener) {
+  Vocabulary vocabulary;
+  const auto eos = vocabulary.Add("<eos>", tok::TokenKind::kControl);
+  const auto opener = vocabulary.Add("<tool_call>", tok::TokenKind::kUserDefined);
+  auto tokenizer = tok::Tokenizer::Create(std::move(vocabulary.spec));
+  ASSERT_TRUE(tokenizer) << tokenizer.error().ToString();
+  c::ToolSampling sampling(*tokenizer, c::QwenToolCalls(), Request({c::ToolChoiceKind::kNone, {}}),
+                           Limits(), true, std::array{eos});
+  sampling.Budget(256, 256);
+  EXPECT_TRUE(sampling.constrained());
+  EXPECT_FALSE(sampling.Allowed(opener));  // even while reasoning (it would end it)
+  for (const auto token : Tokens(*tokenizer, "hm</think>\n\nThe answer")) {
+    ASSERT_TRUE(sampling.Allowed(token));
+    ASSERT_TRUE(sampling.Accept(token));
+  }
+  EXPECT_FALSE(sampling.Allowed(opener));
+  EXPECT_TRUE(sampling.Allowed(eos));
+  EXPECT_TRUE(MaskAgrees(sampling, tokenizer->size()));
+}
+
 }  // namespace

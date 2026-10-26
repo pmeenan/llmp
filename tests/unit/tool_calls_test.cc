@@ -56,16 +56,20 @@ std::string Qwen(std::string_view args, std::string_view name = "lookup") {
          "</function>\n</tool_call>";
 }
 
-TEST(ToolCalls, NormalizedDefinitionsOwnTheirJsonAndNamedChoiceFiltersOnlyDefinitions) {
+TEST(ToolCalls, NormalizedDefinitionsOwnTheirJsonAndEveryChoiceRendersEveryDefinition) {
   auto definitions = Definitions();
   auto request =
       c::ToolRequest::Create(definitions, {c::ToolChoiceKind::kNamed, "lookup"}, true, Limits());
   ASSERT_TRUE(request);
   definitions.clear();
   auto moved = std::move(*request);
+  // Named choice is enforced in sampling; the prompt keeps every tool, so it
+  // does not change when a later turn changes the choice.
   const auto tools = moved.TemplateTools();
-  ASSERT_EQ(tools.size(), 1U);
+  ASSERT_EQ(tools.size(), 2U);
   EXPECT_EQ(tools[0].find("function")->find("name")->string(), "lookup");
+  EXPECT_EQ(tools[1].find("function")->find("name")->string(), "other");
+  EXPECT_EQ(moved.ExposedNames(), (std::vector<std::string_view>{"lookup"}));
   EXPECT_TRUE(moved.Declared("other"));
   EXPECT_EQ(moved.Parameter("lookup", "n")->find("type")->string(), "integer");
   const auto trigger = c::ToolTriggerFor(c::QwenToolCalls(), moved);
@@ -85,7 +89,8 @@ TEST(ToolCalls, ContractsAcceptStrictButRefuseDuplicatesAndInvalidRequiredChoice
   EXPECT_FALSE(c::ToolRequest::Create({}, {c::ToolChoiceKind::kRequired, {}}, true, Limits()));
   EXPECT_FALSE(c::ToolRequest::Create(Definitions(), {c::ToolChoiceKind::kNamed, "missing"}, true,
                                       Limits()));
-  EXPECT_TRUE(Request({c::ToolChoiceKind::kNone, {}}).TemplateTools().empty());
+  EXPECT_EQ(Request({c::ToolChoiceKind::kNone, {}}).TemplateTools().size(), 2U);
+  EXPECT_EQ(Request({c::ToolChoiceKind::kNone, {}}).TemplateBytes(), Request().TemplateBytes());
 }
 TEST(ToolCalls, ActiveNamesMustRoundTripThroughTheSelectedFormat) {
   const std::array formats{c::QwenToolCalls(), c::DsmlToolCalls(), c::GemmaToolCalls()};
@@ -404,14 +409,26 @@ TEST(ToolCalls, AutoReturnsUndeclaredNamesButRequiredAndNamedRejectThem) {
     EXPECT_EQ(out.calls.size(), choice.kind == c::ToolChoiceKind::kAuto ? 1U : 0U);
   }
 }
-TEST(ToolCalls, NonePreservesMarkupAsTextAndDoesNotExtractCalls) {
+TEST(ToolCalls, NoneRefusesCallsAndKeepsTextAndMarkupPrefixes) {
   c::ToolInterpreter parser(c::QwenToolCalls(), Request({c::ToolChoiceKind::kNone, {}}), Limits());
+  EXPECT_FALSE(parser.Allows(Qwen("")));
+  EXPECT_FALSE(parser.Allows("<function="));
+  EXPECT_TRUE(parser.Allows("<tool_"));  // a prefix may still be text
   Output out;
-  const auto text = Qwen("");
-  ASSERT_TRUE(parser.Push(text, out.Sink()));
+  ASSERT_TRUE(parser.Push("an answer <tool_ x", out.Sink()));
   ASSERT_TRUE(parser.Finish(c::ToolFinish::kStop, out.Sink()));
-  EXPECT_EQ(out.text, text);
+  EXPECT_EQ(out.text, "an answer <tool_ x");
   EXPECT_TRUE(out.calls.empty());
+  c::ToolInterpreter refused(c::QwenToolCalls(), Request({c::ToolChoiceKind::kNone, {}}), Limits());
+  EXPECT_FALSE(refused.Push(Qwen(""), out.Sink()));
+  // A bare envelope's opener is only answer text.
+  c::ToolInterpreter bare(c::JsonToolCalls(), Request({c::ToolChoiceKind::kNone, {}}), Limits());
+  Output json;
+  const std::string object = R"({"name":"lookup","parameters":{}})";
+  ASSERT_TRUE(bare.Push(object, json.Sink()));
+  ASSERT_TRUE(bare.Finish(c::ToolFinish::kStop, json.Sink()));
+  EXPECT_EQ(json.text, object);
+  EXPECT_TRUE(json.calls.empty());
 }
 TEST(ToolCalls, ParallelFalseFailsOnSecondOpenerBeforeItCanPublish) {
   c::ToolInterpreter parser(c::QwenToolCalls(), Request({}, false), Limits());
@@ -791,19 +808,25 @@ TEST(ToolSampling, GemmaRawCallTailAdvancesOnlyByUnchangedOrdinarySelections) {
   c::ToolSampling sampling(*tokenizer, c::GemmaToolCalls(),
                            Request({c::ToolChoiceKind::kRequired, {}}), Limits(), false, {});
   sampling.Budget(64, 64);
-  auto first = sampling.Plan(marker);
-  ASSERT_TRUE(first);
-  EXPECT_EQ(first->kind, c::ToolSampling::Selection::Kind::kStableSpan);
-  EXPECT_EQ(first->tokens, (std::vector<std::int32_t>{marker}));
-  ASSERT_TRUE(sampling.Accept(marker));
+  // After the marker, "call" is the held tail's only candidate (a shorter
+  // prefix has no canonical cover): sampling could choose nothing else, so
+  // it joins the marker's span as a certain token.
+  auto after = sampling;
+  ASSERT_TRUE(after.Accept(marker));
   std::vector<float> row(tokenizer->size(), 0), scratch;
-  const auto masked = sampling.Mask(row, scratch);
+  const auto masked = after.Mask(row, scratch);
   EXPECT_TRUE(std::isfinite(masked[static_cast<std::size_t>(call)]));
   EXPECT_FALSE(std::isfinite(masked[static_cast<std::size_t>(colon)]));
-  auto ordinary = sampling.Plan(call);
+  EXPECT_EQ(std::ranges::count_if(masked, [](float v) { return std::isfinite(v); }), 1);
+  auto ordinary = after.Plan(call);
   ASSERT_TRUE(ordinary);
   EXPECT_EQ(ordinary->kind, c::ToolSampling::Selection::Kind::kOrdinarySelected);
   EXPECT_EQ(ordinary->tokens, (std::vector<std::int32_t>{call}));
+  auto first = sampling.Plan(marker);
+  ASSERT_TRUE(first);
+  EXPECT_EQ(first->kind, c::ToolSampling::Selection::Kind::kStableSpan);
+  EXPECT_EQ(first->tokens, (std::vector<std::int32_t>{marker, call}));
+  ASSERT_TRUE(sampling.Accept(marker));
   EXPECT_TRUE(sampling.certain().empty());
   ASSERT_TRUE(sampling.Accept(call));
   auto punctuation = sampling.Plan(static_cast<std::int32_t>(colon));
@@ -1430,8 +1453,10 @@ TEST(ToolCalls, ObjectNotationAllowsValidPrefixesAndRejectsMalformedArgumentsDur
   RawTools raw;
   auto tokenizer = tok::Tokenizer::Create(std::move(raw.spec));
   ASSERT_TRUE(tokenizer) << tokenizer.error().ToString();
-  c::ToolSampling sampling(*tokenizer, c::GemmaToolCalls(), Request({}, false), Limits(), false,
-                           {});
+  // Required: the constrained mask applies the grammar (auto applies it
+  // only after a first call, to refuse a second without parallel calls).
+  c::ToolSampling sampling(*tokenizer, c::GemmaToolCalls(),
+                           Request({c::ToolChoiceKind::kRequired, {}}), Limits(), false, {});
   sampling.Budget(128, 128);
   for (const unsigned char ch : std::string("<|tool_call>call:lookup{"))
     ASSERT_TRUE(sampling.Accept(ch));

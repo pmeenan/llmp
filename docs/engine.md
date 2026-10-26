@@ -620,6 +620,15 @@ unit of generation for a set of slots on the runner:
 - plain, sampled and scored modes are one step: a decode row a slot (its
   token chosen on the device when greedy), or a scored run of given
   tokens with every row's outputs;
+- a greedy step's head logits stay in the workspace (`StepProgram::
+  retained`), and the caller may read one row of a greedy owner's back
+  right after its step (`DecodingPolicy::readback`/`read`, through
+  `RunWave` and `StepRequest::readback`; a job of its own through the
+  output staging, before any later step reuses the workspace): the serving
+  adapter does it for a device choice its tool constraint refuses, and
+  makes that choice on the host from the row
+  ([tool calls](tool-calls.md)). `ModelRunner::retains_head_rows` says,
+  from Setup's greedy shapes, that every greedy target step keeps them;
 - speculation drafts with any number of drafters, each a stage with its
   own state (`DrafterSpec`): an autoregressive drafter proposes a token a
   pass, a row a pass but its first; a block drafter proposes a block from

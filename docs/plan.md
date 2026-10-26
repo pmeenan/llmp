@@ -888,7 +888,7 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       output, one request-local refusal channel, one grammar shared by parser,
       sampler and judge, Llama leading-JSON calls, self-opened reasoning, marked
       forced spans, linear-time result association.
-- [ ] **F3b Tool-call hot path:** device greedy and verify kept when the mask is
+- [x] **F3b Tool-call hot path:** device greedy and verify kept when the mask is
       the identity, lazy and class-based masks, template-derived openers, every
       declared tool rendered.
 - [x] **F4 Engine recovery:** one fence-proof unproven-work contract with
@@ -914,15 +914,27 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
 - [ ] **F9 Import throughput and leftovers:** one parallel post-write hash
       pass, reuse provenance, unknown-key policy, fuzzing of the newer
       routes, component-declared import transforms.
+- [ ] **F14 Test-suite audit:** obsolete, disabled and ignored tests deleted;
+      redundant unit tests (covered lines and assertions already held by
+      another test) merged or removed and input variants made table tests,
+      with per-file line and branch coverage of `src/` measured before and
+      after and not reduced.
 - [ ] **F10 Hygiene, docs and final checks:** raw experiment dumps and unused
       scripts removed, one test-store resolver, `m35-record.md`, doc drift, then
       the full Spark check set and a speed confirmation of every family.
 - [ ] **F12 Known model-test failures and swap continuation:** every model
       test that already failed at `265c821a` (stale frozen digests, a Gemma Q8
       cache admission, Gemma 4 tool rendering, the gemma2 store artifact
-      refused at admission) is fixed, re-recorded with evidence or corrected,
+      refused at admission, the Qwen3.8 quantized-head tests) is fixed,
+      re-recorded with evidence or corrected, every env-gated skip runs by
+      default or is justified,
       and the DeepSeek-to-Qwen3.8 8K continuation that differs (15 of 16
       logits) is bisected and fixed.
+- [ ] **F13 Known open defects:** RE-050 (head wider than the tokenizer),
+      RE-052 (start-up guard against page cache), RE-031 (reference top-k
+      ties), the M3.6 record's carried lifecycle, planner and test-infra
+      defects verified and fixed or scheduled, and the tool-path speed
+      follow-ups; no known, fixable defect left recorded as open.
 
 - [x] **Family selection** (approved by the owner 2026-09-29: all 13
       checkpoints of [m35-families.md](m35-families.md), with the answers

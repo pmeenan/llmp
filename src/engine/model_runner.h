@@ -319,6 +319,22 @@ class StepAuthorization {
   std::optional<StateBorrowPermit> borrowed_{};
 };
 
+// A greedy owner's head row, read back after its step (D-048 completion
+// first): `want` names one of the segment's output rows from its device
+// choices (`outputs`, the segment's own output bytes), or none; `take` then
+// receives that row's logits, those the device chose from (StepProgram::
+// retained), or why they could not be read (none kept, a failed copy). Both
+// run on the driver once the step completed and published, before any
+// later step reuses the workspace; the bytes `take` sees are its call's.
+struct HeadRowReadback {
+  std::function<std::optional<std::uint32_t>(std::size_t segment,
+                                             std::span<const std::byte> outputs)>
+      want;
+  std::function<void(std::size_t segment, std::uint32_t row,
+                     std::expected<std::span<const std::byte>, std::string> logits)>
+      take;
+};
+
 struct StepRequest {
   planner::StepShape shape{};
   std::span<const SegmentWork> work{};      // one per segment
@@ -336,6 +352,8 @@ struct StepRequest {
   // Borrowed during RunStep; its transaction retains any queued witnesses.
   std::span<const StepAuthorization> authorization{};
   PromptBatch batch{};  // opaque owned preflight, independent of execution permissions
+  // Its greedy owners' head rows read back on request (none: never).
+  const HeadRowReadback* readback = nullptr;
 };
 
 struct StepReport {
@@ -497,6 +515,10 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
   const GraphStats& graph_stats() const { return graph_stats_; }
   const Coverage& coverage() const { return coverage_; }
   const StepLookaheadStats& lookahead_stats() const { return lookahead_; }
+  // After Setup: every greedy target step it measured keeps the head logits
+  // its device choices came from, so a step's HeadRowReadback can read any
+  // of its greedy owners' rows (into staging that holds one).
+  bool retains_head_rows() const { return retains_head_rows_; }
   bool graphs() const { return programs_.runs().graphs(); }
   void set_graphs(bool on) { programs_.runs().set_graphs(on); }
   // Its counts, as one JSON object (the runtime's report).
@@ -662,7 +684,8 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
   std::uint64_t inputs_staging_bytes_ = 0;
   std::byte* outputs_staging_ = nullptr;
   std::uint64_t outputs_staging_bytes_ = 0;
-  Mapped snapshots_;  // every slot's stages' verify snapshots
+  bool retains_head_rows_ = false;  // Setup's: HeadRowReadback works
+  Mapped snapshots_;                // every slot's stages' verify snapshots
   struct CommitPlace {
     CommitBuffer buffer;
     std::uint64_t offset = 0;

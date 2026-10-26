@@ -270,6 +270,20 @@ DecodeReport DecodingOrchestrator::Step(std::span<const DecodeWork> work) {
   return Speculate(work);
 }
 
+WaveReadback DecodingOrchestrator::Readback(std::span<const PendingWork> pending) const {
+  if (!policy_.readback || !policy_.read) return {};
+  return {.want =
+              [this, pending](std::size_t j, std::span<const std::int32_t> tokens,
+                              std::span<const std::byte> outputs) {
+                return policy_.readback(pending[j].slot, tokens, outputs);
+              },
+          .take =
+              [this, pending](std::size_t j, std::uint32_t row,
+                              std::expected<std::span<const std::byte>, std::string> logits) {
+                policy_.read(pending[j].slot, row, std::move(logits));
+              }};
+}
+
 DecodeReport DecodingOrchestrator::Single(std::span<const DecodeWork> work, bool scored,
                                           bool greedy) {
   DecodeReport report;
@@ -325,7 +339,8 @@ DecodeReport DecodingOrchestrator::Single(std::span<const DecodeWork> work, bool
       }
     }
     for (std::size_t j = 0; j < pending.size(); ++j) segments[j].history = work[of[j]].history;
-    WaveReport wave = RunWave(*runner_, *composer_, pending, segments, true);
+    WaveReport wave =
+        RunWave(*runner_, *composer_, pending, segments, true, {}, {}, {}, Readback(pending));
     report.steps = wave.steps;
     for (std::size_t j = 0; j < pending.size(); ++j) {
       DecodeOutcome& out = report.outcomes[of[j]];
@@ -788,7 +803,8 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
   std::vector<SegmentWork> segments;
   for (std::size_t i = 0; i < verified.size(); ++i)
     segments.push_back({.tokens = verified[i], .bytes = {}, .history = histories[i]});
-  WaveReport wave = RunWave(*runner_, *composer_, pending, segments, /*advance=*/false);
+  WaveReport wave = RunWave(*runner_, *composer_, pending, segments, /*advance=*/false, {}, {}, {},
+                            Readback(pending));
   report.steps += wave.steps;
   for (std::size_t j = 0; j < pending.size(); ++j) {
     const std::size_t i = of[j];

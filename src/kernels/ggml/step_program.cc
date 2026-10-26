@@ -171,6 +171,7 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
   }
   std::span<const InputSlot> inputs() const override { return lowered_.inputs; }
   std::span<const OutputSlot> outputs() const override { return lowered_.outputs; }
+  std::span<const OutputSlot> retained() const override { return lowered_.retained; }
   std::span<const TensorUse> tensors() const override { return lowered_.tensors; }
   const execution::BoundPlan* bound() const override { return bound_ ? &bound_->bound() : nullptr; }
 

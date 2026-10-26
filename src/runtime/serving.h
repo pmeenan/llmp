@@ -585,6 +585,7 @@ class Llm final : public Served {
     friend class Llm;
     friend class PromptSession;
     friend class GenerationSession;
+    friend struct LlmTestAccess;
     explicit Branch(Llm& model, std::uint32_t slot = 0) : model_(model), slot_(slot) {}
 
     Llm& model_;
@@ -605,6 +606,7 @@ class Llm final : public Served {
     std::optional<execution::SamplingParams> sampling_;
     chat::ToolSampling* tool_sampling_ = nullptr;  // active session's paid request owner
     std::vector<float> constrained_logits_;
+    std::vector<std::int32_t> lazy_ids_;  // the tokens a lazy top-k choice compacted
     std::uint64_t seed_ = 0;
     std::vector<execution::SamplingCandidate> scratch_;
     std::vector<TurnCheckpoint> turn_checkpoints_;
@@ -908,6 +910,9 @@ class Llm final : public Served {
   const chat::ToolCallFormat* tool_format() const {
     return template_ ? template_->tool_calls() : nullptr;
   }
+  // The template's whitespace around a forced tool-call opener
+  // (chat::ToolSpellingFor), read once when the template is chosen.
+  const chat::ToolOpenerSpelling& tool_spelling() const { return tool_spelling_; }
 
   // Tokens of plain text (no template; BOS first where the vocabulary has
   // one, as the reference runs fed it). With `memory`, temporary work is
@@ -1237,6 +1242,7 @@ class Llm final : public Served {
     std::uint64_t joined_waves = 0, joined_units = 0;
     std::uint64_t speculative_units = 0, drafted = 0, accepted = 0, discarded = 0;
     std::uint64_t greedy_tokens = 0;
+    std::uint64_t head_rows = 0;  // refused device choices' rows read back
   };
   const Counts& counts() const { return counts_; }
 
@@ -1261,8 +1267,41 @@ class Llm final : public Served {
     std::optional<std::int32_t> chosen;
   };
   // Greedy output with no caller of its rows, including a policy-selected
-  // plain wave whose sessions still apply speculative results.
+  // plain wave whose sessions still apply speculative results, whose tool
+  // constraint (if any) restricts nothing (ToolsUnrestricted).
   static bool GreedyWithoutRows(const PreparedGeneration& unit);
+  // Whether the branch's tool constraint (if any) restricts nothing at its
+  // next row: no forced span pending and the mask the identity
+  // (chat::ToolSampling::Identity), so a device's own greedy choice or
+  // verdict there is exact.
+  static bool ToolsUnrestricted(const Branch& branch);
+  // Whether a greedy plain step or verify of the branch keeps the device's
+  // choices: its constraint restricts nothing, or (no forced span pending)
+  // the runner reads back the head row of a choice the constraint refuses,
+  // which the host then makes from that row (HeadRows).
+  bool DeviceChooses(const Branch& branch) const;
+  // GreedyWithoutRows with DeviceChooses for its constraint: a decode or
+  // plain-form wave, whose head rows the policy reads back.
+  bool DeviceGreedy(const PreparedGeneration& unit) const;
+  // A head row read back after a greedy step (engine::HeadRowReadback):
+  // the output row whose device choice the constraint refused, and its
+  // logits (or why they could not be read). Each slot's is reset before its
+  // step and consumed by the step's judge or plain result.
+  struct HeadRow {
+    std::uint32_t row = 0;
+    std::expected<std::vector<float>, std::string> logits = std::vector<float>{};
+  };
+  // The device verdict on a verify (or, with one token, a plain step) of
+  // `verified` whose rows chose `tokens`: kept while the branch's tool
+  // constraint allows each row's choice. `row`: the read-back row of the
+  // first choice it refuses, which the host then makes. A refused row
+  // without it: its index (`refused`), and with `refused` null the verdict
+  // ends before it (an error at row 0).
+  std::expected<engine::Verdict, std::string> DeviceVerdict(Branch& branch,
+                                                            std::span<const std::int32_t> verified,
+                                                            std::span<const std::int32_t> tokens,
+                                                            const HeadRow* row,
+                                                            std::optional<std::uint32_t>* refused);
   // Success means the native unit completed. Each independent judgement
   // supplies its own result. A shared error supplies no result to apply.
   Status RunPreparedGenerationWave(std::span<PreparedGeneration> prepared);
@@ -1438,6 +1477,21 @@ class Llm final : public Served {
   std::expected<std::span<const float>, std::string> ConstrainedRow(Branch& branch,
                                                                     std::span<const float> row,
                                                                     chat::ToolSampling* constraint);
+  // A constrained choice that judges only the row's leading tokens where
+  // that is exact (nullopt: mask the whole row). Greedy takes the row's
+  // argmax when the constraint allows it; top-k draws from the k best allowed
+  // tokens, all the masked distribution keeps (LeadingAllowed); temperature
+  // alone keeps an allowed draw from the row and redraws a refused one from
+  // the masked row (rejection sampling, by an independent stream).
+  std::expected<std::optional<std::int32_t>, std::string> LazyChoice(Branch& branch,
+                                                                     std::span<const float> row,
+                                                                     chat::ToolSampling& mask,
+                                                                     std::uint64_t position);
+  // The k best tokens of `row` the constraint allows, compacted in ID order
+  // into the branch's constrained_logits_ (their IDs in lazy_ids_); false
+  // when too many leading tokens would have to be judged, or none is allowed.
+  bool LeadingAllowed(Branch& branch, std::span<const float> row, const chat::ToolSampling& mask,
+                      std::size_t k);
   std::expected<std::int32_t, std::string> Choose(Branch& branch, std::span<const float> row,
                                                   std::uint64_t position,
                                                   chat::ToolSampling* constraint = nullptr);
@@ -1467,6 +1521,7 @@ class Llm final : public Served {
   std::unique_ptr<serving_support::Paid> chat_charge_;
   std::unique_ptr<tokenizer::Tokenizer> tokenizer_;
   std::optional<chat::ChatTemplate> template_;
+  chat::ToolOpenerSpelling tool_spelling_;                             // with template_
   std::size_t render_bytes_ = chat::jinja::Limits{}.max_output_bytes;  // set by UseTemplate
   std::size_t longest_token_ = 1;                                      // likewise
   std::vector<std::int32_t> stops_;
@@ -1621,6 +1676,10 @@ class Llm final : public Served {
   std::array<bool, kMaxBranches> want_rows_{};
   std::array<bool, kMaxBranches> verify_tokens_{};
   std::array<std::vector<std::vector<float>>, kMaxBranches> verified_rows_{};
+  // The runner reads back refused device choices' head rows (Setup's
+  // ModelRunner::retains_head_rows), and each slot's from its last step.
+  bool head_rows_ = false;
+  std::array<std::optional<HeadRow>, kMaxBranches> read_rows_{};
   Counts counts_;
   kernels::PlanRecordSink plan_report_sink_{};
 };

@@ -123,6 +123,49 @@ struct LlmTestAccess {
   static void Stops(Llm& model, std::vector<std::int32_t> stops) {
     model.stops_ = std::move(stops);
   }
+  // A verdict from the model's decoding policy, as a verify's completion asks
+  // for it: the slot's verify returned device tokens (`device`) or rows.
+  static std::expected<engine::Verdict, std::string> Judge(Llm& model, std::uint32_t slot,
+                                                           bool device,
+                                                           std::span<const std::int32_t> verified,
+                                                           std::span<const std::byte> outputs) {
+    model.verify_tokens_.at(slot) = device;
+    return model.Policy().judge(slot, verified, outputs);
+  }
+  // The row a decoding policy's readback names after a greedy step of
+  // `tokens` whose device choices are `chosen` (engine::DecodingPolicy::
+  // readback), and a read-back row the slot's next judge sees.
+  static std::optional<std::uint32_t> Readback(Llm& model, std::uint32_t slot,
+                                               std::span<const std::int32_t> tokens,
+                                               std::span<const std::int32_t> chosen) {
+    return model.Policy().readback(slot, tokens, std::as_bytes(chosen));
+  }
+  static void ReadRow(Llm& model, std::uint32_t slot, std::uint32_t row,
+                      std::vector<float> logits) {
+    model.read_rows_.at(slot) = Llm::HeadRow{.row = row, .logits = std::move(logits)};
+  }
+  static void ClearRow(Llm& model, std::uint32_t slot) { model.read_rows_.at(slot).reset(); }
+  static void UseTools(Llm::Branch& branch, chat::ToolSampling* sampling) {
+    branch.tool_sampling_ = sampling;
+  }
+  static void UseSampling(Llm::Branch& branch, std::optional<execution::SamplingParams> sampling,
+                          std::uint64_t seed = 0) {
+    branch.sampling_ = sampling;
+    branch.seed_ = seed;
+  }
+  // The lazy top-k's compacted tokens (Llm::LeadingAllowed), in ID order.
+  static std::optional<std::vector<std::int32_t>> LeadingAllowed(Llm& model, Llm::Branch& branch,
+                                                                 std::span<const float> row,
+                                                                 const chat::ToolSampling& mask,
+                                                                 std::size_t k) {
+    if (!model.LeadingAllowed(branch, row, mask, k)) return std::nullopt;
+    return branch.lazy_ids_;
+  }
+  static std::expected<std::int32_t, std::string> Choose(Llm& model, Llm::Branch& branch,
+                                                         std::span<const float> row,
+                                                         std::uint64_t position) {
+    return model.Choose(branch, row, position);
+  }
   static bool Ready(const Llm& model, const Llm::Branch& branch) {
     return model.GenerationReadyFor(branch);
   }

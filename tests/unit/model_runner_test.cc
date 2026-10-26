@@ -2166,6 +2166,124 @@ TEST_F(WaveTest, EachOwnerFindsItsOwnOutputsAndPlaceInTheStep) {
   }
 }
 
+// Greedy logits heads that keep their rows (StepProgram::retained): a wave's
+// readback reads each requested row of its own owner, in a joined step of
+// owners out of slot order, right after the step.
+class HeadRowWaveTest : public WaveTest {
+ protected:
+  static constexpr std::uint32_t kLogits = 64;
+  bool retained_ = true;
+  ts::FakeSourceOptions SourceOptions() override {
+    auto o = WaveTest::SourceOptions();
+    o.logits = kLogits;
+    o.retained = retained_;
+    return o;
+  }
+  std::vector<pl::StepShape> SetupShapes() override {
+    auto shapes = WaveTest::SetupShapes();
+    auto greedy = Shape(pl::Phase::kDecode, {Seg(0, 0, 4, 4), Seg(1, 0, 4, 4), Seg(2, 0, 4, 4)});
+    for (auto& segment : greedy.segments) segment.greedy = true;
+    shapes.push_back(std::move(greedy));
+    return shapes;
+  }
+  struct Read {
+    std::size_t pending = 0;
+    std::uint32_t row = 0;
+    std::expected<std::vector<float>, std::string> logits;
+  };
+  // Each greedy owner's row `want[pending]` read back.
+  en::WaveReport ReadWave(const std::vector<en::PendingWork>& pending,
+                          const std::vector<std::vector<std::int32_t>>& tokens,
+                          std::vector<std::optional<std::uint32_t>> want,
+                          std::vector<Read>& reads) {
+    auto composer = en::WaveComposer::Make(Caps(), kContext, 256);
+    EXPECT_TRUE(composer.has_value());
+    std::vector<en::SegmentWork> work;
+    for (const auto& t : tokens) work.push_back({.tokens = t, .bytes = {}});
+    const en::WaveReadback readback{
+        .want = [&, want](std::size_t j, std::span<const std::int32_t> rows,
+                          std::span<const std::byte> outputs) -> std::optional<std::uint32_t> {
+          // Its own work's tokens and device choices.
+          EXPECT_EQ(rows.size(), tokens[j].size());
+          EXPECT_EQ(outputs.size(), rows.size() * sizeof(std::int32_t));
+          return want[j];
+        },
+        .take =
+            [&](std::size_t j, std::uint32_t row,
+                std::expected<std::span<const std::byte>, std::string> logits) {
+              Read read{.pending = j, .row = row, .logits = std::vector<float>{}};
+              if (!logits) {
+                read.logits = std::unexpected(logits.error());
+              } else {
+                read.logits->resize(logits->size() / sizeof(float));
+                std::memcpy(read.logits->data(), logits->data(), logits->size());
+              }
+              reads.push_back(std::move(read));
+            }};
+    return en::RunWave(*runner_, *composer, pending, work, true, {}, {}, {}, readback);
+  }
+};
+
+TEST_F(HeadRowWaveTest, EachOwnersRequestedRowIsItsOwn) {
+  ASSERT_TRUE(runner_->retains_head_rows());
+  std::vector<en::PendingWork> pending = {Decode(2, 0, 1), Decode(0, 0, 2), Decode(1, 0, 3)};
+  for (auto& p : pending) p.greedy = true;
+  const std::vector<std::vector<std::int32_t>> tokens = {{30}, {10, 11}, {20, 21, 22}};
+  const std::vector<std::optional<std::uint32_t>> want = {0, 1, 2};
+  std::vector<Read> reads;
+  const auto report = ReadWave(pending, tokens, want, reads);
+  EXPECT_EQ(report.steps, 1U);
+  ASSERT_EQ(reads.size(), pending.size());
+  std::vector<std::int32_t> chosen_rows;
+  for (const Read& read : reads) {
+    ASSERT_LT(read.pending, pending.size());
+    EXPECT_EQ(read.row, want[read.pending]);
+    ASSERT_TRUE(read.logits) << read.logits.error();
+    ASSERT_EQ(read.logits->size(), kLogits);
+    // The row the device chose that owner's token at that row from.
+    const auto& outcome = report.outcomes[read.pending];
+    ASSERT_FALSE(outcome.refusal.has_value()) << outcome.refusal->what;
+    ASSERT_EQ(outcome.outputs.size(), tokens[read.pending].size() * sizeof(std::int32_t));
+    std::int32_t chosen = 0;
+    std::memcpy(&chosen, outcome.outputs.data() + (std::size_t{read.row} * sizeof(chosen)),
+                sizeof(chosen));
+    const auto best = std::ranges::max_element(*read.logits) - read.logits->begin();
+    EXPECT_EQ(best, chosen) << "pending " << read.pending;
+    EXPECT_EQ((*read.logits)[static_cast<std::size_t>(best)], 1.0F);
+    EXPECT_EQ(std::ranges::count(*read.logits, 0.0F), kLogits - 1);
+    chosen_rows.push_back(chosen);
+  }
+  // Distinct choices: a row read from another owner's would show.
+  std::ranges::sort(chosen_rows);
+  EXPECT_EQ(std::ranges::adjacent_find(chosen_rows), chosen_rows.end());
+  // An unwanted row reads nothing.
+  reads.clear();
+  std::vector<en::PendingWork> next = {Decode(0, 2, 1)};
+  next[0].greedy = true;
+  const auto none = ReadWave(next, {{12}}, {std::nullopt}, reads);
+  ASSERT_FALSE(none.outcomes[0].refusal.has_value()) << none.outcomes[0].refusal->what;
+  EXPECT_TRUE(reads.empty());
+}
+
+class UnretainedHeadRowWaveTest : public HeadRowWaveTest {
+ protected:
+  UnretainedHeadRowWaveTest() { retained_ = false; }
+};
+
+TEST_F(UnretainedHeadRowWaveTest, ARowNoStepKeptIsAnErrorAndTheOutputsStand) {
+  EXPECT_FALSE(runner_->retains_head_rows());
+  std::vector<en::PendingWork> pending = {Decode(0, 0, 2)};
+  pending[0].greedy = true;
+  std::vector<Read> reads;
+  const auto report = ReadWave(pending, {{10, 11}}, {1}, reads);
+  ASSERT_FALSE(report.outcomes[0].refusal.has_value()) << report.outcomes[0].refusal->what;
+  EXPECT_EQ(report.outcomes[0].outputs.size(), 2 * sizeof(std::int32_t));
+  ASSERT_EQ(reads.size(), 1U);
+  EXPECT_EQ(reads[0].row, 1U);
+  EXPECT_FALSE(reads[0].logits);
+  EXPECT_EQ(runner_->slots().positions(0), 2U);
+}
+
 TEST_F(WaveTest, AComposerAtAnotherAlignmentThanTheStateIsRefused) {
   // Its lone reads would not be what the runner backs first for a joined
   // step's owners: nothing runs.

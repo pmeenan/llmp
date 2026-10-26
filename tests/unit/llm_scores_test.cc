@@ -1770,6 +1770,318 @@ class LlmTools : public LlmScores {
   }
 };
 
+// A tools request keeps the device's greedy choice wherever its constraint
+// restricts nothing (B3): every unconstrained auto step outside a call; a
+// named choice forces its opener on the host.
+class LlmToolDevice : public LlmTools {
+ protected:
+  void Run(bool named) {
+    score_width_ = 259;
+    StartScores(false, 1, 128, 32);
+    ASSERT_TRUE(rt::LlmTestAccess::UseChat(*llm_, ByteTokenizer(), "{{ messages[0].content }}"));
+    source_->options().transform_logits = [](pl::Phase, std::int32_t, std::int32_t,
+                                             std::span<float> row) {
+      std::ranges::fill(row, 0.0F);
+      row['a'] = 9;
+    };
+    source_->options().transform_native_token = [](pl::Phase, std::int32_t, std::int32_t,
+                                                   std::int32_t) { return std::int32_t{'a'}; };
+    const std::array<llmp::chat::ToolDefinition, 1> definitions{
+        {{.name = "lookup", .description = {}}}};
+    auto request = llmp::chat::ToolRequest::Create(
+        definitions,
+        named ? llmp::chat::ToolChoice{llmp::chat::ToolChoiceKind::kNamed, "lookup"}
+              : llmp::chat::ToolChoice{},
+        true, {});
+    ASSERT_TRUE(request);
+    auto constraint = std::make_shared<llmp::chat::ToolSampling>(
+        llm_->tokenizer(), llmp::chat::QwenToolCalls(), std::move(*request),
+        llmp::base::json::Limits{}, false, std::span<const std::int32_t>{});
+    std::vector<float> last;
+    ASSERT_TRUE(BranchAt(0).Prefill(std::array<std::int32_t, 1>{'x'}, last));
+    rt::GenerateOptions options;
+    options.max_tokens = 4;
+    options.stop = false;
+    options.tool_sampling = constraint;
+    const auto before = llm_->counts().greedy_tokens;
+    rt::Generation output;
+    ASSERT_TRUE(BranchAt(0).Generate(last, options, output));
+    ASSERT_EQ(output.tokens.size(), 4U);
+    if (named) {
+      EXPECT_EQ(llm_->counts().greedy_tokens, before);  // forced on the host
+      std::string text;
+      ASSERT_TRUE(llm_->tokenizer().Decode(output.tokens, {}, text));
+      EXPECT_EQ(text, "<too");
+    } else {
+      // The first token comes from the prompt's own row; the rest are the
+      // device's choices.
+      EXPECT_EQ(llm_->counts().greedy_tokens - before, 3U);
+      EXPECT_EQ(output.tokens, (std::vector<std::int32_t>(4, 'a')));
+    }
+    EXPECT_FALSE(constraint->refused());
+  }
+};
+TEST_F(LlmToolDevice, UnrestrictedAutoStepsKeepTheDeviceGreedyChoice) { Run(false); }
+TEST_F(LlmToolDevice, ANamedChoiceForcesItsOpenerOnTheHost) { Run(true); }
+
+// A device verify's verdict holds while the constraint allows each row's
+// device choice; the first refused one ends it before that row (B3).
+TEST_F(LlmTools, DeviceVerifyEndsBeforeTheFirstRowTheConstraintRefuses) {
+  QwenChat();
+  const auto opener = llm_->tokenizer().Find("<tool_call>");
+  ASSERT_TRUE(opener);
+  const std::array<std::int32_t, 1> terminals{'#'};
+  const std::array<llmp::chat::ToolDefinition, 1> definitions{
+      {{.name = "lookup", .description = {}}}};
+  auto request = llmp::chat::ToolRequest::Create(definitions, {}, true, {});
+  ASSERT_TRUE(request);
+  llmp::chat::ToolSampling sampling(llm_->tokenizer(), llmp::chat::QwenToolCalls(), *request,
+                                    llmp::base::json::Limits{}, false, terminals);
+  sampling.Budget(64, 64);
+  ASSERT_TRUE(sampling.Identity());
+  rt::LlmTestAccess::UseTools(BranchAt(0), &sampling);
+  const auto judge = [&](std::vector<std::int32_t> verified, std::vector<std::int32_t> tokens) {
+    return rt::LlmTestAccess::Judge(*llm_, 0, true, verified, std::as_bytes(std::span(tokens)));
+  };
+  // Answer text: every row is unrestricted, so the device verdict stands.
+  auto text = judge({'a', 'b', 'c', 'd'}, {'b', 'c', 'x', 'y'});
+  ASSERT_TRUE(text) << text.error();
+  EXPECT_EQ(text->keep, 3U);
+  EXPECT_EQ(text->tokens, (std::vector<std::int32_t>{'b', 'c', 'x'}));
+  // The kept opener starts a block, where the terminal '#' is refused: the
+  // verdict keeps the opener (the next unit chooses its row on the host).
+  auto call = judge({'a', *opener, '#', 'b'}, {*opener, '#', 'b', 'c'});
+  ASSERT_TRUE(call) << call.error();
+  EXPECT_EQ(call->keep, 1U);
+  EXPECT_EQ(call->tokens, (std::vector<std::int32_t>{*opener}));
+  // Allowed device choices inside the block are still exact.
+  auto inside = judge({'a', *opener, '\n', '<'}, {*opener, '\n', '<', 'f'});
+  ASSERT_TRUE(inside) << inside.error();
+  EXPECT_EQ(inside->keep, 4U);
+  EXPECT_EQ(inside->tokens, (std::vector<std::int32_t>{*opener, '\n', '<', 'f'}));
+  EXPECT_FALSE(sampling.refused());
+  EXPECT_TRUE(sampling.Identity());  // the judge worked on a copy
+  rt::LlmTestAccess::UseTools(BranchAt(0), nullptr);
+}
+
+// A greedy step's device choice that the tool constraint refuses is made on
+// the host from the head row the runner reads back (DeviceChooses): under
+// tool_choice none the device's call opener gives way to the row's best
+// allowed token, and an allowed device choice stands.
+TEST_F(LlmTools, ARefusedDeviceChoiceIsMadeFromItsReadBackRow) {
+  retained_rows_ = true;
+  QwenChat();
+  const auto opener = llm_->tokenizer().Find("<tool_call>");
+  ASSERT_TRUE(opener);
+  const std::int32_t call = *opener;
+  std::int32_t native = call;
+  source_->options().transform_logits = [call](pl::Phase, std::int32_t, std::int32_t,
+                                               std::span<float> row) {
+    std::ranges::fill(row, 0.0F);
+    row[static_cast<std::size_t>(call)] = 9;
+    row['a'] = 5;
+  };
+  source_->options().transform_native_token = [&native](pl::Phase, std::int32_t, std::int32_t,
+                                                        std::int32_t) { return native; };
+  const std::array<llmp::chat::ToolDefinition, 1> definitions{
+      {{.name = "lookup", .description = {}}}};
+  auto request = llmp::chat::ToolRequest::Create(definitions,
+                                                 {llmp::chat::ToolChoiceKind::kNone, {}}, true, {});
+  ASSERT_TRUE(request);
+  const auto generate = [&](std::vector<std::int32_t>& tokens) {
+    auto constraint = std::make_shared<llmp::chat::ToolSampling>(
+        llm_->tokenizer(), llmp::chat::QwenToolCalls(), *request, llmp::base::json::Limits{}, false,
+        std::span<const std::int32_t>{});
+    ASSERT_FALSE(constraint->Identity());
+    std::vector<float> last;
+    ASSERT_TRUE(BranchAt(0).Prefill(std::array<std::int32_t, 1>{'x'}, last));
+    rt::GenerateOptions options;
+    options.max_tokens = 4;
+    options.stop = false;
+    options.tool_sampling = constraint;
+    rt::Generation output;
+    ASSERT_TRUE(BranchAt(0).Generate(last, options, output));
+    EXPECT_FALSE(constraint->refused());
+    tokens = output.tokens;
+  };
+  // The first token comes from the prompt's row on the host; every later
+  // one is the device's choice, refused (the opener) and made from its row.
+  auto greedy = llm_->counts().greedy_tokens;
+  auto read = llm_->counts().head_rows;
+  std::vector<std::int32_t> tokens;
+  generate(tokens);
+  EXPECT_EQ(tokens, (std::vector<std::int32_t>(4, 'a')));
+  EXPECT_EQ(llm_->counts().head_rows - read, 3U);
+  EXPECT_EQ(llm_->counts().greedy_tokens, greedy);
+  // An allowed device choice is kept as it is, with nothing read back.
+  native = 'b';
+  greedy = llm_->counts().greedy_tokens;
+  read = llm_->counts().head_rows;
+  generate(tokens);
+  EXPECT_EQ(tokens, (std::vector<std::int32_t>{'a', 'b', 'b', 'b'}));
+  EXPECT_EQ(llm_->counts().head_rows, read);
+  EXPECT_EQ(llm_->counts().greedy_tokens - greedy, 3U);
+}
+
+// A device verify under a restricting constraint (B3): its readback names the
+// first row whose device choice the constraint refuses, and its verdict makes
+// that row's choice on the host from the read-back row, keeping the rows
+// before it.
+TEST_F(LlmTools, ADeviceVerifyMakesTheRefusedRowsChoiceFromItsReadBackRow) {
+  retained_rows_ = true;
+  QwenChat();
+  const auto opener = llm_->tokenizer().Find("<tool_call>");
+  ASSERT_TRUE(opener);
+  const std::array<llmp::chat::ToolDefinition, 1> definitions{
+      {{.name = "lookup", .description = {}}}};
+  auto request = llmp::chat::ToolRequest::Create(definitions,
+                                                 {llmp::chat::ToolChoiceKind::kNone, {}}, true, {});
+  ASSERT_TRUE(request);
+  llmp::chat::ToolSampling sampling(llm_->tokenizer(), llmp::chat::QwenToolCalls(), *request,
+                                    llmp::base::json::Limits{}, false,
+                                    std::span<const std::int32_t>{});
+  sampling.Budget(64, 64);
+  ASSERT_FALSE(sampling.Identity());
+  rt::LlmTestAccess::UseTools(BranchAt(0), &sampling);
+  const auto judge = [&](std::vector<std::int32_t> verified, std::vector<std::int32_t> tokens) {
+    return rt::LlmTestAccess::Judge(*llm_, 0, true, verified, std::as_bytes(std::span(tokens)));
+  };
+  std::vector<float> row(llm_->tokenizer().size(), 0.0F);
+  row[static_cast<std::size_t>(*opener)] = 9;
+  row['z'] = 5;
+  // Every choice allowed: nothing to read back, the device verdict stands.
+  const std::vector<std::int32_t> verified{'a', 'b', 'c', 'd'};
+  EXPECT_FALSE(rt::LlmTestAccess::Readback(*llm_, 0, verified,
+                                           std::vector<std::int32_t>{'b', 'c', 'x', 'y'}));
+  // Row 2 chose the opener: the readback names it, the verdict keeps rows 0
+  // to 2 and the host's choice from its row.
+  const std::vector<std::int32_t> at2{'b', 'c', *opener, 'y'};
+  EXPECT_EQ(rt::LlmTestAccess::Readback(*llm_, 0, verified, at2), 2U);
+  rt::LlmTestAccess::ReadRow(*llm_, 0, 2, row);
+  auto made = judge(verified, at2);
+  ASSERT_TRUE(made) << made.error();
+  EXPECT_EQ(made->keep, 3U);
+  EXPECT_EQ(made->tokens, (std::vector<std::int32_t>{'b', 'c', 'z'}));
+  // Without its row the verdict ends before it.
+  rt::LlmTestAccess::ClearRow(*llm_, 0);
+  auto cut = judge(verified, at2);
+  ASSERT_TRUE(cut) << cut.error();
+  EXPECT_EQ(cut->keep, 2U);
+  EXPECT_EQ(cut->tokens, (std::vector<std::int32_t>{'b', 'c'}));
+  // Row 0 refused: only its read-back row makes a verdict.
+  const std::vector<std::int32_t> at0{*opener, 'c', 'd', 'e'};
+  EXPECT_EQ(rt::LlmTestAccess::Readback(*llm_, 0, verified, at0), 0U);
+  EXPECT_FALSE(judge(verified, at0));
+  rt::LlmTestAccess::ReadRow(*llm_, 0, 0, row);
+  auto first = judge(verified, at0);
+  ASSERT_TRUE(first) << first.error();
+  EXPECT_EQ(first->keep, 1U);
+  EXPECT_EQ(first->tokens, (std::vector<std::int32_t>{'z'}));
+  // A plain step is a verify of its anchor alone.
+  EXPECT_EQ(rt::LlmTestAccess::Readback(*llm_, 0, std::vector<std::int32_t>{'a'},
+                                        std::vector<std::int32_t>{*opener}),
+            0U);
+  EXPECT_FALSE(rt::LlmTestAccess::Readback(*llm_, 0, std::vector<std::int32_t>{'a'},
+                                           std::vector<std::int32_t>{'q'}));
+  rt::LlmTestAccess::ClearRow(*llm_, 0);
+  EXPECT_FALSE(sampling.refused());
+  rt::LlmTestAccess::UseTools(BranchAt(0), nullptr);
+}
+
+// The lazy constrained choices are the masked row's (B4): greedy takes an
+// allowed argmax, top-k keeps exactly the masked row's k best, and every
+// sampled choice is a token the constraint allows.
+TEST_F(LlmTools, LazyChoicesMatchTheMaskedRow) {
+  auto constraint = Constraint();
+  constraint->Budget(64, 64);
+  auto& branch = BranchAt(0);
+  rt::LlmTestAccess::UseTools(branch, constraint.get());
+  // Named and forcing "<tool_call><function=lookup>": only a few tokens pass.
+  std::vector<float> row(259), scratch;
+  std::uint32_t x = 7;
+  for (auto& v : row) {
+    x = x * 1103515245U + 12345U;
+    v = static_cast<float>((x >> 8U) % 1000U) / 100.0F;
+  }
+  const auto masked = constraint->Mask(row, scratch);
+  std::vector<std::int32_t> allowed;
+  for (std::size_t i = 0; i < masked.size(); ++i)
+    if (std::isfinite(masked[i])) allowed.push_back(static_cast<std::int32_t>(i));
+  ASSERT_FALSE(allowed.empty());
+  ASSERT_LT(allowed.size(), row.size());
+  // Ranked as top-k ranks: logit, then the lower ID.
+  auto ranked = allowed;
+  std::ranges::sort(ranked, [&](std::int32_t a, std::int32_t b) {
+    return row[static_cast<std::size_t>(a)] > row[static_cast<std::size_t>(b)] ||
+           (row[static_cast<std::size_t>(a)] == row[static_cast<std::size_t>(b)] && a < b);
+  });
+  // A k above the allowed count keeps them all, as the masked row's top-k.
+  for (const std::size_t k : {std::size_t{1}, ranked.size(), ranked.size() + 3}) {
+    auto kept = rt::LlmTestAccess::LeadingAllowed(*llm_, branch, row, *constraint, k);
+    ASSERT_TRUE(kept) << k;
+    std::vector<std::int32_t> best(
+        ranked.begin(), ranked.begin() + static_cast<std::ptrdiff_t>(std::min(k, ranked.size())));
+    std::ranges::sort(best);
+    EXPECT_EQ(*kept, best) << k;
+  }
+  // Greedy: the masked argmax, however the row's own argmax is placed.
+  auto greedy = rt::LlmTestAccess::Choose(*llm_, branch, row, 1);
+  ASSERT_TRUE(greedy) << greedy.error();
+  EXPECT_EQ(*greedy, ranked.front());
+  // The row's own argmax a token the constraint refuses.
+  auto refused = row;
+  std::size_t outside = 0;
+  while (std::isfinite(masked[outside])) ++outside;
+  refused[outside] = 100.0F;
+  greedy = rt::LlmTestAccess::Choose(*llm_, branch, refused, 1);
+  ASSERT_TRUE(greedy) << greedy.error();
+  EXPECT_EQ(*greedy, ranked.front());
+  // Sampled (top-k, then temperature alone): always an allowed token.
+  for (const auto params :
+       {llmp::execution::SamplingParams{.temperature = 1, .top_k = 3, .top_p = 1, .min_p = 0},
+        llmp::execution::SamplingParams{.temperature = 2, .top_k = 0, .top_p = 1, .min_p = 0}}) {
+    rt::LlmTestAccess::UseSampling(branch, params, 99);
+    for (std::uint64_t position = 0; position < 64; ++position) {
+      auto token = rt::LlmTestAccess::Choose(*llm_, branch, refused, position);
+      ASSERT_TRUE(token) << token.error();
+      EXPECT_NE(std::ranges::find(allowed, *token), allowed.end());
+    }
+  }
+  rt::LlmTestAccess::UseSampling(branch, std::nullopt);
+  // Waiting for reasoning to end before a required call: everything but the
+  // terminal is allowed, and the terminal leads the row.
+  const std::array<llmp::chat::ToolDefinition, 1> definitions{
+      {{.name = "lookup", .description = {}}}};
+  auto request = llmp::chat::ToolRequest::Create(
+      definitions, {llmp::chat::ToolChoiceKind::kRequired, {}}, true, {});
+  ASSERT_TRUE(request);
+  const std::array<std::int32_t, 1> terminals{'#'};
+  llmp::chat::ToolSampling waiting(llm_->tokenizer(), llmp::chat::QwenToolCalls(), *request,
+                                   llmp::base::json::Limits{}, true, terminals);
+  waiting.Budget(64, 64);
+  rt::LlmTestAccess::UseTools(branch, &waiting);
+  auto leading = row;
+  leading['#'] = 100.0F;
+  std::vector<std::int32_t> order(259);
+  for (std::size_t i = 0; i < order.size(); ++i) order[i] = static_cast<std::int32_t>(i);
+  std::erase(order, '#');
+  std::ranges::sort(order, [&](std::int32_t a, std::int32_t b) {
+    return leading[static_cast<std::size_t>(a)] > leading[static_cast<std::size_t>(b)] ||
+           (leading[static_cast<std::size_t>(a)] == leading[static_cast<std::size_t>(b)] && a < b);
+  });
+  auto top = rt::LlmTestAccess::LeadingAllowed(*llm_, branch, leading, waiting, 3);
+  ASSERT_TRUE(top);
+  std::vector<std::int32_t> three(order.begin(), order.begin() + 3);
+  std::ranges::sort(three);
+  EXPECT_EQ(*top, three);
+  auto chosen = rt::LlmTestAccess::Choose(*llm_, branch, leading, 1);
+  ASSERT_TRUE(chosen) << chosen.error();
+  EXPECT_EQ(*chosen, order.front());
+  rt::LlmTestAccess::UseTools(branch, nullptr);
+  EXPECT_FALSE(constraint->refused());
+  EXPECT_FALSE(waiting.refused());
+}
+
 TEST_F(LlmTools, PlainKnownOpeningRunsWithItsSelectingAnchorInOneCausalUnit) {
   auto constraint = Constraint();
   auto& branch = BranchAt(0);
@@ -1901,9 +2213,11 @@ TEST_F(LlmTools, AcceptedSpeculativeEosEndsJudgingBeforeAnUnpublishedToolOpener)
       llm_->tokenizer(), format, std::move(*request), llmp::base::json::Limits{}, false, stops);
   rt::LlmTestAccess::Stops(*llm_, {258});
   std::vector<std::int32_t> script;
-  // Four padding bytes align ']' as the next verify anchor at depth two;
-  // its draft proposals are then EOS and the next '[' in the same unit.
-  for (const char ch : std::string("[lookup{}    ]")) script.push_back(ch);
+  // The forced span's held '{' is its only candidate, so it is certain and
+  // the first verify anchor is '}': five padding bytes then align ']' as a
+  // verify anchor at depth two; its draft proposals are then EOS and the next
+  // '[' in the same unit.
+  for (const char ch : std::string("[lookup{}     ]")) script.push_back(ch);
   script.push_back(258);
   const auto expected = script;
   script.push_back('[');  // accepted draft after EOS would reopen the parser

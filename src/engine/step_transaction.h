@@ -66,6 +66,7 @@ class StepTransaction {
   void Queue(Frame& frame);
   std::expected<void, StepRefusal> Settle(Frame& frame);
   std::expected<StepReport, StepRefusal> Publish(Frame& frame);
+  void ReadBack(Frame& frame);
   enum class Retirement : std::uint8_t { kUnused, kQueued, kRetired, kUnproven };
   explicit StepTransaction(ModelRunner& runner);
   bool PreparedInputsMatch(const StepRequest& request) const;

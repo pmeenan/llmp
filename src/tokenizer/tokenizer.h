@@ -172,21 +172,13 @@ struct ForcedSpanOptions {
   // a special token's text.
   bool marked = false;
   std::span<const SpecialSpan> specials;
-  // Complete allowed NEXT-BYTE set, not Unicode representatives. High-byte
-  // possibilities conservatively retain an open tail; byte-cover accepts them.
-  std::span<const std::uint8_t> following_bytes;
-  bool following_known = false;
-  bool terminal = false;  // actual hard grammar boundary, never max_tokens
   std::size_t remaining_tokens = 0;
   std::size_t remaining_context = 0;
 };
 struct ForcedSpanPlan {
+  // The stable canonical prefix that replaces the selected token (and
+  // includes its bytes), within the allowance; the rest stays held.
   std::vector<TokenId> tokens;
-  std::size_t committed_bytes = 0;        // decoded selected + forced prefix
-  std::size_t consumed_forced_bytes = 0;  // excludes the selected token's bytes
-  std::string held;                       // exact uncommitted suffix of both inputs
-  std::size_t cover_bytes = 0;
-  bool replaces_selected = false;
   // False: this plan supplies no stable replacement or certain suffix. An
   // unchanged ordinary sampler choice is a separate caller disposition.
   bool selected_covered = false;
@@ -195,6 +187,20 @@ struct ForcedSpanPlan {
   // an open block remains held; never authorizes inserting unstable IDs.
   bool selected_matches_canonical_prefix = false;
   bool limited = false;  // real token/context allowance cut the plan
+};
+// PlanForcedSpan for every candidate that is a byte prefix of one forced
+// text at once: a candidate that is not a control token and whose n
+// decoded bytes are forced[0, n) plans exactly as PlanForcedSpan(candidate,
+// forced[n:]) would, and Allows says whether that plan is publishable or
+// an unchanged choice (rather than an error).
+struct ForcedPrefixPlan {
+  bool continuation = false;        // forced finishes an already published character
+  std::size_t committed_bytes = 0;  // the stable canonical prefix within the allowance
+  bool limited = false;
+  std::optional<TokenId> first;  // the canonical encoding's first token
+  bool Allows(TokenId candidate, std::size_t bytes) const {
+    return continuation || committed_bytes >= bytes || limited || first == candidate;
+  }
 };
 
 class Tokenizer {
@@ -267,6 +273,10 @@ class Tokenizer {
   std::expected<ForcedSpanPlan, Error> PlanForcedSpan(std::optional<TokenId> selected,
                                                       std::string_view forced,
                                                       const ForcedSpanOptions& options) const;
+  // One plan for all of forced's prefix candidates (ForcedPrefixPlan): what
+  // a constrained mask asks once a step instead of once a candidate.
+  std::expected<ForcedPrefixPlan, Error> PlanForcedPrefixes(std::string_view forced,
+                                                            const ForcedSpanOptions& options) const;
   // Boundary cover applies only when the forced prefix is one proven closed
   // actual block represented by one exact canonical token. Open blocks return
   // zero: a later crossing merge can split a token encoded in isolation. Lexical permission for any
@@ -276,6 +286,11 @@ class Tokenizer {
   bool CoversForced(TokenId candidate, std::size_t cover_bytes,
                     const DecodeOptions& options = {.control_tokens = true}) const;
 
+  // The bytes Decode appends for one token at a stream's start, without
+  // copying them; empty for a token it appends nothing for (or an ID
+  // outside the vocabulary).
+  std::string_view Piece(TokenId id, const DecodeOptions& options = {}) const;
+
   // Appends the tokens' bytes to out. Byte-level tokens can end inside a
   // UTF-8 sequence, so a partial sequence may end the output; StreamDecoder
   // holds those back.
@@ -284,6 +299,10 @@ class Tokenizer {
 
  private:
   struct Impl;
+  struct ForcedTrace;
+  std::expected<ForcedTrace, Error> TraceForced(std::string_view text,
+                                                std::span<const SpecialSpan> spans,
+                                                const ForcedSpanOptions& options) const;
   explicit Tokenizer(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;
 };
@@ -298,6 +317,9 @@ class StreamDecoder {
 
   std::expected<void, Error> Push(TokenId token, std::string& out);
   void Finish(std::string& out);
+  // Whether a partial sequence is held back: the next token's bytes are then
+  // not decoded on their own.
+  bool holding() const { return !pending_.empty(); }
 
  private:
   const Tokenizer* tokenizer_;

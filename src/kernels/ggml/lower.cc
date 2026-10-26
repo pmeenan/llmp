@@ -3830,6 +3830,23 @@ std::expected<void, KernelFailure> Lowering::Slots() {
                                 .bytes = n * row,
                                 .tensor = result,
                                 .segment = static_cast<std::uint8_t>(i)});
+        // The logits a greedy owner's choices came from stay in the
+        // workspace (a graph output, never reused within the step), for a
+        // caller that reads one row back (StepProgram::retained).
+        const TensorId logits = in_.token->step.logits;
+        const TensorId kept = greedy && logits.valid() ? plan_.tensors.at(logits.v) : TensorId{};
+        if (const ggml_tensor* l = kept.valid() ? made_.at(kept.v) : nullptr;
+            l != nullptr && l->data != nullptr && l->type == GGML_TYPE_F32 &&
+            static_cast<std::uint64_t>(l->ne[1]) == shape.outputs() && l->ne[0] > 0 &&
+            l->nb[0] == sizeof(float) &&
+            l->nb[1] == static_cast<std::uint64_t>(l->ne[0]) * sizeof(float))
+          out_.retained.push_back(
+              {.device_address =
+                   static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(l->data)) +
+                   (first_output * l->nb[1]),
+               .bytes = n * l->nb[1],
+               .tensor = logits,
+               .segment = static_cast<std::uint8_t>(i)});
         first_output += n;
       }
     }

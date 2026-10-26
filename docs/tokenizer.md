@@ -229,8 +229,17 @@ blocks, checks exact decode reproduction, and holds the unstable final block.
 Normalization or decoder transformations that change the requested bytes are
 explicit capability refusals. The plan never rewrites published history.
 `ForcedSpanBytes` bounds peak work and owned results before allocation; token
-and context allowances cut only at canonical token boundaries. A terminal
-boundary is an actual grammar boundary, not an output-token allowance.
+and context allowances cut only at canonical token boundaries. Forced text of
+n bytes encodes to at most n + 1 tokens (every token covers a byte, and text
+its normalization would change is refused), which is the encoding's whole
+reservation. A plan returns its stable canonical tokens, whether they cover
+the selected token, whether the selected token is the canonical encoding's
+first, and whether the allowance cut it; the held tail is what follows the
+tokens. `PlanForcedPrefixes` answers for every candidate that is a byte prefix
+of one forced text with one canonical trace: a non-control candidate of n
+bytes plans exactly as its own `PlanForcedSpan` would, so a constrained mask
+plans once a step, not once a candidate. `Piece` is a token's decoded bytes
+(what `Decode` appends for it alone) without a copy.
 
 Forced bytes continue a stream: their encoding (`EncodeOptions::continuation`)
 adds no SentencePiece dummy `▁` to any fragment, so mid-stream text reproduces
@@ -240,8 +249,8 @@ exactly the given spans are control tokens, in the planned text (the selected
 token's bytes, then the forced bytes, so a span may begin inside the selected
 token and heal it; a selected control token is a span of its own), and control
 text elsewhere, such as a client's tool name, stays text; user-defined tokens
-still match. The canonical encoding, block trace, following-byte check and
-held tail's cover (its spans shifted) all follow that one policy.
+still match. The canonical encoding and the block trace follow that one
+policy.
 `ControlSpans` finds the control tokens a `kParse` encoding of a marker would,
 to build spans; `ContainsControlText` reports control-token text anywhere in a
 string, for refusing names at intake. Unmarked planning keeps `kParse`.
@@ -254,10 +263,11 @@ partition the closed trace up to that prefix reproduces, since the atom would
 close the fragment there, which is not an append. Bytes that finish a character
 whose lead byte is already published have no canonical encoding from there:
 the planner holds them and the cover is zero, so ordinary sampling along the
-forced bytes completes the character. Following-byte promotion requires
-EOF-independent stability, identical prefix partitions and canonical IDs for
-every allowed continuation. A finite known-suffix first-ID match is only a
-consistency check; it never permits injecting an unstable token. The caller
+forced bytes completes the character. The final block of a forced text is
+always held (no grammar boundary promotes it). A finite known-suffix first-ID
+match is only a consistency check; it never permits injecting an unstable
+token by itself (the sampler injects a held tail's token only where its mask
+leaves that token the only candidate). The caller
 may keep an unchanged ordinary sampled token through a held tail as a distinct
 choice. Feeding proven spans in one causal unit, the sampling constraint and
 speculative acceptance are the runtime's ([tool calls](tool-calls.md)).

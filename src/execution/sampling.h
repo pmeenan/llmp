@@ -98,6 +98,11 @@ std::expected<std::int32_t, SamplingError> Sample(std::span<const float> logits,
                                                   const SamplingKey& key,
                                                   std::vector<SamplingCandidate>& scratch);
 
+// The `count` highest finite logits, ranked as top-k ranks them (more
+// likely first, ties to the lower ID), into `out`, each valued by its logit
+// (fewer when fewer are finite). One pass, as top-k's.
+void Ranked(std::span<const float> logits, std::size_t count, std::vector<SamplingCandidate>& out);
+
 // Speculative sampling's verdict on a token a greedy drafter proposed for
 // the position `key` names, whose draft distribution is therefore a point
 // mass (Leviathan et al., ICML 2023, and Chen et al. 2023, with q =

@@ -317,7 +317,8 @@ StepAuthorization WaveComposer::Authorize(const ModelRunner& runner, const Pendi
 WaveReport RunWave(ModelRunner& runner, const WaveComposer& composer,
                    std::span<const PendingWork> pending, std::span<const SegmentWork> work,
                    bool advance, const AheadFor& ahead,
-                   std::span<const StepAuthorization> authorization, const PromptBatch& batch) {
+                   std::span<const StepAuthorization> authorization, const PromptBatch& batch,
+                   const WaveReadback& readback) {
   WaveReport report;
   report.outcomes.resize(pending.size());
   for (std::size_t i = 0; i < pending.size(); ++i) {
@@ -385,6 +386,17 @@ WaveReport RunWave(ModelRunner& runner, const WaveComposer& composer,
         }
         indices.push_back(open[j]);
       }
+      // The step's segments' readbacks, as their pending work's.
+      const HeadRowReadback readbacks{
+          .want =
+              [&](std::size_t s, std::span<const std::byte> outputs) {
+                return readback.want(indices[s], segments[s].tokens, outputs);
+              },
+          .take =
+              [&](std::size_t s, std::uint32_t row,
+                  std::expected<std::span<const std::byte>, std::string> logits) {
+                readback.take(indices[s], row, std::move(logits));
+              }};
       const StepRequest request{.shape = composed.shape,
                                 .work = segments,
                                 .step_bytes = {},
@@ -392,7 +404,8 @@ WaveReport RunWave(ModelRunner& runner, const WaveComposer& composer,
                                 .ahead = batch ? batch.Ahead(composed.shape)
                                                : (ahead ? ahead(composed, indices) : StepAhead{}),
                                 .authorization = permits,
-                                .batch = batch};
+                                .batch = batch,
+                                .readback = readback.want && readback.take ? &readbacks : nullptr};
       auto ran = runner.RunStep(request);
       if (ran) {
         std::uint32_t rows = 0, outputs = 0;

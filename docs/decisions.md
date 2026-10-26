@@ -2525,6 +2525,18 @@ that are not UTF-8, not NFC under an NFC tokenizer, or that contain a control
 token's text are refused with 400 `invalid_tool_name`. The rest of the contract
 is unchanged ([tool-calls.md](tool-calls.md)).
 
+**Amended 2026-10-26 (M3.5 review fixes, tool-call speed, B9/B10).** Every
+declared tool renders whatever `tool_choice` says, as OpenAI and vLLM render
+them, so changing the choice between turns no longer rewrites (and
+re-prefills) the conversation's prefix; sampling enforces the choice. Under
+`none` a template with a verified tool format renders the tools and the
+sampler refuses a call's opener (calls are never parsed out of the reply); a
+template without one renders none, as before. A forced opener (required and
+named choices) spells the template's own whitespace around it, read from the
+template's rendering of a probe call (Qwen3.8 forces
+`</think>\n\n<tool_call>\n<function=NAME>\n`), so the reply re-renders byte
+for byte. The rest of the contract is unchanged ([tool-calls.md](tool-calls.md)).
+
 ## D-096: The runtime serves M3's models through an engine module, `[models]` in the configuration and two local serving commands; GGML, CUTLASS and cuBLAS ship  (2026-09-28, status: accepted by the owner, 2026-09-28; adds configuration keys and runtime commands, D-016 public surfaces; applies D-076's consequences for shipping cuBLAS; changes GGML's and CUTLASS's lock `use` to product under D-057; its engine's CUDA use moved behind the device runtime on 2026-09-29, noted below; engine structure amended by D-107 (one runner of shared components, one serving adapter per pipeline kind); its engine core builds in every profile since 2026-10-08, amended below)
 
 **Amended 2026-10-18** (review follow-up R7). The service and serving

@@ -554,7 +554,8 @@ Status ModelRunner::Setup() {
   for (std::uint16_t stage = 0; stage < slots_.stages(); ++stage) {
     stage_facts_.push_back(source_->StageFacts(stage));
   }
-  std::uint64_t activations = 0, pool = 0, inputs = 0, outputs = 0;
+  std::uint64_t activations = 0, pool = 0, inputs = 0, outputs = 0, head_row = 0;
+  bool greedy_heads = false, heads_retained = true;
   std::vector<std::uint64_t> carry(slots_.stages(), 0);
   for (const pl::StepShape& shape : config_.setup_shapes) {
     if (auto checked = CheckShape(shape); !checked) {
@@ -575,10 +576,26 @@ Status ModelRunner::Setup() {
         carry[shape.stage] = std::max(carry[shape.stage], slot.bytes);
       }
     }
+    // Whether each greedy target owner keeps the head logits its device
+    // choices came from (StepProgram::retained), for a head row's readback.
+    for (std::size_t s = 0; shape.stage == 0 && s < shape.segments.size(); ++s) {
+      const pl::Segment& seg = shape.segments[s];
+      if (!seg.greedy || seg.outputs == 0) continue;
+      greedy_heads = true;
+      const auto kept = std::ranges::find_if(
+          p.retained(), [&](const kn::OutputSlot& slot) { return slot.segment == s; });
+      if (kept == p.retained().end() || kept->bytes == 0 || kept->bytes % seg.outputs != 0)
+        heads_retained = false;
+      else
+        head_row = std::max(head_row, kept->bytes / seg.outputs);
+    }
     inputs = std::max(inputs, measured->inputs);
     outputs = std::max(outputs, measured->outputs);
     plan_floor_bytes_ = std::max(plan_floor_bytes_, measured->host);
   }
+  // A readback lands in the output staging: one row of it at least.
+  retains_head_rows_ = greedy_heads && heads_retained;
+  if (retains_head_rows_) outputs = std::max(outputs, head_row);
   std::uint64_t commit_inputs = 0;
   for (std::uint16_t stage = 0; stage < commit_places_.size(); ++stage) {
     if (commit_places_[stage].empty()) continue;

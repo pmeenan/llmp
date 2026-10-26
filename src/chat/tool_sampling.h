@@ -22,15 +22,36 @@ namespace llmp::chat {
 // bytes: each token decoded as the parser's stream decoder decodes it (hidden
 // control tokens dropped, ill-formed UTF-8 replaced). In unconstrained auto
 // mode nothing is refused per token: only terminals are masked while a call
-// is open, and the output parser alone judges the reply.
+// is open, and the output parser alone judges the reply. Auto without
+// parallel calls is unconstrained until its first call closes (only a second
+// call can then be refused).
+//
+// A step costs only what it restricts: Identity() says when the row is not
+// restricted at all (a device's own choice is then exact), Allowed() judges
+// one token (a choice it passes is the masked row's choice too), and Mask
+// judges every plain token of a state at once (ToolInterpreter::
+// PlainVerdict), with one forced-span plan for all of a forced text's
+// prefix candidates.
 class ToolSampling {
  public:
   // may_reason: the prompt neither opened nor closed the template's
   // reasoning, so the model may open it; a required opener then waits for it.
+  // spelling: the template's own whitespace around a forced opener
+  // (ToolSpellingFor); empty forces the markers alone.
   ToolSampling(const tokenizer::Tokenizer& tokenizer, ToolCallFormat format, ToolRequest request,
                base::json::Limits limits, bool reasoning, std::span<const std::int32_t> terminals,
-               std::span<const std::int32_t> route_stops = {}, bool may_reason = false);
+               std::span<const std::int32_t> route_stops = {}, bool may_reason = false,
+               const ToolOpenerSpelling& spelling = {});
   bool constrained() const;
+  // Whether Mask returns the row unchanged now: nothing is restricted, so a
+  // device's own greedy choice or verdict is this sampler's.
+  bool Identity() const;
+  // Mask's verdict on one token now, without masking a row. The masked
+  // row's greedy choice is the row's own argmax when Allowed passes it.
+  bool Allowed(std::int32_t token) const;
+  // The tokens of `ranked` Mask allows, in order, into `out` until it is
+  // full (Allowed for each, sharing one step's facts): how many it holds.
+  std::size_t AllowedOf(std::span<const std::int32_t> ranked, std::span<std::int32_t> out) const;
   // A request-local refusal (a token outside the grammar, a forced span with
   // no canonical cover, or no allowed candidate), distinct from invalid native
   // logits. A speculative copy that refuses for its request reports it on the
@@ -71,6 +92,7 @@ class ToolSampling {
     ToolCallFormat format;
     ToolRequest request;
     std::string prefix;
+    std::size_t opener_at = 0;  // where the prefix's opener starts (after its lead)
     // Control-token spans of the prefix's format markers, in prefix bytes.
     // The client's name between them is always encoded as text.
     std::vector<tokenizer::SpecialSpan> specials;
@@ -85,13 +107,33 @@ class ToolSampling {
     std::size_t forced = 0;
     std::string tail;
   };
+  // What a step's candidates share, found once for all of them.
+  struct Step {
+    bool constrained = false, can_stop = false, forcing = false;
+    std::string_view forced;  // the forced text still owed
+    std::vector<tokenizer::SpecialSpan> spans;
+    std::optional<std::expected<std::size_t, tokenizer::Error>> cover;
+    std::optional<std::expected<tokenizer::ForcedPrefixPlan, tokenizer::Error>> prefixes;
+    // The verdict on plain candidates (ToolInterpreter::PlainVerdict), when
+    // the trigger cannot tell them apart either.
+    std::optional<std::optional<bool>> plain;
+    std::string bytes;  // scratch
+  };
+  Step Facts() const;
+  bool Judge(std::int32_t token, Step& step) const;
+  bool Plain(std::string_view piece) const;
   bool Transition(std::string_view bytes, Trigger& next) const;
-  bool Raw(std::int32_t token, std::string& out) const;
+  // The token's own bytes (a hidden control token's are none); false for an
+  // ID outside the vocabulary.
+  bool Raw(std::int32_t token, std::string_view& out) const;
   bool Lexical(std::int32_t token, tokenizer::StreamDecoder& decoder, std::string& out) const;
   bool TerminalAllowed(std::int32_t token, bool can_stop) const;
+  tokenizer::ForcedSpanOptions PlanOptions(std::size_t bytes,
+                                           std::span<const tokenizer::SpecialSpan> spans) const;
   std::vector<tokenizer::SpecialSpan> Spans(std::size_t from, std::size_t lead,
                                             std::size_t consumed) const;
   std::expected<Selection, std::string> PlanOnce(std::int32_t selected) const;
+  void Extend(Selection& selection) const;
   std::shared_ptr<const Context> context_;
   ToolInterpreter lexical_;
   tokenizer::StreamDecoder decoder_;

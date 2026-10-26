@@ -453,6 +453,20 @@ void ExpectFamilyLowers() {
           outputs += 1;
         }
         EXPECT_EQ(outputs, c.out == Out::kStateOnly ? 0U : c.segments.size());
+        // Greedy owners keep the logits rows they chose from, one row each,
+        // disjoint from each other and from every owner's chosen tokens.
+        const auto& kept = w.lowered->retained;
+        EXPECT_EQ(kept.size(), c.out == Out::kGreedy ? c.segments.size() : 0U);
+        for (std::size_t i = 0; i < kept.size(); ++i) {
+          EXPECT_EQ(kept[i].segment, i);
+          EXPECT_GT(kept[i].bytes, 0U);
+          EXPECT_EQ(kept[i].bytes % sizeof(float), 0U);
+          EXPECT_EQ(kept[i].bytes, kept.front().bytes);
+          if (i > 0) EXPECT_EQ(kept[i].device_address, kept[i - 1].device_address + kept[i].bytes);
+          for (const kn::OutputSlot& o : w.lowered->outputs)
+            EXPECT_TRUE(o.device_address + o.bytes <= kept[i].device_address ||
+                        kept[i].device_address + kept[i].bytes <= o.device_address);
+        }
         biggest = std::max(biggest, w.lowered->extent);
         owner_forms += w.owners;
         nodes += w.lowered->nodes.size();

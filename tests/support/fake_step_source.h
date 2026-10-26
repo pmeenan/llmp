@@ -170,6 +170,10 @@ struct FakeSourceOptions {
   // Tests use this to exercise per-owner judgement failures after real work.
   std::function<void(planner::Phase, std::int32_t, std::int32_t, std::span<float>)>
       transform_logits;
+  // A greedy logits head (`logits`) leaves each output row's logits (as a
+  // row output's, after transform_logits) in the workspace for a readback
+  // (StepProgram::retained); its device choice stays its own.
+  bool retained = false;
   // A drafter's features as a kFeatures input and a features output.
   bool features = false;
   // Verify saves each row's fixed-state hash; a generated commit restores its kept last row.

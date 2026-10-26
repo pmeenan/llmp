@@ -6,6 +6,7 @@
 #ifndef LLMP_CHAT_TOOL_CALLS_H_
 #define LLMP_CHAT_TOOL_CALLS_H_
 
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -68,21 +69,26 @@ class ToolRequest {
                                                         const base::json::Limits& limits);
   const ToolChoice& choice() const { return data_->choice; }
   bool parallel() const { return data_->parallel; }
+  // How many definitions the request declares.
+  std::size_t size() const { return data_->definitions.size(); }
   bool Declared(std::string_view name) const;
   std::size_t NameBytes() const;
   // Exact name identity in the selected grammar. Named choice checks only
   // its exposed definition; none is harmless. Caller prepays NameBytes()
   // scratch (the object scanner); JSON envelopes escape arbitrary names.
   ToolStatus ValidateNames(const ToolCallFormat& format) const;
-  // Each exposed definition's name, in declaration order (for admission
-  // checks that need the tokenizer).
+  // Each exposed definition's name (one the output may name), in
+  // declaration order (for admission checks that need the tokenizer).
   std::vector<std::string_view> ExposedNames() const;
+  // Every definition's normalized bytes (TemplateTools).
   std::size_t TemplateBytes() const;
   // Checks a partial name plus its declarative terminator without allocating.
   bool NamePrefix(std::string_view prefix, std::string_view terminator) const;
   std::optional<base::json::Value> Parameter(std::string_view name, std::string_view key) const;
-  // OpenAI-shaped definitions are the template contract, owned by this request.
-  // Named choice presents only its selected definition. None presents no tools.
+  // OpenAI-shaped definitions are the template contract, owned by this
+  // request: every declared definition, whatever the choice (as OpenAI and
+  // vLLM render them), so a conversation's rendered prefix does not change
+  // when a later turn changes tool_choice. Sampling enforces the choice.
   std::vector<base::json::Value> TemplateTools() const;
 
  private:
@@ -161,6 +167,20 @@ struct ToolTrigger {
   bool ends_reasoning = false;
 };
 ToolTrigger ToolTriggerFor(const ToolCallFormat& format, const ToolRequest& request);
+
+// The whitespace a template renders around a tool call's opener, so that a
+// forced opener spells exactly what the model was trained on (and what the
+// next turn re-renders): Qwen3.8 writes `</think>\n\n<tool_call>\n<function=
+// NAME>\n`. Read from the template's own rendering of a probe reply (one
+// call); a field the rendering does not show as whitespace stays empty, and
+// empty fields force the markers alone.
+struct ToolOpenerSpelling {
+  std::string lead = {};             // before the opener at the reply's start
+  std::string after_reasoning = {};  // before the opener right after the reasoning's end
+  std::string inner = {};            // between a block opener and its first call
+  std::string after_name = {};       // after a call's name end
+};
+ToolOpenerSpelling ToolSpellingFor(const ChatTemplate& chat_template, const ToolCallFormat& format);
 
 struct ToolReasoningBegin {};
 struct ToolReasoningEnd {};
@@ -267,6 +287,18 @@ class ToolInterpreter {
   bool reasoning() const { return cursor_.reasoning_active; }
   // Whether Finish(kStop) now would succeed.
   bool CanStop() const;
+  // The bytes a candidate may still add (Allows refuses a longer one).
+  std::size_t room() const { return limits_.max_bytes - received_; }
+  // A byte the grammar can react to: a marker's or quote's first byte,
+  // structural JSON or a control character. A candidate of other bytes only
+  // (and complete UTF-8) is plain.
+  bool Attends(unsigned char byte) const { return attention_.test(byte); }
+  // What Allows answers now for every plain candidate within room(), where
+  // the grammar's state judges them all alike (answer text, reasoning, a
+  // string or raw value, with nothing held back): one verdict instead of a
+  // probe each. Nullopt where plain bytes still differ (a name, a scalar,
+  // between parameters, a held marker prefix).
+  std::optional<bool> PlainVerdict() const;
   std::optional<std::string_view> error() const {
     return error_ ? std::optional<std::string_view>(*error_) : std::nullopt;
   }
@@ -288,6 +320,7 @@ class ToolInterpreter {
   bool ended_ = false, busy_ = false, paused_ = false;
   std::optional<ToolFinish> finishing_;
   std::optional<std::string> error_;
+  std::bitset<256> attention_;
 };
 
 // Reorder a parallel result group only when IDs prove its association. Missing

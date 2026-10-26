@@ -171,6 +171,7 @@ struct LoweredStep {
   GraphPlan plan;                      // explicit lowered schedule, lanes and regions
   std::vector<InputSlot> inputs;
   std::vector<OutputSlot> outputs;
+  std::vector<OutputSlot> retained;  // greedy segments' logits (StepProgram::retained)
   std::vector<TensorUse> tensors;
   std::vector<PhysicalRoot> physical_roots;
   // Sorted by internal descriptor pointer for allocation-free logarithmic

@@ -406,6 +406,12 @@ class StepProgram {
 
   virtual std::span<const InputSlot> inputs() const = 0;
   virtual std::span<const OutputSlot> outputs() const = 0;
+  // Each greedy segment's head logits (F32 rows, its outputs' count), which
+  // its device choices were made from: not copied after a run, but left in
+  // the workspace, where they hold until the next run uses it. A caller
+  // reads one back only when it needs it (engine/model_runner.h
+  // HeadRowReadback). None: a program that keeps none.
+  virtual std::span<const OutputSlot> retained() const { return {}; }
   virtual std::span<const TensorUse> tensors() const = 0;
   // The implementations it runs (D-053), if its source records them.
   virtual const execution::BoundPlan* bound() const { return nullptr; }
@@ -490,6 +496,9 @@ class ForwardingStepProgram : public StepProgram {
   }
   std::span<const OutputSlot> outputs() const override {
     return program_ ? program_->outputs() : std::span<const OutputSlot>{};
+  }
+  std::span<const OutputSlot> retained() const override {
+    return program_ ? program_->retained() : std::span<const OutputSlot>{};
   }
   std::span<const TensorUse> tensors() const override {
     return program_ ? program_->tensors() : std::span<const TensorUse>{};

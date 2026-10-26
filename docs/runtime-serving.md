@@ -969,9 +969,14 @@ keeps every wave with a sampling member speculative, below.)
 Plain non-speculative greedy decode without requested logits selects its
 I32 token on the GPU for DeepSeek, native/GGUF Qwen and Gemma; only four bytes
 per owner return to the host. Complete head arithmetic is unchanged. The
-prepared scalar hook, scalar fallback and homogeneous joined routes share
-eligibility and validate completed token IDs before publication. Sampling and
-scoring retain rows. DeepSeek adaptive joined plain decode also publishes
+prepared scalar hook, scalar fallback and joined routes share eligibility and
+validate completed token IDs before publication. Sampling and scoring retain
+rows; a joined wave returns rows for every owner when any owner needs them
+(per-owner result kinds remain a diagnostic: measured slower for tool-call
+waves, [tool-sampling speed](experiments/tool-sampling-speed/README.md)). A
+tools request takes the device path at every greedy step with no forced
+span pending, the host making only the choices its constraint refuses, from
+the head row the runner reads back ([tool calls](tool-calls.md)). DeepSeek adaptive joined plain decode also publishes
 device IDs through the existing kept-token contract, preserving every target
 feature and drafter-ring write; scalar speculation and draft/verify are
 unchanged. Qwen speculative Draft/Verify keeps its existing lean ID contract. Prompt

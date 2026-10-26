@@ -53,9 +53,11 @@ TEST(ApiTools, DefaultsAndNamedDefinitionFilteringAreOwned) {
   ASSERT_TRUE(named) << Failed(named, &api::Error::message).value_or("");
   EXPECT_EQ(named->tools->request.choice().kind, chat::ToolChoiceKind::kNamed);
   EXPECT_FALSE(named->tools->request.parallel());
-  const auto exposed = named->tools->request.TemplateTools();
-  ASSERT_EQ(exposed.size(), 1U);
-  EXPECT_EQ(exposed[0].find("function")->find("name")->string(), "clock");
+  // Every definition renders; sampling enforces the named choice.
+  const auto rendered = named->tools->request.TemplateTools();
+  ASSERT_EQ(rendered.size(), 2U);
+  EXPECT_EQ(rendered[1].find("function")->find("name")->string(), "clock");
+  EXPECT_EQ(named->tools->request.ExposedNames(), (std::vector<std::string_view>{"clock"}));
 }
 
 TEST(ApiTools, EmptyAndNoneRequestsNeedNoToolTemplate) {
@@ -70,10 +72,13 @@ TEST(ApiTools, EmptyAndNoneRequestsNeedNoToolTemplate) {
     EXPECT_EQ(parsed->tools->request.choice().kind, chat::ToolChoiceKind::kNone);
     EXPECT_TRUE(parsed->tools->request.TemplateTools().empty());
   }
+  // Declared tools still render under none (serving renders them only for
+  // a template with a tool format, which then refuses calls in sampling).
   auto parsed =
       api::ParseChatRequest(ToolBody(std::string(kDefinitions) + R"(,"tool_choice":"none")"));
   ASSERT_TRUE(parsed);
-  EXPECT_TRUE(parsed->tools->request.TemplateTools().empty());
+  EXPECT_EQ(parsed->tools->request.TemplateTools().size(), 2U);
+  EXPECT_TRUE(parsed->tools->request.ExposedNames().empty());
 }
 
 TEST(ApiTools, LegacyInputsNormalizeAndConflictingRepresentationsFail) {

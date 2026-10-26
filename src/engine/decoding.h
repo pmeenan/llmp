@@ -216,6 +216,18 @@ struct DecodingPolicy {
   std::function<void(std::uint32_t slot, std::size_t drafter, std::uint32_t depth,
                      std::uint32_t kept, bool complete)>
       observe;
+  // A greedy owner's head row, read back right after its plain step or
+  // verify (HeadRowReadback): `readback` names one of its output rows from
+  // the step's tokens (a plain step's anchor; a verify's anchor and
+  // proposals) and its device choices, or none; `read` then receives that
+  // row's logits or why they could not be read, before the verify's judge.
+  // Unset: never.
+  std::function<std::optional<std::uint32_t>(
+      std::uint32_t slot, std::span<const std::int32_t> tokens, std::span<const std::byte> outputs)>
+      readback;
+  std::function<void(std::uint32_t slot, std::uint32_t row,
+                     std::expected<std::span<const std::byte>, std::string> logits)>
+      read;
 };
 
 // One drafter's part of a slot's unit.
@@ -308,6 +320,8 @@ class DecodingOrchestrator {
   DecodeReport Single(std::span<const DecodeWork> work, bool scored, bool greedy);
   DecodeReport Speculate(std::span<const DecodeWork> work);
   DecodeReport Certain(std::span<const DecodeWork> work);
+  // The policy's head-row readbacks for `pending`, by its slots.
+  WaveReadback Readback(std::span<const PendingWork> pending) const;
   std::size_t At(std::uint32_t slot, std::size_t drafter) const {
     return (std::size_t{slot} * mode_.drafters.size()) + drafter;
   }
