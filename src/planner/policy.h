@@ -45,10 +45,6 @@
 #include "execution/registry.h"
 #include "ir/numerics.h"
 
-namespace llmp::ir {
-class DiagnosticAdmission;
-}
-
 namespace llmp::planner {
 
 inline constexpr std::size_t kMaxPolicyBytes = std::size_t{1} << 20U;
@@ -183,8 +179,7 @@ void Canonicalize(Policy& policy);
 // without '.'), patterns of the table, each once (not both enabled and
 // disabled), an implementation ranked once a class, the
 // bounds above.
-std::expected<void, std::string> Validate(const Policy& policy,
-                                          ir::DiagnosticAdmission* diagnostic = nullptr);
+std::expected<void, std::string> Validate(const Policy& policy);
 
 std::string ToText(const Policy& policy);
 std::expected<Policy, std::string> ParsePolicy(std::string_view text);

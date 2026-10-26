@@ -30,19 +30,6 @@
 # GGML's own units build (third_party/patches/ggml/0002) and the profile's
 # discrete GPUs (D-082); a CPU build plans for the native profile's GB10,
 # the device its planning tests model (capabilities.h CompiledFor).
-# Declarative measurements are separate from implementation code identities to
-# avoid a circular identity. The generator is source-covered; every data field
-# participates in RankDataDigest and therefore registry/plan-cache identity.
-set(fusion_rank_source "${PROJECT_SOURCE_DIR}/docs/experiments/fusion-ranks/data.json")
-set(fusion_rank_generated "${CMAKE_CURRENT_BINARY_DIR}/fusion_rank_data.cc")
-add_custom_command(OUTPUT "${fusion_rank_generated}"
-  COMMAND "${LLMP_PYTHON}" "${PROJECT_SOURCE_DIR}/tools/fusion_rank_data.py"
-          "${fusion_rank_source}" "${fusion_rank_generated}"
-  DEPENDS "${fusion_rank_source}" "${PROJECT_SOURCE_DIR}/tools/fusion_rank_data.py"
-          "${PROJECT_SOURCE_DIR}/src/ir/op_traits.inc"
-  VERBATIM)
-add_library(llmp_ggml_rank_data STATIC "${fusion_rank_generated}")
-target_link_libraries(llmp_ggml_rank_data PUBLIC llmp_execution PRIVATE llmp_warnings)
 
 if(LLMP_CUDA)
   set(architectures 121a-real ${LLMP_CUDA_DISCRETE_SASS})
@@ -64,10 +51,10 @@ target_sources(llmp_ggml_tensors PRIVATE fattn_owner.cc)
 target_sources(llmp_ggml_tensors PRIVATE kv_quant.cc)
 # The module's capabilities (capabilities.h) and the lowering of planned IR
 # steps onto GGML graphs (lower.h).
-target_sources(llmp_ggml_tensors PRIVATE capabilities.cc lower.cc comparison.cc comparison_region.cc comparison_access.cc)
+target_sources(llmp_ggml_tensors PRIVATE capabilities.cc lower.cc)
 set_source_files_properties(capabilities.cc PROPERTIES COMPILE_DEFINITIONS
   "LLMP_GGML_CUDA_ARCHITECTURES=\"${architecture_text}\"")
-target_link_libraries(llmp_ggml_tensors PUBLIC llmp_base llmp_ggml_base llmp_execution llmp_ggml_rank_data
+target_link_libraries(llmp_ggml_tensors PUBLIC llmp_base llmp_ggml_base llmp_execution
                                                  llmp_model llmp_planner llmp_components
                                                  llmp_step_common
                                           # cutlass/version.h only (llmp_ops.cc pins the
@@ -204,7 +191,7 @@ if(LLMP_CUDA)
   # build's configure (CONFIGURE_DEPENDS), so none escapes the identity;
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
-  set(module_files comparison_access.cc comparison_access.h comparison.cc comparison.h comparison_schema.h comparison_region.cc comparison_region.h measured_ranks.h float_route.cc float_route.h CMakeLists.txt capabilities.cc capabilities.h recipe_entries.inc lower.cc lower.h step_program.cc
+  set(module_files measured_ranks.h ../decode/float_formats.cuh float_route.cc float_route.h CMakeLists.txt capabilities.cc capabilities.h recipe_entries.inc lower.cc lower.h step_program.cc
                    step_program.h selected_operation.h cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_sparse.cu
                    dsv4_weighted_reduce.h dsv4_weighted_reduce.cc dsv4_weighted_reduce.cu
                    gemma_moe.h gemma_moe.cc gemma_moe.cu
@@ -247,26 +234,17 @@ if(LLMP_CUDA)
                           "implementations' identity would not cover it")
     endif()
   endforeach()
-  set_property(GLOBAL PROPERTY LLMP_GGML_LOCAL_MODULE_FILES "${module_files}")
-  # src/CMakeLists.txt calls this after all linked targets (including the
-  # selected EXL3 adapters and the graph-plan entry point) have been declared.
-  function(llmp_ggml_source_identity)
-    include("${PROJECT_SOURCE_DIR}/cmake/LlmpSourceClosure.cmake")
-    set(base "${PROJECT_SOURCE_DIR}/src/kernels/ggml")
-    set(binary "${PROJECT_BINARY_DIR}/src/kernels/ggml")
-    get_property(module_files GLOBAL PROPERTY LLMP_GGML_LOCAL_MODULE_FILES)
-    list(TRANSFORM module_files PREPEND "${base}/" OUTPUT_VARIABLE roots)
-    target_sources(llmp_ggml_kernels PRIVATE "${binary}/module_digest.cc")
-    llmp_compiler_identity(OUTPUT "${binary}/module_digest.cc" CONSTANT_TARGET llmp_ggml_kernels
-      TARGETS llmp_ggml_objects llmp_device_runtime llmp_engine_core
-      SELECT_TARGET llmp_engine_core SELECT_SOURCE "${PROJECT_SOURCE_DIR}/src/engine/graph_plan.cc"
-      FILES ${roots} "${PROJECT_SOURCE_DIR}/tools/fusion_rank_data.py"
-        "${PROJECT_SOURCE_DIR}/src/kernels/exl3/module_digest.cmake"
-        "${PROJECT_SOURCE_DIR}/src/kernels/decode/module_digest.cmake"
-      EXCLUDED_SOURCES "${PROJECT_BINARY_DIR}/src/kernels/exl3/module_digest.cc"
-                       "${PROJECT_BINARY_DIR}/src/kernels/decode/module_digest.cc")
-    add_dependencies(llmp_ggml_kernels llmp_compiler_identity_ready)
-  endfunction()
+  string(JOIN ":" module_names ${module_files})
+  set_property(GLOBAL PROPERTY LLMP_GGML_MODULE_NAMES "${module_names}")
+  list(TRANSFORM module_files PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/" OUTPUT_VARIABLE module_paths)
+  set(module_digest "${CMAKE_CURRENT_BINARY_DIR}/module_digest.cc")
+  add_custom_command(
+    OUTPUT "${module_digest}"
+    COMMAND "${CMAKE_COMMAND}" "-DBASE=${CMAKE_CURRENT_SOURCE_DIR}" "-DNAMES=${module_names}"
+            "-DOUTPUT=${module_digest}" -P "${CMAKE_CURRENT_SOURCE_DIR}/module_digest.cmake"
+    DEPENDS ${module_paths}
+    COMMENT "Hashing the GGML module's sources for its implementation identities (D-053)"
+    VERBATIM)
   # The copy of upstream's cuBLAS path builds with the FP16 bridge's device
   # flag, as GGML's own files do (third_party/patches/ggml/0002), so that its
   # kernel's SASS compares with the bridge's. (NVCC's -O sets only the host
@@ -305,5 +283,6 @@ if(LLMP_CUDA)
                               "-use_fast_math;-extended-lambda")
 
   add_library(llmp_ggml_kernels STATIC)
+  target_sources(llmp_ggml_kernels PRIVATE "${module_digest}")
   target_link_libraries(llmp_ggml_kernels PUBLIC llmp_ggml_objects)
 endif()

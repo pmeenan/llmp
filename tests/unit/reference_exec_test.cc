@@ -51,26 +51,6 @@ using format::Encoding;
 using format::Layout;
 using ir::TensorId;
 
-class TestStorageFunder final : public ir::StorageFunder {
- public:
-  bool Charge(std::uint64_t bytes) const override {
-    ++calls_;
-    if (refuse_at_ != 0 && calls_ == refuse_at_) return false;
-    outstanding_ += bytes;
-    return true;
-  }
-  void Release(std::uint64_t bytes) const override { outstanding_ -= bytes; }
-  std::size_t calls() const { return calls_; }
-  std::uint64_t outstanding() const { return outstanding_; }
-  void RefuseOn(std::size_t call) { refuse_at_ = call; }
-  void AllowAll() { refuse_at_ = 0; }
-
- private:
-  std::size_t refuse_at_ = 0;
-  mutable std::size_t calls_ = 0;
-  mutable std::uint64_t outstanding_ = 0;
-};
-
 constexpr double kInf = std::numeric_limits<double>::infinity();
 
 std::vector<float> Normal(std::uint32_t seed, std::size_t n, float sd = 1.0f) {
@@ -229,49 +209,6 @@ TEST(ReferenceExecValidationTest, NormOutputGateRejectsUnknownSelection) {
   b.Output(b.Fused(ir::FusedKind::kNormGate, std::array{x, x, x},
                    ir::NormGateParams{.gate = static_cast<ir::NormGateFn>(2)})[0]);
   EXPECT_FALSE(std::move(b).Finish());
-}
-
-TEST(ReferenceExecValidationTest, PaidExpansionMapSurvivesExecutorMovesAndRefunds) {
-  const auto make_graph = [](const std::shared_ptr<TestStorageFunder>& funder) {
-    ir::Builder b;
-    EXPECT_TRUE(b.SetStorageFunder(funder));
-    const auto input = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({4})));
-    b.Output(input);
-    auto graph = std::move(b).Finish();
-    EXPECT_TRUE(graph);
-    if (!graph) return std::optional<ir::Graph>{};
-    return std::optional<ir::Graph>(std::move(*graph));
-  };
-
-  auto first_owner = std::make_shared<TestStorageFunder>();
-  auto first_graph = make_graph(first_owner);
-  ASSERT_TRUE(first_graph);
-  const std::uint64_t first_graph_bytes = first_owner->outstanding();
-
-  // Verify takes one scratch loan; the next request is Expand's retained map.
-  first_owner->RefuseOn(first_owner->calls() + 2);
-  auto refused = Executor::Create(*first_graph);
-  ASSERT_FALSE(refused);
-  EXPECT_EQ(first_owner->outstanding(), first_graph_bytes);
-  first_owner->AllowAll();
-
-  auto first = Executor::Create(*first_graph);
-  ASSERT_TRUE(first);
-  EXPECT_GT(first_owner->outstanding(), first_graph_bytes);
-
-  auto second_owner = std::make_shared<TestStorageFunder>();
-  auto second_graph = make_graph(second_owner);
-  ASSERT_TRUE(second_graph);
-  const std::uint64_t second_graph_bytes = second_owner->outstanding();
-  auto second = Executor::Create(*second_graph);
-  ASSERT_TRUE(second);
-  EXPECT_GT(second_owner->outstanding(), second_graph_bytes);
-
-  *first = std::move(*second);
-  EXPECT_EQ(first_owner->outstanding(), first_graph_bytes);
-  EXPECT_GT(second_owner->outstanding(), second_graph_bytes);
-  first = std::unexpected(ExecFailure{});
-  EXPECT_EQ(second_owner->outstanding(), second_graph_bytes);
 }
 
 TEST_F(ExecTest, GroupedMatMulHasIndependentCompleteGroupAndTokenFormula) {

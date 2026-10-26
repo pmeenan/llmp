@@ -44,8 +44,9 @@ if(NOT generated MATCHES "return \"${current}\";")
 endif()
 
 file(REMOVE_RECURSE "${WORK}")
-# The module inventory also covers shared IR sources and its data generator.
-# Keep their ../../ and ../../../ relative paths within the scratch root.
+# The module inventory may name files outside its directory (the GGML
+# module's ../decode/float_formats.cuh). Keep such relative paths within
+# the scratch root.
 set(copy_base "${WORK}/root/src/kernels/module")
 file(MAKE_DIRECTORY "${copy_base}")
 foreach(name IN LISTS names)

@@ -218,32 +218,27 @@ void Format(Hasher& h, const format::TensorFormat& f) {
 }  // namespace
 
 Graph::Graph(Graph&& other) noexcept
-    : storage_loan_(std::move(other.storage_loan_)),
-      nodes_(std::move(other.nodes_)),
+    : nodes_(std::move(other.nodes_)),
       tensors_(std::move(other.tensors_)),
       producers_(std::move(other.producers_)),
       inputs_(std::move(other.inputs_)),
       outputs_(std::move(other.outputs_)),
       keep_(std::move(other.keep_)),
       names_(std::move(other.names_)),
-      digest_(other.digest_),
-      identity_(std::exchange(other.identity_, 0)) {
-  other.digest_ = {};
-}
+      digest_(std::exchange(other.digest_, {})),
+      identity_(std::exchange(other.identity_, 0)) {}
 
 Graph& Graph::operator=(Graph&& other) noexcept {
   if (this != &other) {
-    Graph incoming(std::move(other));
-    std::swap(storage_loan_, incoming.storage_loan_);
-    std::swap(nodes_, incoming.nodes_);
-    std::swap(tensors_, incoming.tensors_);
-    std::swap(producers_, incoming.producers_);
-    std::swap(inputs_, incoming.inputs_);
-    std::swap(outputs_, incoming.outputs_);
-    std::swap(keep_, incoming.keep_);
-    std::swap(names_, incoming.names_);
-    std::swap(digest_, incoming.digest_);
-    std::swap(identity_, incoming.identity_);
+    nodes_ = std::move(other.nodes_);
+    tensors_ = std::move(other.tensors_);
+    producers_ = std::move(other.producers_);
+    inputs_ = std::move(other.inputs_);
+    outputs_ = std::move(other.outputs_);
+    keep_ = std::move(other.keep_);
+    names_ = std::move(other.names_);
+    digest_ = std::exchange(other.digest_, {});
+    identity_ = std::exchange(other.identity_, 0);
   }
   return *this;
 }
@@ -253,94 +248,25 @@ std::uint64_t Graph::NextIdentity() {
   return next.fetch_add(1, std::memory_order_relaxed);
 }
 
-std::expected<Graph, VerifyError> Graph::Clone(std::shared_ptr<const StorageFunder> funder,
-                                               DiagnosticAdmission* diagnostic) const {
-  const auto error = [diagnostic](GraphError code,
-                                  std::string_view detail) -> std::unexpected<VerifyError> {
-    if (code == GraphError::kAdmission)
-      return std::unexpected(VerifyError{.error = code, .detail = {}});
-    auto text = FormatDiagnostic(diagnostic, "{}", detail);
-    if (!text) return std::unexpected(VerifyError{.error = GraphError::kAdmission, .detail = {}});
-    return std::unexpected(VerifyError{.error = code, .detail = std::move(*text)});
-  };
-  if (identity_ == 0) return error(GraphError::kBounds, "cannot clone a moved-from graph");
-  if (!funder) funder = storage_loan_.funder();
+std::expected<Graph, VerifyError> Graph::Clone() const {
+  if (identity_ == 0) {
+    return std::unexpected(
+        VerifyError{.error = GraphError::kBounds, .detail = "cannot clone a moved-from graph"});
+  }
   Graph g;
-  std::uint64_t name_bytes = 0;
-  for (const std::string& name : names_) {
-    const std::uint64_t bytes = name.size() + 1;
-    if (bytes > std::numeric_limits<std::uint64_t>::max() - name_bytes)
-      return error(GraphError::kAdmission, "comparison graph clone inventory overflowed");
-    name_bytes += bytes;
-  }
-  std::uint64_t bytes = 0;
-  constexpr std::uint64_t kVectorAllocationOverhead = 2 * sizeof(void*) + alignof(std::max_align_t);
-  auto add = [&](std::uint64_t count, std::uint64_t size) {
-    if (size != 0 && count > (std::numeric_limits<std::uint64_t>::max() - bytes) / size)
-      return false;
-    bytes += count * size;
-    return true;
-  };
-  if (!add(nodes_.size(), sizeof(Node)) || !add(nodes_.size() != 0, kVectorAllocationOverhead) ||
-      !add(tensors_.size(), sizeof(TensorDesc)) ||
-      !add(tensors_.size() != 0, kVectorAllocationOverhead) ||
-      !add(producers_.size(), sizeof(NodeId)) ||
-      !add(producers_.size() != 0, kVectorAllocationOverhead) ||
-      !add(inputs_.size(), sizeof(TensorId)) ||
-      !add(inputs_.size() != 0, kVectorAllocationOverhead) ||
-      !add(outputs_.size(), sizeof(TensorId)) ||
-      !add(outputs_.size() != 0, kVectorAllocationOverhead) ||
-      !add(keep_.size(), sizeof(TensorId)) || !add(keep_.size() != 0, kVectorAllocationOverhead) ||
-      !add(names_.size(), sizeof(std::string)) ||
-      !add(names_.size() != 0, kVectorAllocationOverhead) || !add(name_bytes, 1) ||
-      !add(names_.size(), kVectorAllocationOverhead))
-    return error(GraphError::kAdmission, "comparison graph clone inventory overflowed");
-  if (funder) {
-    auto loan = AcquireStorageLoan(funder, bytes);
-    if (!loan)
-      return error(GraphError::kAdmission, "comparison graph clone storage was not funded");
-    g.storage_loan_ = std::move(*loan);
-  }
-  g.nodes_.reserve(nodes_.size());
-  g.nodes_.insert(g.nodes_.end(), nodes_.begin(), nodes_.end());
-  g.tensors_.reserve(tensors_.size());
-  g.tensors_.insert(g.tensors_.end(), tensors_.begin(), tensors_.end());
-  g.producers_.reserve(producers_.size());
-  g.producers_.insert(g.producers_.end(), producers_.begin(), producers_.end());
-  g.inputs_.reserve(inputs_.size());
-  g.inputs_.insert(g.inputs_.end(), inputs_.begin(), inputs_.end());
-  g.outputs_.reserve(outputs_.size());
-  g.outputs_.insert(g.outputs_.end(), outputs_.begin(), outputs_.end());
-  g.keep_.reserve(keep_.size());
-  g.keep_.insert(g.keep_.end(), keep_.begin(), keep_.end());
-  g.names_.reserve(names_.size());
-  g.names_.insert(g.names_.end(), names_.begin(), names_.end());
+  g.nodes_ = nodes_;
+  g.tensors_ = tensors_;
+  g.producers_ = producers_;
+  g.inputs_ = inputs_;
+  g.outputs_ = outputs_;
+  g.keep_ = keep_;
+  g.names_ = names_;
   g.digest_ = digest_;
   g.identity_ = NextIdentity();
-  return std::move(g);
+  return g;
 }
 
 base::Sha256Digest Graph::Digest() const { return digest_; }
-
-std::expected<std::uint64_t, VerifyError> Graph::DigestScratchBound() const {
-  const std::uint64_t tensors = tensors_.size();
-  const std::uint64_t nodes = nodes_.size();
-  const std::uint64_t leaves = static_cast<std::uint64_t>(
-      std::ranges::count_if(nodes_, [](const Node& node) { return IsLeaf(node.key.op); }));
-  std::uint64_t bytes = 0;
-  auto add = [&](std::uint64_t count, std::uint64_t size) {
-    if (size != 0 && count > (std::numeric_limits<std::uint64_t>::max() - bytes) / size)
-      return false;
-    bytes += count * size;
-    return true;
-  };
-  constexpr std::uint64_t kVectorAllocationOverhead = 2 * sizeof(void*) + alignof(std::max_align_t);
-  if (!add(tensors, sizeof(std::uint32_t)) || !add(tensors != 0, kVectorAllocationOverhead) ||
-      !add(nodes, sizeof(std::uint32_t)) || !add(nodes != 0, kVectorAllocationOverhead) ||
-      !add(leaves, sizeof(base::Sha256Digest)) || !add(leaves != 0, kVectorAllocationOverhead))
-    return std::unexpected(VerifyError{.error = GraphError::kAdmission, .detail = {}});
-  return bytes;
-}
 
 base::Sha256Digest Graph::ComputeDigest() const {
   Hasher h;

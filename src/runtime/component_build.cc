@@ -12,7 +12,6 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <numeric>
 #include <optional>
 #include <span>
 #include <string>
@@ -509,47 +508,15 @@ std::expected<LlmBuildParts, std::string> AssembleComponentParts(
       return Error("a launch's pool lies outside the node's workspace");
     return held->backend->Launch({.base = node.pool().base, .size = base::Bytes(pool_bytes)});
   };
-  const std::uint64_t weight_reservation_alignment = node.memory().ReservationAlignment().value();
-  const auto resolve_weight = [held, paged, drafter_paged, weight_reservation_alignment](
-                                  const ir::WeightRef& ref, format::PartRole role)
-      -> std::optional<std::pair<std::uint64_t, std::optional<kernels::BoundedAddress>>> {
+  parts.config.weight_address = [held, paged, drafter_paged](
+                                    const ir::WeightRef& ref,
+                                    format::PartRole role) -> std::uint64_t {
     const auto at = held->place.find({ref, role});
-    if (at == held->place.end()) return std::nullopt;
+    if (at == held->place.end()) return 0;
     const ComponentHold::Place& p = at->second;
     const auto* owner = p.artifact == 0 ? paged : drafter_paged;
-    if (owner == nullptr) return std::nullopt;
-    if (p.array) {
-      const std::uint64_t address = owner->array_address(p.index);
-      return address == 0
-                 ? std::nullopt
-                 : std::optional(std::pair{address, std::optional<kernels::BoundedAddress>{}});
-    }
-    const auto resources = owner->artifact().resources();
-    if (p.index >= resources.size()) return std::nullopt;
-    const ja::Resource& resource = resources[p.index];
-    if (resource.part != role) return std::nullopt;
-    const std::uint64_t address = owner->resource_address(p.index);
-    if (address == 0) return std::nullopt;
-    std::uint64_t end = 0;
-    if (resource.readable.value() == 0 || weight_reservation_alignment == 0 ||
-        __builtin_add_overflow(address, resource.readable.value(), &end))
-      return std::pair{address, std::optional<kernels::BoundedAddress>{}};
-    const std::uint64_t alignment = std::gcd(weight_reservation_alignment, address);
-    if (alignment == 0) return std::pair{address, std::optional<kernels::BoundedAddress>{}};
-    return std::pair{
-        address, std::optional(kernels::BoundedAddress{
-                     .base = address, .bytes = resource.readable.value(), .alignment = alignment})};
-  };
-  parts.config.weight_address = [resolve_weight](const ir::WeightRef& ref,
-                                                 format::PartRole role) -> std::uint64_t {
-    const auto resolved = resolve_weight(ref, role);
-    return resolved ? resolved->first : 0;
-  };
-  parts.config.weight_range = [resolve_weight](
-                                  const ir::WeightRef& ref,
-                                  format::PartRole role) -> std::optional<kernels::BoundedAddress> {
-    const auto resolved = resolve_weight(ref, role);
-    return resolved ? resolved->second : std::nullopt;
+    if (owner == nullptr) return 0;
+    return p.array ? owner->array_address(p.index) : owner->resource_address(p.index);
   };
   parts.source = std::move(built.source);
   parts.caps = built.policy.batching();

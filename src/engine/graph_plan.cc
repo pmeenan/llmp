@@ -102,17 +102,11 @@ class ReportedProgram final : public kernels::ForwardingStepProgram {
 };
 }  // namespace
 
-std::expected<planner::PlanOptions, std::string> PrepareComponentPlanOptions(
-    const GraphBuildIO& io, const kernels::StepBackend& backend,
-    const kernels::Addresses& addresses, planner::PlanOptions options) {
-  auto prepared = PrepareComponentPlanOptionsInPlace(io, backend, addresses, options);
-  if (!prepared) return std::unexpected(std::move(prepared.error()));
-  return options;
-}
-
-std::expected<void, std::string> PrepareComponentPlanOptionsInPlace(
-    const GraphBuildIO& io, const kernels::StepBackend& backend,
-    const kernels::Addresses& addresses, planner::PlanOptions& options) {
+namespace {
+std::expected<void, std::string> PrepareInPlace(const GraphBuildIO& io,
+                                                const kernels::StepBackend& backend,
+                                                const kernels::Addresses& addresses,
+                                                planner::PlanOptions& options) {
   if (backend.registry == nullptr || !std::ranges::equal(io.inputs, io.graph.inputs()) ||
       !std::ranges::equal(io.outputs, io.graph.outputs()))
     return std::unexpected("a component graph needs its exact typed interface and registry");
@@ -197,6 +191,16 @@ std::expected<void, std::string> PrepareComponentPlanOptionsInPlace(
   options.root_alignment = std::move(root_alignment);
   options.activation_alignment = addresses.activation_alignment;
   return {};
+}
+
+}  // namespace
+
+std::expected<planner::PlanOptions, std::string> PrepareComponentPlanOptions(
+    const GraphBuildIO& io, const kernels::StepBackend& backend,
+    const kernels::Addresses& addresses, planner::PlanOptions options) {
+  auto prepared = PrepareInPlace(io, backend, addresses, options);
+  if (!prepared) return std::unexpected(std::move(prepared.error()));
+  return options;
 }
 
 std::expected<planner::StepPlan, std::string> PlanComponentGraph(
@@ -328,15 +332,12 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> LowerComponent
   return result;
 }
 
-std::expected<std::unique_ptr<kernels::StepProgram>, std::string>
-detail::BuildOrdinaryComponentProgram(const GraphBuildIO& io, const kernels::StepBackend& backend,
-                                      const planner::Policy& policy,
-                                      const kernels::Addresses& addresses,
-                                      planner::PlanOptions options,
-                                      std::optional<kernels::TokenLowerInput> token,
-                                      const kernels::ProgramValidator& validate,
-                                      std::shared_ptr<const kernels::BackendOwner> report_owner,
-                                      const kernels::ExecutionResources* resources) {
+std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildComponentProgram(
+    const GraphBuildIO& io, const kernels::StepBackend& backend, const planner::Policy& policy,
+    const kernels::Addresses& addresses, planner::PlanOptions options,
+    std::optional<kernels::TokenLowerInput> token, const kernels::ProgramValidator& validate,
+    std::shared_ptr<const kernels::BackendOwner> report_owner,
+    const kernels::ExecutionResources* resources) {
   if (!backend.lower) return std::unexpected("a component graph needs a backend lowerer");
   if (resources &&
       (!*resources || !resources->parent() || &backend != &resources->parent()->backend()))
@@ -372,20 +373,6 @@ detail::BuildOrdinaryComponentProgram(const GraphBuildIO& io, const kernels::Ste
   if (!plan) return std::unexpected(std::move(plan.error()));
   const kernels::LowerInput input{*plan, io, addresses, token};
   return LowerComponentPlan(input, backend, policy, validate, std::move(report_owner), resources);
-}
-
-std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildComponentProgram(
-    const GraphBuildIO& io, const kernels::StepBackend& backend, const planner::Policy& policy,
-    const kernels::Addresses& addresses, planner::PlanOptions options,
-    std::optional<kernels::TokenLowerInput> token, const kernels::ProgramValidator& validate,
-    std::shared_ptr<const kernels::BackendOwner> report_owner,
-    const kernels::ExecutionResources* resources) {
-  if (!token && !options.shape && !options.state_spans && backend.registry &&
-      !backend.registry->ranks().recipe_comparisons.empty() && !addresses.measuring())
-    return BuildCumulativeRecipeProgram(io, backend, policy, addresses, std::move(options),
-                                        validate, std::move(report_owner), resources);
-  return detail::BuildOrdinaryComponentProgram(io, backend, policy, addresses, std::move(options),
-                                               token, validate, std::move(report_owner), resources);
 }
 
 }  // namespace llmp::engine

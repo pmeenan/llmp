@@ -28,7 +28,11 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
-## RE-061: Permission-only source sync can invalidate compiler receipts without scheduling a rebuild  (2026-10-22, status: worked-around)
+## RE-061: Permission-only source sync can invalidate compiler receipts without scheduling a rebuild  (2026-10-22, status: obsolete 2026-10-26)
+
+*Obsolete:* the compiler-identity launcher and its receipts were removed with
+U6's exact-site comparison (M3.5 fix F6); a permission-only change no longer
+fails a build. The record below is history.
 
 On `spark` with the locked AArch64 SDK and Ninja native build, handing a warm
 build from a worktree to the main source copy changed an unchanged header from

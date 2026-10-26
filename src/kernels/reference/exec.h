@@ -38,7 +38,6 @@
 #include <vector>
 
 #include "format/encoding.h"
-#include "ir/decompose.h"
 #include "ir/graph.h"
 #include "kernels/reference/decode.h"
 
@@ -131,8 +130,8 @@ class Executor {
 
   const ir::Graph* source_ = nullptr;
   std::optional<ir::Graph> expanded_;
-  ir::OwnedTensorMap map_;   // source tensor -> expanded tensor
-  std::vector<Root> roots_;  // by expanded tensor (roots only)
+  std::vector<ir::TensorId> map_;  // source tensor -> expanded tensor
+  std::vector<Root> roots_;        // by expanded tensor (roots only)
   std::size_t next_ = 0;
 };
 

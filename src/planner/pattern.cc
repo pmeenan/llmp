@@ -3,8 +3,6 @@
 
 #include "planner/pattern.h"
 
-#include <bits/shared_ptr_base.h>
-
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -31,7 +29,6 @@
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "ir/verify.h"
-#include "planner/alternative.h"
 #include "planner/fusions.h"
 #include "planner/policy.h"
 #include "planner/select.h"
@@ -47,79 +44,6 @@ using ir::TensorId;
 
 constexpr ir::OpKey Prim(Op op) { return ir::Primitive(op); }
 
-constexpr std::uint64_t kMatchVectorEnvelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-
-template <class T>
-std::optional<std::uint64_t> MatchVectorBytes(std::uint64_t capacity) {
-  if (capacity == 0) return std::uint64_t{0};
-  if (capacity > (std::numeric_limits<std::uint64_t>::max() - kMatchVectorEnvelope) / sizeof(T))
-    return std::nullopt;
-  return capacity * sizeof(T) + kMatchVectorEnvelope;
-}
-
-// Tracks actual capacities admitted for vectors owned by one matcher call.
-// Declare it before those vectors so they are destroyed before their charge is
-// returned. Retained vectors detach the charge when ownership moves to Match.
-class MatchVectorInventory {
- public:
-  explicit MatchVectorInventory(const MatchContext& context) : context_(context) {}
-  MatchVectorInventory(const MatchVectorInventory&) = delete;
-  MatchVectorInventory& operator=(const MatchVectorInventory&) = delete;
-  ~MatchVectorInventory() {
-    if (bytes_ != 0) (void)context_.ReleaseMatchTrial(bytes_);
-  }
-
-  template <class T>
-  bool Reserve(std::vector<T>& values, std::size_t requested) {
-    if (requested <= values.capacity()) return true;
-    if (context_.metadata_admission() == nullptr) return true;
-    const std::uint64_t old_capacity = values.capacity();
-    const std::uint64_t max_capacity = values.max_size();
-    if (requested > max_capacity || old_capacity >= max_capacity) {
-      context_.RefuseMatchTrial();
-      return false;
-    }
-    const std::uint64_t doubled = old_capacity > max_capacity / 2 ? max_capacity : old_capacity * 2;
-    const std::uint64_t next_capacity =
-        std::max<std::uint64_t>(requested, std::max<std::uint64_t>(1, doubled));
-    const auto old_bytes = MatchVectorBytes<T>(old_capacity);
-    const auto next_bytes = MatchVectorBytes<T>(next_capacity);
-    if (!old_bytes || !next_bytes ||
-        *next_bytes > std::numeric_limits<std::uint64_t>::max() - bytes_) {
-      context_.RefuseMatchTrial();
-      return false;
-    }
-    // The previous allocation is already represented in bytes_. Admit the new
-    // allocation while it remains live, then refund the old allocation only
-    // after reserve has replaced it.
-    if (!context_.ChargeMatchTrial(*next_bytes)) return false;
-    values.reserve(static_cast<std::size_t>(next_capacity));
-    if (values.capacity() != next_capacity) {
-      context_.RefuseMatchTrial();
-      return false;
-    }
-    if (*old_bytes != 0 && !context_.ReleaseMatchTrial(*old_bytes)) return false;
-    bytes_ = bytes_ - *old_bytes + *next_bytes;
-    return true;
-  }
-
-  bool Charge(std::uint64_t bytes) {
-    if (bytes > std::numeric_limits<std::uint64_t>::max() - bytes_) {
-      context_.RefuseMatchTrial();
-      return false;
-    }
-    if (!context_.ChargeMatchTrial(bytes)) return false;
-    bytes_ += bytes;
-    return true;
-  }
-
-  void Retain() { bytes_ = 0; }
-
- private:
-  const MatchContext& context_;
-  std::uint64_t bytes_ = 0;
-};
-
 bool HasCandidateNoAllocation(const MatchContext& c, ir::OpKey key,
                               std::span<const ir::TensorDesc* const> sources,
                               std::span<const ir::TensorDesc* const> outputs,
@@ -127,8 +51,7 @@ bool HasCandidateNoAllocation(const MatchContext& c, ir::OpKey key,
   // This matcher only asks whether any implementation exists. Keep the
   // capability/tuning/fusion filters, but avoid temporary candidate lists;
   // SelectionView builds operand facts on the stack and execution scans the
-  // registry without constructing a ranked list. These Bf16 matcher queries
-  // are primitive operations, so no fused-comparison identity is allocated.
+  // registry without constructing a ranked list.
   return c.view().HasCandidate(key, sources, outputs, params);
 }
 
@@ -196,21 +119,13 @@ bool KeepsOrder(const MatchContext& c, const Match& m) {
   const NodeId last = m.nodes.back();
   for (std::size_t i = 0; i + 1 < m.nodes.size(); ++i) {
     const ir::Node& node = g.node(m.nodes[i]);
-    MatchVectorInventory reads_inventory(c);
     std::vector<TensorId> reads;
-    std::size_t read_count = 0;
-    for (const TensorId s : node.sources()) read_count += s.valid();
-    if (!reads_inventory.Reserve(reads, read_count)) return false;
     for (const TensorId s : node.sources()) {
       if (s.valid()) {
         reads.push_back(g.root(s));
       }
     }
-    MatchVectorInventory writes_inventory(c);
     std::vector<TensorId> writes;
-    std::size_t write_count = 0;
-    ir::ForEachWrite(g, node, [&](TensorId) { ++write_count; });
-    if (!writes_inventory.Reserve(writes, write_count)) return false;
     ir::ForEachWrite(g, node, [&](TensorId r) { writes.push_back(r); });
     for (std::uint32_t k = m.nodes[i].v + 1; k < last.v; ++k) {
       if (std::ranges::contains(m.nodes, NodeId{k})) {
@@ -294,29 +209,21 @@ Match Fusion(std::vector<NodeId> nodes, std::vector<TensorId> sources, const P& 
                .params = ir::ToBytes(params)};
 }
 
-// Fixed-arity matchers pass stack-backed descriptors here. Pay each owned
-// vector before its first allocation, while the initializer/array remains
-// live, then retain the charges with the returned Match.
+// Fixed-arity matchers pass stack-backed descriptors here; trailing absent
+// sources are trimmed as Fusion's.
 template <typename P>
-std::optional<Match> Fusion(const MatchContext& c, std::span<const NodeId> nodes,
+std::optional<Match> Fusion(const MatchContext& /*context*/, std::span<const NodeId> nodes,
                             std::span<const TensorId> sources, const P& params) {
-  MatchVectorInventory nodes_inventory(c);
-  MatchVectorInventory sources_inventory(c);
   std::vector<NodeId> owned_nodes;
   std::vector<TensorId> owned_sources;
   std::size_t source_count = sources.size();
   while (source_count != 0 && !sources[source_count - 1].valid()) --source_count;
-  if (!nodes_inventory.Reserve(owned_nodes, nodes.size()) ||
-      !sources_inventory.Reserve(owned_sources, source_count))
-    return std::nullopt;
   const auto retained_sources = sources.first(source_count);
   owned_nodes.assign(nodes.begin(), nodes.end());
   owned_sources.assign(retained_sources.begin(), retained_sources.end());
   Match match{.nodes = std::move(owned_nodes),
               .sources = std::move(owned_sources),
               .params = ir::ToBytes(params)};
-  nodes_inventory.Retain();
-  sources_inventory.Retain();
   return match;
 }
 
@@ -362,12 +269,8 @@ std::optional<Match> NormRopeSectionsMatch(const MatchContext& c, NodeId anchor)
   const std::uint64_t dim = xd.ne(0), rows = xd.ne(2);
   // The fused parameter holds four sections. Each can add one Rope and one
   // packed-position Cont, with an optional weight Convert.
-  MatchVectorInventory nodes_inventory(c);
-  MatchVectorInventory sources_inventory(c);
   std::vector<NodeId> nodes;
   std::vector<TensorId> sources;
-  if (!nodes_inventory.Reserve(nodes, 2 + 1 + 2 * 4) || !sources_inventory.Reserve(sources, 2 + 4))
-    return std::nullopt;
   nodes.push_back(nm->norm);
   nodes.push_back(nm->mul);
   TensorId w = nm->w;
@@ -423,8 +326,6 @@ std::optional<Match> NormRopeSectionsMatch(const MatchContext& c, NodeId anchor)
   }
   if (covered != dim) return std::nullopt;
   std::ranges::sort(nodes);
-  sources_inventory.Retain();
-  nodes_inventory.Retain();
   Match match = Fusion(std::move(nodes), std::move(sources), params);
   // Every elided intermediate but the positions' copies F32 (the
   // decomposition's), and no read moved past a write.
@@ -455,10 +356,6 @@ struct Bf16GluPlan final : MatchDetail {
   std::array<TensorId, 2> inputs{};  // the products' distinct F32 inputs
   std::size_t input_count = 0;
 };
-using Bf16GluPlanControl =
-    std::_Sp_counted_ptr_inplace<Bf16GluPlan, std::allocator<void>, std::_S_atomic>;
-static_assert(sizeof(Bf16GluPlanControl) >=
-              sizeof(Bf16GluPlan) + sizeof(std::_Sp_counted_base<std::_S_atomic>));
 
 std::optional<Match> Bf16GluMatch(const MatchContext& c, NodeId anchor) {
   const ir::Node& glu = c.node(anchor);
@@ -475,14 +372,8 @@ std::optional<Match> Bf16GluMatch(const MatchContext& c, NodeId anchor) {
            d.format.layout == format::Layout::kDense && !d.is_view() &&
            c.producer(w).key == Prim(Op::kWeight);
   };
-  MatchVectorInventory nodes_inventory(c);
   std::vector<NodeId> nodes;
-  if (!nodes_inventory.Reserve(nodes, 1)) return std::nullopt;
   nodes.push_back(anchor);
-  constexpr std::uint64_t allocation_envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-  if (c.metadata_admission() != nullptr &&
-      !c.ChargeMatchTrial(sizeof(Bf16GluPlanControl) + allocation_envelope))
-    return std::nullopt;
   auto plan = std::make_shared<Bf16GluPlan>();
   // The gate and up: reshapes back to a product, each read once.
   for (std::size_t i = 0; i < 2; ++i) {
@@ -492,7 +383,6 @@ std::optional<Match> Bf16GluMatch(const MatchContext& c, NodeId anchor) {
       const NodeId at = g.producer(t);
       const ir::Node& n = c.node(at);
       if (c.taken(at) || c.OnlyReader(t) != reader) return std::nullopt;
-      if (!nodes_inventory.Reserve(nodes, nodes.size() + 1)) return std::nullopt;
       nodes.push_back(at);
       if (n.key == Prim(Op::kReshape)) {
         reader = at;
@@ -515,11 +405,8 @@ std::optional<Match> Bf16GluMatch(const MatchContext& c, NodeId anchor) {
   }
   // Its readers: reshapes, then products of BF16 weights reading the
   // result as their input.
-  MatchVectorInventory frontier_inventory(c);
   std::vector<TensorId> frontier;
-  if (!frontier_inventory.Reserve(frontier, 1)) return std::nullopt;
   frontier.push_back(glu.out[0]);
-  MatchVectorInventory readers_inventory(c);
   std::vector<NodeId> readers;
   while (!frontier.empty()) {
     const TensorId t = frontier.back();
@@ -529,14 +416,10 @@ std::optional<Match> Bf16GluMatch(const MatchContext& c, NodeId anchor) {
       const ir::Node& n = c.node(r);
       if (c.taken(r)) return std::nullopt;
       if (n.key == Prim(Op::kReshape)) {
-        if (!nodes_inventory.Reserve(nodes, nodes.size() + 1) ||
-            !frontier_inventory.Reserve(frontier, frontier.size() + 1))
-          return std::nullopt;
         nodes.push_back(r);
         frontier.push_back(n.out[0]);
       } else if (n.key == Prim(Op::kMatMul) && n.src[1] == t && n.src[0] != t &&
                  DefaultProduct(n) && bf16_weight(n.src[0])) {
-        if (!readers_inventory.Reserve(readers, readers.size() + 1)) return std::nullopt;
         readers.push_back(r);
       } else {
         return std::nullopt;
@@ -579,14 +462,9 @@ std::optional<Match> Bf16GluMatch(const MatchContext& c, NodeId anchor) {
     if (!HasCandidateNoAllocation(c, q.key, src, o, q.params)) return std::nullopt;
   }
   std::ranges::sort(nodes);
-  Match m{.nodes = std::move(nodes),
-          .rewrite_local_slots = plan->input_count,
-          .sources = {},
-          .params = {},
-          .implementation = 0,
-          .detail = plan};
+  Match m{
+      .nodes = std::move(nodes), .sources = {}, .params = {}, .implementation = 0, .detail = plan};
   if (!KeepsOrder(c, m)) return std::nullopt;
-  nodes_inventory.Retain();
   return m;
 }
 
@@ -650,16 +528,12 @@ struct QkAttentionPlan final : MatchDetail {
   std::array<NodeId, 3> products{};  // q, k, v
   bool bf16_out = false;
 };
-using QkAttentionPlanControl =
-    std::_Sp_counted_ptr_inplace<QkAttentionPlan, std::allocator<void>, std::_S_atomic>;
-static_assert(sizeof(QkAttentionPlanControl) >=
-              sizeof(QkAttentionPlan) + sizeof(std::_Sp_counted_base<std::_S_atomic>));
 
 // `t`, read by `reader` alone, through views that are reshapes of their
 // whole source (a packed view of all of a tensor's bytes) and reshapes,
 // each read by the next alone: the nodes and the tensor they reshape.
 std::optional<TensorId> Unreshaped(const MatchContext& c, TensorId t, NodeId reader,
-                                   std::vector<NodeId>& nodes, MatchVectorInventory& inventory) {
+                                   std::vector<NodeId>& nodes) {
   for (;;) {
     if (c.OnlyReader(t) != reader) return std::nullopt;
     const NodeId at = c.graph().producer(t);
@@ -670,7 +544,6 @@ std::optional<TensorId> Unreshaped(const MatchContext& c, TensorId t, NodeId rea
                                 ir::Elements(c.tensor(c.graph().root(n.src[0])).shape()) &&
                             !c.tensor(n.src[0]).is_view();
     if ((n.key != Prim(Op::kReshape) && !whole_view) || c.taken(at)) return t;
-    if (!inventory.Reserve(nodes, nodes.size() + 1)) return std::nullopt;
     nodes.push_back(at);
     reader = at;
     t = n.src[0];
@@ -689,15 +562,9 @@ std::optional<Match> QkAttentionMatch(const MatchContext& c, NodeId anchor) {
       ap.n_kv_max != 0 || ap.accumulate != ir::Accumulate::kDefault)
     return std::nullopt;
   const ir::Graph& g = c.graph();
-  constexpr std::uint64_t allocation_envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-  if (c.metadata_admission() != nullptr &&
-      !c.ChargeMatchTrial(sizeof(QkAttentionPlanControl) + allocation_envelope))
-    return std::nullopt;
   auto plan = std::make_shared<QkAttentionPlan>();
   plan->attention = anchor;
-  MatchVectorInventory nodes_inventory(c);
   std::vector<NodeId> nodes;
-  if (!nodes_inventory.Reserve(nodes, 1)) return std::nullopt;
   nodes.push_back(anchor);
   const auto bf16_weight = [&](TensorId w) {
     const ir::TensorDesc& d = c.tensor(w);
@@ -732,7 +599,6 @@ std::optional<Match> QkAttentionMatch(const MatchContext& c, NodeId anchor) {
       const NodeId at = g.producer(t);
       if (c.node(at).key != Prim(Op::kCont) || c.taken(at) || c.OnlyReader(t) != reader)
         return std::nullopt;
-      if (!nodes_inventory.Reserve(nodes, nodes.size() + 1)) return std::nullopt;
       nodes.push_back(at);
       reader = at;
       t = c.node(at).src[0];
@@ -742,9 +608,8 @@ std::optional<Match> QkAttentionMatch(const MatchContext& c, NodeId anchor) {
     if (pn.key != Prim(Op::kPermute) || c.taken(perm) || c.OnlyReader(t) != reader ||
         pn.Params<ir::PermuteParams>().axes != std::array<std::uint8_t, 4>{0, 2, 1, 3})
       return std::nullopt;
-    if (!nodes_inventory.Reserve(nodes, nodes.size() + 1)) return std::nullopt;
     nodes.push_back(perm);
-    auto under = Unreshaped(c, pn.src[0], perm, nodes, nodes_inventory);
+    auto under = Unreshaped(c, pn.src[0], perm, nodes);
     if (!under) return std::nullopt;
     return *under;
   };
@@ -764,15 +629,13 @@ std::optional<Match> QkAttentionMatch(const MatchContext& c, NodeId anchor) {
       return false;
     const auto rp = r.Params<ir::RopeSectionsParams>();
     if (rp.mode != ir::RopeMode::kNormal) return false;
-    if (!nodes_inventory.Reserve(nodes, nodes.size() + 1)) return false;
     nodes.push_back(rot);
-    auto under = Unreshaped(c, r.src[0], rot, nodes, nodes_inventory);
+    auto under = Unreshaped(c, r.src[0], rot, nodes);
     if (!under) return false;
     const NodeId product_reader = nodes.back() == rot ? rot : nodes.back();
     const auto p = product(*under, product_reader);
     if (!p) return false;
     prod = *p;
-    if (!nodes_inventory.Reserve(nodes, nodes.size() + 1)) return false;
     nodes.push_back(prod);
     return true;
   };
@@ -786,7 +649,6 @@ std::optional<Match> QkAttentionMatch(const MatchContext& c, NodeId anchor) {
     const auto p = product(*v, last);
     if (!p) return std::nullopt;
     plan->products[2] = *p;
-    if (!nodes_inventory.Reserve(nodes, nodes.size() + 1)) return std::nullopt;
     nodes.push_back(*p);
   }
   // Its readers: products of BF16 weights through reshapes, each with a
@@ -863,14 +725,9 @@ std::optional<Match> QkAttentionMatch(const MatchContext& c, NodeId anchor) {
     if (!HasCandidateNoAllocation(c, ir::Fused(FusedKind::kQkAttention), src, o, ir::ToBytes(qp)))
       return std::nullopt;
   }
-  Match m{.nodes = std::move(nodes),
-          .rewrite_local_slots = plan->input_count + 3,
-          .sources = {},
-          .params = {},
-          .implementation = 0,
-          .detail = plan};
+  Match m{
+      .nodes = std::move(nodes), .sources = {}, .params = {}, .implementation = 0, .detail = plan};
   if (!KeepsOrder(c, m)) return std::nullopt;
-  nodes_inventory.Retain();
   return m;
 }
 
@@ -973,7 +830,6 @@ struct SplitSide {
   std::uint32_t split = 0;
 };
 std::optional<SplitSide> SplitSideOf(const MatchContext& c, TensorId v, NodeId reader) {
-  MatchVectorInventory inventory(c);
   const ir::Graph& g = c.graph();
   const ir::TensorDesc& vd = c.tensor(v);
   if (vd.shape().rank > 2 || c.external(v)) return std::nullopt;
@@ -1018,9 +874,7 @@ std::optional<SplitSide> SplitSideOf(const MatchContext& c, TensorId v, NodeId r
   for (std::size_t k = 1; k < chain_size && owned; ++k) owned = c.OnlyReader(chain[k].second) == at;
   for (std::size_t k = 0; k < chain_size; ++k) owned = owned && !c.taken(chain[k].first);
   if (owned) {
-    if (!inventory.Reserve(side.nodes, chain_size)) return std::nullopt;
     for (std::size_t k = 0; k < chain_size; ++k) side.nodes.push_back(chain[k].first);
-    inventory.Retain();
   }
   return side;
 }
@@ -1029,9 +883,7 @@ std::optional<SplitSide> SplitSideOf(const MatchContext& c, TensorId v, NodeId r
 // numerical recipe. A possible BF16 consumer alone is not authority.
 // Copy() transfers the fact to each changed product's final selection.
 bool OnlyBf16Products(const MatchContext& c, TensorId t) {
-  MatchVectorInventory inventory(c);
   std::vector<TensorId> frontier;
-  if (!inventory.Reserve(frontier, 1)) return false;
   frontier.push_back(t);
   while (!frontier.empty()) {
     const TensorId u = frontier.back();
@@ -1040,7 +892,6 @@ bool OnlyBf16Products(const MatchContext& c, TensorId t) {
     for (const NodeId r : c.readers(u)) {
       const ir::Node& n = c.node(r);
       if (n.key == Prim(Op::kReshape)) {
-        if (!inventory.Reserve(frontier, frontier.size() + 1)) return false;
         frontier.push_back(n.out[0]);
         continue;
       }
@@ -1069,10 +920,6 @@ bool OnlyBf16Products(const MatchContext& c, TensorId t) {
 struct SplitModulatePlan final : MatchDetail {
   bool bf16 = false;  // recorded in BF16 (OnlyBf16Products)
 };
-using SplitModulatePlanControl =
-    std::_Sp_counted_ptr_inplace<SplitModulatePlan, std::allocator<void>, std::_S_atomic>;
-static_assert(sizeof(SplitModulatePlanControl) >=
-              sizeof(SplitModulatePlan) + sizeof(std::_Sp_counted_base<std::_S_atomic>));
 
 // split_modulate: a layer norm times one plus a conditioning split between
 // two row ranges (SplitSideOf): fused.layer_norm_modulate_split. BF16
@@ -1098,9 +945,7 @@ std::optional<Match> SplitModulateMatch(const MatchContext& c, NodeId anchor) {
       continue;
     const auto side = SplitSideOf(c, scale.src[0], sc);
     if (!side) continue;
-    MatchVectorInventory inventory(c);
     std::vector<NodeId> nodes;
-    if (!inventory.Reserve(nodes, 3 + side->nodes.size())) return std::nullopt;
     nodes.push_back(anchor);
     nodes.push_back(ln);
     nodes.push_back(sc);
@@ -1110,15 +955,10 @@ std::optional<Match> SplitModulateMatch(const MatchContext& c, NodeId anchor) {
                                          .split = side->split};
     Match match;
     match.nodes = std::move(nodes);
-    if (!inventory.Reserve(match.sources, 3)) return std::nullopt;
     match.sources.push_back(norm.src[0]);
     match.sources.push_back(side->a);
     match.sources.push_back(side->b);
     match.params = ir::ToBytes(params);
-    constexpr std::uint64_t allocation_envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-    if (c.metadata_admission() != nullptr &&
-        !c.ChargeMatchTrial(sizeof(SplitModulatePlanControl) + allocation_envelope))
-      return std::nullopt;
     auto plan = std::make_shared<SplitModulatePlan>();
     ir::TensorDesc out = c.tensor(m.out[0]);
     if (OnlyBf16Products(c, m.out[0])) {
@@ -1133,7 +973,6 @@ std::optional<Match> SplitModulateMatch(const MatchContext& c, NodeId anchor) {
       continue;
     if (!ElidesF32(c, match) || !KeepsOrder(c, match)) continue;
     match.detail = std::move(plan);
-    inventory.Retain();
     return match;
   }
   return std::nullopt;
@@ -1180,9 +1019,7 @@ std::optional<Match> SplitGatedResidualMatch(const MatchContext& c, NodeId ancho
         continue;
       const auto side = SplitSideOf(c, tanh.src[0], tn);
       if (!side) continue;
-      MatchVectorInventory inventory(c);
       std::vector<NodeId> nodes;
-      if (!inventory.Reserve(nodes, 3 + side->nodes.size())) return std::nullopt;
       nodes.push_back(anchor);
       nodes.push_back(mn);
       nodes.push_back(tn);
@@ -1190,14 +1027,12 @@ std::optional<Match> SplitGatedResidualMatch(const MatchContext& c, NodeId ancho
       std::ranges::sort(nodes);
       Match match;
       match.nodes = std::move(nodes);
-      if (!inventory.Reserve(match.sources, 4)) return std::nullopt;
       match.sources.insert(match.sources.end(), {carry, branch, side->a, side->b});
       match.params = ir::ToBytes(ir::SplitModulateParams{.eps = 0.0F, .split = side->split});
       if (!Implemented(c, ir::Fused(FusedKind::kGatedResidualSplit), match.sources, add.outputs(),
                        match.params) ||
           !ElidesF32(c, match) || !KeepsOrder(c, match))
         continue;
-      inventory.Retain();
       return match;
     }
   }
@@ -1222,10 +1057,6 @@ struct SplitResidualPlan final : MatchDetail {
   // A range: its first row and row count (rows == 0: the whole sum).
   std::uint64_t first = 0, rows = 0;
 };
-using SplitResidualPlanControl =
-    std::_Sp_counted_ptr_inplace<SplitResidualPlan, std::allocator<void>, std::_S_atomic>;
-static_assert(sizeof(SplitResidualPlanControl) >=
-              sizeof(SplitResidualPlan) + sizeof(std::_Sp_counted_base<std::_S_atomic>));
 // The descriptor of rows [first, first + rows) of the contiguous [C, R]
 // `whole`, as a view.
 ir::TensorDesc RowRange(const ir::TensorDesc& whole, std::uint64_t first, std::uint64_t rows) {
@@ -1305,10 +1136,7 @@ std::optional<Match> SplitGatedResidualModulateMatch(const MatchContext& c, Node
     if (r.v < anchor.v && (between_count == 0 || r != between[0])) return std::nullopt;
   ir::SplitModulateParams params = mp;
   params.split = gp.split;
-  MatchVectorInventory inventory(c);
   Match match;
-  if (!inventory.Reserve(match.nodes, 2 + between_count) || !inventory.Reserve(match.sources, 6))
-    return std::nullopt;
   match.nodes.push_back(at);
   for (std::size_t i = 0; i < between_count; ++i) match.nodes.push_back(between[i]);
   match.nodes.push_back(anchor);
@@ -1341,10 +1169,6 @@ std::optional<Match> SplitGatedResidualModulateMatch(const MatchContext& c, Node
                                 std::array<const ir::TensorDesc*, 2>{&sum, &modulated},
                                 match.params) ||
       !KeepsOrder(c, match))
-    return std::nullopt;
-  constexpr std::uint64_t allocation_envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-  if (c.metadata_admission() != nullptr &&
-      !c.ChargeMatchTrial(sizeof(SplitResidualPlanControl) + allocation_envelope))
     return std::nullopt;
   auto plan = std::make_shared<SplitResidualPlan>();
   plan->first = first;
@@ -1389,7 +1213,6 @@ std::optional<Match> SplitGatedResidualModulateMatch(const MatchContext& c, Node
     }
   }
   match.detail = std::move(plan);
-  inventory.Retain();
   return match;
 }
 
@@ -1455,11 +1278,8 @@ std::optional<Match> Bf16BranchMatch(const MatchContext& c, NodeId anchor) {
   }
   // The residual keeps its own match (round 1 may join it with its
   // modulation): only the product is taken.
-  MatchVectorInventory inventory(c);
   Match match;
-  if (!inventory.Reserve(match.nodes, 1)) return std::nullopt;
   match.nodes.push_back(anchor);
-  inventory.Retain();
   return match;
 }
 
@@ -1785,17 +1605,13 @@ std::optional<Match> PairedGluProductsMatch(const MatchContext& c, NodeId anchor
       c.tensor(second.out[0]).format.encoding != format::Encoding::kF32 ||
       !SameShape(c.tensor(first.out[0]), c.tensor(second.out[0])))
     return std::nullopt;
-  MatchVectorInventory inventory(c);
   Match match;
-  if (!inventory.Reserve(match.nodes, 2) || !inventory.Reserve(match.sources, 3))
-    return std::nullopt;
   match.nodes = {anchor, second_id};
   match.sources = {first.src[0], second.src[0], first.src[1]};
   const std::array outputs{first.out[0], second.out[0]};
   if (!Implemented(c, ir::Fused(FusedKind::kPreparedProducts), match.sources, outputs,
                    match.params))
     return std::nullopt;
-  inventory.Retain();
   return match;
 }
 
@@ -1835,7 +1651,6 @@ std::optional<Match> PreparedInputsMatch(const MatchContext& c, NodeId anchor) {
   if (!c.view().HasCandidate(Prim(Op::kPrepare), prep_src, prep_out)) {
     return std::nullopt;
   }
-  MatchVectorInventory products_inventory(c);
   std::vector<NodeId> products;
   for (const NodeId r : c.readers(x)) {
     const ir::Node& q = c.node(r);
@@ -1855,7 +1670,6 @@ std::optional<Match> PreparedInputsMatch(const MatchContext& c, NodeId anchor) {
     const std::array<const ir::TensorDesc*, 2> s = {&c.tensor(q.src[0]), &pd};
     const std::array<const ir::TensorDesc*, 1> o = {&c.tensor(q.out[0])};
     if (HasCandidateNoAllocation(c, Prim(Op::kMatMul), s, o, ir::ToBytes(params))) {
-      if (!products_inventory.Reserve(products, products.size() + 1)) return std::nullopt;
       products.push_back(r);
     }
   }
@@ -1863,11 +1677,8 @@ std::optional<Match> PreparedInputsMatch(const MatchContext& c, NodeId anchor) {
     return std::nullopt;
   }
   Match match;
-  match.rewrite_local_slots = 1;
-  if (!products_inventory.Reserve(match.sources, 1)) return std::nullopt;
   match.nodes = std::move(products);
   match.sources.push_back(x);
-  products_inventory.Retain();
   return match;
 }
 
@@ -1883,9 +1694,7 @@ std::optional<Match> GroupedStoresMatch(const MatchContext& c, NodeId anchor) {
   if (!member(anchor)) {
     return std::nullopt;
   }
-  MatchVectorInventory run_inventory(c);
   std::vector<NodeId> run;
-  if (!run_inventory.Reserve(run, 1)) return std::nullopt;
   run.push_back(anchor);
   for (std::uint32_t i = anchor.v + 1; i < g.nodes().size(); ++i) {
     const NodeId id{i};
@@ -1906,7 +1715,6 @@ std::optional<Match> GroupedStoresMatch(const MatchContext& c, NodeId anchor) {
     if (!independent) {
       break;
     }
-    if (!run_inventory.Reserve(run, run.size() + 1)) return std::nullopt;
     run.push_back(id);
   }
   if (run.size() < 2) {
@@ -1914,18 +1722,16 @@ std::optional<Match> GroupedStoresMatch(const MatchContext& c, NodeId anchor) {
   }
   const ir::OpKey key = ir::Fused(FusedKind::kGroupedStores);
   std::optional<std::size_t> after;
-  while (const auto candidate =
-             c.view().NextOrdinaryCandidate(g, g.node(run.front()), key, after)) {
+  while (const auto candidate = c.view().NextCandidate(g, g.node(run.front()), key, after)) {
     after = candidate;
     const auto& capability = c.view().registry().at(*candidate).capability;
     const std::size_t most = std::min<std::size_t>(capability->batch, run.size());
     std::size_t count = 1;
-    while (count < most && c.view().IsOrdinaryCandidate(g, g.node(run[count]), key, *candidate)) {
+    while (count < most && c.view().IsCandidate(g, g.node(run[count]), key, *candidate)) {
       ++count;
     }
     if (count >= 2) {
       run.resize(count);
-      run_inventory.Retain();
       return Match{.nodes = std::move(run), .implementation = *candidate};
     }
   }
@@ -1982,10 +1788,6 @@ struct OwnerPlan final : MatchDetail {
   // pairs (at most four owners).
   bool chained = true;
 };
-using OwnerPlanControl =
-    std::_Sp_counted_ptr_inplace<OwnerPlan, std::allocator<void>, std::_S_atomic>;
-static_assert(sizeof(OwnerPlanControl) >=
-              sizeof(OwnerPlan) + sizeof(std::_Sp_counted_base<std::_S_atomic>));
 
 constexpr std::uint32_t kOwnerGroup = 4;  // the owners of one node at most (op.h)
 
@@ -2134,13 +1936,7 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
       return std::nullopt;  // not the first
     }
   }
-  MatchVectorInventory retained_inventory(c);
-  constexpr std::uint64_t allocation_envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-  if (c.metadata_admission() != nullptr &&
-      !retained_inventory.Charge(sizeof(OwnerPlanControl) + allocation_envelope))
-    return std::nullopt;
   auto plan = std::make_shared<OwnerPlan>();
-  MatchVectorInventory groups_inventory(c);
   std::vector<std::vector<NodeId>> groups;  // each layer's nodes, in order
   const auto count = static_cast<std::uint32_t>(g.nodes().size());
   for (std::uint32_t at = anchor.v; at < count;) {
@@ -2154,9 +1950,7 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
     if (!first || first->owner != 0 || first->first_row != 0) {
       return std::nullopt;
     }
-    MatchVectorInventory layer_scratch(c);
     std::vector<OwnerAttention> owners;
-    if (!layer_scratch.Reserve(owners, 1)) return std::nullopt;
     owners.push_back(*first);
     TensorId joined = c.node(first->rows).out[0];
     std::vector<NodeId> joins;
@@ -2180,9 +1974,6 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
           o->first_row != prev.first_row + prev.query_rows) {
         return std::nullopt;
       }
-      if (!layer_scratch.Reserve(owners, owners.size() + 1) ||
-          !layer_scratch.Reserve(joins, joins.size() + 1))
-        return std::nullopt;
       owners.push_back(*o);
       joins.push_back(*next);
       joined = cat.out[0];
@@ -2215,9 +2006,6 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
     layer.kv_heads = c.tensor(first->k).ne(1);
     std::vector<TensorId> masks;
     std::vector<NodeId> group;
-    if (!retained_inventory.Reserve(layer.k, n) || !retained_inventory.Reserve(layer.v, n) ||
-        !layer_scratch.Reserve(masks, n))
-      return std::nullopt;
     for (const OwnerAttention& o : owners) {
       const ir::TensorDesc& k = c.tensor(o.k);
       const ir::TensorDesc& v = c.tensor(o.v);
@@ -2231,12 +2019,10 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
       layer.k.push_back(o.k);
       layer.v.push_back(o.v);
       masks.push_back(o.mask);
-      if (!groups_inventory.Reserve(group, group.size() + o.views.size() + 2)) return std::nullopt;
       group.insert(group.end(), o.views.begin(), o.views.end());
       group.push_back(o.attention);
       group.push_back(o.rows);
     }
-    if (!groups_inventory.Reserve(group, group.size() + joins.size())) return std::nullopt;
     group.insert(group.end(), joins.begin(), joins.end());
     std::ranges::sort(group);
     // The layer's kind: its owners' masks.
@@ -2244,7 +2030,6 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
     layer.kind = static_cast<std::size_t>(kind - plan->kinds.begin());
     if (kind == plan->kinds.end()) {
       OwnerPlan::Kind made;
-      if (!retained_inventory.Reserve(made.masks, masks.size())) return std::nullopt;
       made.masks = masks;
       made.rows = c.tensor(masks.front()).ne(1);
       made.component = c.node(g.producer(masks.front())).component;
@@ -2256,12 +2041,8 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
         }
         made.cells = std::max(made.cells, d.ne(0));
       }
-      if (!retained_inventory.Reserve(plan->kinds, plan->kinds.size() + 1)) return std::nullopt;
       plan->kinds.push_back(std::move(made));
     }
-    if (!retained_inventory.Reserve(plan->layers, plan->layers.size() + 1) ||
-        !groups_inventory.Reserve(groups, groups.size() + 1))
-      return std::nullopt;
     plan->layers.push_back(std::move(layer));
     groups.push_back(std::move(group));
     at = groups.back().back().v + 1;
@@ -2291,7 +2072,6 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
   if (!plan->chained && n > kOwnerGroup) {
     return std::nullopt;  // masks in pairs: one node's owners
   }
-  if (!retained_inventory.Reserve(plan->kind_order, plan->kinds.size())) return std::nullopt;
   plan->kind_order.resize(plan->kinds.size());
   for (std::size_t k = 0; k < plan->kinds.size(); ++k) {
     plan->kind_order[k] = k;
@@ -2315,14 +2095,10 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
     padded = true;
   }
   using Dims = std::pair<std::uint64_t, std::uint64_t>;  // head size, KV heads
-  MatchVectorInventory tails_inventory(c);
-  if (plan->kinds.size() != 0 && n > std::numeric_limits<std::size_t>::max() / plan->kinds.size()) {
-    c.RefuseMatchTrial();
+  if (plan->kinds.size() != 0 && n > std::numeric_limits<std::size_t>::max() / plan->kinds.size())
     return std::nullopt;
-  }
   const std::size_t tails_count = plan->kinds.size() * n;
   std::vector<std::vector<std::pair<Dims, int>>> tails;
-  if (!tails_inventory.Reserve(tails, tails_count)) return std::nullopt;
   tails.resize(tails_count);
   if (padded) {
     for (std::uint32_t o = 0; o < n; ++o) {
@@ -2341,12 +2117,7 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
             if (std::ranges::contains(list, d, &std::pair<Dims, int>::first)) {
               continue;
             }
-            if (plan->tails.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-              c.RefuseMatchTrial();
-              return std::nullopt;
-            }
-            if (!tails_inventory.Reserve(list, list.size() + 1) ||
-                !retained_inventory.Reserve(plan->tails, plan->tails.size() + 1))
+            if (plan->tails.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
               return std::nullopt;
             list.emplace_back(d, static_cast<int>(plan->tails.size()));
             plan->tails.push_back(
@@ -2362,9 +2133,6 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
     return it == list.end() ? -1 : it->second;
   };
   for (OwnerPlan::Layer& layer : plan->layers) {
-    if (!retained_inventory.Reserve(layer.k_tail, n) ||
-        !retained_inventory.Reserve(layer.v_tail, n))
-      return std::nullopt;
     for (std::uint32_t o = 0; o < n; ++o) {
       layer.k_tail.push_back(tail(layer.kind, o, {layer.kd, layer.kv_heads}));
       layer.v_tail.push_back(tail(layer.kind, o, {layer.vd, layer.kv_heads}));
@@ -2380,9 +2148,7 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
         }
       }
     }
-    MatchVectorInventory keep_order_inventory(c);
     Match group;
-    if (!keep_order_inventory.Reserve(group.nodes, groups[l].size())) return std::nullopt;
     group.nodes = groups[l];
     if (!KeepsOrder(c, group)) {
       return std::nullopt;
@@ -2390,25 +2156,7 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
   }
   // The match: the masks (kept, before every layer: BuildStep makes them
   // first), then every layer's group, in node order.
-  MatchVectorInventory all_inventory(c);
   std::vector<std::pair<NodeId, std::int32_t>> all;
-  std::size_t all_count = 0;
-  const auto add_count = [&](std::size_t count) {
-    if (count > std::numeric_limits<std::size_t>::max() - all_count) return false;
-    all_count += count;
-    return true;
-  };
-  for (const OwnerPlan::Kind& kind : plan->kinds)
-    if (!add_count(kind.masks.size())) {
-      c.RefuseMatchTrial();
-      return std::nullopt;
-    }
-  for (const auto& group : groups)
-    if (!add_count(group.size())) {
-      c.RefuseMatchTrial();
-      return std::nullopt;
-    }
-  if (!all_inventory.Reserve(all, all_count)) return std::nullopt;
   NodeId last_mask{0};
   for (const OwnerPlan::Kind& kind : plan->kinds) {
     for (const TensorId m : kind.masks) {
@@ -2427,16 +2175,11 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
   }
   std::ranges::sort(all);
   Match m;
-  if (!retained_inventory.Reserve(m.nodes, all.size()) ||
-      !retained_inventory.Reserve(plan->at, all.size()))
-    return std::nullopt;
   for (const auto& [id, role] : all) {
     m.nodes.push_back(id);
     plan->at.push_back(id == last_mask ? OwnerPlan::kLastMask : role);
   }
-  m.rewrite_local_slots = plan->kinds.size() + plan->tails.size();
   m.detail = std::move(plan);
-  retained_inventory.Retain();
   return m;
 }
 
@@ -2623,11 +2366,6 @@ constexpr std::array kGdnConvAnchors = {Op::kSsmConv, Op::kCacheStore};
 constexpr std::array kDeltaAnchors = {Op::kGatedDeltaNet};
 constexpr std::array kMulAnchors = {Op::kMul};
 constexpr std::array kGluAnchors = {Op::kGlu};
-constexpr std::array kVecqGluAdditionalResults = {ir::Fused(FusedKind::kMatMulIdGlu)};
-constexpr std::array kPreparedProductResults = {ir::Primitive(Op::kMatMul)};
-constexpr std::array kVecqPreparedProductResults = {
-    ir::Primitive(Op::kMatMul), ir::Primitive(Op::kMatMulId), ir::Fused(FusedKind::kMatMulGlu),
-    ir::Fused(FusedKind::kMatMulIdGlu)};
 constexpr std::array kRouteAnchors = {Op::kRoute};
 constexpr std::array kReduceAnchors = {Op::kExpertReduce};
 constexpr std::array kFoldReaderAnchors = {Op::kPrepare, Op::kConvert, Op::kMatMul};
@@ -2785,7 +2523,6 @@ constexpr std::array kPatterns = {
     Pattern{.name = "vecq_glu",
             .version = 3,
             .result = ir::Fused(FusedKind::kMatMulGlu),
-            .additional_results = kVecqGluAdditionalResults,
             .anchors = kGluAnchors,
             .match = &fusions::VecQGluMatch,
             .own_checks = true,
@@ -2794,7 +2531,6 @@ constexpr std::array kPatterns = {
     Pattern{.name = "mxfp8_inputs",
             .version = 2,
             .result = ir::Primitive(Op::kPrepare),
-            .additional_results = kPreparedProductResults,
             .anchors = kProductAnchors,
             .match = &fusions::Mxfp8InputsMatch,
             .own_checks = true,
@@ -2804,8 +2540,6 @@ constexpr std::array kPatterns = {
     Pattern{.name = "hc_fold_inputs",
             .version = 2,
             .result = ir::Fused(FusedKind::kHcFold),
-            .additional_results = kPreparedProductResults,
-            .existing_result = true,
             .anchors = kFoldReaderAnchors,
             .match = &fusions::HcFoldInputsMatch,
             .own_checks = true,
@@ -2840,7 +2574,6 @@ constexpr std::array kPatterns = {
     Pattern{.name = "bf16_inputs",
             .version = 2,
             .result = ir::Primitive(Op::kConvert),
-            .additional_results = kPreparedProductResults,
             .anchors = kProductAnchors,
             .match = &fusions::Bf16InputsMatch,
             .own_checks = true,
@@ -2863,7 +2596,6 @@ constexpr std::array kPatterns = {
     Pattern{.name = "vecq_inputs",
             .version = 3,
             .result = ir::Primitive(Op::kPrepare),
-            .additional_results = kVecqPreparedProductResults,
             .anchors = kQuantProductAnchors,
             .match = &fusions::VecQInputsMatch,
             .own_checks = true,
@@ -2944,7 +2676,6 @@ constexpr std::array kPatterns = {
     Pattern{.name = "exl3_products",
             .version = 2,
             .result = ir::Primitive(Op::kConvert),
-            .additional_results = kPreparedProductResults,
             .anchors = kProductAnchors,
             .match = &fusions::Exl3ProductsMatch,
             .own_checks = true,
@@ -2958,7 +2689,6 @@ constexpr std::array kPatterns = {
     Pattern{.name = "prepared_inputs",
             .version = 2,
             .result = ir::Primitive(Op::kPrepare),
-            .additional_results = kPreparedProductResults,
             .anchors = kProductAnchors,
             .match = &PreparedInputsMatch,
             .rewrite = &PreparedRewrite},
@@ -2997,13 +2727,11 @@ bool Anchored(const Pattern& p, Op op) { return std::ranges::contains(p.anchors,
 // ------------------------------------------------------------ the context
 
 MatchContext::MatchContext(const ir::Graph& graph, const SelectionView& view,
-                           const StepShape* shape, StateSpans state_spans,
-                           PlannerMetadataAdmission* metadata_admission)
+                           const StepShape* shape, StateSpans state_spans)
     : graph_(graph),
       view_(view),
       shape_(shape),
       state_spans_(std::move(state_spans)),
-      metadata_admission_(metadata_admission),
       readers_(graph.tensor_count()),
       external_(graph.tensor_count(), false),
       kept_(graph.tensor_count(), false),
@@ -3025,69 +2753,6 @@ MatchContext::MatchContext(const ir::Graph& graph, const SelectionView& view,
 }
 
 std::span<const NodeId> MatchContext::readers(TensorId t) const { return readers_.at(t.v); }
-
-bool MatchContext::BeginMatchTrial() {
-  trial_match_detail_bytes_ = 0;
-  return metadata_admission_ == nullptr ||
-         static_cast<bool>(metadata_admission_->SetMatchDetailLive(retained_match_detail_bytes_));
-}
-
-bool MatchContext::ChargeMatchTrial(std::uint64_t bytes) const {
-  if (bytes > std::numeric_limits<std::uint64_t>::max() - retained_match_detail_bytes_ ||
-      trial_match_detail_bytes_ >
-          std::numeric_limits<std::uint64_t>::max() - retained_match_detail_bytes_ - bytes) {
-    RefuseMatchTrial();
-    return false;
-  }
-  const auto next = retained_match_detail_bytes_ + trial_match_detail_bytes_ + bytes;
-  if (metadata_admission_ != nullptr && !metadata_admission_->SetMatchDetailLive(next)) {
-    RefuseMatchTrial();
-    return false;
-  }
-  trial_match_detail_bytes_ += bytes;
-  return true;
-}
-
-bool MatchContext::ReleaseMatchTrial(std::uint64_t bytes) const {
-  if (bytes > trial_match_detail_bytes_) {
-    RefuseMatchTrial();
-    return false;
-  }
-  const auto next = retained_match_detail_bytes_ + trial_match_detail_bytes_ - bytes;
-  if (metadata_admission_ != nullptr && !metadata_admission_->SetMatchDetailLive(next)) {
-    RefuseMatchTrial();
-    return false;
-  }
-  trial_match_detail_bytes_ -= bytes;
-  return true;
-}
-
-void MatchContext::RefuseMatchTrial() const {
-  if (metadata_admission_ != nullptr) metadata_admission_->RefuseAdmission();
-}
-
-bool MatchContext::AcceptMatchTrial() {
-  if (trial_match_detail_bytes_ >
-      std::numeric_limits<std::uint64_t>::max() - retained_match_detail_bytes_) {
-    RefuseMatchTrial();
-    return false;
-  }
-  retained_match_detail_bytes_ += trial_match_detail_bytes_;
-  trial_match_detail_bytes_ = 0;
-  if (metadata_admission_ == nullptr) return true;
-  if (!metadata_admission_->SetMatchDetailLive(retained_match_detail_bytes_)) {
-    RefuseMatchTrial();
-    return false;
-  }
-  return true;
-}
-
-void MatchContext::DropMatchTrial() {
-  trial_match_detail_bytes_ = 0;
-  if (metadata_admission_ != nullptr) {
-    (void)metadata_admission_->SetMatchDetailLive(retained_match_detail_bytes_);
-  }
-}
 
 bool MatchContext::external(TensorId t) const {
   return external_.at(t.v) || external_.at(graph_.root(t).v);
@@ -3156,10 +2821,6 @@ bool CompositeImplemented(const Policy& policy, ir::OpKey key) {
   });
 }
 
-bool Pattern::AcceptsResult(ir::OpKey key) const {
-  return key == result || std::ranges::contains(additional_results, key);
-}
-
 base::Sha256Digest PatternsDigest(const Policy& policy) {
   base::Sha256 hash;
   hash.Update(std::string_view("llmp.planner.patterns.v3;qualified-automatic-recipes\n"));
@@ -3196,114 +2857,16 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
     const ir::Graph& graph, const SelectionView& view, const StepShape* shape,
     const StateSpans& state_spans, std::uint8_t round, std::span<const NodeId> preserve,
     std::span<const Pattern> table, std::span<const Excluded> excluded,
-    std::optional<Excluded>& failed, std::span<const std::uint32_t> origin_sets,
-    ComparisonOriginDag* origins, ComparisonCaptureSession* comparison_capture,
-    std::span<const TensorId> source_to_graph, std::span<const NodeId> graph_node_to_source,
-    PlannerMetadataAdmission* metadata_admission, std::span<const Applied> prior_applied = {},
-    std::span<const NodeId> prior_to_source = {}) {
-  const bool track_origins = origins != nullptr;
-  if (track_origins != !origin_sets.empty() ||
-      (track_origins && origin_sets.size() != graph.nodes().size()))
-    return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+    std::optional<Excluded>& failed) {
   struct Found {
     const Pattern* pattern = nullptr;
     NodeId anchor{};
     Match match;
     std::vector<NumericalProof> numerical{};
-    std::uint32_t origin_set = 0;
   };
-  if (metadata_admission != nullptr) {
-    constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-    std::uint64_t bytes = 0;
-    const auto add = [&](std::uint64_t count, std::uint64_t stride, std::uint64_t allocations) {
-      if (count == 0) return true;
-      std::uint64_t payload = 0;
-      std::uint64_t overhead = 0;
-      if (__builtin_mul_overflow(count, stride, &payload) ||
-          __builtin_mul_overflow(allocations, envelope, &overhead) ||
-          payload > std::numeric_limits<std::uint64_t>::max() - overhead ||
-          bytes > std::numeric_limits<std::uint64_t>::max() - payload - overhead)
-        return false;
-      bytes += payload + overhead;
-      return true;
-    };
-    const std::uint64_t tensors = graph.tensor_count();
-    const std::uint64_t nodes = graph.nodes().size();
-    const std::uint64_t source_count = nodes * ir::kMaxSources;
-    // Match results accepted in a round are node-disjoint because each
-    // accepted match marks its members taken. Price their retained records,
-    // member/site arrays and the IR-bounded sources before invoking a matcher
-    // that may return and retain any of them.
-    if (source_count > std::numeric_limits<std::uint64_t>::max() / 3 ||
-        nodes > std::numeric_limits<std::uint64_t>::max() / 4 ||
-        !add(3 * nodes, sizeof(Found), 2) || !add(3 * nodes, sizeof(NodeId), 4 * nodes) ||
-        !add(3 * source_count, sizeof(TensorId), 2 * nodes) ||
-        !add(6 * nodes, sizeof(NumericalProof), 2 * nodes))
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    // GroupedStoresMatch retains one candidate list per member while it
-    // chooses the common implementation. This uses the actual run bound and
-    // registry size, including each list's geometric growth overlap.
-    const bool has_grouped_stores = std::ranges::any_of(
-        table, [](const Pattern& p) { return p.result == ir::Fused(FusedKind::kGroupedStores); });
-    const std::uint64_t registry_size = view.registry().size();
-    if (has_grouped_stores &&
-        ((registry_size != 0 &&
-          nodes > std::numeric_limits<std::uint64_t>::max() / registry_size / 3) ||
-         !add(nodes, sizeof(std::vector<std::size_t>), 1) ||
-         !add(3 * nodes * registry_size, sizeof(std::size_t), 2 * nodes)))
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    if (!table.empty() &&
-        ((nodes != 0 && table.size() > std::numeric_limits<std::uint64_t>::max() / nodes / 3) ||
-         !add(3 * nodes * table.size(), sizeof(MissingNumericalQualification), 2)))
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    const bool has_owner_attention = std::ranges::any_of(
-        table, [](const Pattern& p) { return p.match == &OwnerAttentionMatch; });
-    if (has_owner_attention) {
-      constexpr std::uint64_t cohort = ir::kMaxOwnerCohort;
-      // OwnerPlan's accepted detail and the largest working layer are both
-      // bounded by actual graph nodes/layers and the IR's cohort limit.
-      // Sum each owned vector field, including nested per-owner arrays.
-      if (!add(nodes, sizeof(OwnerPlan), nodes) ||
-          !add(3 * nodes, sizeof(OwnerPlan::Kind), 2 * nodes) ||
-          !add(3 * nodes, sizeof(OwnerPlan::Layer), 2 * nodes) ||
-          !add(3 * nodes, sizeof(std::size_t), 2 * nodes) ||
-          !add(3 * nodes, sizeof(std::int32_t), 2 * nodes) ||
-          !add(3 * nodes * cohort, sizeof(OwnerPlan::Tail), 2 * nodes) ||
-          !add(3 * nodes * cohort, 3 * sizeof(TensorId) + 2 * sizeof(int), 4 * nodes) ||
-          !add(3 * nodes, sizeof(std::vector<NodeId>) + sizeof(std::vector<OwnerAttention>),
-               4 * nodes) ||
-          !add(3 * nodes * cohort, sizeof(OwnerAttention) + sizeof(NodeId) + sizeof(TensorId),
-               4 * nodes))
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    }
-    std::uint64_t edges = 0;
-    for (const auto& node : graph.nodes()) {
-      if (node.nsrc > std::numeric_limits<std::uint64_t>::max() - edges)
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-      edges += node.nsrc;
-    }
-    constexpr std::uint64_t word_bits = std::numeric_limits<unsigned long>::digits;
-    const auto add_bits = [&](std::uint64_t count) {
-      if (count > std::numeric_limits<std::uint64_t>::max() - (word_bits - 1)) return false;
-      return add((count + word_bits - 1) / word_bits, sizeof(unsigned long), 1);
-    };
-    // MatchContext owns tensor-indexed reader headers, their actual source
-    // edges (including old and new buffers during geometric growth), and
-    // rounded vector<bool> external/kept/taken arrays.
-    if (edges > std::numeric_limits<std::uint64_t>::max() / 3 ||
-        tensors > std::numeric_limits<std::uint64_t>::max() / 2 ||
-        !add(tensors, sizeof(std::vector<NodeId>), 1) ||
-        !add(3 * edges, sizeof(NodeId), 2 * tensors) || !add_bits(tensors) || !add_bits(tensors) ||
-        !add_bits(nodes))
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    if (auto paid = metadata_admission->Require(PlannerMetadataPhase::kMatch, bytes); !paid)
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-  }
-  MatchContext context(graph, view, shape, state_spans, metadata_admission);
+  MatchContext context(graph, view, shape, state_spans);
   std::vector<Found> found;
   std::vector<MissingNumericalQualification> missing_numerical;
-  std::optional<ComparisonCheckpoint> tentative_checkpoint;
-  std::size_t accepted_comparison_candidates = 0;
   const auto missing = [&](NumericalChange change, const ir::Node& node) {
     std::uint32_t arch = 0;
     view.Inspect(graph, node, [&](const execution::CapabilityQuery& query) { arch = query.arch; });
@@ -3326,19 +2889,7 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
           !Anchored(p, node.key.op) || std::ranges::contains(excluded, Excluded{&p, id})) {
         continue;
       }
-      struct TrialScope {
-        MatchContext& context;
-        bool active = true;
-        ~TrialScope() {
-          if (active) context.DropMatchTrial();
-        }
-      };
-      if (!context.BeginMatchTrial())
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-      TrialScope trial{context};
       auto m = p.match(context, id);
-      if (metadata_admission != nullptr && metadata_admission->refused())
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
       if (!m ||
           std::ranges::any_of(m->nodes,
                               [&](NodeId n) { return std::ranges::contains(preserve, n); }) ||
@@ -3426,90 +2977,13 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
         if (!authorized) continue;
       }
       if (m->unqualified_numerical) missing(*m->unqualified_numerical, node);
-      if (comparison_capture != nullptr && track_origins) {
-        const bool excluded_by_decision =
-            comparison_capture->ExcludesRewrite(p, m->nodes, origin_sets, graph, source_to_graph);
-        if (comparison_capture->record_refused())
-          return std::unexpected(
-              ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-        if (excluded_by_decision) continue;
-      }
-      std::uint32_t origin_set = 0;
-      if (track_origins) {
-        if (m->nodes.size() == 1) {
-          origin_set = origin_sets[m->nodes.front().v];
-        } else {
-          auto joined = origins->AddUnion(m->nodes, origin_sets, metadata_admission);
-          if (!joined)
-            return std::unexpected(
-                ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-          origin_set = *joined;
-        }
-      }
-      if (comparison_capture != nullptr && track_origins) {
-        auto captured = comparison_capture->CaptureRewrite(
-            p.name, p.version, m->nodes, origin_sets, graph, source_to_graph, graph_node_to_source,
-            metadata_admission, prior_applied, prior_to_source);
-        if (!captured)
-          return std::unexpected(
-              ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-        if (*captured) {
-          ++accepted_comparison_candidates;
-          if (!tentative_checkpoint) tentative_checkpoint.emplace(std::move(**captured));
-        }
-      }
-      if (!context.AcceptMatchTrial())
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-      trial.active = false;
       context.Take(m->nodes);
-      found.push_back({.pattern = &p,
-                       .anchor = id,
-                       .match = std::move(*m),
-                       .numerical = std::move(numerical),
-                       .origin_set = origin_set});
+      found.push_back(
+          {.pattern = &p, .anchor = id, .match = std::move(*m), .numerical = std::move(numerical)});
     }
   }
   // Recorded in node order (of each match's first node).
   std::ranges::sort(found, {}, [](const Found& f) { return f.match.nodes.front(); });
-  std::uint64_t rewrite_base_bytes = 0;
-  if (metadata_admission != nullptr) {
-    constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-    const auto add_exact = [&](std::uint64_t count, std::uint64_t stride) {
-      if (count == 0) return true;
-      if (stride == 0 || count > (std::numeric_limits<std::uint64_t>::max() - envelope) / stride ||
-          rewrite_base_bytes >
-              std::numeric_limits<std::uint64_t>::max() - count * stride - envelope)
-        return false;
-      rewrite_base_bytes += count * stride + envelope;
-      return true;
-    };
-    std::uint64_t qk_matches = 0;
-    using SharedMapNode = std::_Rb_tree_node<std::pair<const SharedTensorKey, TensorId>>;
-    for (const Found& f : found) {
-      const std::uint64_t slots = f.match.rewrite_local_slots;
-      if (!add_exact(slots, sizeof(TensorId)))
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-      if (f.pattern != nullptr && f.pattern->name == "qk_attention") ++qk_matches;
-    }
-    if (!add_exact(graph.nodes().size(), sizeof(std::pair<std::size_t, std::size_t>)) ||
-        !add_exact(graph.tensor_count(), sizeof(TensorId)) ||
-        !add_exact(found.size(), sizeof(Applied)) ||
-        !add_exact(found.size(), sizeof(std::vector<TensorId>)))
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    if (qk_matches != 0) {
-      constexpr std::uint64_t map_node = sizeof(SharedMapNode) + envelope;
-      if (qk_matches > std::numeric_limits<std::uint64_t>::max() / 2)
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-      const std::uint64_t entries = 2 * qk_matches;
-      if (entries > std::numeric_limits<std::uint64_t>::max() / map_node ||
-          entries * map_node > std::numeric_limits<std::uint64_t>::max() - rewrite_base_bytes)
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-      rewrite_base_bytes += entries * map_node;
-    }
-    if (auto paid = metadata_admission->Require(PlannerMetadataPhase::kRewrite, rewrite_base_bytes);
-        !paid)
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-  }
   std::vector<std::pair<std::size_t, std::size_t>> at(graph.nodes().size(),
                                                       {~std::size_t{0}, 0});  // match, index
   for (std::size_t f = 0; f < found.size(); ++f) {
@@ -3518,26 +2992,11 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
     }
   }
   ir::Builder b;
-  b.SetDiagnosticAdmission(metadata_admission);
-  if (auto funder = graph.storage_funder(); funder && !b.SetStorageFunder(std::move(funder)))
-    return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
   std::vector<TensorId> tensors(graph.tensor_count(), TensorId{});
   std::vector<Applied> applied(found.size());
   std::vector<NodeId> from;
-  ir::StorageLoan made_origins_loan;
-  std::vector<std::uint32_t> made_origins;
-  const auto origin_funder = graph.storage_funder();
-  if (track_origins && !origin_funder)
-    return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
   std::vector<std::vector<TensorId>> locals(found.size());
-  if (metadata_admission != nullptr) {
-    for (std::size_t f = 0; f < found.size(); ++f)
-      if (found[f].match.rewrite_local_slots != 0)
-        locals[f].reserve(found[f].match.rewrite_local_slots);
-  }
   RewriteContext rc(graph, b, tensors, &view);
-  std::uint64_t made_elements = 0;
-  std::uint64_t made_vectors = 0;
   for (std::size_t f = 0; f < found.size(); ++f) {
     applied[f].pattern = found[f].pattern->name;
     applied[f].replaced = found[f].match.nodes;
@@ -3567,8 +3026,7 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
       locals[f] = std::move(rc.local());
     }
     if (!b.ok()) {
-      auto taken_error = b.TakeError();
-      ir::VerifyError e = std::move(*taken_error);
+      ir::VerifyError e = *b.error();
       e.node = i;
       // The match that failed: this node's, or for a copied node the
       // match that made what it reads (a view over a changed layout).
@@ -3581,58 +3039,11 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
       }
       return std::unexpected(std::move(e));
     }
-    if (metadata_admission != nullptr) {
-      constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-      std::uint64_t next_made = made_elements;
-      std::uint64_t next_made_vectors = made_vectors;
-      const std::uint64_t emitted = b.node_count() - before;
-      if (f != ~std::size_t{0}) {
-        if (emitted > std::numeric_limits<std::uint64_t>::max() - next_made)
-          return std::unexpected(
-              ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-        next_made += emitted;
-        if (emitted != 0 && applied[f].made.empty()) ++next_made_vectors;
-      }
-      const std::uint64_t next_from = b.node_count();
-      if (next_from > std::numeric_limits<std::uint64_t>::max() / (3 * sizeof(NodeId)) ||
-          next_made > std::numeric_limits<std::uint64_t>::max() / (3 * sizeof(NodeId)) ||
-          next_made_vectors > std::numeric_limits<std::uint64_t>::max() / (2 * envelope))
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-      const std::uint64_t from_bytes = 3 * next_from * sizeof(NodeId) + 2 * envelope;
-      const std::uint64_t made_bytes =
-          3 * next_made * sizeof(NodeId) + 2 * next_made_vectors * envelope;
-      if (made_bytes > std::numeric_limits<std::uint64_t>::max() - from_bytes ||
-          rewrite_base_bytes > std::numeric_limits<std::uint64_t>::max() - from_bytes - made_bytes)
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-      if (auto paid = metadata_admission->Require(PlannerMetadataPhase::kRewrite,
-                                                  rewrite_base_bytes + from_bytes + made_bytes);
-          !paid)
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-      made_elements = next_made;
-      made_vectors = next_made_vectors;
-    }
     if (f != ~std::size_t{0}) {
       for (std::size_t n = before; n < b.node_count(); ++n)
         applied[f].made.push_back(NodeId{static_cast<std::uint32_t>(n)});
     }
     from.resize(b.node_count(), NodeId{i});
-    if (track_origins) {
-      if (b.node_count() > made_origins.capacity()) {
-        const std::uint64_t requested = b.node_count();
-        const std::uint64_t current = made_origins.capacity();
-        const std::uint64_t capacity =
-            current == 0 || current > std::numeric_limits<std::uint64_t>::max() / 2
-                ? requested
-                : std::max(requested, current * 2);
-        const auto origin_bytes = ir::VectorAdmissionBytes(capacity, sizeof(std::uint32_t));
-        if (!origin_bytes || !made_origins_loan.GrowTo(origin_funder, *origin_bytes))
-          return std::unexpected(
-              ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-        made_origins.reserve(static_cast<std::size_t>(capacity));
-      }
-      made_origins.resize(b.node_count(),
-                          f == ~std::size_t{0} ? origin_sets[i] : found[f].origin_set);
-    }
   }
   for (const TensorId o : graph.outputs()) {
     b.Output(rc.Map(o));
@@ -3644,26 +3055,11 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
   if (!g) {
     return std::unexpected(std::move(g.error()));
   }
-  if (comparison_capture != nullptr && track_origins) {
-    for (const Found& accepted : found) {
-      auto recorded = comparison_capture->RecordDiscovery(
-          ComparisonSiteKind::kRewrite, accepted.pattern->name, accepted.pattern->version,
-          accepted.pattern->result, accepted.match.nodes, origin_sets, graph, source_to_graph,
-          metadata_admission);
-      if (!recorded)
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    }
-  }
-  if (comparison_capture != nullptr)
-    comparison_capture->CommitRound(std::move(tentative_checkpoint), accepted_comparison_candidates,
-                                    graph.identity(), g->identity(), tensors);
-  return Rewritten{
-      .graph = std::move(*g),
-      .applied = std::move(applied),
-      .from = std::move(from),
-      .tensors = std::move(tensors),
-      .origin_sets = OwnedRewriteOrigins{std::move(made_origins_loan), std::move(made_origins)},
-      .missing_numerical = std::move(missing_numerical)};
+  return Rewritten{.graph = std::move(*g),
+                   .applied = std::move(applied),
+                   .from = std::move(from),
+                   .tensors = std::move(tensors),
+                   .missing_numerical = std::move(missing_numerical)};
 }
 
 // ApplyRound until no rewrite fails: each failed match is dropped and the
@@ -3672,70 +3068,17 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
 std::expected<Rewritten, ir::VerifyError> ApplyRoundDropping(
     const ir::Graph& graph, const SelectionView& view, const StepShape* shape,
     const StateSpans& state_spans, std::uint8_t round, std::span<const NodeId> preserve,
-    std::span<const Pattern> table, std::span<const std::uint32_t> origin_sets,
-    ComparisonOriginDag* origins, ComparisonCaptureSession* comparison_capture,
-    std::span<const TensorId> source_to_graph, std::span<const NodeId> graph_node_to_source,
-    PlannerMetadataAdmission* metadata_admission, std::span<const Applied> prior_applied = {},
-    std::span<const NodeId> prior_to_source = {}) {
+    std::span<const Pattern> table) {
   std::vector<Excluded> excluded;
   std::vector<DroppedRewrite> dropped;
-  if (metadata_admission != nullptr) {
-    constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-    std::uint64_t bytes = 0;
-    const auto add = [&](std::uint64_t count, std::uint64_t stride) {
-      if (count == 0) return true;
-      std::uint64_t payload = 0;
-      if (__builtin_mul_overflow(count, stride, &payload) ||
-          payload > std::numeric_limits<std::uint64_t>::max() - envelope ||
-          bytes > std::numeric_limits<std::uint64_t>::max() - payload - envelope)
-        return false;
-      bytes += payload + envelope;
-      return true;
-    };
-    if (!add(graph.nodes().size(), sizeof(Excluded)) ||
-        !add(graph.nodes().size(), sizeof(DroppedRewrite)))
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    if (auto paid = metadata_admission->Require(PlannerMetadataPhase::kRetry, bytes); !paid)
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    excluded.reserve(graph.nodes().size());
-    dropped.reserve(graph.nodes().size());
-  }
-  std::uint64_t retained_detail_bytes = 0;
   for (;;) {
     std::optional<Excluded> failed;
-    const ComparisonCaptureMark decision_mark = comparison_capture != nullptr
-                                                    ? comparison_capture->DecisionJournalMark()
-                                                    : ComparisonCaptureMark{};
-    auto r = ApplyRound(graph, view, shape, state_spans, round, preserve, table, excluded, failed,
-                        origin_sets, origins, comparison_capture, source_to_graph,
-                        graph_node_to_source, metadata_admission, prior_applied, prior_to_source);
+    auto r = ApplyRound(graph, view, shape, state_spans, round, preserve, table, excluded, failed);
     if (r) {
-      if (comparison_capture != nullptr && comparison_capture->record_refused())
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
       r->dropped = std::move(dropped);
       return r;
     }
-    if (comparison_capture != nullptr) comparison_capture->RollbackDecisionJournal(decision_mark);
-    if (r.error().error == ir::GraphError::kAdmission) return r;
     if (!failed || std::ranges::contains(excluded, *failed)) return r;
-    if (metadata_admission != nullptr) {
-      constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-      const std::uint64_t capacity = r.error().detail.capacity();
-      if (capacity > std::numeric_limits<std::uint64_t>::max() - 1 - envelope ||
-          retained_detail_bytes >
-              std::numeric_limits<std::uint64_t>::max() - capacity - 1 - envelope)
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-      retained_detail_bytes += capacity + 1 + envelope;
-      const std::uint64_t arrays =
-          static_cast<std::uint64_t>(graph.nodes().size()) * sizeof(Excluded) + envelope +
-          static_cast<std::uint64_t>(graph.nodes().size()) * sizeof(DroppedRewrite) + envelope;
-      if (retained_detail_bytes > std::numeric_limits<std::uint64_t>::max() - arrays)
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-      if (auto paid = metadata_admission->Require(PlannerMetadataPhase::kRetry,
-                                                  arrays + retained_detail_bytes);
-          !paid)
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    }
     excluded.push_back(*failed);
     dropped.push_back({.pattern = failed->pattern->name,
                        .anchor = failed->anchor,
@@ -3745,66 +3088,18 @@ std::expected<Rewritten, ir::VerifyError> ApplyRoundDropping(
 
 }  // namespace
 
-std::expected<Rewritten, ir::VerifyError> ApplyPatterns(
-    const ir::Graph& graph, const SelectionView& view, const StepShape* shape,
-    StateSpans state_spans, std::span<const NodeId> preserve,
-    std::span<const std::uint32_t> origin_sets, ComparisonOriginDag* origins,
-    ComparisonCaptureSession* comparison_capture, std::span<const TensorId> source_to_graph,
-    std::span<const NodeId> graph_node_to_source, PlannerMetadataAdmission* metadata_admission) {
-  return ApplyPatternTable(kPatterns, graph, view, shape, state_spans, preserve, origin_sets,
-                           origins, comparison_capture, source_to_graph, graph_node_to_source,
-                           metadata_admission);
+std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
+                                                        const SelectionView& view,
+                                                        const StepShape* shape,
+                                                        StateSpans state_spans,
+                                                        std::span<const NodeId> preserve) {
+  return ApplyPatternTable(kPatterns, graph, view, shape, state_spans, preserve);
 }
 
 std::expected<Rewritten, ir::VerifyError> ApplyPatternTable(
     std::span<const Pattern> table, const ir::Graph& graph, const SelectionView& view,
-    const StepShape* shape, StateSpans state_spans, std::span<const NodeId> preserve,
-    std::span<const std::uint32_t> origin_sets, ComparisonOriginDag* origins,
-    ComparisonCaptureSession* comparison_capture, std::span<const TensorId> source_to_graph,
-    std::span<const NodeId> graph_node_to_source, PlannerMetadataAdmission* metadata_admission) {
-  // Identity maps are comparison-capture scratch. Acquire their complete
-  // backing before reserving either vector, and keep the loan older than the
-  // vectors so failed calls destroy storage before refunding it.
-  ir::StorageLoan identity_maps_loan;
-  if (comparison_capture != nullptr && (source_to_graph.empty() || graph_node_to_source.empty())) {
-    constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-    std::uint64_t bytes = 0;
-    const auto add = [&](std::uint64_t count, std::uint64_t stride) {
-      if (count == 0) return true;
-      if (stride == 0 || bytes > std::numeric_limits<std::uint64_t>::max() - envelope ||
-          count > (std::numeric_limits<std::uint64_t>::max() - bytes - envelope) / stride)
-        return false;
-      bytes += count * stride + envelope;
-      return true;
-    };
-    if (!add(source_to_graph.empty() ? graph.tensor_count() : 0, sizeof(TensorId)) ||
-        !add(graph_node_to_source.empty() ? graph.nodes().size() : 0, sizeof(NodeId)))
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    auto loan = ir::AcquireStorageLoan(graph.storage_funder(), bytes);
-    if (!loan)
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    identity_maps_loan = std::move(*loan);
-  }
-  std::vector<TensorId> identity_tensors;
-  std::vector<NodeId> identity_nodes;
-  if (comparison_capture != nullptr) {
-    if (source_to_graph.empty()) {
-      identity_tensors.reserve(graph.tensor_count());
-      for (std::uint32_t t = 0; t < graph.tensor_count(); ++t)
-        identity_tensors.push_back(TensorId{t});
-      source_to_graph = identity_tensors;
-    }
-    if (graph_node_to_source.empty()) {
-      identity_nodes.reserve(graph.nodes().size());
-      for (std::uint32_t n = 0; n < graph.nodes().size(); ++n) identity_nodes.push_back(NodeId{n});
-      graph_node_to_source = identity_nodes;
-    }
-    if (graph_node_to_source.size() != graph.nodes().size())
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-  }
-  auto first = ApplyRoundDropping(graph, view, shape, state_spans, 0, preserve, table, origin_sets,
-                                  origins, comparison_capture, source_to_graph,
-                                  graph_node_to_source, metadata_admission);
+    const StepShape* shape, StateSpans state_spans, std::span<const NodeId> preserve) {
+  auto first = ApplyRoundDropping(graph, view, shape, state_spans, 0, preserve, table);
   if (!first) {
     return first;
   }
@@ -3814,109 +3109,18 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatternTable(
   if (!later) {
     return first;
   }
-  if (auto paid = view.PrepayCopy(); !paid) return std::unexpected(std::move(paid.error()));
   SelectionView next_view = view;
-  if (auto forwarded = next_view.Forward(graph, first->graph, first->tensors); !forwarded)
-    return std::unexpected(std::move(forwarded.error()));
+  next_view.Forward(graph, first->graph, first->tensors);
   std::vector<NodeId> next_preserve;
-  if (!preserve.empty()) {
-    if (metadata_admission != nullptr) {
-      const auto preserve_bytes = ir::VectorAdmissionBytes(first->from.size(), sizeof(NodeId));
-      if (!preserve_bytes ||
-          !metadata_admission->Require(PlannerMetadataPhase::kRewriteCompose, *preserve_bytes))
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    }
-    next_preserve.reserve(first->from.size());
-    for (std::uint32_t i = 0; i < first->from.size(); ++i) {
-      if (std::ranges::contains(preserve, first->from[i])) next_preserve.push_back(NodeId{i});
-    }
+  for (std::uint32_t i = 0; i < first->from.size(); ++i) {
+    if (std::ranges::contains(preserve, first->from[i])) next_preserve.push_back(NodeId{i});
   }
-  ir::StorageLoan next_maps_loan;
-  std::vector<TensorId> next_source_to_graph;
-  std::vector<NodeId> next_graph_node_to_source;
-  std::span<const TensorId> second_source_to_graph = first->tensors;
-  std::span<const NodeId> second_graph_node_to_source = first->from;
-  if (comparison_capture != nullptr) {
-    std::uint64_t bytes = 0;
-    if (!ir::AddVectorAdmissionBytes(source_to_graph.size(), sizeof(TensorId), bytes) ||
-        !ir::AddVectorAdmissionBytes(first->from.size(), sizeof(NodeId), bytes))
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    auto loan = ir::AcquireStorageLoan(graph.storage_funder(), bytes);
-    if (!loan)
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    next_maps_loan = std::move(*loan);
-    next_source_to_graph.reserve(source_to_graph.size());
-    for (const TensorId old : source_to_graph) {
-      if (!old.valid()) {
-        next_source_to_graph.push_back(TensorId{});
-      } else if (old.v < first->tensors.size()) {
-        next_source_to_graph.push_back(first->tensors[old.v]);
-      } else {
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-      }
-    }
-    next_graph_node_to_source.reserve(first->from.size());
-    for (const NodeId old : first->from) {
-      if (!old.valid()) {
-        next_graph_node_to_source.push_back(NodeId{});
-      } else if (old.v < graph_node_to_source.size()) {
-        next_graph_node_to_source.push_back(graph_node_to_source[old.v]);
-      } else {
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-      }
-    }
-    second_source_to_graph = next_source_to_graph;
-    second_graph_node_to_source = next_graph_node_to_source;
-  }
-  auto second = ApplyRoundDropping(first->graph, next_view, shape, state_spans, 1, next_preserve,
-                                   table, first->origin_sets, origins, comparison_capture,
-                                   second_source_to_graph, second_graph_node_to_source,
-                                   metadata_admission, first->applied, graph_node_to_source);
+  auto second =
+      ApplyRoundDropping(first->graph, next_view, shape, state_spans, 1, next_preserve, table);
   if (!second) {
     return second;
   }
   const std::size_t first_node_count = first->graph.nodes().size();
-  {
-    const ir::Graph released = std::move(first->graph);
-    (void)released;
-  }
-  first->origin_sets = OwnedRewriteOrigins{};
-  next_source_to_graph.clear();
-  next_source_to_graph.shrink_to_fit();
-  next_graph_node_to_source.clear();
-  next_graph_node_to_source.shrink_to_fit();
-  next_maps_loan.Reset();
-  if (metadata_admission != nullptr) {
-    constexpr std::uint64_t kWordBits = std::numeric_limits<unsigned long>::digits;
-    std::uint64_t compose_bytes = 0;
-    std::uint64_t total_dropped = first->dropped.size();
-    std::uint64_t total_missing = first->missing_numerical.size();
-    std::uint64_t total_applied = first->applied.size();
-    std::uint64_t bit_words = 0;
-    if (!ir::AddAdmissionBytes(total_dropped, second->dropped.size()) ||
-        !ir::AddAdmissionBytes(total_missing, second->missing_numerical.size()) ||
-        !ir::AddAdmissionBytes(total_applied, second->applied.size()) ||
-        first_node_count > std::numeric_limits<std::uint64_t>::max() - (kWordBits - 1))
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    bit_words = (static_cast<std::uint64_t>(first_node_count) + kWordBits - 1) / kWordBits;
-    if (!ir::AddVectorAdmissionBytes(next_preserve.capacity(), sizeof(NodeId), compose_bytes) ||
-        !ir::AddVectorAdmissionBytes(total_dropped, sizeof(DroppedRewrite), compose_bytes) ||
-        !ir::AddVectorAdmissionBytes(total_missing, sizeof(MissingNumericalQualification),
-                                     compose_bytes) ||
-        !ir::AddVectorAdmissionBytes(first->tensors.size(), sizeof(TensorId), compose_bytes) ||
-        !ir::AddVectorAdmissionBytes(second->from.size(), sizeof(NodeId), compose_bytes) ||
-        !ir::AddVectorAdmissionBytes(bit_words, sizeof(unsigned long), compose_bytes) ||
-        !ir::AddVectorAdmissionBytes(total_applied, sizeof(Applied), compose_bytes))
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    for (std::size_t i = 0; i < first->applied.size(); ++i) {
-      if (!ir::AddVectorAdmissionBytes(second->from.size(), sizeof(NodeId), compose_bytes))
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    }
-    if (auto paid =
-            metadata_admission->Require(PlannerMetadataPhase::kRewriteCompose, compose_bytes);
-        !paid)
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-  }
   // The maps composed: the primitive graph's tensors and nodes through
   // round 0's graph into round 1's; round 0's nodes it made, as round 1
   // copied them.
@@ -3924,7 +3128,6 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatternTable(
                 .applied = {},
                 .from = {},
                 .tensors = {},
-                .origin_sets = std::move(second->origin_sets),
                 .missing_numerical = std::move(first->missing_numerical),
                 .dropped = std::move(first->dropped)};
   // Round 1's anchors as the primitive nodes they stood for.

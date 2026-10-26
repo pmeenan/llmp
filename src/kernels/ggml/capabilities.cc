@@ -2438,13 +2438,6 @@ constexpr ex::Capability Cap(ir::OpKey op, std::span<const Rule> rules,
   return result;
 }
 
-// Lowering::Build binds these individual scalar recipes without upstream
-// refusion or preparation folding. The source identity covers that contract.
-constexpr ex::Capability StandaloneComparator(ex::Capability cap) {
-  cap.standalone_comparator = true;
-  return cap;
-}
-
 // Its output 0 at source 0's row pitch (ex::Capability::pitched_output).
 constexpr ex::Capability Pitched(ex::Capability cap) {
   cap.pitched_output = true;
@@ -2535,12 +2528,10 @@ const std::array kEntries = {
           kBuilt},
     Entry{"ggml.scale", Cap(P(Op::kScale), kF32In, &AcceptsAny, true), kBuilt},
     Entry{"ggml.add", Cap(P(Op::kAdd), kAddRules, &AcceptsAdd, true), kBuilt},
-    Entry{"ggml.mul", StandaloneComparator(Cap(P(Op::kMul), kF32Binary, &AcceptsAny, true)),
-          kBuilt},
+    Entry{"ggml.mul", Cap(P(Op::kMul), kF32Binary, &AcceptsAny, true), kBuilt},
     Entry{"ggml.sub", Cap(P(Op::kSub), kF32Binary, &AcceptsAny, true), kBuilt},
     Entry{"ggml.div", Cap(P(Op::kDiv), kF32Binary, &AcceptsAny, true), kBuilt},
-    Entry{"ggml.unary", StandaloneComparator(Cap(P(Op::kUnary), kF32In, &AcceptsUnary, true)),
-          kBuilt},
+    Entry{"ggml.unary", Cap(P(Op::kUnary), kF32In, &AcceptsUnary, true), kBuilt},
     Entry{"ggml.clamp", Cap(P(Op::kClamp), kF32In, &AcceptsAny, true), kBuilt},
     Entry{"ggml.fill", Cap(P(Op::kFill), {}, &AcceptsAny, true), kBuilt},
     Entry{"ggml.repeat", Cap(P(Op::kRepeat), {}, &AcceptsAny, true), kBuilt},
@@ -2579,8 +2570,7 @@ const std::array kEntries = {
               &AcceptsNormRopeSections, true),
           "; selectable for the build's SASS architectures: packed F32 or BF16 heads of D at most "
           "512, an F32 or BF16 [D] weight, one to three plain sections covering D"},
-    Entry{"ggml.rms_norm", StandaloneComparator(Cap(P(Op::kRmsNorm), kF32In, &AcceptsAny, true)),
-          kBuilt},
+    Entry{"ggml.rms_norm", Cap(P(Op::kRmsNorm), kF32In, &AcceptsAny, true), kBuilt},
     Entry{"ggml.rms_norm_mul.fused", Cap(F(FusedKind::kRmsNormMul), kNormMul, &AcceptsAny, true),
           kBuilt},
     Entry{kGemmaNormRopeName,
@@ -2590,12 +2580,11 @@ const std::array kEntries = {
     Entry{kGemmaNormAddName, Cap(F(FusedKind::kRmsNormMulAdd), kNormMulAdd, &AcceptsNormAdd, true),
           "; positive F32 widths within launcher integer bounds, finite nonnegative epsilon"},
     // Rotations and stores.
-    Entry{"ggml.rope.neox",
-          StandaloneComparator(Cap(P(Op::kRope), kRope, &AcceptsRopeNeox, true, {}, 1)),
+    Entry{"ggml.rope.neox", Cap(P(Op::kRope), kRope, &AcceptsRopeNeox, true, {}, 1),
           "; selectable for the build's SASS architectures: NEOX over positions without "
           "frequency factors or an offset; proportional pairs use the owned primitive "
           "and a separate cache store"},
-    Entry{"ggml.rope.ext", StandaloneComparator(Cap(P(Op::kRope), kRope, &AcceptsRopeExt, true)),
+    Entry{"ggml.rope.ext", Cap(P(Op::kRope), kRope, &AcceptsRopeExt, true),
           "; selectable for the build's SASS architectures over positions; proportional pairs "
           "use the owned primitive and a separate cache store"},
     Entry{"ggml.set_rows", Cap(P(Op::kCacheStore), kF16Store, &AcceptsAny, true, {}, 1), kBuilt},
@@ -2949,6 +2938,23 @@ std::span<const RecipeDeclaration> RecipeDeclarations() {
   return recipes;
 }
 
+namespace {
+// Kernel versions past the first, by implementation: bump an entry (or add
+// one at 2) when a change to what that implementation launches could move its
+// measured speed, then re-measure or retire its rows in measured_ranks.h
+// (tests/unit/fusion_ranks_test.cc refuses a row of another version).
+struct KernelVersionEntry {
+  std::string_view name;
+  std::uint32_t version;
+};
+constexpr std::array<KernelVersionEntry, 0> kKernelVersions{};
+}  // namespace
+
+std::uint32_t KernelVersion(std::string_view implementation) {
+  const auto found = std::ranges::find(kKernelVersions, implementation, &KernelVersionEntry::name);
+  return found == kKernelVersions.end() ? 1 : found->version;
+}
+
 std::vector<execution::Implementation> PlanningImplementations() {
   std::vector<execution::Implementation> out;
   out.reserve(RecipeDeclarations().size() + CapabilityDeclarations().size());
@@ -2965,6 +2971,7 @@ std::vector<execution::Implementation> PlanningImplementations() {
                    .revision = "structural declarations; cannot bind executable kernels",
                    .build = "planning only",
                    .variant = std::format("{}; {}", contract, AcceptsTextOf(name)),
+                   .version = KernelVersion(name),
                    .capability = cap ? std::optional(*cap) : std::nullopt});
   };
   // Retain the capability inventory's tie order. Concrete helper-only recipes

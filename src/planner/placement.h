@@ -47,11 +47,6 @@ struct Placement {
 // The bytes a root tensor spans (its strides' reach, or its parts').
 std::expected<std::uint64_t, std::string> RootBytes(const ir::TensorDesc& tensor);
 
-// Checked comparison-only admission bound for the temporary vectors owned
-// by PlaceActivations and the final alignment audit. The caller adds the
-// already-live staged-input and prologue inventories before allocation.
-std::expected<std::uint64_t, std::string> PlacementMetadataBytes(const ir::Graph& graph);
-
 // The bytes a lowering's implementation writes for a root it computes,
 // where that is more than the tensor's own (GGML's MMVQ writes a prepared
 // Q8_1 input's rows padded to its row step), or 0: a root takes the larger.

@@ -4,7 +4,6 @@
 
 #include "ir/decompose.h"
 
-#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -40,10 +39,6 @@ Shape S(std::uint64_t a, std::uint64_t b = 1, std::uint64_t c = 1, std::uint64_t
 
 using Nb = std::array<std::uint64_t, format::kMaxDims>;
 
-std::optional<std::uint64_t> VectorScratchBytes(std::uint64_t count, std::size_t element_size) {
-  return VectorAdmissionBytes(count, element_size);
-}
-
 template <typename P>
 P Get(const ParamBytes& bytes) {
   P p{};
@@ -72,26 +67,21 @@ class D {
     }
     if (src_.size() < required || src_.size() > total) {
       b_.Refuse(GraphError::kArity,
-                DiagFormat("takes {} to {} sources, not {}", required, total, src_.size()));
+                std::format("takes {} to {} sources, not {}", required, total, src_.size()));
       return false;
     }
     for (std::size_t i = 0; i < required; ++i) {
       if (!src_[i].valid()) {
-        b_.Refuse(GraphError::kArity, DiagFormat("source {} is required", i));
+        b_.Refuse(GraphError::kArity, std::format("source {} is required", i));
         return false;
       }
     }
     return true;
   }
-  bool check(bool ok, GraphError e, std::string_view what) {
+  bool check(bool ok, GraphError e, const std::string& what) {
     if (!ok && b_.ok()) {
       b_.Refuse(e, what);
     }
-    return ok && b_.ok();
-  }
-  template <std::size_t N>
-  bool check(bool ok, GraphError e, const DiagnosticMessage<N>& what) {
-    if (!ok && b_.ok()) b_.Refuse(e, what);
     return ok && b_.ok();
   }
   // A 2-D [n, m] view of `x` with strides nb0 and nbm at `offset` bytes.
@@ -491,16 +481,7 @@ TensorId Reduce(D& d, TensorId x, TensorId w, TensorId ids, TensorId scale) {
       b.View(w, S(1, wt.ne(0), wt.ne(1)), Nb{wt.nb[0], wt.nb[0], wt.nb[1], wt.nb[1] * wt.ne(1)}, 0);
   const TensorId xw = b.Mul(x, w3);  // [n, U, T]
   const std::uint64_t u = wt.ne(0);
-  if (!b.ok()) return {};
-  const auto scratch_bytes = VectorScratchBytes(u, sizeof(TensorId));
-  if (!scratch_bytes) {
-    b.Refuse(GraphError::kBounds, "expert reduction scratch byte count overflows");
-    return {};
-  }
-  auto scratch_loan = b.FundScratch(*scratch_bytes);
-  if (!b.ok()) return {};
   std::vector<TensorId> slots;
-  slots.reserve(static_cast<std::size_t>(u));
   for (std::uint64_t i = 0; i < u && b.ok(); ++i) slots.push_back(Slice(d, xw, i));
   if (!b.ok()) return {};
   // One slot: its view made a tensor of its own.
@@ -574,17 +555,9 @@ Outputs GatedDeltaNet(D& d) {
   const TensorId k_all = spread_all(d.s(1));
   const TensorId kb_all = b.Mul(k_all, d.s(4));
   const TensorId decay_all = b.Unary(d.s(3), UnaryFn::kExp);
-  if (!b.ok()) return {};
   const TensorDesc& kbt = d.t(kb_all);
   TensorId state = d.s(5);
   const float scale = 1.0f / std::sqrt(static_cast<float>(sk));
-  const auto initial_scratch_bytes = VectorScratchBytes(t, sizeof(TensorId));
-  if (!initial_scratch_bytes) {
-    b.Refuse(GraphError::kBounds, "gated delta net scratch byte count overflows");
-    return {};
-  }
-  auto outs_loan = b.FundScratch(*initial_scratch_bytes);
-  if (!b.ok()) return {};
   std::vector<TensorId> outs;
   outs.reserve(static_cast<std::size_t>(t));
   for (std::uint64_t i = 0; i < t && b.ok(); ++i) {
@@ -601,23 +574,13 @@ Outputs GatedDeltaNet(D& d) {
     outs.push_back(b.MatMul(state, qt));  // [Sv, 1, H, B]
   }
   while (outs.size() > 1 && b.ok()) {
-    const std::size_t next_capacity = (outs.size() + 1) / 2;
-    const auto next_scratch_bytes = VectorScratchBytes(next_capacity, sizeof(TensorId));
-    if (!next_scratch_bytes) {
-      b.Refuse(GraphError::kBounds, "gated delta net reduction scratch byte count overflows");
-      return {};
-    }
-    auto next_loan = b.FundScratch(*next_scratch_bytes);
-    if (!b.ok()) return {};
     std::vector<TensorId> next;
-    next.reserve(next_capacity);
+    next.reserve((outs.size() + 1) / 2);
     for (std::size_t i = 0; i < outs.size() && b.ok(); i += 2) {
       next.push_back(i + 1 < outs.size() ? b.Concat(outs[i], outs[i + 1], 1) : outs[i]);
     }
     outs = std::move(next);
-    outs_loan = std::move(next_loan);
   }
-  if (!b.ok()) return {};
   const TensorId joined = outs.empty() ? TensorId{} : outs.front();  // [Sv, T, H, B]
   Outputs o;
   o.ids[0] = b.Scale(b.Cont(b.Permute(joined, {0, 2, 1, 3})), scale);
@@ -652,7 +615,7 @@ Outputs DupUpAdd(D& d, const DupUpParams& p) {
   if (!d.check(
           ft >= 1 && sc.ne(3) == 1 && virt % ci == 0 && x.ne(0) == 2 * w && x.ne(1) == 2 * h,
           GraphError::kShape,
-          DiagFormat("dup-up of [{}, {}, {}] into {} channels at {} frames", w, h, ci, co, ft))) {
+          std::format("dup-up of [{}, {}, {}] into {} channels at {} frames", w, h, ci, co, ft))) {
     return {};
   }
   const std::uint64_t repeats = virt / ci;
@@ -1648,24 +1611,13 @@ Outputs Attention(D& d, const AttnParams& p) {
 bool Composite(Op op) { return HasDecomposition(Primitive(op)); }
 
 std::expected<Graph, VerifyError> ExpandOnce(const Graph& graph, bool composites,
-                                             std::vector<TensorId>& map, StorageLoan& map_loan,
-                                             bool& more) {
+                                             std::vector<TensorId>& map, bool& more) {
   Builder b;
-  const auto funder = graph.storage_funder();
-  if (funder && !b.SetStorageFunder(funder)) return std::unexpected(std::move(*b.TakeError()));
-  const std::uint64_t map_capacity = std::max<std::uint64_t>(graph.tensor_count(), map.capacity());
-  auto map_bytes = VectorScratchBytes(map_capacity, sizeof(TensorId));
-  if (!map_bytes) {
-    return std::unexpected(VerifyError{.error = GraphError::kAdmission, .detail = {}});
-  }
-  if (funder && !map_loan.GrowTo(funder, *map_bytes)) {
-    return std::unexpected(VerifyError{.error = GraphError::kAdmission, .detail = {}});
-  }
   map.assign(graph.tensor_count(), TensorId{});
   more = false;
-  std::array<TensorId, kMaxSources> sources{};
-  std::array<TensorDesc, kMaxOutputs> requested{};
-  std::array<format::Encoding, kMaxOutputs> encodings{};
+  std::vector<TensorId> sources;
+  std::vector<TensorDesc> requested;
+  std::vector<format::Encoding> encodings;
   for (std::size_t n = 0; n < graph.nodes().size(); ++n) {
     const Node& node = graph.nodes()[n];
     b.SetComponent(node.component);
@@ -1674,40 +1626,37 @@ std::expected<Graph, VerifyError> ExpandOnce(const Graph& graph, bool composites
     } else {
       b.SetJoined();
     }
-    std::size_t source_count = 0;
+    sources.clear();
     for (const TensorId s : node.sources()) {
-      sources.at(source_count++) = s.valid() ? map.at(s.v) : TensorId{};
+      sources.push_back(s.valid() ? map.at(s.v) : TensorId{});
     }
     Outputs outs;
     const bool split = node.key.op == Op::kFused || (composites && Composite(node.key.op));
     if (split) {
-      std::size_t encoding_count = 0;
+      encodings.clear();
       for (const TensorId o : node.outputs()) {
-        encodings.at(encoding_count++) = graph.tensor(o).format.encoding;
+        encodings.push_back(graph.tensor(o).format.encoding);
       }
-      outs = Decompose(b, node.key, node.params, std::span(sources).first(source_count),
-                       std::span(encodings).first(encoding_count));
+      outs = Decompose(b, node.key, node.params, sources, encodings);
     } else {
-      std::size_t requested_count = 0;
+      requested.clear();
       for (const TensorId o : node.outputs()) {
-        requested.at(requested_count++) = graph.tensor(o);
+        requested.push_back(graph.tensor(o));
       }
-      if (node.key == Primitive(Op::kView) && source_count > 0 && sources[0].valid() &&
+      if (node.key == Primitive(Op::kView) && sources[0].valid() &&
           !SameViewSource(graph.tensor(node.src[0]), b.tensor(sources[0]))) {
         b.Refuse(GraphError::kFormat,
                  "a view's source changed layout in its expansion: the view would read "
                  "other elements");
       } else {
-        outs = b.Emit(node.key, node.params, std::span(sources).first(source_count),
-                      std::span(requested).first(requested_count),
+        outs = b.Emit(node.key, node.params, sources, requested,
                       node.nout > 0 ? graph.name(node.out[0]) : std::string_view());
       }
     }
     if (!b.ok()) {
-      auto taken_error = b.TakeError();
-      VerifyError e = std::move(*taken_error);
+      VerifyError e = *b.error();
       e.node = static_cast<std::uint32_t>(n);
-      return std::unexpected(std::move(e));
+      return std::unexpected(e);
     }
     for (std::size_t i = 0; i < node.nout; ++i) {
       map.at(node.out.at(i).v) = outs[i];
@@ -1813,7 +1762,7 @@ Outputs Decompose(Builder& b, OpKey key, const ParamBytes& params,
   D d(b, sources);
   const auto handler = DecompositionOf(key);
   if (!handler) {
-    b.Refuse(GraphError::kParams, DiagFormat("{} has no decomposition", key));
+    b.Refuse(GraphError::kParams, std::format("{} has no decomposition", OpKeyName(key)));
     return {};
   }
   Outputs o = handler(d, params);
@@ -1835,33 +1784,14 @@ Outputs Decompose(Builder& b, OpKey key, const ParamBytes& params,
   return o;
 }
 
-OwnedTensorMap::OwnedTensorMap(OwnedTensorMap&& other) noexcept
-    : loan_(std::move(other.loan_)), values_(std::move(other.values_)) {}
-
-void OwnedTensorMap::Swap(OwnedTensorMap& other) noexcept {
-  std::swap(loan_, other.loan_);
-  values_.swap(other.values_);
-}
-
-OwnedTensorMap& OwnedTensorMap::operator=(OwnedTensorMap&& other) noexcept {
-  if (this != &other) {
-    OwnedTensorMap incoming(std::move(other));
-    Swap(incoming);
-  }
-  return *this;
-}
-
 namespace {
 
 std::expected<Graph, VerifyError> ExpandImpl(const Graph& graph, bool composites,
-                                             std::vector<TensorId>& result_map,
-                                             StorageLoan& result_map_loan) {
-  StorageLoan total_loan;
+                                             std::vector<TensorId>* map) {
   std::vector<TensorId> total;
-  StorageLoan step_loan;
   std::vector<TensorId> step;
   bool more = false;
-  auto g = ExpandOnce(graph, composites, total, total_loan, more);
+  auto g = ExpandOnce(graph, composites, total, more);
   // A decomposition may emit fused or composite ops (kMoeCombine's expert
   // reduction, kHcNormPost's spread): expand again until none is left, a
   // bounded number of times (the deepest nesting is a few levels).
@@ -1873,7 +1803,7 @@ std::expected<Graph, VerifyError> ExpandImpl(const Graph& graph, bool composites
           .node = 0,
           .detail = std::format("fused nodes remain after {} expansion passes", kMaxPasses)});
     }
-    auto next = ExpandOnce(*g, composites, step, step_loan, more);
+    auto next = ExpandOnce(*g, composites, step, more);
     if (!next) {
       return next;
     }
@@ -1882,9 +1812,8 @@ std::expected<Graph, VerifyError> ExpandImpl(const Graph& graph, bool composites
     }
     g = std::move(next);
   }
-  if (g) {
-    result_map = std::move(total);
-    result_map_loan = std::move(total_loan);
+  if (g && map != nullptr) {
+    *map = std::move(total);
   }
   return g;
 }
@@ -1892,14 +1821,12 @@ std::expected<Graph, VerifyError> ExpandImpl(const Graph& graph, bool composites
 }  // namespace
 
 std::expected<Graph, VerifyError> Expand(const Graph& graph, bool composites) {
-  StorageLoan map_loan;
-  std::vector<TensorId> map;
-  return ExpandImpl(graph, composites, map, map_loan);
+  return ExpandImpl(graph, composites, nullptr);
 }
 
 std::expected<ExpansionResult, VerifyError> ExpandWithMap(const Graph& graph, bool composites) {
-  OwnedTensorMap map;
-  auto expanded = ExpandImpl(graph, composites, map.values_, map.loan_);
+  std::vector<TensorId> map;
+  auto expanded = ExpandImpl(graph, composites, &map);
   if (!expanded) return std::unexpected(std::move(expanded.error()));
   return ExpansionResult{std::move(*expanded), std::move(map)};
 }

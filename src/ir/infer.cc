@@ -43,7 +43,9 @@ std::unexpected<VerifyError> Err(GraphError error, std::string detail) {
   return std::unexpected(VerifyError{.error = error, .node = 0, .detail = std::move(detail)});
 }
 
-const Shape& Text(const Shape& s) { return s; }
+std::string Text(const Shape& s) {
+  return std::format("[{}, {}, {}, {}]", s.ne[0], s.ne[1], s.ne[2], s.ne[3]);
+}
 
 Shape S(std::uint64_t a, std::uint64_t b = 1, std::uint64_t c = 1, std::uint64_t d = 1) {
   return ShapeOf({a, b, c, d});
@@ -90,15 +92,8 @@ class Ctx {
  public:
   Ctx(OpKey key, std::span<const std::byte, kMaxParamBytes> params,
       std::span<const TensorId> sources, std::span<const TensorDesc> tensors,
-      std::span<const TensorDesc> requested, std::shared_ptr<const StorageFunder> funder,
-      DiagnosticAdmission* diagnostic)
-      : key_(key),
-        params_(params),
-        sources_(sources),
-        tensors_(tensors),
-        requested_(requested),
-        funder_(std::move(funder)),
-        diagnostic_(diagnostic) {}
+      std::span<const TensorDesc> requested)
+      : key_(key), params_(params), sources_(sources), tensors_(tensors), requested_(requested) {}
 
   std::size_t count() const { return sources_.size(); }
   // Source i, or null when absent.
@@ -128,8 +123,6 @@ class Ctx {
   OpKey key() const { return key_; }
   std::span<const TensorId> sources() const { return sources_; }
   std::span<const TensorDesc> tensors() const { return tensors_; }
-  const std::shared_ptr<const StorageFunder>& funder() const { return funder_; }
-  DiagnosticAdmission* diagnostic() const { return diagnostic_; }
 
  private:
   OpKey key_;
@@ -137,46 +130,19 @@ class Ctx {
   std::span<const TensorId> sources_;
   std::span<const TensorDesc> tensors_;
   std::span<const TensorDesc> requested_;
-  std::shared_ptr<const StorageFunder> funder_{};
-  DiagnosticAdmission* diagnostic_ = nullptr;
 };
-
-template <std::size_t N>
-std::unexpected<VerifyError> Err(const Ctx& c, GraphError error,
-                                 const DiagnosticMessage<N>& message) {
-  auto detail = MakeDiagnostic(c.diagnostic(), message);
-  if (!detail)
-    return std::unexpected(VerifyError{.error = GraphError::kAdmission, .node = 0, .detail = {}});
-  return Err(error, std::move(*detail));
-}
-
-template <std::size_t N>
-std::unexpected<VerifyError> Fail(GraphError error, const Ctx& c,
-                                  const DiagnosticMessage<N>& message) {
-  auto detail = MakeDiagnostic(c.diagnostic(), message);
-  if (!detail)
-    return std::unexpected(VerifyError{.error = GraphError::kAdmission, .node = 0, .detail = {}});
-  auto annotated = FormatDiagnostic(c.diagnostic(), "{}: {}", c.key(), *detail);
-  if (!annotated)
-    return std::unexpected(VerifyError{.error = GraphError::kAdmission, .node = 0, .detail = {}});
-  return Err(error, std::move(*annotated));
-}
-
-std::unexpected<VerifyError> Fail(GraphError error, const Ctx& c, std::string_view detail) {
-  return Fail(error, c, DiagFormat("{}", detail));
-}
 
 // Sources: `required` positions must be present, the rest up to `total`
 // may be absent, none past `total`.
 std::expected<void, VerifyError> Arity(const Ctx& c, std::size_t required, std::size_t total) {
   if (c.count() < required || c.count() > total) {
-    return Err(
-        c, GraphError::kArity,
-        DiagFormat("{} takes {} to {} sources, not {}", c.key(), required, total, c.count()));
+    return Err(GraphError::kArity, std::format("{} takes {} to {} sources, not {}",
+                                               OpKeyName(c.key()), required, total, c.count()));
   }
   for (std::size_t i = 0; i < required; ++i) {
     if (c.src(i) == nullptr) {
-      return Err(c, GraphError::kArity, DiagFormat("{}'s source {} is required", c.key(), i));
+      return Err(GraphError::kArity,
+                 std::format("{}'s source {} is required", OpKeyName(c.key()), i));
     }
   }
   return {};
@@ -186,8 +152,8 @@ std::expected<void, VerifyError> Arity(const Ctx& c, std::size_t required, std::
 std::expected<void, VerifyError> Tail(const Ctx& c, std::size_t size) {
   for (std::size_t i = size; i < kMaxParamBytes; ++i) {
     if (c.byte(i) != 0) {
-      return Err(c, GraphError::kParams,
-                 DiagFormat("{}'s parameter byte {} is set past its {} bytes", c.key(), i, size));
+      return Err(GraphError::kParams, std::format("{}'s parameter byte {} is set past its {} bytes",
+                                                  OpKeyName(c.key()), i, size));
     }
   }
   return {};
@@ -196,8 +162,8 @@ std::expected<void, VerifyError> Tail(const Ctx& c, std::size_t size) {
 std::expected<void, VerifyError> Zero(const Ctx& c, std::size_t offset, std::size_t count) {
   for (std::size_t i = offset; i < offset + count; ++i) {
     if (c.byte(i) != 0) {
-      return Err(c, GraphError::kParams,
-                 DiagFormat("{}'s reserved parameter byte {} is set", c.key(), i));
+      return Err(GraphError::kParams,
+                 std::format("{}'s reserved parameter byte {} is set", OpKeyName(c.key()), i));
     }
   }
   return {};
@@ -205,26 +171,30 @@ std::expected<void, VerifyError> Zero(const Ctx& c, std::size_t offset, std::siz
 
 std::expected<void, VerifyError> Bool(const Ctx& c, std::size_t offset) {
   if (c.byte(offset) > 1) {
-    return Err(c, GraphError::kParams,
-               DiagFormat("{}'s flag at byte {} is not 0 or 1", c.key(), offset));
+    return Err(GraphError::kParams,
+               std::format("{}'s flag at byte {} is not 0 or 1", OpKeyName(c.key()), offset));
   }
   return {};
 }
 
-#define LLMP_TRY(expr)                                    \
-  if (auto llmp_try_ = (expr); !llmp_try_) {              \
-    return std::unexpected(std::move(llmp_try_.error())); \
+std::unexpected<VerifyError> Fail(GraphError e, const Ctx& c, const std::string& what) {
+  return Err(e, std::format("{}: {}", OpKeyName(c.key()), what));
+}
+
+#define LLMP_TRY(expr)                         \
+  if (auto llmp_try_ = (expr); !llmp_try_) {   \
+    return std::unexpected(llmp_try_.error()); \
   }
 
 std::expected<void, VerifyError> Readable(const Ctx& c, std::size_t i) {
   const TensorDesc* t = c.src(i);
   if (t == nullptr) return {};
   if (const auto valid = format::Validate(t->format); !valid) {
-    return Fail(
-        GraphError::kFormat, c,
-        DiagFormat("source {} has an invalid format ({} {} [{}, {}, {}, {}]: {})", i,
-                   format::Info(t->format.encoding).name, format::Info(t->format.layout).name,
-                   t->ne(0), t->ne(1), t->ne(2), t->ne(3), format::FormatErrorName(valid.error())));
+    return Fail(GraphError::kFormat, c,
+                std::format("source {} has an invalid format ({} {} [{}, {}, {}, {}]: {})", i,
+                            format::Info(t->format.encoding).name,
+                            format::Info(t->format.layout).name, t->ne(0), t->ne(1), t->ne(2),
+                            t->ne(3), format::FormatErrorName(valid.error())));
   }
   return {};
 }
@@ -233,7 +203,7 @@ std::expected<void, VerifyError> FloatSrc(const Ctx& c, std::size_t i) {
   LLMP_TRY(Readable(c, i));
   const TensorDesc* t = c.src(i);
   if (t != nullptr && Integer(t->format.encoding)) {
-    return Fail(GraphError::kFormat, c, DiagFormat("source {} is an integer, not values", i));
+    return Fail(GraphError::kFormat, c, std::format("source {} is an integer, not values", i));
   }
   return {};
 }
@@ -247,21 +217,15 @@ std::expected<void, VerifyError> IndexSrc(const Ctx& c, std::size_t i, bool i64 
   if (t->format.layout != format::Layout::kDense ||
       !(e == Encoding::kI32 || (i64 && e == Encoding::kI64))) {
     return Fail(GraphError::kFormat, c,
-                DiagFormat("source {} must be I32{}", i, i64 ? " or I64" : ""));
+                std::format("source {} must be I32{}", i, i64 ? " or I64" : ""));
   }
   return {};
 }
 
-std::expected<void, VerifyError> Want(bool ok, const Ctx& c, std::string_view what) {
+std::expected<void, VerifyError> Want(bool ok, const Ctx& c, const std::string& what) {
   if (!ok) {
     return Fail(GraphError::kShape, c, what);
   }
-  return {};
-}
-
-template <std::size_t N>
-std::expected<void, VerifyError> Want(bool ok, const Ctx& c, const DiagnosticMessage<N>& what) {
-  if (!ok) return Fail(GraphError::kShape, c, what);
   return {};
 }
 
@@ -315,7 +279,7 @@ std::expected<void, VerifyError> InRoot(const Ctx& c, const TensorDesc& view,
   }
   if ((view.ne(0) != per && view.nb[0] != unit) || view.ne(0) % per != 0) {
     return Fail(GraphError::kShape, c,
-                DiagFormat("a view steps by one unit ({} bytes) over whole units", unit));
+                std::format("a view steps by one unit ({} bytes) over whole units", unit));
   }
   const auto parts = format::PartsOf(root.format);
   if (!parts) {
@@ -336,11 +300,11 @@ std::expected<void, VerifyError> InRoot(const Ctx& c, const TensorDesc& view,
   }
   overflow |= __builtin_add_overflow(last, unit, &last);
   if (overflow || last > bytes) {
-    return Err(c, GraphError::kBounds,
-               DiagFormat("{}: a view {} at offset {} with strides [{}, {}, {}, {}] ends past its "
-                          "root's {} bytes",
-                          c.key(), Text(view.format.shape), view.view_offset, view.nb[0],
-                          view.nb[1], view.nb[2], view.nb[3], bytes));
+    return Err(GraphError::kBounds,
+               std::format("{}: a view {} at offset {} with strides [{}, {}, {}, {}] ends past its "
+                           "root's {} bytes",
+                           OpKeyName(c.key()), Text(view.format.shape), view.view_offset,
+                           view.nb[0], view.nb[1], view.nb[2], view.nb[3], bytes));
   }
   return {};
 }
@@ -353,7 +317,7 @@ std::expected<void, VerifyError> Writable(const Ctx& c, std::size_t i) {
   const Role role = c.root_desc(i).role;
   if (role == Role::kWeight || role == Role::kConstant) {
     return Fail(GraphError::kBinding, c,
-                DiagFormat("source {} is a {}'s bytes, which nothing writes", i, RoleName(role)));
+                std::format("source {} is a {}'s bytes, which nothing writes", i, RoleName(role)));
   }
   return {};
 }
@@ -457,25 +421,25 @@ Out RopeOf(const Ctx& c, const RopeParams& p, std::size_t x_at, std::size_t pos_
   const std::uint64_t t = x.ne(2);
   const std::uint64_t span = p.mode == RopeMode::kVision ? 2ULL * p.dims : p.dims;
   LLMP_TRY(Want(std::uint64_t{p.offset} + span <= d, c,
-                DiagFormat("rotates {} values from {} of a {}-value head", span, p.offset, d)));
+                std::format("rotates {} values from {} of a {}-value head", span, p.offset, d)));
   if (p.table) {
     LLMP_TRY(FloatSrc(c, pos_at));
     LLMP_TRY(Want(
         pos.shape().ne == S(2, p.dims / 2, t).ne, c,
-        DiagFormat("a rotation table is [2, {}, {}], not {}", p.dims / 2, t, Text(pos.shape()))));
+        std::format("a rotation table is [2, {}, {}], not {}", p.dims / 2, t, Text(pos.shape()))));
   } else {
     LLMP_TRY(IndexSrc(c, pos_at));
     const bool four = p.mode == RopeMode::kMulti || p.mode == RopeMode::kInterleavedMulti ||
                       p.mode == RopeMode::kVision;
     LLMP_TRY(Want(pos.shape().ne == S(four ? 4 * t : t).ne, c,
-                  DiagFormat("positions are [{}], not {}", four ? 4 * t : t, Text(pos.shape()))));
+                  std::format("positions are [{}], not {}", four ? 4 * t : t, Text(pos.shape()))));
   }
   if (const TensorDesc* f = c.src(freq_at); f != nullptr) {
     LLMP_TRY(FloatSrc(c, freq_at));
     // One per pair: the vision rotation has dims pairs, the others dims / 2.
     const std::uint64_t pairs = p.mode == RopeMode::kVision ? p.dims : p.dims / 2;
     LLMP_TRY(Want(f->ne(0) >= pairs && Elements(f->shape()) == f->ne(0), c,
-                  DiagFormat("frequency factors are a vector of at least {}", pairs)));
+                  std::format("frequency factors are a vector of at least {}", pairs)));
   }
   return FloatResult(x.shape(), FloatOf(x));
 }
@@ -531,7 +495,7 @@ Out InferReshape(const Ctx& c) {
   }
   LLMP_TRY(Want(IsContiguous(a), c, "reshapes a contiguous tensor"));
   LLMP_TRY(Want(Elements(r->shape()) == Elements(a.shape()), c,
-                DiagFormat("{} has another count than {}", Text(r->shape()), Text(a.shape()))));
+                std::format("{} has another count than {}", Text(r->shape()), Text(a.shape()))));
   format::TensorFormat f = a.format;
   f.shape = r->format.shape;
   f.stacked = 1;
@@ -576,7 +540,7 @@ Out InferCont(const Ctx& c) {
   if (const TensorDesc* r = c.req(0); r != nullptr) {
     shape = r->shape();
     LLMP_TRY(Want(Elements(shape) == Elements(a.shape()), c,
-                  DiagFormat("{} has another count than {}", Text(shape), Text(a.shape()))));
+                  std::format("{} has another count than {}", Text(shape), Text(a.shape()))));
   }
   return One(Fresh(shape, a.format.encoding), false);
 }
@@ -610,7 +574,7 @@ Out InferConcat(const Ctx& c) {
     } else {
       LLMP_TRY(Want(
           a.ne(d) == b.ne(d), c,
-          DiagFormat("{} and {} differ beyond dim {}", Text(a.shape()), Text(b.shape()), p.dim)));
+          std::format("{} and {} differ beyond dim {}", Text(a.shape()), Text(b.shape()), p.dim)));
     }
   }
   format::TensorFormat f = a.format;
@@ -631,7 +595,7 @@ Out InferRepeat(const Ctx& c) {
   }
   LLMP_TRY(Want(a.format.layout == format::Layout::kDense, c, "tiles dense tensors"));
   LLMP_TRY(Want(Broadcasts(r->shape(), a.shape()), c,
-                DiagFormat("{} is not a multiple of {}", Text(r->shape()), Text(a.shape()))));
+                std::format("{} is not a multiple of {}", Text(r->shape()), Text(a.shape()))));
   return One(Fresh(ShapeOf({r->ne(0), r->ne(1), r->ne(2), r->ne(3)}), a.format.encoding), false);
 }
 
@@ -653,7 +617,7 @@ Out InferGetRows(const Ctx& c) {
   const TensorDesc& a = *c.src(0);
   const TensorDesc& ids = *c.src(1);
   LLMP_TRY(Want(a.ne(2) == ids.ne(1) && a.ne(3) == ids.ne(2) && ids.ne(3) == 1, c,
-                DiagFormat("rows of {} by ids {}", Text(a.shape()), Text(ids.shape()))));
+                std::format("rows of {} by ids {}", Text(a.shape()), Text(ids.shape()))));
   const Shape out = S(a.ne(0), ids.ne(0), ids.ne(1), ids.ne(2));
   if (a.format.encoding == Encoding::kI32) {
     return One(Fresh(out, Encoding::kI32), false);
@@ -668,7 +632,7 @@ Out InferMatMul(const Ctx& c) {
   const TensorDesc& b = *c.src(1);
   LLMP_TRY(CheckProduct(c, a));
   LLMP_TRY(Want(a.ne(0) == b.ne(0) && b.ne(2) % a.ne(2) == 0 && b.ne(3) % a.ne(3) == 0, c,
-                DiagFormat("{} times {}", Text(a.shape()), Text(b.shape()))));
+                std::format("{} times {}", Text(a.shape()), Text(b.shape()))));
   return FloatResult(S(a.ne(1), b.ne(1), b.ne(2), b.ne(3)), Encoding::kF32);
 }
 
@@ -683,8 +647,8 @@ Out InferMatMulId(const Ctx& c) {
   LLMP_TRY(Want(as.ne(3) == 1 && b.ne(3) == 1 && ids.ne(2) == 1 && ids.ne(3) == 1 &&
                     ids.ne(1) == b.ne(2) && as.ne(0) == b.ne(0) && ids.ne(0) % b.ne(1) == 0,
                 c,
-                DiagFormat("experts {} times {} by ids {}", Text(as.shape()), Text(b.shape()),
-                           Text(ids.shape()))));
+                std::format("experts {} times {} by ids {}", Text(as.shape()), Text(b.shape()),
+                            Text(ids.shape()))));
   return FloatResult(S(as.ne(1), ids.ne(0), b.ne(2)), Encoding::kF32);
 }
 
@@ -758,13 +722,14 @@ Out InferAttention(const Ctx& c) {
   LLMP_TRY(Want(
       q.ne(0) == k.ne(0) && k.ne(1) == v.ne(1) && k.ne(2) == v.ne(2) && q.ne(3) == k.ne(3) &&
           q.ne(3) == v.ne(3) && q.ne(2) % k.ne(2) == 0,
-      c, DiagFormat("q {} over k {} and v {}", Text(q.shape()), Text(k.shape()), Text(v.shape()))));
+      c,
+      std::format("q {} over k {} and v {}", Text(q.shape()), Text(k.shape()), Text(v.shape()))));
   if (mask != nullptr) {
     LLMP_TRY(Want(mask->ne(0) == k.ne(1) && mask->ne(1) >= q.ne(1) && q.ne(2) % mask->ne(2) == 0 &&
                       q.ne(3) % mask->ne(3) == 0,
                   c,
-                  DiagFormat("a mask {} for q {} over {} cells", Text(mask->shape()),
-                             Text(q.shape()), k.ne(1))));
+                  std::format("a mask {} for q {} over {} cells", Text(mask->shape()),
+                              Text(q.shape()), k.ne(1))));
   }
   if (sinks != nullptr) {
     LLMP_TRY(Want(sinks->shape().ne == S(q.ne(2)).ne, c, "a sink per head"));
@@ -798,7 +763,7 @@ Out InferMaskBuild(const Ctx& c) {
   LLMP_TRY(Want(
       r->ne(0) == cp.ne(0) && r->ne(1) >= qp.ne(0) && (!p.exact_rows || r->ne(1) == qp.ne(0)) &&
           r->ne(2) == 1 && r->ne(3) == 1,
-      c, DiagFormat("a mask {} for {} cells and {} rows", Text(r->shape()), cp.ne(0), qp.ne(0))));
+      c, std::format("a mask {} for {} cells and {} rows", Text(r->shape()), cp.ne(0), qp.ne(0))));
   return One(Fresh(S(cp.ne(0), r->ne(1)), e), false);
 }
 
@@ -817,8 +782,8 @@ Out InferCacheStore(const Ctx& c) {
                     src.ne(1) == idx.ne(0) && src.ne(2) % idx.ne(1) == 0 &&
                     src.ne(3) % idx.ne(2) == 0 && idx.ne(3) == 1,
                 c,
-                DiagFormat("rows {} into {} at {}", Text(src.shape()), Text(cache.shape()),
-                           Text(idx.shape()))));
+                std::format("rows {} into {} at {}", Text(src.shape()), Text(cache.shape()),
+                            Text(idx.shape()))));
   return One(ViewOf(c, 0, cache.format, cache.nb, cache.view_offset), false);
 }
 
@@ -857,14 +822,14 @@ Out InferIndexScore(const Ctx& c) {
   const TensorDesc& k = *c.src(1);
   const TensorDesc& w = *c.src(2);
   const TensorDesc* mask = c.src(3);
-  LLMP_TRY(Want(q.ne(0) == k.ne(0) && k.ne(1) == 1 && k.ne(3) == q.ne(3) && w.ne(0) == q.ne(1) &&
-                    w.ne(1) == q.ne(2) && w.ne(2) == 1 && w.ne(3) == q.ne(3),
-                c,
-                DiagFormat("q {}, k {}, w {}", Text(q.shape()), Text(k.shape()), Text(w.shape()))));
+  LLMP_TRY(
+      Want(q.ne(0) == k.ne(0) && k.ne(1) == 1 && k.ne(3) == q.ne(3) && w.ne(0) == q.ne(1) &&
+               w.ne(1) == q.ne(2) && w.ne(2) == 1 && w.ne(3) == q.ne(3),
+           c, std::format("q {}, k {}, w {}", Text(q.shape()), Text(k.shape()), Text(w.shape()))));
   if (mask != nullptr) {
     LLMP_TRY(Want(mask->ne(0) == k.ne(2) && mask->ne(1) == q.ne(2) && mask->ne(2) == 1 &&
                       q.ne(3) % mask->ne(3) == 0,
-                  c, DiagFormat("a mask {}", Text(mask->shape()))));
+                  c, std::format("a mask {}", Text(mask->shape()))));
   }
   return FloatResult(S(k.ne(2), q.ne(2), 1, q.ne(3)), Encoding::kF32);
 }
@@ -924,7 +889,7 @@ Out InferBinary(const Ctx& c) {
   const TensorDesc& a = *c.src(0);
   const TensorDesc& b = *c.src(1);
   LLMP_TRY(Want(Broadcasts(a.shape(), b.shape()), c,
-                DiagFormat("{} does not broadcast over {}", Text(b.shape()), Text(a.shape()))));
+                std::format("{} does not broadcast over {}", Text(b.shape()), Text(a.shape()))));
   return FloatResult(a.shape(), FloatOf(a));
 }
 
@@ -1016,7 +981,7 @@ Out InferSoftMax(const Ctx& c) {
   if (mask != nullptr) {
     LLMP_TRY(Want(mask->ne(0) == x.ne(0) && mask->ne(1) >= x.ne(1) && x.ne(2) % mask->ne(2) == 0 &&
                       x.ne(3) % mask->ne(3) == 0,
-                  c, DiagFormat("a mask {} over {}", Text(mask->shape()), Text(x.shape()))));
+                  c, std::format("a mask {} over {}", Text(mask->shape()), Text(x.shape()))));
   }
   if (const TensorDesc* sinks = c.src(2); sinks != nullptr) {
     LLMP_TRY(Want(sinks->shape().ne == S(x.ne(2)).ne, c, "a sink per matrix"));
@@ -1045,7 +1010,7 @@ Out InferTopK(const Ctx& c) {
   const auto p = c.params<TopKParams>();
   const TensorDesc& x = *c.src(0);
   if (p.k == 0 || p.k > x.ne(0)) {
-    return Fail(GraphError::kParams, c, DiagFormat("k {} of {}", p.k, x.ne(0)));
+    return Fail(GraphError::kParams, c, std::format("k {} of {}", p.k, x.ne(0)));
   }
   return One(Fresh(S(p.k, x.ne(1), x.ne(2), x.ne(3)), Encoding::kI32), false);
 }
@@ -1095,7 +1060,7 @@ Out InferRoute(const Ctx& c) {
                 "scale is 1)");
   }
   LLMP_TRY(Want(logits.ne(0) == p.experts && logits.ne(2) == 1 && logits.ne(3) == 1, c,
-                DiagFormat("logits {} for {} experts", Text(logits.shape()), p.experts)));
+                std::format("logits {} for {} experts", Text(logits.shape()), p.experts)));
   const TensorDesc* bias = c.src(1);
   const TensorDesc* table = c.src(2);
   const TensorDesc* tokens = c.src(3);
@@ -1137,7 +1102,7 @@ Out InferExpertReduce(const Ctx& c) {
   const TensorDesc* ids = c.src(2);
   const TensorDesc* scale = c.src(3);
   LLMP_TRY(Want(x.ne(3) == 1 && w.shape().ne == S(x.ne(1), x.ne(2)).ne, c,
-                DiagFormat("experts {} with weights {}", Text(x.shape()), Text(w.shape()))));
+                std::format("experts {} with weights {}", Text(x.shape()), Text(w.shape()))));
   const bool gathered = scale != nullptr && scale->ne(0) == 1 && scale->ne(1) == x.ne(1) &&
                         scale->ne(2) == x.ne(2) && scale->ne(3) == 1;
   if ((scale != nullptr) && !gathered && (ids == nullptr)) {
@@ -1160,7 +1125,7 @@ Out InferSsmConv(const Ctx& c) {
   const TensorDesc& w = *c.src(1);
   LLMP_TRY(Want(
       sx.ne(3) == 1 && w.ne(2) == 1 && w.ne(3) == 1 && sx.ne(1) == w.ne(1) && sx.ne(0) >= w.ne(0),
-      c, DiagFormat("{} over taps {}", Text(sx.shape()), Text(w.shape()))));
+      c, std::format("{} over taps {}", Text(sx.shape()), Text(w.shape()))));
   return FloatResult(S(w.ne(1), sx.ne(0) - w.ne(0) + 1, sx.ne(2)), Encoding::kF32);
 }
 
@@ -1184,8 +1149,8 @@ Out InferGatedDeltaNet(const Ctx& c) {
                     g.ne(2) == t && g.ne(3) == b && beta.shape().ne == S(1, h, t, b).ne &&
                     state.shape().ne == S(sk, sv, h, b).ne,
                 c,
-                DiagFormat("q {}, v {}, g {}, beta {}, state {}", Text(q.shape()), Text(v.shape()),
-                           Text(g.shape()), Text(beta.shape()), Text(state.shape()))));
+                std::format("q {}, v {}, g {}, beta {}, state {}", Text(q.shape()), Text(v.shape()),
+                            Text(g.shape()), Text(beta.shape()), Text(state.shape()))));
   Inferred r;
   r.out[0] = Fresh(S(sv, h, t, b), Encoding::kF32);
   r.out[1] = Fresh(S(sk, sv, h, b), Encoding::kF32);
@@ -1205,7 +1170,7 @@ Out InferConv2d(const Ctx& c) {
     return Fail(GraphError::kParams, c, "stride and dilation at least one");
   }
   LLMP_TRY(Want(w.ne(2) == x.ne(2), c,
-                DiagFormat("kernel {} over {}", Text(w.shape()), Text(x.shape()))));
+                std::format("kernel {} over {}", Text(w.shape()), Text(x.shape()))));
   const auto size = [&](std::uint64_t in, std::uint64_t k) -> std::uint64_t {
     const std::uint64_t span = (std::uint64_t{p.dilation} * (k - 1)) + 1;
     const std::uint64_t padded = in + (2ULL * p.padding);
@@ -1276,7 +1241,7 @@ Out InferHcPost(const Ctx& c) {
   LLMP_TRY(Want(
       y.ne(2) == 1 && y.ne(3) == 1 && x.shape().ne == S(w, hc, t).ne &&
           post.shape().ne == S(hc, t).ne,
-      c, DiagFormat("y {}, x {}, post {}", Text(y.shape()), Text(x.shape()), Text(post.shape()))));
+      c, std::format("y {}, x {}, post {}", Text(y.shape()), Text(x.shape()), Text(post.shape()))));
   if (const TensorDesc* comb = c.src(3); comb != nullptr) {
     LLMP_TRY(Want(comb->shape().ne == S(hc, hc, t).ne, c, "comb is [hc, hc, tokens]"));
   }
@@ -1308,8 +1273,8 @@ Out InferHcMix(const Ctx& c) {
                     Elements(scale.shape()) == scale.ne(0) && scale.ne(0) >= need_sc &&
                     base.shape().ne == S(m).ne,
                 c,
-                DiagFormat("mixes {}, scale {}, base {} for {} streams", Text(mixes.shape()),
-                           Text(scale.shape()), Text(base.shape()), hc)));
+                std::format("mixes {}, scale {}, base {} for {} streams", Text(mixes.shape()),
+                            Text(scale.shape()), Text(base.shape()), hc)));
   if (p.mix == HcMixKind::kSinkhorn) {
     if (p.iterations == 0) {
       return Fail(GraphError::kParams, c, "Sinkhorn needs iterations");
@@ -1471,8 +1436,6 @@ Out InferFused(const Ctx& c) {
   // The decomposition over stand-ins of the sources: its outputs are the
   // node's.
   Builder b;
-  b.SetDiagnosticAdmission(c.diagnostic());
-  if (c.funder()) (void)b.SetStorageFunder(c.funder());
   std::array<TensorId, kMaxSources> ins{};
   for (std::size_t i = 0; i < c.count(); ++i) {
     if (const TensorDesc* s = c.src(i); s != nullptr) {
@@ -1484,17 +1447,9 @@ Out InferFused(const Ctx& c) {
   std::ranges::copy(c.raw(), params.begin());
   const Outputs outs = Decompose(b, c.key(), params, std::span(ins).first(c.count()), {});
   if (!b.ok()) {
-    auto error = b.TakeError();
-    VerifyError e = std::move(*error);
-    if (e.error != GraphError::kAdmission) {
-      auto annotated = MakeDiagnostic(
-          c.diagnostic(), DiagFormat("{} (in its decomposition)", std::string_view(e.detail)));
-      if (!annotated)
-        return std::unexpected(
-            VerifyError{.error = GraphError::kAdmission, .node = e.node, .detail = {}});
-      e.detail = std::move(*annotated);
-    }
-    return std::unexpected(std::move(e));
+    VerifyError e = *b.error();
+    e.detail = std::format("{} (in its decomposition)", e.detail);
+    return std::unexpected(e);
   }
   Inferred r;
   r.nout = outs.n;
@@ -1561,20 +1516,17 @@ static_assert([] {
 
 }  // namespace
 
-std::expected<Inferred, VerifyError> Infer(
-    OpKey key, std::span<const std::byte, kMaxParamBytes> params, std::span<const TensorId> sources,
-    std::span<const TensorDesc> tensors, std::span<const TensorDesc> requested,
-    std::shared_ptr<const StorageFunder> funder, DiagnosticAdmission* diagnostic) {
-  const Ctx c(key, params, sources, tensors, requested, std::move(funder), diagnostic);
+std::expected<Inferred, VerifyError> Infer(OpKey key,
+                                           std::span<const std::byte, kMaxParamBytes> params,
+                                           std::span<const TensorId> sources,
+                                           std::span<const TensorDesc> tensors,
+                                           std::span<const TensorDesc> requested) {
+  const Ctx c(key, params, sources, tensors, requested);
   if (sources.size() > kMaxSources) {
-    auto detail =
-        MakeDiagnostic(diagnostic, DiagFormat("{} sources, past {}", sources.size(), kMaxSources));
-    if (!detail)
-      return std::unexpected(VerifyError{.error = GraphError::kAdmission, .node = 0, .detail = {}});
-    return Err(GraphError::kArity, std::move(*detail));
+    return Err(GraphError::kArity, std::format("{} sources, past {}", sources.size(), kMaxSources));
   }
   if (key.op != Op::kFused && key.fused != FusedKind::kNone) {
-    return Err(c, GraphError::kParams, DiagFormat("a fused kind on a primitive op"));
+    return Err(GraphError::kParams, "a fused kind on a primitive op");
   }
   const OpTraits* traits = Traits(key);
   if (!traits) return Fail(GraphError::kParams, c, "an op outside op set v1");
@@ -1600,8 +1552,8 @@ std::expected<Inferred, VerifyError> Infer(
     const TensorDesc& t = r->out.at(i);
     if (!t.view_of.valid() && !format::Validate(t.format)) {
       return Fail(GraphError::kShape, c,
-                  DiagFormat("output {} of {} is not a valid {} tensor", i, Text(t.shape()),
-                             format::Info(t.format.encoding).name));
+                  std::format("output {} of {} is not a valid {} tensor", i, Text(t.shape()),
+                              format::Info(t.format.encoding).name));
     }
   }
   return r;

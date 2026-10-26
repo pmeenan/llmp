@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <expected>
 #include <format>
-#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -21,7 +20,6 @@
 #include "ir/builder.h"
 #include "ir/graph.h"
 #include "ir/op.h"
-#include "planner/alternative.h"
 
 namespace llmp::planner {
 namespace {
@@ -40,11 +38,6 @@ struct Rows {
 };
 
 bool Matrix(const ir::TensorDesc& d) { return d.ne(2) == 1 && d.ne(3) == 1 && ir::IsContiguous(d); }
-
-std::optional<std::uint64_t> SplitEmittedNodeCount(std::uint64_t owners) {
-  if (owners <= 1 || owners > std::numeric_limits<std::uint64_t>::max() / 3) return std::nullopt;
-  return 3 * owners - 1;
-}
 
 class Proof {
  public:
@@ -258,92 +251,25 @@ std::expected<OwnerProducts, std::string> ProveOwnerProducts(const ir::Graph& gr
   return out;
 }
 
-std::expected<OwnerRewritten, ir::VerifyError> SplitOwnerProducts(
-    const ir::Graph& graph, const OwnerProducts& proof, PlannerMetadataAdmission* admission) {
-  const auto diagnostic = [&](ir::GraphError error,
-                              std::string_view text) -> std::unexpected<ir::VerifyError> {
-    if (error == ir::GraphError::kAdmission)
-      return std::unexpected(ir::VerifyError{.error = error, .detail = {}});
-    auto owned = ir::FormatDiagnostic(admission, "{}", text);
-    if (!owned)
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    return std::unexpected(ir::VerifyError{.error = error, .detail = std::move(*owned)});
-  };
+std::expected<OwnerRewritten, std::string> SplitOwnerProducts(const ir::Graph& graph,
+                                                              const OwnerProducts& proof) {
   if (proof.graph_digest() != OwnerGraphIdentity(graph))
-    return diagnostic(ir::GraphError::kArity, "owner products: proof belongs to another graph");
-  // Price each private result container from the proof's exact owner
-  // cardinalities before constructing any of them. Builder graph storage has
-  // its own StorageFunder and is paid independently.
-  constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-  std::uint64_t output_nodes = graph.nodes().size();
-  std::uint64_t scope_count = 0;
-  std::uint64_t records = 0;
-  std::uint64_t record_nodes = 0;
-  const auto add = [](std::uint64_t value, std::uint64_t& total) {
-    if (value > std::numeric_limits<std::uint64_t>::max() - total) return false;
-    total += value;
-    return true;
-  };
-  const auto add_vector = [&](std::uint64_t count, std::uint64_t element, std::uint64_t& total) {
-    if (count == 0) return true;
-    if (element == 0 || count > (std::numeric_limits<std::uint64_t>::max() - envelope) / element)
-      return false;
-    return add(count * element + envelope, total);
-  };
-  for (const auto& product : proof.products()) {
-    const std::uint64_t owners = product.owners.size();
-    if (owners == 0 || !add(owners, scope_count))
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    if (owners > 1) {
-      // Each owner emits a view and product, and all products after the first
-      // add one concat: 2*N + (N-1) nodes in the rewritten graph.
-      const auto emitted = SplitEmittedNodeCount(owners);
-      if (!emitted)
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-      if (!add(*emitted - 1, output_nodes) || !add(1, records) || !add(*emitted, record_nodes))
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-    }
-  }
-  if (output_nodes > std::numeric_limits<std::uint32_t>::max() ||
-      output_nodes > std::numeric_limits<std::size_t>::max())
-    return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-  std::uint64_t metadata_bytes = 0;
-  if (!add_vector(graph.tensor_count(), sizeof(ir::TensorId), metadata_bytes) ||
-      !add_vector(output_nodes, sizeof(ir::NodeId), metadata_bytes) ||
-      !add_vector(scope_count, sizeof(OwnerProductScope), metadata_bytes) ||
-      !add_vector(records, sizeof(Applied), metadata_bytes) ||
-      !add_vector(record_nodes, sizeof(ir::NodeId), metadata_bytes) ||
-      !add_vector(records, sizeof(ir::NodeId), metadata_bytes) ||
-      (records != 0 && records > std::numeric_limits<std::uint64_t>::max() / (2 * envelope)) ||
-      (records != 0 && !add(records * 2 * envelope, metadata_bytes)))
-    return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-  if (admission != nullptr) {
-    auto paid = admission->Require(PlannerMetadataPhase::kOwnerSplit, metadata_bytes);
-    if (!paid)
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-  }
-  for (const auto& product : proof.products())
-    for (const auto& owner : product.owners)
-      if (owner.columns > 16)
-        return diagnostic(ir::GraphError::kArity,
-                          "owner products: owner width exceeds the initial recipe domain");
-
+    return std::unexpected("owner products: proof belongs to another graph");
   ir::Builder b;
-  b.SetDiagnosticAdmission(admission);
-  if (auto funder = graph.storage_funder(); funder && !b.SetStorageFunder(std::move(funder)))
-    return std::unexpected(std::move(*b.TakeError()));
   std::vector<ir::TensorId> tensors(graph.tensor_count());
   std::vector<ir::NodeId> from;
   std::vector<OwnerProductScope> scopes;
   std::vector<Applied> applied;
-  from.reserve(static_cast<std::size_t>(output_nodes));
-  scopes.reserve(static_cast<std::size_t>(scope_count));
-  applied.reserve(static_cast<std::size_t>(records));
   RewriteContext copy(graph, b, tensors);
   for (std::uint32_t i = 0; i < graph.nodes().size(); ++i) {
     const ir::NodeId id{i};
     const ir::Node& n = graph.node(id);
     const auto p = std::ranges::find(proof.products(), id, &OwnerProduct::node);
+    if (p != proof.products().end()) {
+      for (const auto& owner : p->owners)
+        if (owner.columns > 16)
+          return std::unexpected("owner products: owner width exceeds the initial recipe domain");
+    }
     if (p == proof.products().end() || p->owners.size() == 1) {
       copy.Copy(n);
       if (p != proof.products().end()) {
@@ -358,10 +284,6 @@ std::expected<OwnerRewritten, ir::VerifyError> SplitOwnerProducts(
       const auto& x = graph.tensor(p->input);
       b.SetComponent(n.component);
       Applied a{.pattern = "owner_products", .replaced = {id}, .made = {}};
-      const auto emitted = SplitEmittedNodeCount(p->owners.size());
-      if (!emitted)
-        return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-      a.made.reserve(static_cast<std::size_t>(*emitted));
       const auto begin = b.node_count();
       ir::TensorId joined;
       for (const auto& owner : p->owners) {
@@ -383,15 +305,14 @@ std::expected<OwnerRewritten, ir::VerifyError> SplitOwnerProducts(
         a.made.push_back(ir::NodeId{static_cast<std::uint32_t>(j)});
       applied.push_back(std::move(a));
     }
-    if (!b.ok()) return std::unexpected(std::move(*b.TakeError()));
-    if (b.node_count() > output_nodes)
-      return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
+    if (!b.ok())
+      return std::unexpected(std::format("owner rewrite at {}: {}", i, b.error()->detail));
     from.resize(b.node_count(), id);
   }
   for (auto t : graph.outputs()) b.Output(copy.Map(t));
   for (auto t : graph.keep()) b.Keep(copy.Map(t));
   auto made = std::move(b).Finish();
-  if (!made) return std::unexpected(std::move(made.error()));
+  if (!made) return std::unexpected(made.error().detail);
   return OwnerRewritten{.rewrite = {.graph = std::move(*made),
                                     .applied = std::move(applied),
                                     .from = std::move(from),

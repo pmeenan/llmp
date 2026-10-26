@@ -39,6 +39,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <expected>
 #include <initializer_list>
 #include <span>
 #include <string>
@@ -49,12 +50,9 @@
 #include "base/sha256.h"
 #include "format/tensor_format.h"
 #include "ir/op.h"
-#include "ir/storage_admission.h"
 #include "ir/verify.h"
 
 namespace llmp::ir {
-
-class DiagnosticAdmission;
 
 class Builder;
 
@@ -241,27 +239,22 @@ class Graph {
   base::Sha256Digest Digest() const;
 
   // A copy (graphs are move-only so that a copy is always explicit): a
-  // planner consumes one graph while its lowering reads the other. A paid
-  // source carries its funder into the clone and refuses before copying.
-  std::expected<Graph, VerifyError> Clone(std::shared_ptr<const StorageFunder> funder = {},
-                                          DiagnosticAdmission* diagnostic = nullptr) const;
+  // planner consumes one graph while its lowering reads the other. Refused
+  // (kBounds) for a moved-from graph.
+  std::expected<Graph, VerifyError> Clone() const;
 
   // This graph's identity in the process: unique to each built or cloned
   // graph (graphs never change once built), never reused, so a cache of
   // facts about one graph keyed on it never confuses another, even one
   // built where a freed graph was. Zero: a moved-from graph.
   std::uint64_t identity() const { return identity_; }
-  std::shared_ptr<const StorageFunder> storage_funder() const { return storage_loan_.funder(); }
 
  private:
   friend class ir::Builder;
   Graph() = default;
   static std::uint64_t NextIdentity();
-  std::expected<std::uint64_t, VerifyError> DigestScratchBound() const;
   base::Sha256Digest ComputeDigest() const;
 
-  // Declared first so graph allocations are destroyed before their payment.
-  StorageLoan storage_loan_{};
   std::vector<Node> nodes_;
   std::vector<TensorDesc> tensors_;
   std::vector<NodeId> producers_;  // by tensor

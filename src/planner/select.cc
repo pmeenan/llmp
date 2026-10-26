@@ -4,10 +4,10 @@
 #include "planner/select.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <limits>
 #include <memory>
 #include <numeric>
 #include <span>
@@ -17,14 +17,10 @@
 #include <variant>
 #include <vector>
 
-#include "execution/fusion_ranks.h"
 #include "execution/registry.h"
 #include "format/tensor_format.h"
-#include "ir/builder.h"
-#include "ir/decompose.h"
 #include "ir/graph.h"
 #include "ir/op.h"
-#include "planner/alternative.h"
 #include "planner/fusions.h"
 #include "planner/pattern.h"
 #include "planner/policy.h"
@@ -111,27 +107,6 @@ OwnedDeviceFacts::~OwnedDeviceFacts() = default;
 const DeviceFacts& OwnedDeviceFacts::facts() const { return storage_->facts; }
 
 namespace {
-
-constexpr std::uint64_t kVectorEnvelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-
-bool AddCapacity(std::uint64_t count, std::uint64_t element, std::uint64_t& total,
-                 std::uint64_t allocations = 1) {
-  if (count == 0) return true;
-  if (element == 0 || count > std::numeric_limits<std::uint64_t>::max() / element) return false;
-  const auto bytes = count * element;
-  if (bytes > std::numeric_limits<std::uint64_t>::max() - total) return false;
-  total += bytes;
-  if (allocations > std::numeric_limits<std::uint64_t>::max() / kVectorEnvelope) return false;
-  const auto overhead = allocations * kVectorEnvelope;
-  if (overhead > std::numeric_limits<std::uint64_t>::max() - total) return false;
-  total += overhead;
-  return true;
-}
-
-std::unexpected<ir::VerifyError> AdmissionFailure(const char* detail) {
-  (void)detail;
-  return std::unexpected(ir::VerifyError{.error = ir::GraphError::kAdmission, .detail = {}});
-}
 
 using ir::FusedKind;
 using ir::Op;
@@ -312,12 +287,6 @@ bool SameLeaf(const ir::Graph& before, ir::TensorId a, const ir::Graph& after, i
   return true;
 }
 
-struct ForwardedAlignmentState {
-  RootAlignment previous;
-  std::vector<std::uint64_t> alignments;
-  std::uint64_t identity = 0;
-};
-
 }  // namespace
 
 RootAlignment ForwardRootAlignments(const ir::Graph& before, const ir::Graph& after,
@@ -489,8 +458,7 @@ bool LaunchesNothing(ir::OpKey key) {
 SelectionView::SelectionView(const execution::Registry& registry, const DeviceFacts& device,
                              const Policy& policy, bool row_invariant, bool capturable,
                              StateSpans state_spans, RootAlignment root_alignment,
-                             ActivationAlignment activation, FusionComparisons fusion_comparisons,
-                             PlannerMetadataAdmission* metadata_admission)
+                             ActivationAlignment activation)
     : registry_(registry),
       device_(device),
       policy_(policy),
@@ -499,158 +467,24 @@ SelectionView::SelectionView(const execution::Registry& registry, const DeviceFa
       state_spans_(std::move(state_spans)),
       root_alignment_(std::move(root_alignment)),
       activation_(std::move(activation)),
-      fusion_comparisons_(fusion_comparisons),
-      metadata_admission_(metadata_admission),
       ranks_(RanksFor(policy, device.device_class)) {
   for (const auto& pattern : Patterns())
     if (!Disabled(policy, pattern.name)) enabled_options_.push_back(pattern.name);
 }
 
-std::expected<void, ir::VerifyError> SelectionView::PrepayCopy() const {
-  if (metadata_admission_ == nullptr) return {};
-  std::uint64_t copy_bytes = 0;
-  if (!AddCapacity(ranks_.size(), sizeof(execution::MeasuredRank), copy_bytes) ||
-      !AddCapacity(enabled_options_.size(), sizeof(std::string_view), copy_bytes) ||
-      (activation_.staged &&
-       !AddCapacity(activation_.staged->size(), sizeof(ir::TensorId), copy_bytes)))
-    return AdmissionFailure("comparison selection-view copy inventory overflows");
-  // Comparison callbacks are fixed-size borrowed adapters. Copying each
-  // std::function can add one allocator block but cannot duplicate opaque
-  // captures or any prior forwarding table (the latter is shared).
-  if ((root_alignment_ && !AddCapacity(sizeof(RootAlignment), 1, copy_bytes)) ||
-      (state_spans_ && !AddCapacity(sizeof(StateSpans), 1, copy_bytes)) ||
-      (activation_.within && !AddCapacity(sizeof(activation_.within), 1, copy_bytes)))
-    return AdmissionFailure("comparison alignment callback copy inventory overflows");
-  if (copy_bytes > std::numeric_limits<std::uint64_t>::max() - prepaid_copy_bytes_ ||
-      forwarding_bytes_ >
-          std::numeric_limits<std::uint64_t>::max() - prepaid_copy_bytes_ - copy_bytes)
-    return AdmissionFailure("comparison selection-view copy inventory overflows");
-  auto paid = metadata_admission_->Require(PlannerMetadataPhase::kForward,
-                                           forwarding_bytes_ + prepaid_copy_bytes_ + copy_bytes);
-  if (!paid) return AdmissionFailure("comparison selection-view copy payment was refused");
-  prepaid_copy_bytes_ += copy_bytes;
-  return {};
-}
-
-std::expected<void, ir::VerifyError> SelectionView::Forward(const ir::Graph& before,
-                                                            const ir::Graph& after,
-                                                            std::span<const ir::TensorId> tensors) {
-  if (metadata_admission_ == nullptr) {
-    root_alignment_ = ForwardRootAlignments(before, after, tensors, root_alignment_);
-    if (activation_.staged) {
-      std::vector<ir::TensorId> mapped;
-      for (const auto old : *activation_.staged) {
-        if (!old.valid() || old.v >= tensors.size()) continue;
-        const auto next = tensors[old.v];
-        if (SameLeaf(before, old, after, next) && std::ranges::count(tensors, next) == 1)
-          mapped.push_back(next);
-      }
-      activation_.staged = std::move(mapped);
-    }
-    return {};
-  }
-
-  if (tensors.size() != before.tensor_count()) {
-    root_alignment_ = {};
-    if (activation_.staged) activation_.staged->clear();
-    return {};
-  }
-  if (!root_alignment_ && !activation_.staged) return {};
-
-  const std::uint64_t new_count = after.tensor_count();
-  const std::uint64_t staged_count = activation_.staged ? activation_.staged->size() : 0;
-  const bool forward_alignment = root_alignment_ && after.identity() != 0;
-  if (!forward_alignment && !activation_.staged) {
-    root_alignment_ = {};
-    return {};
-  }
-  std::uint64_t retained = 0;
-  std::uint64_t chain_added = 0;
-  std::uint64_t scratch = 0;
-  // Uses and the new table are exact-reserved. The old callback chain moves
-  // into one shared state; only this state's object and the small function
-  // adapter are new. The previous opaque callback is never copied.
-  if (!AddCapacity(new_count, sizeof(std::uint32_t), scratch) ||
-      !AddCapacity(staged_count, sizeof(ir::TensorId), retained) ||
-      (activation_.staged &&
-       !AddCapacity(activation_.staged->capacity(), sizeof(ir::TensorId), scratch)))
-    return AdmissionFailure("comparison alignment forwarding inventory overflows");
-  if (forward_alignment &&
-      (!AddCapacity(sizeof(ForwardedAlignmentState), 1, chain_added) ||
-       !AddCapacity(sizeof(std::shared_ptr<ForwardedAlignmentState>), 1, chain_added) ||
-       !AddCapacity(new_count, sizeof(std::uint64_t), chain_added)))
-    return AdmissionFailure("comparison alignment forwarding inventory overflows");
-  if (chain_added > std::numeric_limits<std::uint64_t>::max() - retained)
-    return AdmissionFailure("comparison alignment forwarding inventory overflows");
-  retained += chain_added;
-  if (retained > std::numeric_limits<std::uint64_t>::max() - forwarding_bytes_ ||
-      prepaid_copy_bytes_ >
-          std::numeric_limits<std::uint64_t>::max() - forwarding_bytes_ - retained ||
-      scratch > std::numeric_limits<std::uint64_t>::max() - forwarding_bytes_ - retained -
-                    prepaid_copy_bytes_)
-    return AdmissionFailure("comparison alignment forwarding inventory overflows");
-  const std::uint64_t prospective = forwarding_bytes_ + prepaid_copy_bytes_ + retained + scratch;
-  auto paid = metadata_admission_->Require(PlannerMetadataPhase::kForward, prospective);
-  if (!paid) return AdmissionFailure("comparison alignment forwarding payment was refused");
-
-  std::vector<std::uint32_t> uses(after.tensor_count());
-  for (const auto next : tensors)
-    if (next.valid() && next.v < uses.size()) ++uses[next.v];
-
-  std::vector<std::uint64_t> alignments;
-  if (forward_alignment) alignments.resize(after.tensor_count(), 0);
-  std::optional<bool> unchanged;
-  const auto same = [&] {
-    if (!unchanged)
-      unchanged = (before.identity() != 0 && before.identity() == after.identity()) ||
-                  (before.tensor_count() == after.tensor_count() && RootSealsEqual(before, after) &&
-                   before.Digest() == after.Digest());
-    return *unchanged;
-  };
-  for (std::uint32_t i = 0; forward_alignment && i < tensors.size(); ++i) {
-    const ir::TensorId old{i}, next = tensors[i];
-    if (!next.valid() || next.v >= after.tensor_count() || uses[next.v] != 1 ||
-        before.tensor(old).is_view() || after.tensor(next).is_view())
-      continue;
-    const bool leaf = SameLeaf(before, old, after, next);
-    if (!leaf && old != next) continue;
-    const auto alignment = root_alignment_(before, old);
-    if (!PowerOfTwo(alignment) || (!leaf && !same())) continue;
-    alignments[next.v] = alignment;
-  }
-
-  std::vector<ir::TensorId> staged;
+void SelectionView::Forward(const ir::Graph& before, const ir::Graph& after,
+                            std::span<const ir::TensorId> tensors) {
+  root_alignment_ = ForwardRootAlignments(before, after, tensors, root_alignment_);
   if (activation_.staged) {
-    staged.reserve(static_cast<std::size_t>(staged_count));
+    std::vector<ir::TensorId> mapped;
     for (const auto old : *activation_.staged) {
       if (!old.valid() || old.v >= tensors.size()) continue;
       const auto next = tensors[old.v];
-      if (SameLeaf(before, old, after, next) && next.valid() && next.v < uses.size() &&
-          uses[next.v] == 1)
-        staged.push_back(next);
+      if (SameLeaf(before, old, after, next) && std::ranges::count(tensors, next) == 1)
+        mapped.push_back(next);
     }
+    activation_.staged = std::move(mapped);
   }
-
-  const std::uint64_t sealed = after.identity();
-  if (root_alignment_ && !forward_alignment) {
-    root_alignment_ = {};
-  } else if (forward_alignment) {
-    auto state = std::make_shared<ForwardedAlignmentState>();
-    state->previous = std::move(root_alignment_);
-    state->alignments = std::move(alignments);
-    state->identity = sealed;
-    root_alignment_ = [state](const ir::Graph& graph, ir::TensorId root) -> std::uint64_t {
-      if (root.valid() && root.v < state->alignments.size() &&
-          graph.identity() == state->identity && !graph.tensor(root).is_view()) {
-        const auto value = state->alignments[root.v];
-        if (PowerOfTwo(value)) return value;
-      }
-      return state->previous ? state->previous(graph, root) : 0;
-    };
-    forwarding_bytes_ += chain_added;
-  }
-  if (activation_.staged) activation_.staged = std::move(staged);
-  return {};
 }
 
 std::uint64_t SelectionView::Alignment(const ir::Graph& graph, ir::TensorId root) const {
@@ -694,8 +528,7 @@ bool SelectionView::HasCandidate(ir::OpKey key, std::span<const ir::TensorDesc* 
   bool found = false;
   // Hypothetical descriptors have no authenticated current graph/root. The
   // existence-only path avoids constructing a ranked candidate vector.
-  (void)ForOperands(key, sources, outputs, params, state_span, {}, automatic_fusion, {}, false,
-                    &found);
+  (void)ForOperands(key, sources, outputs, params, state_span, {}, automatic_fusion, {}, &found);
   return found;
 }
 
@@ -703,99 +536,17 @@ std::optional<std::size_t> SelectionView::NextCandidate(
     ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
     std::span<const ir::TensorDesc* const> outputs, std::span<const std::byte> params,
     std::optional<std::size_t> after, bool state_span, bool automatic_fusion) const {
-  (void)ForOperands(key, sources, outputs, params, state_span, {}, automatic_fusion, {}, false,
-                    nullptr, nullptr, nullptr, &after);
+  (void)ForOperands(key, sources, outputs, params, state_span, {}, automatic_fusion, {}, nullptr,
+                    &after);
   return after;
-}
-
-std::vector<std::size_t> SelectionView::TerminalDecomposition(
-    ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
-    std::span<const ir::TensorDesc* const> outputs, std::span<const std::byte> params,
-    std::span<const std::uint64_t> alignments) const {
-  if (params.size() != ir::kMaxParamBytes || !ir::HasDecomposition(key) ||
-      alignments.size() != sources.size() + outputs.size())
-    return {};
-  // Exact natural roots can be represented as independent symbolic inputs.
-  // Strided/view/state/alias cases need a richer ordered-plan proof and remain
-  // unmeasured. This is a structural contract, never an operation whitelist.
-  const auto natural = [](const ir::TensorDesc* t) {
-    return t && !t->is_view() && t->view_offset == 0 && t->role != ir::Role::kState &&
-           t->nb == ir::NaturalStrides(t->format);
-  };
-  if (!std::ranges::all_of(sources, natural) || !std::ranges::all_of(outputs, natural)) return {};
-  // Original descriptors are graph-owned roots here. Cloning a repeated root
-  // as separate symbolic inputs would erase its alias partition, which the
-  // exact format query does not encode. Such queries remain unmeasured.
-  if (std::ranges::any_of(
-          sources, [&](const auto* source) { return std::ranges::count(sources, source) != 1; }))
-    return {};
-  ir::Builder builder;
-  std::vector<ir::TensorId> inputs;
-  for (const auto* source : sources) inputs.push_back(builder.Input(source->format));
-  std::vector<format::Encoding> encodings;
-  for (const auto* output : outputs) encodings.push_back(output->format.encoding);
-  ir::ParamBytes bytes{};
-  std::ranges::copy(params, bytes.begin());
-  const auto results = ir::Decompose(builder, key, bytes, inputs, encodings);
-  if (results.n != outputs.size()) return {};
-  for (const auto result : results.span()) builder.Output(result);
-  auto made = std::move(builder).Finish();
-  if (!made) return {};
-  const auto& graph = *made;
-  const auto alignment = [&](ir::TensorId id) {
-    const auto found = std::ranges::find(inputs, id);
-    return found != inputs.end() ? alignments[static_cast<std::size_t>(found - inputs.begin())]
-                                 : Alignment(graph, id);
-  };
-  for (std::size_t i = 0; i < outputs.size(); ++i) {
-    const auto& actual = graph.tensor(results[i]);
-    if (actual.format != outputs[i]->format || actual.nb != outputs[i]->nb || actual.is_view() ||
-        alignment(results[i]) != alignments[sources.size() + i])
-      return {};
-  }
-  std::vector<std::size_t> selected;
-  for (const auto& node : graph.nodes()) {
-    if (node.key == ir::Primitive(ir::Op::kInput)) continue;
-    if (LaunchesNothing(node.key) || ir::HasDecomposition(node.key) || ir::WritesInPlace(node) ||
-        node.nout != 1 || graph.tensor(node.out[0]).is_view())
-      return {};
-    // No later batch matcher can consume this node or a neighboring chain.
-    if (std::ranges::any_of(Patterns(), [&](const auto& pattern) {
-          return pattern.kind == PatternKind::kBatch && !Disabled(policy_, pattern.name) &&
-                 std::ranges::contains(pattern.anchors, node.key.op);
-        }))
-      return {};
-    std::vector<const ir::TensorDesc*> src, out;
-    std::vector<std::uint64_t> aligned;
-    for (const auto source : node.sources()) {
-      if (!source.valid()) return {};
-      src.push_back(&graph.tensor(source));
-      aligned.push_back(alignment(source));
-    }
-    for (const auto output : node.outputs()) {
-      out.push_back(&graph.tensor(output));
-      aligned.push_back(alignment(output));
-    }
-    const auto candidates = ForOperands(node.key, src, out, node.params, false, aligned);
-    if (candidates.empty()) return {};
-    const auto& capability = *registry_.at(candidates.front()).capability;
-    if (!capability.standalone_comparator || !capability.group.empty() || capability.batch != 0 ||
-        capability.pitched_output || capability.needs_state_span ||
-        capability.fusion_needs_measurement || capability.expansion != execution::Expansion::kNone)
-      return {};
-    selected.push_back(candidates.front());
-  }
-  return selected;
 }
 
 std::vector<std::size_t> SelectionView::ForOperands(
     ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
     std::span<const ir::TensorDesc* const> outputs, std::span<const std::byte> params,
     bool state_span, std::span<const std::uint64_t> alignments, bool automatic_fusion,
-    const QueryInspector& inspect, bool final_selection, bool* has_candidate,
-    std::size_t* best_candidate, ir::ProductArithmetic* best_arithmetic,
-    std::optional<std::size_t>* next_after, std::size_t* check_implementation, bool* is_candidate,
-    bool ignore_fusion_comparisons) const {
+    const QueryInspector& inspect, bool* has_candidate, std::optional<std::size_t>* next_after,
+    std::size_t* check_implementation, bool* is_candidate) const {
   const auto clear_cursor = [&] {
     if (next_after != nullptr) next_after->reset();
   };
@@ -879,38 +630,13 @@ std::vector<std::size_t> SelectionView::ForOperands(
       .device_model = device_.device_model,
       .multiprocessors = device_.multiprocessors,
       .automatic_fusion = automatic_fusion,
-      .fusion_comparisons =
-          !ignore_fusion_comparisons && fusion_comparisons_ == FusionComparisons::enabled,
       .preferred = device_.preferred};
-  std::vector<std::size_t> terminal;
-  bool has_comparison = false;
-  if (final_selection && !ignore_fusion_comparisons &&
-      fusion_comparisons_ == FusionComparisons::enabled && registry_.HasFusionComparisons(key)) {
-    const auto key_digest = execution::FusionQueryKey(query);
-    has_comparison = key_digest && !registry_.FusionComparisons(key, *key_digest).empty();
-  }
-  if (key.op == ir::Op::kFused && (inspect || has_comparison)) {
-    terminal = TerminalDecomposition(key, sources, outputs, params, alignments);
-    query.terminal_decomposition = terminal;
-  }
   if (inspect) {
     inspect(query);
     return {};
   }
   if (has_candidate != nullptr) {
     *has_candidate = execution::HasCandidate(registry_, query);
-    return {};
-  }
-  if (best_candidate != nullptr) {
-    const auto best = execution::BestCandidate(registry_, query);
-    if (!best) return {};
-    *best_candidate = *best;
-    if (best_arithmetic != nullptr) {
-      const auto& capability = registry_.at(*best).capability;
-      *best_arithmetic = capability && capability->product_arithmetic
-                             ? capability->product_arithmetic(query)
-                             : ir::ProductArithmetic::kImplementation;
-    }
     return {};
   }
   if (next_after != nullptr) {
@@ -938,7 +664,7 @@ std::optional<std::size_t> SelectionView::NextCandidate(const ir::Graph& graph,
                                                         const ir::Node& node, ir::OpKey key,
                                                         std::optional<std::size_t> after,
                                                         bool automatic_fusion) const {
-  (void)CandidatesForNode(graph, node, key, automatic_fusion, {}, false, &after);
+  (void)CandidatesForNode(graph, node, key, automatic_fusion, {}, &after);
   return after;
 }
 bool SelectionView::HasCandidate(const ir::Graph& graph, const ir::Node& node, ir::OpKey key,
@@ -948,29 +674,9 @@ bool SelectionView::HasCandidate(const ir::Graph& graph, const ir::Node& node, i
 bool SelectionView::IsCandidate(const ir::Graph& graph, const ir::Node& node, ir::OpKey key,
                                 std::size_t implementation, bool automatic_fusion) const {
   bool found = false;
-  (void)CandidatesForNode(graph, node, key, automatic_fusion, {}, false, nullptr, &implementation,
-                          &found);
+  (void)CandidatesForNode(graph, node, key, automatic_fusion, {}, nullptr, &implementation, &found);
   return found;
 }
-std::optional<std::size_t> SelectionView::NextOrdinaryCandidate(
-    const ir::Graph& graph, const ir::Node& node, ir::OpKey key,
-    std::optional<std::size_t> after) const {
-  (void)CandidatesForNode(graph, node, key, true, {}, false, &after, nullptr, nullptr, true);
-  return after;
-}
-bool SelectionView::IsOrdinaryCandidate(const ir::Graph& graph, const ir::Node& node, ir::OpKey key,
-                                        std::size_t implementation) const {
-  bool found = false;
-  (void)CandidatesForNode(graph, node, key, true, {}, false, nullptr, &implementation, &found,
-                          true);
-  return found;
-}
-std::vector<std::size_t> SelectionView::FinalCandidates(const ir::Graph& graph,
-                                                        const ir::Node& node, ir::OpKey key,
-                                                        bool automatic_fusion) const {
-  return CandidatesForNode(graph, node, key, automatic_fusion, {}, true);
-}
-
 void SelectionView::Inspect(const ir::Graph& graph, const ir::Node& node,
                             const QueryInspector& inspect) const {
   if (inspect) (void)CandidatesForNode(graph, node, node.key, false, inspect);
@@ -991,28 +697,6 @@ QueryShape SelectionView::Shape(const ir::Graph& graph, const ir::Node& node, ir
 }
 ir::ProductArithmetic SelectionView::IncumbentArithmetic(const ir::Graph& graph,
                                                          const ir::Node& node) const {
-  if (metadata_admission_ != nullptr && node.key == ir::Primitive(ir::Op::kMatMul)) {
-    std::array<const ir::TensorDesc*, ir::kMaxSources> sources{};
-    std::array<const ir::TensorDesc*, ir::kMaxOutputs> outputs{};
-    std::array<std::uint64_t, ir::kMaxSources + ir::kMaxOutputs> alignments{};
-    for (std::size_t i = 0; i < node.nsrc; ++i) {
-      const auto tensor = node.source(i);
-      sources[i] = tensor.valid() ? &graph.tensor(tensor) : nullptr;
-      alignments[i] = tensor.valid() ? Alignment(graph, graph.root(tensor)) : 0;
-    }
-    for (std::size_t i = 0; i < node.nout; ++i) {
-      const auto tensor = node.out[i];
-      outputs[i] = &graph.tensor(tensor);
-      alignments[node.nsrc + i] = Alignment(graph, graph.root(tensor));
-    }
-    std::size_t best = 0;
-    auto arithmetic = ir::ProductArithmetic::kImplementation;
-    (void)ForOperands(node.key, std::span(sources).first(node.nsrc),
-                      std::span(outputs).first(node.nout), node.params, false,
-                      std::span(alignments).first(node.nsrc + node.nout), false, {}, false, nullptr,
-                      &best, &arithmetic);
-    return arithmetic;
-  }
   const auto candidates = Candidates(graph, node);
   if (candidates.empty()) return ir::ProductArithmetic::kImplementation;
   const auto& cap = registry_.at(candidates.front()).capability;
@@ -1102,8 +786,8 @@ std::optional<NumericalQualification> SelectionView::Qualification(
 
 std::vector<std::size_t> SelectionView::CandidatesForNode(
     const ir::Graph& graph, const ir::Node& node, ir::OpKey key, bool automatic_fusion,
-    const QueryInspector& inspect, bool final_selection, std::optional<std::size_t>* next_after,
-    std::size_t* check_implementation, bool* is_candidate, bool ignore_fusion_comparisons) const {
+    const QueryInspector& inspect, std::optional<std::size_t>* next_after,
+    std::size_t* check_implementation, bool* is_candidate) const {
   const auto cursor_start = next_after == nullptr ? std::optional<std::size_t>{} : *next_after;
   if (next_after != nullptr) next_after->reset();
   // Direct composites need the same immutable source authority as the
@@ -1161,8 +845,7 @@ std::vector<std::size_t> SelectionView::CandidatesForNode(
     auto after = cursor_start;
     for (;;) {
       (void)ForOperands(key, srcs, outs, node.params, state_span, aligned, automatic_fusion, {},
-                        false, nullptr, nullptr, nullptr, &after, nullptr, nullptr,
-                        ignore_fusion_comparisons);
+                        nullptr, &after);
       if (!after) {
         *next_after = {};
         return {};
@@ -1183,8 +866,7 @@ std::vector<std::size_t> SelectionView::CandidatesForNode(
   }
   if (check_implementation != nullptr) {
     (void)ForOperands(key, srcs, outs, node.params, state_span, aligned, automatic_fusion, {},
-                      false, nullptr, nullptr, nullptr, nullptr, check_implementation, is_candidate,
-                      ignore_fusion_comparisons);
+                      nullptr, nullptr, check_implementation, is_candidate);
     if (grouped && is_candidate != nullptr && *is_candidate) {
       const auto& capability = registry_.at(*check_implementation).capability;
       *is_candidate =
@@ -1194,8 +876,8 @@ std::vector<std::size_t> SelectionView::CandidatesForNode(
     }
     return {};
   }
-  auto candidates = ForOperands(key, srcs, outs, node.params, state_span, aligned, automatic_fusion,
-                                inspect, final_selection);
+  auto candidates =
+      ForOperands(key, srcs, outs, node.params, state_span, aligned, automatic_fusion, inspect);
   if (grouped) {
     std::erase_if(candidates, [&](std::size_t index) {
       const auto& capability = registry_.at(index).capability;

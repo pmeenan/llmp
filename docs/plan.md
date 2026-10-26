@@ -743,38 +743,17 @@ D-122).
       IR and selection code. All 49 registered rewrite/batch patterns have
       enforced synthetic match and refusal controls.
 
-      Owned comparisons retain actual accepted sites, original source provenance,
-      complete physical recipes and paid resource lifetimes. Token and ordinary
-      stateless component sources share cumulative production selection, retaining
-      the chosen program through Bind and cache publication. Local Ready,
-      restored-state whole-program and OrdinaryOnly domains remain distinct;
-      changed or unsupported proof facts preserve ordinary execution. Generated
-      indices are bounded against actual destination capacity, and adopted
-      captures receive changed-position updates through the ordinary wrapper.
-      Backend-owned measured data and implementation identities are separate
-      inputs to registry and cache keys.
+      **Revised by F6 (2026-10-26):** the exact-site recipe comparison U6
+      added to production (owned comparisons, cumulative recipe adoption) ran on
+      every plan miss without any row able to match a real model, and left dense
+      decoders unable to finish a prefill plan; F6 removed it. The U6 rank rows,
+      including `7c96e27b`'s re-stamp without re-measurement, are retired.
+      Selection uses coarse, versioned `FusionRank` rows (none shipped yet)
+      measured by `llmp_fusion_ranks`; a re-check at Qwen-Image VAE shapes kept
+      the fused spatial channel norm (4.5–5.7× faster there). The U6 reports
+      under [fusion-ranks](experiments/fusion-ranks/README.md) remain as history.
 
-      The [final qualification](experiments/fusion-ranks/U6-FINAL-RESULTS.md)
-      installs 99 current-build decisions: 97 latency comparisons and two
-      separate quality rejections, with 4,836 ordered observations across both
-      Sparks. Latency results are 52 incumbent wins, 36 neutral cells and nine
-      alternative wins. All 21 installed-data controls pass, including actual
-      rejection of a slower fusion and honest unmeasured fallback. The 12 legacy
-      and 14 historical recipe rows remain unchanged; stale keys are not repinned.
-      The [functional record](experiments/fusion-ranks/READY-MATRIX-RESULTS.md)
-      covers arithmetic, modulation, sectioned RoPE, spatial normalization, HC,
-      GDN, ordinary and quantized stores, source bindings and production adoption,
-      including F16/F32, BF16, Q8, GGUF, NVFP4, MXFP8 and EXL3 branches.
-      Numerical refusals retain their fixed gates and grant no ranking authority.
-      The published-GGUF DeepSeek frozen failure remains historical, with all
-      eleven pre-U6 observations unchanged. U7 capability and scheduling work
-      remains separate.
-
-      Both native artifact builds pass. Final checks pass across both Sparks:
-      4,036 shared tests, six actual affected model cases, ten data-tool tests
-      and the 21 installed controls, with zero skips. Formatting, licensing,
-      headers and portability checks pass; source/data/native identities remain
-      exact. **Exit:** adding an IR op declares its dispatch once in the trait
+      **Exit:** adding an IR op declares its dispatch once in the trait
       table; new semantic algorithms live in their
       owning modules and need no duplicate per-op classification lists. Its
       kernels and tests complete the addition, and the boundary check finds no
@@ -917,7 +896,7 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       failure classification, image fence acknowledgement, history copies.
 - [ ] **F5 Serving:** output delivery as host-only state, one cohort decision
       function, kept-record commit by descriptor, clock-skew and lock-file edges.
-- [ ] **F6 Comparison out of production:** exact-site recipe comparison moved to
+- [x] **F6 Comparison out of production:** exact-site recipe comparison moved to
       `benchmarks/` (dense decoders could not finish a prefill plan at
       `265c821a`); coarse, versioned rank rows in `src/`.
 - [ ] **F7 Decode GEMV and planner cost:** one-pass VecQ at 5–8 columns, rank

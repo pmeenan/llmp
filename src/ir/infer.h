@@ -13,7 +13,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
-#include <memory>
 #include <span>
 
 #include "format/encoding.h"
@@ -38,10 +37,11 @@ struct Inferred {
 // format, strides and view fields are set; its segment, binding and name
 // are left to the caller (a leaf's binding comes from its request). The
 // error's node is 0: the caller knows which node it is.
-std::expected<Inferred, VerifyError> Infer(
-    OpKey key, std::span<const std::byte, kMaxParamBytes> params, std::span<const TensorId> sources,
-    std::span<const TensorDesc> tensors, std::span<const TensorDesc> requested,
-    std::shared_ptr<const StorageFunder> funder = {}, DiagnosticAdmission* diagnostic = nullptr);
+std::expected<Inferred, VerifyError> Infer(OpKey key,
+                                           std::span<const std::byte, kMaxParamBytes> params,
+                                           std::span<const TensorId> sources,
+                                           std::span<const TensorDesc> tensors,
+                                           std::span<const TensorDesc> requested);
 
 // The dense float encodings a computed result may be recorded in.
 bool ResultEncoding(format::Encoding encoding);

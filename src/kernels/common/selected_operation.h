@@ -139,10 +139,6 @@ class SelectedSource {
   // Required only by an owned declared backend. This binds immutable adapter
   // format/layout, execution preparation and source-read authority in addition
   // to the registry's implementation/build identities. Default is unqualified.
-  // For whole-program comparison, Lower's call and private schedule must be
-  // determined by this identity, the selected implementation and the complete
-  // typed operands. Device occupancy, tuning and library plans used by Lower
-  // are part of that immutable identity, never ambient mutable configuration.
   virtual std::optional<base::Sha256Digest> ExecutionIdentity() const { return {}; }
   // Persistent bytes (e.g. cooperative lock slots), separate from the pool
   // scratch shared serially with GGML. Both bounds are 256-byte aligned.

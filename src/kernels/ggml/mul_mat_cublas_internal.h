@@ -15,9 +15,6 @@ namespace llmp::kernels::ggml::internal {
 // Ordinary MulMatCublas retains its existing complete public preflight.
 void LaunchPlannedMulMatCublas(ggml_backend_cuda_context& context, const CublasMulMat& plan,
                                ggml_tensor* node);
-// Pure shape query over the launcher's one pinned table. False guarantees the
-// pinned attempt cannot launch; true does not promise library availability.
-bool HasPinnedBf16GemmShape(int m, int n, int k);
 // Packed BF16 weights [k, m] times packed BF16 activations [k, n] into
 // packed [m, n] (BF16 where `bf16_out`, else F32), with the GB10's pinned
 // cuBLASLt algorithm for the shape (kGb10LtPins) and the lent cuBLAS

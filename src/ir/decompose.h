@@ -33,32 +33,11 @@
 
 namespace llmp::ir {
 
-// Owns a tensor remap and its paid allocation envelope. The loan precedes
-// the vector so the vector is destroyed before its funding is returned.
-class OwnedTensorMap {
- public:
-  OwnedTensorMap() = default;
-  OwnedTensorMap(OwnedTensorMap&& other) noexcept;
-  OwnedTensorMap& operator=(OwnedTensorMap&& other) noexcept;
-  OwnedTensorMap(const OwnedTensorMap&) = delete;
-  OwnedTensorMap& operator=(const OwnedTensorMap&) = delete;
-  ~OwnedTensorMap() = default;
-
-  std::span<const TensorId> values() const { return values_; }
-  std::size_t size() const { return values_.size(); }
-  const TensorId& at(std::size_t i) const { return values_.at(i); }
-
- private:
-  friend struct ExpansionResult;
-  friend std::expected<struct ExpansionResult, VerifyError> ExpandWithMap(const Graph&, bool);
-  void Swap(OwnedTensorMap& other) noexcept;
-  StorageLoan loan_{};
-  std::vector<TensorId> values_;
-};
-
+// An expansion and its original-to-expanded tensor map (by original
+// tensor index; invalid where a tensor has no counterpart).
 struct ExpansionResult {
   Graph graph;
-  OwnedTensorMap map;
+  std::vector<TensorId> map;
 };
 
 // Whether `key` has a decomposition: every fused kind but the batch key
@@ -114,8 +93,7 @@ inline bool WritesInPlace(const Node& node) {
 // bounded number of passes, and (kFormat) where a view's source would
 // change layout (graph.h SameViewSource).
 std::expected<Graph, VerifyError> Expand(const Graph& graph, bool composites);
-// Expand and return the original-to-expanded tensor map with its funding
-// owner. This is the paid path for callers that retain the map.
+// Expand and return the original-to-expanded tensor map.
 std::expected<ExpansionResult, VerifyError> ExpandWithMap(const Graph& graph, bool composites);
 
 }  // namespace llmp::ir

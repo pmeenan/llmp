@@ -20,12 +20,9 @@
 #ifndef LLMP_PLANNER_LANES_H_
 #define LLMP_PLANNER_LANES_H_
 
-#include <cstddef>
 #include <cstdint>
-#include <expected>
 #include <functional>
 #include <span>
-#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -51,13 +48,6 @@ struct Region {
   std::uint32_t last = 0;
   bool operator==(const Region&) const = default;
 };
-
-// Checked upper bound for the allocations made while mapping original lane
-// tags and splitting/ordering the resulting plan regions. This is queried
-// before either the mapped-tag or AssignLanes scratch vectors are created.
-std::expected<std::uint64_t, std::string> LaneMetadataBytes(std::span<const Selected> steps,
-                                                            const LaneTags& source_tags,
-                                                            std::size_t current_node_count);
 
 // Gives `steps` their lanes and returns the regions' spans, in order and
 // disjoint (overlapping spans joined).

@@ -99,17 +99,8 @@ The entries below record each change; the record of the milestone is
   adding a spatial definition no longer requires compiler kind-name branches
   (M3.5 U8).
 
-- Backend-owned fusion rankings compare genuine selected recipes with their own
-  complete alternatives under exact source, device, preparation and compiler
-  identities. Production selection retains the cumulatively chosen program and
-  its paid resources through Bind and cache publication. Measured losing recipes
-  use their qualified alternatives; stale, missing or unsupported evidence keeps
-  ordinary execution. Quality rejections remain separate from latency evidence.
-  Historical identities and numerical refusals are preserved
-  ([U6 qualification](docs/experiments/fusion-ranks/U6-FINAL-RESULTS.md)).
 - IR operation traits select typed parameter, inference, decomposition and
-  partition handlers, with exhaustive dispatch controls and indexed fusion-rank
-  lookup (M3.5 U6).
+  partition handlers, with exhaustive dispatch controls (M3.5 U6).
 
 - Chat Completions tool intake, generated calls and result continuation through
   the shared format-driven parser and renderer, with canonical stable-span
@@ -144,6 +135,19 @@ The entries below record each change; the record of the milestone is
   immediate working set release via `POST /llmp/v1/memory/release`.
 
 ### Fixed
+
+- Each step shape is planned once and lowered once again. U6's exact-site
+  recipe comparison ran on every GGML plan miss (a second discovery plan,
+  then a replan and a full relowering per fused site) against a table no
+  real model's site could match; it is gone from production with its
+  comparison-only lowering and Bind refusals, the planned-graph copies every
+  cached program kept, and the compiler-identity launcher. Dense decoders
+  (Llama, Qwen2, EXL3) and Gemma 4 31B no longer stall in their first
+  prefill plan; served outputs are unchanged. Measured fusion preferences
+  are coarse rows keyed on device class, fused operation, implementation and
+  its kernel version, operand encoding and layout and row and width bands
+  ([fusion ranks](docs/experiments/fusion-ranks/README.md)); the U6 rows are
+  retired.
 
 - Qwen-Image requests are served again: binding a stored stage graph accepts
   request scalars the stage does not use, and recipe scalar names come from

@@ -1,12 +1,6 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Optional checked explicit accesses; ordinary recipe consumers ignore these rows.
-#ifndef LLMP_GGML_ACCESS_RECIPE
-#define LLMP_GGML_ACCESS_RECIPE(NAME, DESCRIBE)
-#define LLMP_GGML_LOCAL_ACCESS_MACRO
-#endif
-
 // Shared concrete recipe inventory: key, numerical contract, ordered node arity,
 // descriptor validator and launcher. CPU metadata discards only callable expressions.
 // No include guard: consumers define both recipe macros before including this file.
@@ -1066,31 +1060,3 @@ LLMP_GGML_RECIPE("llmp.select", llmp::ir::Primitive(llmp::ir::Op::kSelect),
                  "broadcast without arithmetic or inspection of unselected payload",
                  1, ([](ConstNodes n) { return CheckSelect(n[0]); }),
                  ([](LaunchContext& launch, Nodes n) { return RunSelect(launch, n[0]); }))
-
-LLMP_GGML_ACCESS_RECIPE("ggml.norm", &LayerNormAccess)
-LLMP_GGML_ACCESS_RECIPE("ggml.scale", &ScaleAccess)
-LLMP_GGML_ACCESS_RECIPE("ggml.unary", &UnaryAccess)
-LLMP_GGML_ACCESS_RECIPE("ggml.repeat", &RepeatAccess)
-LLMP_GGML_ACCESS_RECIPE("ggml.concat", &ConcatAccess)
-LLMP_GGML_ACCESS_RECIPE("ggml.add", &AddAccess)
-LLMP_GGML_ACCESS_RECIPE("ggml.mul", &MulAccess)
-LLMP_GGML_ACCESS_RECIPE("ggml.rms_norm", &RmsAccess)
-LLMP_GGML_ACCESS_RECIPE("ggml.rms_norm_mul.fused", &RmsMulAccess)
-LLMP_GGML_ACCESS_RECIPE("ggml.rms_norm_mul.unfused", &RmsThenMulAccess)
-LLMP_GGML_ACCESS_RECIPE(kRopeExtName, &RopeExtAccess)
-LLMP_GGML_ACCESS_RECIPE("ggml.convert", &GammaConvertAccess)
-LLMP_GGML_ACCESS_RECIPE("ggml.cont", &ContAccess)
-LLMP_GGML_ACCESS_RECIPE(kNormRopeSectionsName, &NormRopeSectionsAccess)
-LLMP_GGML_ACCESS_RECIPE(kSpatialChannelNormName, &SpatialChannelNormAccess)
-LLMP_GGML_ACCESS_RECIPE("ggml.l2_norm", &L2NormAccess)
-LLMP_GGML_ACCESS_RECIPE(kLayerNormModulateSplitName, &ModulateAccess)
-LLMP_GGML_ACCESS_RECIPE(kGatedResidualSplitName, &GatedAccess)
-LLMP_GGML_ACCESS_RECIPE(kGatedResidualModulateSplitName, &JoinedAccess)
-LLMP_GGML_ACCESS_RECIPE(kHcCombineName, &HcCombineAccess)
-LLMP_GGML_ACCESS_RECIPE(kGdnGatesName, &GdnGatesAccess)
-LLMP_GGML_ACCESS_RECIPE(kHcPostName, &HcPostAccess)
-LLMP_GGML_ACCESS_RECIPE(kDsv4HcPostNormF16Name, &HcPostNormAccess)
-#ifdef LLMP_GGML_LOCAL_ACCESS_MACRO
-#undef LLMP_GGML_LOCAL_ACCESS_MACRO
-#undef LLMP_GGML_ACCESS_RECIPE
-#endif

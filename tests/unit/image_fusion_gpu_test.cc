@@ -8,7 +8,9 @@
 // backend: every output against the reference executor's double-precision
 // oracle (at the source geometry, out of the oracle's reach, against the
 // same graph planned without patterns), and each fused implementation
-// shown in a plan. Synthetic weights; no model files, no speed claim.
+// shown in a plan. The LLM norm and float-product fusions the stateless
+// lowering takes are checked the same way, each planned with and without
+// `disable <pattern>`. Synthetic weights; no model files, no speed claim.
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
@@ -23,6 +25,7 @@
 #include <cstring>
 #include <expected>
 #include <format>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -39,12 +42,16 @@
 #include "engine/execution_contract.h"
 #include "engine/graph_plan.h"
 #include "expected_error.h"
+#include "ggml.h"
 #include "image_family.h"
+#include "ir/builder.h"
 #include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/executor.h"
+#include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/step_program.h"
 #include "kernels/reference/exec.h"
 #include "model/image_pipeline.h"
@@ -212,6 +219,9 @@ class ImageFusionGpu : public ::testing::Test {
   struct Case {
     std::string name;
     std::optional<co::SpatialGraph> graph;
+    // Or a graph built directly, with its weights (no spatial component).
+    std::optional<ir::Graph> raw;
+    std::vector<co::StepWeight> raw_weights;
     std::vector<std::vector<float>> inputs;  // per graph input, logical order
     std::vector<std::vector<float>> reference;
     // False: too large for the oracle; the same graph planned without
@@ -223,7 +233,12 @@ class ImageFusionGpu : public ::testing::Test {
     // Explicit arithmetic diagnostics derived from the image mapping.
     llmp::planner::Policy policy = ImagePolicy();
     std::uint64_t activations = 0, activation_bytes = 0;
+    std::uint64_t activation_request = 0;  // zero: the oracle-sized default
   };
+  static const ir::Graph& GraphOf(const Case& c) { return c.graph ? c.graph->graph() : *c.raw; }
+  static std::span<const co::StepWeight> WeightsOf(const Case& c) {
+    return c.graph ? c.graph->weights() : std::span<const co::StepWeight>(c.raw_weights);
+  }
 
   void SetUp() override {
     auto opened = llmp::providers::cuda::OpenDeviceExecution(0);
@@ -360,9 +375,9 @@ class ImageFusionGpu : public ::testing::Test {
 
   // The graph's weights, drawn once, uploaded and bound into the oracle.
   void Weights(Case& c, rf::Executor* oracle, std::uint64_t seed) {
-    const auto& graph = c.graph->graph();
+    const auto& graph = GraphOf(c);
     Draw draw{seed};
-    for (const auto& weight : c.graph->weights()) {
+    for (const auto& weight : WeightsOf(c)) {
       const auto& format = graph.tensor(weight.tensor).format;
       ASSERT_EQ(format.layout, fm::Layout::kDense);
       const auto& ne = format.shape.ne;
@@ -386,6 +401,14 @@ class ImageFusionGpu : public ::testing::Test {
         }
         bytes.resize(count * 2);
         std::memcpy(bytes.data(), bits.data(), bytes.size());
+      } else if (format.encoding == fm::Encoding::kF16) {
+        std::vector<ggml_fp16_t> bits(count);
+        for (std::size_t i = 0; i < count; ++i) {
+          bits[i] = ggml_fp32_to_fp16(values[i]);
+          values[i] = ggml_fp16_to_fp32(bits[i]);
+        }
+        bytes.resize(count * sizeof(ggml_fp16_t));
+        std::memcpy(bytes.data(), bits.data(), bytes.size());
       } else {
         ASSERT_EQ(format.encoding, fm::Encoding::kF32);
         bytes.resize(count * 4);
@@ -403,7 +426,7 @@ class ImageFusionGpu : public ::testing::Test {
   // Lowers the case's graph through the production backend, binds it to
   // the launch and computes its oracle.
   void Prepare(Case& c, std::uint64_t seed) {
-    const auto& graph = c.graph->graph();
+    const auto& graph = GraphOf(c);
     std::optional<rf::Executor> oracle;
     if (c.oracle) {
       auto created = rf::Executor::Create(graph);
@@ -436,8 +459,10 @@ class ImageFusionGpu : public ::testing::Test {
         c.reference.push_back(std::move(*values));
       }
     }
-    const en::GraphBuildIO io{graph, graph.inputs(), graph.outputs(), c.graph->weights()};
-    c.activation_bytes = c.oracle ? 512 * kMiB : 6144 * kMiB;
+    const en::GraphBuildIO io{graph, graph.inputs(), graph.outputs(), WeightsOf(c)};
+    c.activation_bytes = c.activation_request != 0 ? c.activation_request
+                         : c.oracle                ? 512 * kMiB
+                                                   : 6144 * kMiB;
     c.activations = Allocate(c.activation_bytes);
     kn::Addresses addresses;
     addresses.weight = [&c](const ir::WeightRef& ref, fm::PartRole) {
@@ -477,7 +502,7 @@ class ImageFusionGpu : public ::testing::Test {
   // steps around it.
   std::expected<std::vector<std::vector<float>>, std::string> Run(Case& c) {
     std::vector<std::vector<float>> out;
-    const auto& graph = c.graph->graph();
+    const auto& graph = GraphOf(c);
     for (std::size_t i = 0; i < c.inputs.size(); ++i) {
       const auto& slot = c.program->inputs()[i];
       std::vector<std::byte> bytes;
@@ -651,6 +676,51 @@ class ImageFusionGpu : public ::testing::Test {
     Check(*c, shape.bound);
   }
 
+  // One small stateless graph (no spatial component) planned twice through
+  // the production backend: under the default policy, whose plan must run
+  // `fused`, and with `disable <pattern>`, whose plan must not. Both runs
+  // against the oracle, on the same weights and inputs.
+  using GraphMaker = std::function<void(ir::Builder&, std::vector<co::StepWeight>&)>;
+  void LlmFusion(std::string_view name, std::string_view pattern, std::string_view fused,
+                 const GraphMaker& make, double bound) {
+    for (const bool disabled : {false, true}) {
+      auto& c = *cases.emplace_back(std::make_unique<Case>());
+      c.name = std::format("{}{}", name, disabled ? "_disabled" : "");
+      c.policy = llmp::planner::Policy{};
+      if (disabled) c.policy.disabled.emplace_back(pattern);
+      llmp::planner::Canonicalize(c.policy);
+      c.activation_request = 64 * kMiB;
+      ir::Builder builder;
+      builder.SetOwner(0);
+      make(builder, c.raw_weights);
+      auto graph = std::move(builder).Finish();
+      ASSERT_TRUE(graph.has_value()) << c.name;
+      c.raw.emplace(std::move(*graph));
+      Draw draw{23};
+      for (const auto id : c.raw->inputs()) {
+        const auto& format = c.raw->tensor(id).format;
+        std::uint64_t count = 1;
+        for (std::size_t d = 0; d < format.shape.rank; ++d) count *= format.shape.ne[d];
+        std::vector<float> values(count);
+        for (auto& v : values) v = draw();
+        c.inputs.push_back(std::move(values));
+      }
+      Prepare(c, 29);
+      ASSERT_FALSE(HasFatalFailure());
+      EXPECT_EQ(c.plan.contains(std::string(fused)), !disabled) << c.name << ": " << fused;
+      Check(c, bound);
+      ASSERT_FALSE(HasFatalFailure());
+    }
+  }
+  static ir::TensorId AddWeight(ir::Builder& builder, std::vector<co::StepWeight>& weights,
+                                fm::Encoding encoding, const fm::Shape& shape, std::uint16_t role) {
+    const ir::WeightRef ref{.role = role};
+    const auto name = std::format("w{}", role);
+    const auto tensor = builder.Weight(ir::Dense(encoding, shape), ref, name);
+    weights.push_back({.tensor = tensor, .ref = ref, .parts = {{name, fm::PartRole::kData}}});
+    return tensor;
+  }
+
   static constexpr std::uint64_t kPool = 256 * kMiB;
   std::shared_ptr<llmp::catalog::Catalog> metadata_catalog;
   std::shared_ptr<en::ExecutionMetadataAllowance> metadata_paid;
@@ -757,6 +827,66 @@ TEST_F(ImageFusionGpu, TransferWidth4096Rows77MatchesTheOracle) {
 
 TEST_F(ImageFusionGpu, TransferWidth4096Rows264MatchesTheOracle) {
   TransferFlow({"transfer_w4096_r264", 32, 1024, 8, 16});
+}
+
+// The LLM norm and float-product fusions the stateless lowering takes
+// (formerly covered only by the exact-site comparison tests): each fused
+// plan and its `disable <pattern>` decomposition match the oracle.
+TEST_F(ImageFusionGpu, LlmFusionsAndTheirDecompositionsMatchTheOracle) {
+  // F32 norms against the FP64 oracle; F16-weight vector products convert
+  // their activations to F16, so both arms carry the same ~4e-4 product error.
+  constexpr double kBound = 1e-4, kProductBound = 1e-3;
+  LlmFusion(
+      "rms_norm_mul", "rms_norm_mul", "ggml.rms_norm_mul.fused",
+      [](ir::Builder& b, std::vector<co::StepWeight>& weights) {
+        const auto x = b.Input(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({1024, 4})));
+        const auto w = AddWeight(b, weights, fm::Encoding::kF32, ir::ShapeOf({1024}), 0);
+        b.Output(b.Mul(b.RmsNorm(x, 1e-6F), w));
+      },
+      kBound);
+  ASSERT_FALSE(HasFatalFailure());
+  LlmFusion(
+      "rms_norm_mul_add", "rms_norm_mul_add", kg::kGemmaNormAddName,
+      [](ir::Builder& b, std::vector<co::StepWeight>& weights) {
+        const auto x = b.Input(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({1024, 4})));
+        const auto residual = b.Input(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({1024, 4})));
+        const auto w = AddWeight(b, weights, fm::Encoding::kF32, ir::ShapeOf({1024}), 0);
+        b.Output(b.Add(b.Mul(b.RmsNorm(x, 1e-6F), w), residual));
+      },
+      kBound);
+  ASSERT_FALSE(HasFatalFailure());
+  // GDN's gated output norm over heads of 128: rms_norm(x) · w · SiLU(z),
+  // its heads joined into rows as the GDN output projection reads them.
+  LlmFusion(
+      "gdn_norm_gate", "gdn_norm_gate", kg::kGdnNormGateName,
+      [](ir::Builder& b, std::vector<co::StepWeight>& weights) {
+        const auto x = b.Input(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({128, 4, 3})));
+        const auto z = b.Input(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({128, 4, 3})));
+        const auto w = AddWeight(b, weights, fm::Encoding::kF32, ir::ShapeOf({128}), 0);
+        const auto gated = b.Mul(b.Mul(b.RmsNorm(x, 1e-6F), w), b.Unary(z, ir::UnaryFn::kSilu));
+        b.Output(b.Reshape(gated, ir::ShapeOf({512, 3})));
+      },
+      kBound);
+  ASSERT_FALSE(HasFatalFailure());
+  LlmFusion(
+      "float_mul_mat_glu", "float_mul_mat_glu", kg::kMulMatGluFused,
+      [](ir::Builder& b, std::vector<co::StepWeight>& weights) {
+        const auto x = b.Input(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({256, 1})));
+        const auto gate = AddWeight(b, weights, fm::Encoding::kF16, ir::ShapeOf({256, 512}), 0);
+        const auto up = AddWeight(b, weights, fm::Encoding::kF16, ir::ShapeOf({256, 512}), 1);
+        b.Output(b.Glu(b.MatMul(gate, x), b.MatMul(up, x), ir::GluParams{}));
+      },
+      kProductBound);
+  ASSERT_FALSE(HasFatalFailure());
+  LlmFusion(
+      "float_mul_mat_add", "float_mul_mat_add", kg::kMulMatAddFused,
+      [](ir::Builder& b, std::vector<co::StepWeight>& weights) {
+        const auto x = b.Input(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({256, 1})));
+        const auto bias = b.Input(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({512, 1})));
+        const auto w = AddWeight(b, weights, fm::Encoding::kF16, ir::ShapeOf({256, 512}), 0);
+        b.Output(b.Add(b.MatMul(w, x), bias));
+      },
+      kProductBound);
 }
 
 }  // namespace

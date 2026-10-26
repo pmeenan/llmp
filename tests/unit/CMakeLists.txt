@@ -509,7 +509,7 @@ target_link_libraries(execution_test PRIVATE llmp_execution)
 llmp_gtest(execution_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 add_executable(ggml_measured_ranks_test ggml_measured_ranks_test.cc)
-target_link_libraries(ggml_measured_ranks_test PRIVATE llmp_execution llmp_ggml_rank_data)
+target_link_libraries(ggml_measured_ranks_test PRIVATE llmp_execution)
 llmp_gtest(ggml_measured_ranks_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # Tensor formats (D-108): encodings, layouts and the size rule.
@@ -760,15 +760,16 @@ if(LLMP_CUDA)
                             GgmlKernelsTest.AnErrorPendingOnTheThreadRefusesOneContext
                             GgmlKernelsTest.WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault)
 
-  # Authenticate the generated identity against current compiler receipts.
-  get_property(identity_config GLOBAL PROPERTY LLMP_GGML_IDENTITY_CONFIG)
-  get_property(identity_objects GLOBAL PROPERTY LLMP_GGML_IDENTITY_OBJECTS)
-  get_property(identity_receipt GLOBAL PROPERTY LLMP_GGML_IDENTITY_RECEIPT)
+  # The module's implementation identities follow every one of its source
+  # files (src/kernels/ggml/module_digest.cmake). A script on the build
+  # host, so it runs in every CUDA profile without a GPU.
+  get_property(module_names GLOBAL PROPERTY LLMP_GGML_MODULE_NAMES)
   add_test(NAME unit.GgmlModuleDigest
-           COMMAND "${LLMP_PYTHON}" "${PROJECT_SOURCE_DIR}/tools/compiler_identity.py"
-                   check --config "${identity_config}" --objects "${identity_objects}"
-                   --output "${PROJECT_BINARY_DIR}/src/kernels/ggml/module_digest.cc"
-                   --receipt "${identity_receipt}")
+           COMMAND ${CMAKE_COMMAND} "-DBASE=${PROJECT_SOURCE_DIR}/src/kernels/ggml"
+                   "-DNAMES=${module_names}"
+                   "-DGENERATED=${PROJECT_BINARY_DIR}/src/kernels/ggml/module_digest.cc"
+                   "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/module_digest"
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/ggml_module_digest_test.cmake)
   set_tests_properties(unit.GgmlModuleDigest PROPERTIES LABELS unit)
 
   # The remaining operations of the FP16 bridge's recorded plan. The test
@@ -923,19 +924,6 @@ if(LLMP_CUDA)
   target_link_libraries(ggml_step_program_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
                                                         llmp_platform)
   llmp_gpu_gtest(ggml_step_program_gpu_test DISCRETE ALL)
-
-  add_executable(ggml_comparison_gpu_test ggml_comparison_gpu_test.cc)
-  target_sources(ggml_comparison_gpu_test PRIVATE ggml_comparison_preparation_gpu_test.cc
-                                                     ggml_comparison_pair_gpu_test.cc)
-  target_include_directories(ggml_comparison_gpu_test SYSTEM PRIVATE
-      "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(ggml_comparison_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
-                                                      llmp_platform llmp_reference_kernels
-                                                      llmp_fake_step_source
-                                                      llmp_engine_core llmp_paging_kernels
-                                                      llmp_test_artifact_writer)
-  llmp_gpu_gtest(ggml_comparison_gpu_test DISCRETE ALL
-                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
   # Qwen3.8's routed experts over the CUTLASS layout (kernels/ggml/
   # moe_layout.h): the conversion, routing, CUTLASS's grouped GEMM, the
@@ -1328,19 +1316,6 @@ target_link_libraries(ggml_spatial_test PRIVATE llmp_ggml_tensors llmp_engine_co
                                                llmp_spec llmp_model)
 llmp_gtest(ggml_spatial_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-add_executable(comparison_pair_test comparison_pair_test.cc)
-target_link_libraries(comparison_pair_test PRIVATE llmp_engine_core llmp_fake_device_backend)
-llmp_gtest(comparison_pair_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-add_executable(comparison_boundary_test comparison_boundary_test.cc)
-target_link_libraries(comparison_boundary_test PRIVATE llmp_components llmp_ir)
-llmp_gtest(comparison_boundary_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-add_executable(ggml_comparison_test ggml_comparison_test.cc)
-target_link_libraries(ggml_comparison_test PRIVATE llmp_ggml_tensors llmp_planner llmp_components
-                                                   llmp_spec llmp_model llmp_artifact llmp_json)
-llmp_gtest(ggml_comparison_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
 add_executable(ggml_lower_test ggml_lower_test.cc)
 target_link_libraries(ggml_lower_test PRIVATE llmp_ggml_tensors llmp_planner llmp_components
                                               llmp_spec llmp_model llmp_artifact llmp_json)
@@ -1646,10 +1621,5 @@ llmp_gtest(corpus_score_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
 add_executable(fusion_ranks_test fusion_ranks_test.cc)
-target_link_libraries(fusion_ranks_test PRIVATE llmp_execution llmp_planner)
+target_link_libraries(fusion_ranks_test PRIVATE llmp_execution llmp_planner llmp_ggml_tensors)
 llmp_gtest(fusion_ranks_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-# Path/depfile/receipt controls do not require a compiler or device.
-add_test(NAME unit.SourceClosure
-         COMMAND "${LLMP_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/compiler_identity_test.py")
-set_tests_properties(unit.SourceClosure PROPERTIES LABELS unit)

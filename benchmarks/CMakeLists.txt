@@ -70,23 +70,14 @@ if(LLMP_CUDA)
   target_link_options(llmp_gdn_gates_bench PRIVATE
     "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # Fused versus decomposed: one case planned with and without `disable
+  # <pattern>` (docs/experiments/fusion-ranks/README.md).
   add_executable(llmp_fusion_ranks fusion_ranks.cc)
   target_include_directories(llmp_fusion_ranks SYSTEM PRIVATE
     "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(llmp_fusion_ranks PRIVATE llmp_runtime_serving llmp_ggml_kernels
-    llmp_cuda_device_memory llmp_reference_kernels llmp_json llmp_warnings)
+  target_link_libraries(llmp_fusion_ranks PRIVATE llmp_engine llmp_ggml_kernels
+    llmp_cuda_device_memory llmp_warnings)
   target_link_options(llmp_fusion_ranks PRIVATE
-    "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  # Actual shared-GDN default versus own-decomposition ordinary programs.
-  # Fixed-shape correctness control; timing requires its separate protocol.
-  add_executable(llmp_fusion_gdn fusion_gdn.cc)
-  target_include_directories(llmp_fusion_gdn SYSTEM PRIVATE
-    "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(llmp_fusion_gdn PRIVATE llmp_engine llmp_ggml_kernels
-    llmp_runtime
-    llmp_cuda_device_memory llmp_reference_kernels llmp_json llmp_warnings)
-  target_link_options(llmp_fusion_gdn PRIVATE
     "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
   add_executable(llmp_turn_reuse turn_reuse.cc)

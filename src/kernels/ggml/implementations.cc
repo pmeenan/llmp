@@ -149,6 +149,7 @@ execution::Implementation Declare(std::string_view name, llmp::ir::OpKey operati
                                LLMP_GGML_BUILD_TYPE, kAsserts, kLibraryAsserts, LLMP_GGML_SANITIZE),
           .variant = capability == nullptr ? std::string(variant)
                                            : std::format("{}{}", variant, AcceptsTextOf(name)),
+          .version = KernelVersion(name),
           .capability = capability == nullptr ? std::nullopt : std::optional(*capability)};
 }
 

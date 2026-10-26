@@ -31,7 +31,6 @@
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -408,10 +407,11 @@ constexpr std::array<std::int32_t, kRows> kPicks = {7, 0, 3, 3, 6};
 constexpr std::array<std::int64_t, kRows> kSlots = {9, 2, 15, 0, 4};
 constexpr std::uint16_t kPoisonHalf = 0x7e00;  // an F16 NaN no kernel writes
 
-// This live table check normally permits source-stale measurements. The adoption
-// invocation can require the exact compiled digest and number of current rows
-// without forcing every future source change to remeasure this operator.
-TEST_F(GgmlOpsTest, LiveFusionMeasurementsMatchCurrentQueriesOrRemainSafelyStale) {
+// The live registry's coarse fusion measurements (rank_data.h FusionRank)
+// decide only whether the fused candidate stays first: a measured loss
+// excludes it, and anything else (unmeasured, stale, neutral, a win) keeps
+// the incumbent fusion first.
+TEST_F(GgmlOpsTest, LiveFusionPreferencesDecideTheFusedCandidate) {
   namespace ex = llmp::execution;
   namespace ir = llmp::ir;
   namespace pl = llmp::planner;
@@ -455,8 +455,7 @@ TEST_F(GgmlOpsTest, LiveFusionMeasurementsMatchCurrentQueriesOrRemainSafelyStale
   const pl::Policy policy;
   pl::SelectionView selection(registry, table.device, policy, false, true, {}, {},
                               {.base = 256, .offset = 256, .within = table.within});
-  std::size_t current_rows = 0;
-  const auto inspect = [&](std::uint64_t width, std::uint64_t rows, bool outside) {
+  const auto inspect = [&](std::uint64_t width, std::uint64_t rows) {
     SCOPED_TRACE(std::format("{}x{}", width, rows));
     ir::Builder builder;
     builder.SetOwner(0);
@@ -474,75 +473,22 @@ TEST_F(GgmlOpsTest, LiveFusionMeasurementsMatchCurrentQueriesOrRemainSafelyStale
     bool inspected = false;
     selection.Inspect(*graph, node, [&](const ex::CapabilityQuery& query) {
       inspected = true;
-      const auto key = ex::FusionQueryKey(query);
-      ASSERT_TRUE(key.has_value());
-      const ex::FusionComparison* record = nullptr;
-      for (const auto& entry : registry.FusionComparisons(query.op, *key)) {
-        if (entry.comparison->fusion.name == "ggml.rms_norm_mul.fused") {
-          ASSERT_EQ(record, nullptr);
-          record = entry.comparison;
-        }
-      }
       preference = ex::FusionPreferenceFor(registry, query, "ggml.rms_norm_mul.fused");
-      if (outside) {
-        EXPECT_EQ(record, nullptr);
-        EXPECT_EQ(preference, ex::FusionPreference::kUnmeasured);
-        return;
-      }
-      if (record == nullptr) {
-        EXPECT_EQ(preference, ex::FusionPreference::kUnmeasured);
-        return;  // Future query-contract changes leave the old data unmeasured.
-      }
-      ASSERT_EQ(record->query, *key);
-      if (query.terminal_decomposition.size() != 2U) {
-        EXPECT_TRUE(preference == ex::FusionPreference::kStale ||
-                    preference == ex::FusionPreference::kUnmeasured);
-        return;
-      }
-      ASSERT_EQ(record->decomposition.size(), 2U);
-      EXPECT_EQ(registry.at(query.terminal_decomposition[0]).name, "ggml.rms_norm");
-      EXPECT_EQ(registry.at(query.terminal_decomposition[1]).name, "ggml.mul");
-      bool current = record->selection_environment == registry.SelectionDigest() &&
-                     record->fusion.identity == registry.identity(*fused);
-      for (std::size_t i = 0; i < record->decomposition.size(); ++i) {
-        const auto child = query.terminal_decomposition[i];
-        current = current && record->decomposition[i].name == registry.at(child).name &&
-                  record->decomposition[i].identity == registry.identity(child);
-      }
-      if (current) {
-        ++current_rows;
-        EXPECT_EQ(preference,
-                  ex::ClassifyFusionLatency(record->fused_ns, record->decomposition_ns));
-      } else {
-        EXPECT_EQ(preference, ex::FusionPreference::kStale);
-      }
-      std::cout << "fusion data query " << width << 'x' << rows << ' ' << llmp::base::ToHex(*key)
-                << " current=" << current << "\n";
     });
     ASSERT_TRUE(inspected);
-    const auto candidates = selection.FinalCandidates(*graph, node, node.key);
+    const auto candidates = selection.Candidates(*graph, node, node.key);
     ASSERT_FALSE(candidates.empty());
     if (preference == ex::FusionPreference::kDecomposition) {
       EXPECT_EQ(std::ranges::find(candidates, *fused), candidates.end());
     } else {
       EXPECT_EQ(candidates.front(), *fused);  // Stale/missing/neutral retain the incumbent.
     }
+    std::cout << "fusion preference " << width << 'x' << rows << ' ' << static_cast<int>(preference)
+              << "\n";
   };
-  for (std::uint64_t width : {256U, 1024U, 4096U}) {
-    for (std::uint64_t rows : {1U, 4U, 32U, 256U}) inspect(width, rows, false);
+  for (std::uint64_t width : {256U, 512U, 1024U, 4096U}) {
+    for (std::uint64_t rows : {1U, 4U, 32U, 256U}) inspect(width, rows);
   }
-  inspect(512, 1, true);
-  if (const char* expected = std::getenv("LLMP_TEST_EXPECT_CURRENT_FUSION_ROWS")) {
-    std::size_t count = 0;
-    const std::string_view text(expected);
-    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), count);
-    ASSERT_EQ(parsed.ec, std::errc{});
-    ASSERT_EQ(parsed.ptr, text.data() + text.size());
-    EXPECT_EQ(current_rows, count);
-  }
-  std::cout << "fusion data module " << module << " selection "
-            << llmp::base::ToHex(registry.SelectionDigest()) << " current_rows=" << current_rows
-            << " unmeasured512=incumbent\n";
 }
 
 TEST_F(GgmlOpsTest, NormMulWrapperPreservesStandaloneLaunchesAndOutputs) {
@@ -1469,13 +1415,12 @@ TEST_F(GgmlOpsTest, TheRegistryDeclaresBindsAndRunsEveryNewImplementation) {
   EXPECT_FALSE(launch->faulted());
 }
 
-TEST_F(GgmlOpsTest, UnaryAndRopeStandaloneComparatorsMatchTheirLaunchDomains) {
+TEST_F(GgmlOpsTest, UnaryCapabilityMatchesItsLaunchDomain) {
   namespace ir = llmp::ir;
   namespace kg = llmp::kernels::ggml;
   namespace ex = llmp::execution;
   const auto* unary = kg::CapabilityOf("ggml.unary");
   ASSERT_NE(unary, nullptr);
-  EXPECT_TRUE(unary->standalone_comparator);
   const std::array operands{ex::OperandFormat{.operand = 0,
                                               .encoding = llmp::format::Encoding::kF32,
                                               .layout = llmp::format::Layout::kDense}};
@@ -1494,9 +1439,6 @@ TEST_F(GgmlOpsTest, UnaryAndRopeStandaloneComparatorsMatchTheirLaunchDomains) {
     EXPECT_TRUE(accepts(fn)) << static_cast<int>(fn);
   EXPECT_FALSE(accepts(ir::UnaryFn::kGeluErf));
   EXPECT_FALSE(accepts(ir::UnaryFn::kSqr));
-
-  EXPECT_TRUE(kg::CapabilityOf("ggml.rope.neox")->standalone_comparator);
-  EXPECT_TRUE(kg::CapabilityOf("ggml.rope.ext")->standalone_comparator);
 }
 
 // The pinned GGML definition uses the tanh approximation, rather than ERF.

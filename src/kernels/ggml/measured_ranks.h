@@ -3,11 +3,18 @@
 #ifndef LLMP_KERNELS_GGML_MEASURED_RANKS_H_
 #define LLMP_KERNELS_GGML_MEASURED_RANKS_H_
 
+#include <vector>
+
 #include "execution/rank_data.h"
 
 namespace llmp::kernels::ggml {
-std::vector<execution::FusionComparison> MeasuredFusionComparisons();
-std::vector<execution::RecipeComparison> MeasuredRecipeComparisons();
+
+// Coarse fusion rows (execution/rank_data.h FusionRank) measured by
+// benchmarks/fusion_ranks.cc; report and protocol in
+// docs/experiments/fusion-ranks/README.md. A row names its implementation's
+// kernel version; tests/unit/fusion_ranks_test.cc fails when a row names an
+// implementation or version this backend no longer declares.
+inline std::vector<execution::FusionRank> MeasuredFusionRanks() { return {}; }
 
 // The backend owns these measurements; unrelated registries do not inherit them.
 inline execution::RankData MeasuredRanks() {
@@ -42,8 +49,7 @@ inline execution::RankData MeasuredRanks() {
        .rank = 0,
        .params = {.tensor_scale = true}},
   }};
-  data.fusions = MeasuredFusionComparisons();
-  data.recipe_comparisons = MeasuredRecipeComparisons();
+  data.fusions = MeasuredFusionRanks();
   return data;
 }
 }  // namespace llmp::kernels::ggml

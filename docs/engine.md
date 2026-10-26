@@ -453,7 +453,8 @@ positions reach it as input data; uncapturable plans receive positions through
 a `SlotLifecycle`, the stages' `PagedWeights`, `RunnerMemory` (input and
 output staging), `StepRuns`, the launch, a `PlanAccount` and one plan
 cache, over a `StepSource` (`KeyBase` once at Bind; `Build`, host-only, per
-plan miss). Setup lays out the slots' state first, reserves the weights,
+plan miss: one ordinary plan and one lowering of the step's graph, with no
+alternative replanned or relowered). Setup lays out the slots' state first, reserves the weights,
 builds every configured setup shape placeless to size the activations,
 pool, staging and plan floor (a quarter's margin) and pins the staging;
 Register registers sources and pins places; Bind makes the launch, binds

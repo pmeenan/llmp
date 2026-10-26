@@ -593,20 +593,6 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
                                     .alignment_staged = std::move(aligned_staged),
                                     .observed_bound_model = o_.bound_digest,
                                     .observed_model_spec = semantic_identity_};
-  if (!Backend().registry->ranks().recipe_comparisons.empty()) {
-    auto adopted = BuildCumulativeRecipeProgram(
-        io, *step, shape, o_.stage, o_.bindings.state->context, Backend(), step_policy, addresses,
-        std::move(plan_options), o_.validate_program, o_.backend.owner, resources);
-    if (adopted) {
-      if (compiler) {
-        auto held = std::make_shared<SharedCompilerAllowance::Use>(std::move(*compiler));
-        if (!(**adopted).HoldConstruction(std::move(held)))
-          return std::unexpected("lowered program already has a construction owner");
-      }
-      return std::move(*adopted);
-    }
-    return std::unexpected(std::move(adopted.error()));
-  }
   auto program = BuildComponentProgram(
       io, Backend(), step_policy, addresses, std::move(plan_options),
       kernels::TokenLowerInput{*step, shape, o_.bindings.state->context, state_spans},

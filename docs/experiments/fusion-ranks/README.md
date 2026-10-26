@@ -1,369 +1,136 @@
 <!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Fusion versus its own decomposition: U6 qualification
+# Fusion versus its own decomposition: coarse measured rows
 
-The [final qualification](U6-FINAL-RESULTS.md) installs 99 independently reviewed
-current-build decisions: 97 latency comparisons and two separate incumbent-quality
-rejections. The latency decisions comprise 52 incumbent wins, 36 neutral cells
-and nine alternative wins, from 4,836 ordered observations across both Sparks.
-Twenty-one installed-data controls pass, including actual production rejection of
-the slower spatial C144 fusion, exact-key hits, an unmeasured image miss, and
-EXL3's preserved OrdinaryOnly execution. Each decision applies only to its exact
-source, physical recipe, backend, device and preparation domain. This makes no
-whole-model speed or universal shape/format claim.
+A backend's measured fusion preferences are coarse rows
+(`execution::FusionRank`, [rank_data.h](../../../src/execution/rank_data.h)),
+consulted at selection (`execution::FusionPreferenceFor`, D-085's 10% band):
 
-The [production-regression registration](U6-PRODUCTION-REGRESSION-REGISTRATION.md)
-was committed before the final measurements. The final report records retained
-numerical refusals, bookend-drift failures, source identities and verification.
-Unmeasured, unsupported or stale records preserve ordinary execution. Quality
-rejections carry no timings and grant no speed evidence.
+- **Key.** The device class, the fused operation, the implementation and
+  its kernel version (`Implementation::version`), operand 0's encoding and
+  layout, and inclusive bands of the selection query's rows and width (its
+  `k`: a row's elements). Nothing else: no build identity, source closure,
+  graph, layer, weight name, address or policy digest, so a row survives
+  unrelated code changes and stops deciding when its kernel changes.
+- **Decision.** Within 10% of the decomposition keeps the incumbent; a fusion
+  more than 10% slower is not a candidate, so the planner decomposes the node;
+  one more than 10% faster qualifies a fusion that needs measurement. A row
+  never grants numerical eligibility and is never extrapolated past its
+  bands.
+- **Staleness.** A row measured at another kernel version decides nothing.
+  `FusionRanksTest.NoShippedRowNamesAMissingOrStaleImplementation` fails on
+  any shipped row whose implementation is missing, of another operation or
+  of another version. A kernel author who changes what an implementation
+  launches in a way that could move its speed bumps its version (GGML:
+  `KernelVersion` in `src/kernels/ggml/capabilities.cc`) and re-measures or
+  retires its rows. Rows are refreshed at milestone boundaries, as
+  TensorFold's pin is.
+- **Data.** The GGML backend's rows are C++ data in
+  [measured_ranks.h](../../../src/kernels/ggml/measured_ranks.h), beside its
+  device ranks.
 
-Historical rows remain under their original identities: the twelve
-[RMS cells](READY-MATRIX-RESULTS.md), one
-[captured-event NEOX cell](READY-NEOX-CAPTURED-EVENTS-RESULTS.md) and one
-[NormGate cell](READY-NORMGATE-MEDIAN-BOOKENDS-RESULTS.md) are unchanged.
-The [actual full GDN first screen](ACTUAL-GDN-FIRST-SCREEN-RESULTS.md) installed
-no row and transfers no isolated Ready authority. The twelve legacy whole-program
-rows in `comparisons`, [original results](RESULTS.md),
-[W5 rerun](FRESH-W5-RESULTS.md) and [historical data](historical-v11-v12.json)
-retain their original observations. None is repinned to a later build.
-The [compiler-owned source identity](SOURCE-IDENTITY.md) and actual current
-descriptors determine applicability. The protocols below preserve the earlier
-experiments; the final registration governs the current data.
+## Harness
 
-## Prospective protocol (2026-10-22, before measurement)
+`llmp_fusion_ranks` ([fusion_ranks.cc](../../../benchmarks/fusion_ranks.cc))
+builds one case's fused node, expands it to its own decomposition and plans
+that graph twice through the GGML backend's ordinary planner: as the policy
+stands (the pattern rewrites it back into the fusion) and with
+`disable <pattern>`. It lowers and binds both normally, runs each once and
+compares the outputs (relative RMS at most 1e-5), captures each as a graph
+of repeated runs and times them alternately with CUDA events: three warmup
+pairs, then nine pairs, medians reported. It prints a JSON line and a
+`FusionRank` initializer at the measured point; the reviewer chooses its
+bands from the cases measured. Cases: `rms_norm_mul WIDTH ROWS`,
+`spatial_channel_norm W H C [silu]`. Run it as an exclusive Spark job.
 
-The first screen is F32 RMSNormMul, width 1024 and one row on GB10. This is a
-synthetic operator shape, not a checkpoint-size eligibility condition. The
-standalone `llmp_fusion_ranks [width [rows]]` constructs one fused IR node and
-uses `ir::Expand` to obtain **that node's own decomposition**. Both arms lower
-through the production planner/backend. The primitive arm disables only the
-RMSNormMul rewrite so it cannot reassemble the fusion under test. The harness
-requires exactly the fused norm/multiply versus separate norm and multiply
-implementation inventory. No checkpoint, source-quality claim, numerical
-proposal, or alias mode is involved: both arms compute the same F32 contract,
-with identical input data, epsilon, result encoding and complete output shape.
+## Measurements
 
-Before timing, every output must be finite, relative RMS difference must be at
-most 1e-6, and maximum absolute difference at most 2e-5. These are prospective
-arithmetic tolerances, not measured errors. Both arms use deterministic,
-nonzero bounded inputs and per-channel scales. The same complete output is
-read after one execution; the timed arms replay the captured complete chains.
-Inputs, intermediate storage and output remain distinct between arms.
+### Harness control: RMSNormMul (2026-10-26)
 
-Four untimed paired warmups precede a primitive bookend, four additional paired
-warmups and nine alternating AB/BA paired samples, then a primitive bookend.
-Each event sample replays one graph containing 128 complete chains, avoiding
-CPU submission gaps between individual kernels. Captured-node inventory and
-replayed output are checked against the eagerly executed arm before timing. Report median nanoseconds,
-all selected implementation identities, graph-node counts, activation bytes,
-query key, selection-environment digest, device/model/architecture/multiprocessors, driver/runtime versions,
-output differences and both bookends. Preserve all nine unsorted pairs with
-first-arm order; compute medians from copies. Flush a JSONL receipt after every
-warmup arm, timing arm and bookend, and a refusal receipt before a detected
-failure, so a late failure retains completed samples rather than discarding
-unfavorable evidence. Refuse timing evidence if bookends differ
-by more than 10%; do not adjust this bound after observing results. No clocks,
-profiling or kernel counters are needed for the first screen. Each case runs
-as an exclusive supervised Spark job, at most 600 seconds; expected runtime is
-seconds after the narrow native build.
+`ggml.rms_norm_mul.fused` against `ggml.rms_norm` then `ggml.mul`, outputs
+bit-identical: width 1024, one row, 1,399 against 1,831 ns; width 4096, 256
+rows, 11,652 against 20,724 ns (fusion both). The retired exact-query rows
+measured 1,388/1,817 and 10,840/20,937 ns at the same shapes. The fusion
+needs no row: it is already the incumbent.
 
-Selection follows D-085's coarse band: a fusion over 10% slower than its own
-primitive chain is excluded for this exact query, and the existing planner
-fallback decomposes it. A fusion with latency more than 10% below its
-primitive chain is measured-positive. Both bounds use the decomposition latency
-as the denominator; exactly 90% and 110% are neutral and retain the incumbent.
-Production selection and harness reporting use the same overflow-safe classifier. Numerical eligibility
-is checked independently before this preference; speed evidence cannot grant
-an arithmetic change. Unmeasured and source-stale records retain the incumbent.
+### Spatial channel norm at Qwen-Image's VAE shapes (2026-10-26)
 
-If the first screen validates the mechanism, the next small matrix is widths
-256, 1024 and 4096 at rows 1 (decode), 4 (short wave), 32 and 256 (prefill).
-Measure each tuple; do not infer an interval from endpoints or extrapolate
-1024 to other widths. These are descriptions of measured shape classes, not
-backend capability restrictions. Expand to other selected fusions only after
-reviewing this first class and its paid decomposition. No whole-model speed
-claim follows from isolated operation timings.
+U6 found the decomposed `spatial_channel_norm` 1.3 to 4.7 times faster at
+widths 144 to 1025 (rows 111). Its fixture was a [37, 3, C] tensor: 37
+columns, 3 rows and C channels. `spark` (GB10, driver API 13000, runtime
+13040), `llmp_fusion_ranks`, nine pairs each, medians, F32, `eps` 1e-12;
+the fusion is `llmp.image.spatial_channel_norm` (kernel version 1), the
+decomposition GGML's five or six launches. Outputs agree within relative
+RMS 3e-7.
 
-## Original v8 registration (closed without timing)
+| Case [W, H, C] | Query rows / k | Fused ns | Decomposed ns | Decision |
+| --- | ---: | ---: | ---: | --- |
+| [37, 3, 144] (U6 fixture) | 432 / 37 | 4,551 | 4,836 | neutral |
+| [37, 3, 1025] (U6 fixture) | 3,075 / 37 | 45,070 | 9,918 | decomposition, 4.5x |
+| [128, 128, 384] | 49,152 / 128 | 241,702 | 1,092,164 | fusion, 4.5x |
+| [128, 128, 384] + SiLU | 49,152 / 128 | 244,596 | 1,292,348 | fusion, 5.3x |
+| [256, 256, 384] + SiLU | 98,304 / 256 | 971,968 | 5,447,424 | fusion, 5.6x |
+| [512, 512, 192] + SiLU | 98,304 / 512 | 1,927,616 | 10,852,744 | fusion, 5.6x |
+| [1024, 1024, 96] + SiLU | 98,304 / 1,024 | 3,815,768 | 21,623,159 | fusion, 5.7x |
+| [1024, 1024, 96] | 98,304 / 1,024 | 3,824,784 | 18,129,305 | fusion, 4.7x |
 
-The original v8 registration below is historical. Its launch attempts produced
-no timing; the v11 registration in the next section governs execution.
+The fused kernel loses only on a narrow row of many channels, which the
+VAE never has; at the VAE decoder's shapes for a 1024x1024 image (the
+default `image_size`) it is 4.5 to 5.7 times faster. The whole image
+agrees: Qwen-Image-2.1 (composition `62497918`), 1024x1024, 40 steps, the
+pinned latents and prompt of `tools/speed_gate.py`, one process each,
+generation time after the model is ready:
 
-The reviewed v8 source checkpoint and its native binary were frozen before this
-registration. This registration adds their execution identities; the frozen
-source snapshot retains its original protocol text. No measurement has run.
+| Arm | Generation s | Pixels SHA-256 |
+| --- | --- | --- |
+| Shipped policy (fusion) | 33.17, 33.40, 33.50 | `93356574…` (frozen) |
+| `disable spatial_channel_norm` | 33.73, 33.97 | `2e5432ec…` |
 
-| Identity | Value |
-| --- | --- |
-| Source base | `dfba7a78cd6f6a821148d3cc434ab182153ece7c` |
-| Explicit wave-J dependency patch SHA-256 | `2cfe12da558abb5c84fe2b3b4d1a0641c5edcebe739e3bd847545c093054e775` |
-| Reviewed U6 v8 patch SHA-256 | `a710843e8001c5844412af83cf25e3198425c2a2f04dbdc21e71a82bc9434125` |
-| Complete 2,778-file source manifest SHA-256 | `d4fc63f59700340efd9737f6fffed32f69bd62d3fcef84a8ac55355e0e34e642` |
-| Native benchmark SHA-256 | `7e50e9411abaf714bf1d8a5c8fc99228b2515a63ac4045001c4b95621feda5b6` |
-| Launch helper SHA-256 | `6b035d31bf8e0ff9b754c1efd534f30d5c8aa6751026d907bbb6c45cda982f69` |
-| Host / GPU / driver | `spark` (`spark-c4e2`), NVIDIA GB10, `580.178.04` |
-| SDK | `aarch64-2c4eb5b2f68f3fa5` |
+Decomposing is 1.5% slower and changes the pixels, so no row is adopted:
+the shipped table has no fusion rows. U6's two other alternative wins are
+not re-expressed: its split-modulate cell was width 8193, which no served
+model uses, and its two rope-store cells store into Q8_0 and Q4_0 caches,
+a per-alias KV mode that is off by default, at a two-row fixture; measuring
+them at a served cache geometry needs a state-binding case in the harness
+(a follow-up).
 
-The source base, dependency and slice patch identify the compiled source. The
-retained remote checkout's `61f8426f.dirty` label in its build receipt describes
-that checkout, not this compilation. All six narrow native targets and the
-focused rank, planner, execution, wrapper-launch, source-digest and generator
-checks passed before registration; independent whole and adversarial reviews
-accepted v8 after repairing the latency denominator and repeated-root proof.
+## Retired: U6's exact-site recipe rows (2026-10-26)
 
-Run only after this registration is committed. The installed Spark supervisor
-runs one exclusive job, `m35-u6-first-1024x1-v8-r1`, with a 600-second limit and
-30-second termination grace. Its command is pinned Python with bytecode disabled,
-`/tmp/u6-first-screen-v8.py --prereg-commit COMMITTED_REGISTRATION`, in
-`/home/pmeenan/src/llmp`. The helper authenticates all 2,778 source files and the
-benchmark before launching the exact `llmp_fusion_ranks 1024 1` command through
-mise; it authenticates the binary again after retirement. No build or source sync
-may change this snapshot before execution.
+U6 (commit `24849831`) installed 113 exact-site recipe rows and kept 12
+legacy exact-query fusion rows, keyed on whole-graph and region digests,
+fixture weight names, layers, offsets and the build's source-closure
+identity, and ran an exact-site comparison (a second discovery plan, then a
+replan and full relowering per fused site) on every GGML plan miss to look
+them up. No production site could match a row: every subject was a synthetic
+fixture. Commit `7c96e27b` then re-stamped all 99 new rows and the 12 legacy
+rows onto a new build without re-measuring them (new build, recipe and
+selection identities with byte-identical timings, including seven
+`whole.image.block.bf16.width256.rows17` rows whose planned region had
+changed), contradicting this report's former "never repinned" rule. Those
+rows, the comparison path, the compiler-identity launcher
+(`tools/compiler_identity.py`, `cmake/LlmpSourceClosure.cmake`) and
+`data.json` are retired; production planning plans and lowers once per step
+shape. The U6 harness found nine alternative wins among 97 latency
+decisions (six spatial-norm cells, one split-modulate cell, two quantized
+rope-store cells), all on synthetic fixture shapes; the measurements above
+re-check the ones that could reach a served model.
 
-The helper and manifest are staged at the exact paths above and
-`/tmp/u6-v8-first-screen-source-manifest.json`. The private, fresh output directory
-is `~/.local/share/llmp/m35-u6-fusion-ranks/first-1024x1-v8-r1`: `launch.json`
-retains identities, validation and process completion; `samples.jsonl` retains
-all flushed harness events; `stderr.txt` retains diagnostics. The wrapper gives
-the harness 540 seconds, signals its owned process group on cancellation or
-failure, and reaps its child with one 20-second TERM wait and at most five further seconds after
-KILL inside the supervisor's 30-second grace. Cancellation during launch waits
-for child ownership; repeated signals cannot restart cleanup. Final receipts
-retain retirement and binary-postcheck failures, and only successful completion
-sets `completed=true`. The supervisor's post-job GPU-process check remains
-required. Failed or refused evidence is retained. Review
-this first result before expanding the prospectively listed matrix or installing
-rank data. This operator screen makes no model-speed or whole-U6 coverage claim.
-
-## Repaired v11 first-screen registration
-
-**Prospective:** run only after this registration is committed and reviewed.
-No performance samples exist. The first A supervisor job failed before the
-helper because its invocation used a relative mise path and omitted the
-registered working directory. The corrected invocation authenticated all 2,778
-source files and the v8 binary, then the harness refused a zero-byte backend
-workspace during setup. No warmup, timing or correctness result was collected.
-Both failures remain in the external first-screen receipt directories.
-
-The repair uses the production `DeviceBackend` factory's full declaration,
-workspace binding and launch sequence. It obtains the actual library and selected
-persistent backing requirements. The fixture has one owner and both planner
-arms start from its own expanded IR: normal rewriting reconstructs the fused
-arm with production provenance; disabling only `rms_norm_mul` leaves its
-primitive arm. The actual final fused query must equal the reported typed
-fixture query. These are harness corrections, with the registered arithmetic,
-shape, inputs, epsilon, correctness, sampling, drift and decision bands unchanged.
-
-Before this registration, native job `u6-fusion-v11-validate` on spark-b passed
-`--validate-only 1024 1` through complete setup, eager output, capture, replay,
-comparison and teardown. Both output differences were zero; captured graphs
-contained 128 fused and 256 primitive nodes. The mode creates no timing events,
-collects no samples and emits no measurement row. Its final completion receipt
-followed teardown. Earlier v9/v10 validation refusals for missing rewrite
-provenance and joined input ports remain preserved.
-
-| Frozen execution identity | Value |
-| --- | --- |
-| Source base | `dfba7a78cd6f6a821148d3cc434ab182153ece7c` |
-| Explicit wave-J dependency patch SHA-256 | `2cfe12da558abb5c84fe2b3b4d1a0641c5edcebe739e3bd847545c093054e775` |
-| Reviewed U6 v11 patch SHA-256 | `ed7439d4e71f83698e3723a1508a5ec4f09186336c36f713b258348dc19e1756` |
-| Complete 2,778-file source manifest SHA-256 | `b01ba89bdd4689caccca6c5aa5d20e12efbc375bd9bbd567f537082148b0c978` |
-| Native benchmark SHA-256 | `6e9bcdebd527fdf2ea4dd63fe685d2254a064725704a6b2a58430e33bc4c3b46` |
-| Launch helper SHA-256 | `667bdf81939430fe247bb8f04a79775339b67b4846ab1eefd7e911573d952cda` |
-| Host / GPU | `spark-b` (`spark-56f5`), NVIDIA GB10 |
-| SDK / driver API / runtime API | `aarch64-2c4eb5b2f68f3fa5` / `13000` / `13040` |
-| Library / selected persistent backing | 33,554,432 / 21,015,040 bytes |
-
-This source snapshot retains its pre-registration protocol text. Its exact
-source chain and manifest identify the compiled source; the inherited remote
-`61f8426f.dirty` stamp does not identify this build. The production rank code
-remains the whole/adversarial-reviewed v8 implementation. All six v8 native
-targets and focused checks passed; v11 rebuilt the changed harness and passed
-its complete functional validation.
-
-Stage only the authenticated helper and manifest at
-`/tmp/u6-first-screen-v11.py` and
-`/tmp/u6-v11-first-screen-source-manifest.json`. Preserve the frozen source and
-binary. Run exactly one exclusive 600-second job with 30-second termination
-grace, using absolute installed tool paths and the registered working directory:
-
-```sh
-~/.local/bin/spark-job start --gpu --name m35-u6-first-1024x1-v11-r1 \
-  --timeout 600 --grace 30 -C /home/pmeenan/src/llmp -- \
-  /home/pmeenan/.local/bin/mise exec -- python3 -B /tmp/u6-first-screen-v11.py \
-  --prereg-commit COMMITTED_V11_REGISTRATION
-```
-
-The helper retains the reviewed v8 bounded lifecycle and source/binary
-validation, substituting only the v11 identities and fresh output path
-`~/.local/share/llmp/m35-u6-fusion-ranks/first-1024x1-v11-r1`. Keep `launch.json`,
-all `samples.jsonl` events and `stderr.txt`, including any refusal, and check
-that the completed job leaves no GPU process. Review the first result before
-expanding the already listed matrix or installing any measured rank. No model
-speed, arithmetic qualification or full-U6 completion follows from this screen.
-
-## Prospective v12 capacity amendment for the last matrix case
-
-At the time of this historical v12 capacity amendment, the reviewed v11 first
-screen and ten additional matrix cases had produced eleven valid measurements.
-The twelfth case, width 4096 and 256 rows, refused its argument guard before
-backend setup and produced no timing. That refusal and every earlier attempt
-remain preserved. No measured rank had yet been installed at that stage; the
-first eleven results were being audited separately.
-
-The v12 harness replaces its blanket factor-16 input estimate with overflow-safe
-per-input F32 bounds. Before lowering, each arm checks its actual production
-placement extent against the unchanged 32 MiB activation arena. Before binding
-or launching, it also checks the lowered activation and kernel-pool requirements
-against that arena and the unchanged 16 MiB pool. No kernel, implementation
-identity, input, arithmetic, sampling order, drift bound or decision band changes.
-The other 2,776 source-manifest entries are byte-identical to v11.
-
-Before timing, supervised shared jobs `u6-fusion-v12-build`,
-`u6-fusion-v12-validate` and `u6-fusion-v12-negative-controls` on spark-b passed.
-Full `--validate-only 4096 256` reported logical placement 8,404,992 bytes for
-both arms, actual lowered activation 8,404,992 bytes fused and 12,599,296 bytes
-primitive, and zero kernel-pool bytes. Output differences were zero, captured
-nodes 128/256 and replay equality true; completion followed teardown. No timing
-event or sample was created. Two oversized individual inputs refused before
-backend setup; a third case whose inputs fit separately refused its 67,125,248
-byte production placement before lowering. These retained controls validate
-resource refusal, not performance.
-
-| Frozen v12 execution identity | Value |
-| --- | --- |
-| Source base | `dfba7a78cd6f6a821148d3cc434ab182153ece7c` |
-| Explicit wave-J dependency patch SHA-256 | `2cfe12da558abb5c84fe2b3b4d1a0641c5edcebe739e3bd847545c093054e775` |
-| Full U6 v12 patch SHA-256 | `43373c288f15490f21e32325212f9a593775e2c09d1531324a718d3dbd94db8a` |
-| Narrow v11-to-v12 repair SHA-256 | `c67f5451dfbf786b2bda35f6379aa1f3db1cdcf80dca206c248ee751b99e5856` |
-| Complete 2,778-file source manifest SHA-256 | `acfb562360004d70ba11d80e09a0cde9dc594aee6925520587c7d89276456b98` |
-| Native benchmark SHA-256 | `ecb80b29f4df1271feaeba9ba0f950b61c5e6c6837207385370cabcca74b610b` |
-| Last-case launch helper SHA-256 | `38a2b379c9d9f99428f4c3b5b3e720120cb480b41e598699e38d9f98b54e570a` |
-| Host / GPU / SDK | `spark-b` / NVIDIA GB10 / `aarch64-2c4eb5b2f68f3fa5` |
-
-Run only after independent review and this amendment's commit. Stage the
-manifest at `/tmp/u6-v12-last-screen-source-manifest.json` and the helper at
-`/tmp/u6-last-screen-v12.py`. The helper differs from the reviewed v11 helper
-only in frozen identities, output directory and the exact last-case arguments.
-It authenticates every manifest entry before execution and the binary before
-and after retirement. The inherited remote dirty Git label is not build identity.
-
-```sh
-~/.local/bin/spark-job start --gpu --name m35-u6-matrix-4096x256-v12-r1 \
-  --timeout 600 --grace 30 -C /home/pmeenan/src/llmp -- \
-  /home/pmeenan/.local/bin/mise exec -- python3 -B /tmp/u6-last-screen-v12.py \
-  --prereg-commit COMMITTED_V12_REGISTRATION
-```
-
-The fresh output is
-`~/.local/share/llmp/m35-u6-fusion-ranks/matrix-4096x256-v12-r1`. Preserve its
-launch, flushed samples and diagnostics, including refusal or cleanup failure;
-check post-job absence of GPU processes. Existing v11 measurements are retained
-and are not rerun. This amendment authorizes only the remaining prospective
-matrix tuple; it establishes no model-speed or full-U6 conclusion.
-
-## Data and source identity
-
-`execution/fusion_ranks.h` distinguishes unmeasured, stale, neutral, fused-win
-and decomposition-win records. Its exact query identity covers all source and
-output encodings, layouts, encoding parameters, dimensions, strides, offsets,
-alignment/alias facts, operation parameters, immutable device facts and
-selection requirements. Automatic-rewrite bookkeeping is not an arithmetic
-fact. Operand ordering is canonicalized; unknown/duplicate facts do not match.
-No model name, checkpoint shape predicate or vendor name lives in execution.
-
-The first comparator contract is deliberately nonrecursive: only immediate
-own-decomposition children that are terminal, stateless single-node operations
-with distinct natural source roots qualify. Repeated source roots remain
-unmeasured: cloning them must not erase an alias relation absent from the query key. The planner constructs that chain and checks its
-current ordered selections at **final selection**, after rewrites, input
-preparation, layout changes and pruning. The fallback expansion does not rerun
-those passes. Nested fused/composite children, views/layout operations, state,
-batching anchors, implementation groups, expansion and pitched outputs remain
-unmeasured. Each selected child must also declare `standalone_comparator`: its
-backend guarantees no neighbor can fold or replace its launched work. This is
-a reusable capability contract, not a fusion or checkpoint whitelist.
-
-Initially GGML RMSNorm and Mul carry that audited contract. Lowering may wrap
-those adjacent launches in `ggml.rms_norm_mul.unfused`; its recipe still calls
-RMSNorm then Mul as two GPU launches with unchanged arithmetic. The harness
-records the logical chain and this physical bound recipe separately, checks
-the exact recipe, and requires two captured nodes per complete primitive
-chain. That recipe is included in the selection-environment identity too.
-The launch audit is `Lowering::Build`'s ordered wrapper, `CheckRmsNormThenMul`
-in `validate.cc` (exact dependency and disjoint intermediate checks), and
-`RmsNormThenMul` in `ops.cu`: it passes the original norm descriptor/epsilon,
-then the same `ShiftBinaryLeft` normalization as standalone Mul, to the same
-upstream launchers on one context/stream. This slice aligns that normalization
-for width-one tensors too; no shape exemption is used.
-Other primitive implementations and shape classes outside the registered
-ready-body matrix require their own launch-contract audit and measurement;
-they remain open and no whole-model claim follows.
-
-The selection-environment digest includes every registered implementation
-identity/capability and every ordinary device-rank record. Registry ordering is
-canonical by name, matching the candidate tie-break; priorities and eligibility
-metadata are in each identity. Query identity includes semantic policy options,
-explicit rank order and all tuning facts, including `all_rows`. It excludes
-checkpoint/spec/source-quality evidence handles. Comparison data is excluded
-from this environment to avoid a self-cycle: qualifying children are terminal,
-so changing a nested fusion's preference cannot influence their selection.
-The current ordered chain must independently match the recorded identities;
-without that proof, a query is explicitly unmeasured.
-
-Each legacy declarative JSON comparison owns the fused implementation identity and
-**every implementation in the ordered primitive chain**, measured medians,
-sample count, selection-environment digest, descriptive shape label and report provenance. Source changes
-make a comparison stale; missing evidence does not mean measured-neutral.
-Complete comparison contents participate in `RankDataDigest`, registry digest
-and the existing plan-cache identity. The registry rejects malformed, unbound
-or overlapping comparisons.
-
-The version-2 JSON envelope keeps these historical rows in `comparisons` and
-adds a separate `recipe_comparisons` table. A recipe key identifies a canonical
-subject and boundary, policy, device, independent selection environment,
-full/warm preparation contract, and both ordered actual recipes and their
-source/build identities. Evidence contains paired times, sample count, protocol,
-receipt and provenance. Every exact field must match; a well-formed stale row
-remains legal data but cannot authorize a current comparison. Discovery by
-operation is only an index. The installed table contains fourteen recipe rows:
-twelve historical Ready RMSNorm/Mul rows and the later NEOX and NormGate rows.
-Production cumulative selection retains the
-chosen actual program, preserves earlier choices and revalidates certificates
-at Bind. Token steps and ordinary stateless component ports share this
-selection path; staged image execution reaches it through the normal component
-builder. Ordinary ports supply their actual graph interface and no token or
-state facts. An optional immutable part-content identity travels in the same
-owner-bounded address tuple; missing or different identities cannot borrow a
-measurement made with a different part. Whole-workload comparison seals cannot
-stand in for local region keys.
-
-Recipe records default to latency evidence. An explicit JSON
-`disposition: "reject_incumbent_quality"` instead requires zero timings and zero
-timing samples, with the same nonzero protocol, receipt, provenance and exact
-key identities. It selects the passing own alternative only through authenticated
-whole-program adoption, ahead of a competing local timing row. Local recipe
-selectors refuse this disposition. The disposition participates in the version-2
-data digest; it grants neither numerical eligibility nor local-cut authority.
-A changed source, preparation or physical recipe misses rather than transferring
-the rejection to another case.
-
-The data has a deliberately separate identity from implementation sources:
-`tools/fusion_rank_data.py` accepts only the documented JSON fields and emits
-C++ values, never source text supplied by the data. The generator and the IR
-operation-trait schema are implementation inputs. The [compiler-owned source
-closure](SOURCE-IDENTITY.md) covers the actual transitive implementation objects
-and their compiler dependencies. `data.json` is a declared value input: its
-complete semantic contents enter the registry rank digest and invalidate cached
-plans, while measurement values stay outside implementation identity. Both
-comparison tables are excluded from independent selection identity. No runtime
-file reads are introduced.
-
-Before accepting a measurement, record the Git base, dependency patch and
-slice patch SHA-256, native build receipt, supervised job receipt, host,
-driver/toolkit, and the verified harness result in this report. Raw samples and
-logs remain in external scratch. Replace the harness's `UNREVIEWED` provenance
-with the reviewed report reference before inserting any comparison in
-`data.json`. A syntax-valid record is not evidence that its measurements ran.
+The reports below are frozen history. Their identities, receipts, data
+files and helper scripts describe the retired mechanism and are not
+re-runnable against the current tree:
+[U6 final results](U6-FINAL-RESULTS.md) and
+[registration](U6-FINAL-MATRIX-REGISTRATION.md),
+[shared-support pass](U6-SUPPORT-CLOSURE-RESULTS.md),
+[production context](U6-PRODUCTION-CONTEXT-RESULTS.md),
+[production regression registration](U6-PRODUCTION-REGRESSION-REGISTRATION.md),
+[ready matrix](READY-MATRIX-RESULTS.md),
+[first screens](READY-FIRST-SCREEN-RESULTS.md),
+[NEOX](READY-NEOX-FIRST-SCREEN-RESULTS.md) and
+[captured-event NEOX](READY-NEOX-CAPTURED-EVENTS-RESULTS.md),
+[NormGate captured events](READY-NORMGATE-CAPTURED-EVENTS-RESULTS.md) and
+[median bookends](READY-NORMGATE-MEDIAN-BOOKENDS-RESULTS.md),
+[actual GDN first screen](ACTUAL-GDN-FIRST-SCREEN-RESULTS.md),
+[W5 rerun](FRESH-W5-RESULTS.md), [original RMSNormMul results](RESULTS.md)
+with [historical data](historical-v11-v12.json), and the
+[source identity](SOURCE-IDENTITY.md) scheme.

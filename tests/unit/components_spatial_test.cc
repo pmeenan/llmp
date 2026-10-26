@@ -26,7 +26,6 @@
 #include "image_family.h"
 #include "ir/builder.h"
 #include "kernels/reference/exec.h"
-#include "planner/alternative.h"
 #include "spec/image_spatial.h"
 
 namespace llmp::components {
@@ -588,10 +587,6 @@ class ReportProbeProgram final : public kernels::StepProgram {
   std::uint64_t scratch_bytes() const override { return 16; }
   std::uint64_t pool_bytes() const override { return 64; }
   std::uint64_t private_pool_bytes() const override { return 32; }
-  std::optional<kernels::ComparisonRecipeSeal> comparison_recipe() const override {
-    return kernels::ComparisonRecipeSeal{.version = 19,
-                                         .missing = kernels::ComparisonMissing::kOperationSchema};
-  }
   std::uint64_t host_bytes() const override { return 100; }
   std::uint64_t launches() const override { return 2; }
   std::span<const kernels::InputSlot> inputs() const override { return {}; }
@@ -662,20 +657,6 @@ class ReportProbeOwner final : public kernels::BackendOwner {
   std::uintptr_t lower_plan_address = 0;
   std::string lower_failure;
   bool unstable = false;
-};
-
-class ComparisonStorageFunder final : public ir::StorageFunder {
- public:
-  bool Charge(std::uint64_t bytes) const override {
-    if (bytes > std::numeric_limits<std::uint64_t>::max() - active_) return false;
-    active_ += bytes;
-    return true;
-  }
-  void Release(std::uint64_t bytes) const override {
-    EXPECT_LE(bytes, active_);
-    active_ -= bytes;
-  }
-  mutable std::uint64_t active_ = 0;
 };
 
 TEST(SpatialComponentsTest, ExactReportFundingTransfersOrReleasesAcrossEveryFailurePath) {
@@ -755,8 +736,9 @@ TEST(SpatialComponentsTest, LowerComponentPlanUsesTheSuppliedPlanAndReportsItsId
   auto registry = execution::Registry::Create(std::move(implementations));
   ASSERT_TRUE(registry);
   auto owner = std::make_shared<ReportProbeOwner>(*registry);
-  auto storage_funder = std::make_shared<ComparisonStorageFunder>();
-  const planner::Policy policy{};
+  // The supplied plan is the decomposed one: the policy keeps the planner
+  // from rewriting the primitive norm and multiply into the fusion.
+  const planner::Policy policy{.disabled = {"rms_norm_mul"}};
   const kernels::Addresses addresses{};
   std::unique_ptr<kernels::StepProgram> lowered_program;
   std::string expected_inventory;
@@ -766,9 +748,7 @@ TEST(SpatialComponentsTest, LowerComponentPlanUsesTheSuppliedPlanAndReportsItsId
     const auto input_tensor = builder.Input(ir::Dense(format::Encoding::kF32, ir::ShapeOf({4, 1})));
     const auto weight_tensor =
         builder.Weight(ir::Dense(format::Encoding::kF32, ir::ShapeOf({4})), weight_ref);
-    const auto output_tensor =
-        builder.Fused(ir::FusedKind::kRmsNormMul, std::array{input_tensor, weight_tensor},
-                      ir::NormParams{.eps = 1e-6F})[0];
+    const auto output_tensor = builder.Mul(builder.RmsNorm(input_tensor, 1e-6F), weight_tensor);
     builder.Output(output_tensor);
     auto graph_result = std::move(builder).Finish();
     ASSERT_TRUE(graph_result);
@@ -777,51 +757,24 @@ TEST(SpatialComponentsTest, LowerComponentPlanUsesTheSuppliedPlanAndReportsItsId
                                         .ref = weight_ref,
                                         .parts = {{"weight", format::PartRole::kData}}}};
     const components::GraphBuildIO io{graph, graph.inputs(), graph.outputs(), weights};
-    const auto extent = *ir::StorageBytes(graph.tensor(input_tensor));
-    const auto weight_extent = *ir::StorageBytes(graph.tensor(weight_tensor));
-    const std::array external{
-        components::ComparisonExternalBinding{.original_root = input_tensor,
-                                              .allocation_class = 1,
-                                              .allocation_bytes = extent,
-                                              .bytes = extent,
-                                              .alignment = 64},
-        components::ComparisonExternalBinding{.original_root = weight_tensor,
-                                              .part = format::PartRole::kData,
-                                              .allocation_class = 2,
-                                              .allocation_bytes = weight_extent,
-                                              .bytes = weight_extent,
-                                              .alignment = 64}};
-    const components::ComparisonBoundaryView boundary{.io = io, .external = external};
-    planner::ComparisonSiteSelector selector;
-    selector.source_graph_identity = graph.identity();
-    selector.kind = planner::ComparisonSiteKind::kFusedNode;
-    selector.member_origins = {{graph.producer(output_tensor)}};
-    auto inventory =
-        planner::BoundComparison(boundary, selector, storage_funder, *registry, {}, policy);
-    ASSERT_TRUE(inventory) << inventory.error().detail;
-    const auto incumbent_digest = inventory->incumbent.view().graph_digest;
-    auto alternative = planner::MakeAlternative(*inventory);
-    ASSERT_TRUE(alternative) << alternative.error().detail;
-    auto planned =
-        planner::PlanAlternative(*inventory, std::move(*alternative), *registry, {}, policy);
-    ASSERT_TRUE(planned) << planned.error().detail;
-    ASSERT_NE(planned->view().graph_digest, incumbent_digest);
-    EXPECT_TRUE(std::ranges::any_of(planned->view().graph.nodes(), [](const ir::Node& node) {
+    auto planned = engine::PlanComponentGraph(io, owner->backend(), policy, addresses, {});
+    ASSERT_TRUE(planned) << Failed(planned).value_or("");
+    EXPECT_TRUE(std::ranges::any_of(planned->graph.nodes(), [](const ir::Node& node) {
       return node.key == ir::Primitive(ir::Op::kRmsNorm) || node.key == ir::Primitive(ir::Op::kMul);
     }));
-    alternative_digest = planned->view().graph_digest;
-    const auto alternative_graph_identity = planned->view().graph.identity();
-    const auto* const expected_lower_plan = &planned->view();
-    planner::StreamPlanReport(planned->view(), *registry,
+    alternative_digest = (*planned).graph_digest;
+    const auto alternative_graph_identity = (*planned).graph.identity();
+    const auto* const expected_lower_plan = &(*planned);
+    planner::StreamPlanReport((*planned), *registry,
                               [&](std::string_view part) { expected_inventory.append(part); });
-    const kernels::LowerInput input{planned->view(), io, addresses};
-    const auto* const supplied_plan = &planned->view();
+    const kernels::LowerInput input{(*planned), io, addresses};
+    const auto* const supplied_plan = &(*planned);
     unsigned validation_calls = 0;
     const kernels::ProgramValidator validator = [&](const kernels::LowerInput& actual,
                                                     const kernels::StepProgram&) {
       ++validation_calls;
       EXPECT_EQ(&actual.plan, supplied_plan);
-      EXPECT_EQ(actual.plan.graph.identity(), planned->view().graph.identity());
+      EXPECT_EQ(actual.plan.graph.identity(), (*planned).graph.identity());
       EXPECT_EQ(actual.plan.graph_digest, alternative_digest);
       return std::expected<void, std::string>{};
     };
@@ -892,7 +845,6 @@ TEST(SpatialComponentsTest, LowerComponentPlanUsesTheSuppliedPlanAndReportsItsId
   lowered_program.reset();
   EXPECT_EQ(owner->alive, 0);
   EXPECT_EQ(owner->charges, owner->releases);
-  EXPECT_EQ(storage_funder->active_, 0U);
 }
 
 TEST(SpatialComponentsTest, LowerComponentPlanMatchesTokenPortsByUniqueTensorIdentity) {
@@ -1160,11 +1112,6 @@ TEST(SpatialComponentsTest, CommonCompilerRetainsPaidPrivateSafeLogicalAndPhysic
   EXPECT_EQ((*program)->scratch_bytes(), 16U);
   EXPECT_EQ((*program)->pool_bytes(), 64U);
   EXPECT_EQ((*program)->private_pool_bytes(), 32U);
-  const auto comparison = (*program)->comparison_recipe();
-  ASSERT_TRUE(comparison);
-  EXPECT_EQ(comparison->version, 19U);
-  EXPECT_EQ(comparison->state, kernels::ComparisonProofState::kUnproved);
-  EXPECT_EQ(comparison->missing, kernels::ComparisonMissing::kOperationSchema);
   EXPECT_EQ((*program)->plan_coverage().physical_activation_bytes, 16U);
   std::string again;
   (*program)->ReportPlan([&](std::string_view record) {

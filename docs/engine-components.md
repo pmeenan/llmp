@@ -551,7 +551,21 @@ primitive ids). It is deterministic. The steps:
   the device has data for: EXL3's pinned reconstruction) and measured
   ranks for its class; a node without a candidate is replaced by its
   decomposition where it has one (the primitive-fallback rule) and the
-  plan refused otherwise.
+  plan refused otherwise. A backend's coarse fusion rows
+  (`execution::FusionRank`, the GGML backend's in `measured_ranks.h`) key a
+  fused implementation's measured speed against its own decomposition on
+  the device class, the fused operation, the implementation and its kernel
+  version (`Implementation::version`, which its author bumps), operand 0's
+  encoding and layout and inclusive bands of the query's rows and width
+  (its k). Within 10% keeps the incumbent; a fusion more than 10% slower
+  is not a candidate, so the node decomposes; one more than 10% faster
+  qualifies a fusion that `fusion_needs_measurement`. A row of another
+  kernel version decides nothing, and `fusion_ranks_test` fails on any
+  shipped row naming a missing or other-version implementation.
+  `benchmarks/fusion_ranks.cc` measures a case planned with and without
+  `disable <pattern>` ([fusion ranks](experiments/fusion-ranks/README.md)).
+  Planning never compares exact sites or relowers alternatives: one
+  ordinary plan and one lowering per step shape.
   Backend construction owns the compiled decode and EXL3 sources; runtime
   assembly does not scan policy strings to attach them. Twelve decoders over
   six templates plus two mixed GLUs expose 74 decode implementations. Physical

@@ -85,11 +85,6 @@ Status PromptBatch::Data::Close() {
   if (closed) return {};
   if (pending || unproven.active())
     return std::unexpected("private batch retains work without positive retirement");
-  for (const auto& view : views) {
-    if (!view.launch()) continue;
-    if (auto drained = view.launch()->DrainGeneratedInputs(); !drained)
-      return std::unexpected(drained.error().detail);
-  }
   closing = true;
   // Keep every plan/view/backing intact if the canonical reverse exchange
   // refuses. A copied token never evicts or reopens its request to get around it.

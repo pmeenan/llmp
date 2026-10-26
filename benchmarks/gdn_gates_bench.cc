@@ -109,11 +109,10 @@ void Run(bool validation_only) {
   std::println(
       "{{\"event\":\"identity\",\"heads\":{},\"rows\":1,\"nodes\":{},"
       "\"replays\":{},\"warmups\":{},\"samples\":{},\"device\":\"{}\","
-      "\"driver\":{},\"runtime\":{},\"selection_digest\":\"{}\","
+      "\"driver\":{},\"runtime\":{},\"registry_digest\":\"{}\","
       "\"output_sha256\":\"{}\",\"fixture_bytes\":{},\"scratch_bytes\":0}}",
       kHeads, kNodes, kReplays, kWarmups, kSamples, properties.name, driver, runtime,
-      llmp::base::ToHex(registry.SelectionDigest()), llmp::base::ToHex(hash.Finish()),
-      sizeof(initial));
+      llmp::base::ToHex(registry.Digest()), llmp::base::ToHex(hash.Finish()), sizeof(initial));
   {
     auto graph = Must(
         launch->Capture([&](kg::LaunchContext& captured) -> std::expected<void, kg::KernelFailure> {

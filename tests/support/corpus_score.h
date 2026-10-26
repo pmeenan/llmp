@@ -42,9 +42,6 @@ class CorpusProgram final : public kernels::StepProgram {
   std::uint64_t scratch_bytes() const override { return inner_->scratch_bytes(); }
   std::uint64_t pool_bytes() const override { return inner_->pool_bytes(); }
   std::uint64_t private_pool_bytes() const override { return inner_->private_pool_bytes(); }
-  std::optional<kernels::ComparisonRecipeSeal> comparison_recipe() const override {
-    return inner_->comparison_recipe();
-  }
   kernels::PlanCoverage plan_coverage() const override { return inner_->plan_coverage(); }
   std::uint64_t host_bytes() const override { return inner_->host_bytes() + sizeof(*this); }
   std::uint64_t launches() const override { return inner_->launches(); }

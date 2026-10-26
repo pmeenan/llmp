@@ -7296,6 +7296,17 @@ is not supported until it has:
 - an admission envelope;
 - performance evidence for its configuration.
 
+*Amended 2026-10-26 (M3.5 fix F6).* Measured speed rows (a backend's device
+ranks and coarse fusion rows, `execution/rank_data.h`) do not key on the
+whole identity above, which every edit to a module, preset or toolchain
+changes: they name an implementation and its kernel version
+(`Implementation::version`), which the implementation's author bumps when a
+change could move its speed, plus device class, operation, operand encodings
+and layouts and row and width bands. A row of another version is inert, and a
+unit test fails on any shipped row naming a missing or other-version
+implementation. Exact-site recipe comparison (U6) is gone from production
+planning; see [fusion ranks](experiments/fusion-ranks/README.md).
+
 **Build profiles.** A model is supported in a build profile only if every
 operation in its plan has an eligible implementation in that profile. That
 includes the copyleft-disabled profile (D-017). There is never silent

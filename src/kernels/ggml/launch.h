@@ -73,10 +73,8 @@ class WorkspacePool;
 class LaunchContext;
 
 // An instantiated graph a context captured (LaunchContext::Capture). Move
-// only. The originating LaunchContext and provider stream must both outlive
-// an instrumented graph: it borrows their handles and fault state. Ordinary
-// graph destruction uses CUDA's deferred executable cleanup; instrumented
-// destruction first establishes stream completion before freeing its events.
+// only; destroying it frees the executable graph (after a replay in flight
+// completes, as CUDA does).
 class CapturedGraph {
  public:
   CapturedGraph(CapturedGraph&& other) noexcept;
@@ -85,14 +83,11 @@ class CapturedGraph {
   CapturedGraph& operator=(const CapturedGraph&) = delete;
   ~CapturedGraph();
 
-  // The captured graph's nodes: kernels, copies, memsets and optional timing events.
+  // The captured graph's nodes: kernels, copies and memsets.
   std::size_t nodes() const { return nodes_; }
   // Host time capturing it, and instantiating and uploading it.
   double capture_seconds() const { return capture_seconds_; }
   double instantiate_seconds() const { return instantiate_seconds_; }
-  // Submission-thread only: no concurrent replay/read. Requires completion
-  // of the borrowed originating stream, including any later unrelated work.
-  std::expected<double, KernelFailure> gpu_duration_ns() const;
 
  private:
   friend class LaunchContext;
@@ -103,20 +98,6 @@ class CapturedGraph {
         nodes_(nodes),
         capture_seconds_(capture_seconds),
         instantiate_seconds_(instantiate_seconds) {}
-
-  // Timed graphs borrow their originating context and stream; the caller keeps
-  // both alive through graph destruction. Cleanup fences
-  // submitted work before destroying exec/events. Unknown completion abandons
-  // those native handles to context teardown; it never proves memory retirement.
-  void Release();
-  void* start_event_ = nullptr;
-  void* stop_event_ = nullptr;
-  void* timing_stream_ = nullptr;
-  int timing_device_ = 0;
-  bool* timing_fault_ = nullptr;
-  mutable bool submitted_ = false;
-  mutable bool launched_ = false;
-  mutable bool timing_unknown_ = false;
 
   // The capturing context's identity, never reused in the process (not
   // its address, which a later context may take).
@@ -226,9 +207,8 @@ class LaunchContext {
   // it makes cannot be captured. kUnknown, faulting the context, if the
   // stream reports a device fault or the upload fails.
   template <typename Record>
-  std::expected<CapturedGraph, KernelFailure> Capture(Record&& record,
-                                                      bool measure_gpu_duration = false) {
-    if (auto begun = BeginCapture(measure_gpu_duration); !begun) {
+  std::expected<CapturedGraph, KernelFailure> Capture(Record&& record) {
+    if (auto begun = BeginCapture(); !begun) {
       return std::unexpected(begun.error());
     }
     std::expected<void, KernelFailure> recorded = std::forward<Record>(record)(*this);
@@ -282,7 +262,7 @@ class LaunchContext {
   void* StreamOf(std::uint32_t lane) const;
 
   struct Lane;
-  std::expected<void, KernelFailure> BeginCapture(bool measure_gpu_duration);
+  std::expected<void, KernelFailure> BeginCapture();
   std::expected<CapturedGraph, KernelFailure> EndCapture(
       std::expected<void, KernelFailure> recorded);
 
@@ -304,8 +284,6 @@ class LaunchContext {
   void* stream_event_ = nullptr;  // cudaEvent_t: the stream's, for LaneWait
   bool faulted_ = false;
   bool capturing_ = false;
-  void* capture_start_event_ = nullptr;
-  void* capture_stop_event_ = nullptr;
   std::int64_t capture_started_ = 0;  // steady_clock ticks, while capturing
 };
 

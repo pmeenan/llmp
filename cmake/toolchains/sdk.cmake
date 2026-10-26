@@ -219,8 +219,8 @@ if [ -n "$link" ]; then
 fi
 exec@_llmp_compile@ "$@"
 ]=])
-  # CONFIGURE preserves unchanged bytes/mtime. CHMOD must also be idempotent:
-  # even setting the same mode changes ctime and invalidates compiler receipts.
+  # CONFIGURE preserves unchanged bytes/mtime; CHMOD only when they changed,
+  # so a reconfigure leaves the wrapper's ctime alone too.
   file(SHA256 "${CMAKE_CUDA_HOST_COMPILER}" _llmp_wrapper_hash)
   if(NOT _llmp_wrapper_hash STREQUAL _llmp_previous_wrapper_hash
      OR NOT IS_EXECUTABLE "${CMAKE_CUDA_HOST_COMPILER}")

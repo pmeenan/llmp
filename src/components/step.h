@@ -598,8 +598,8 @@ std::expected<void, std::string> CheckStateAccess(const ir::Graph& graph,
 // Checks a planned graph against the already validated original declaration.
 // Rewrites may eliminate reads (for example, a complete GDN history overwrite
 // need not read the old history), but may not introduce reads or change writes.
-// Root identity, complete state inventory and write authorization remain separate
-// requirements of the mapped comparison boundary. Never validates source facts.
+// Root identity, complete state inventory and write authorization remain the
+// caller's to check. Never validates source facts.
 std::expected<void, std::string> CheckMappedStateAccess(
     const ir::Graph& graph, std::span<const StepState> state,
     std::span<const ir::TensorId> original_to_planned);

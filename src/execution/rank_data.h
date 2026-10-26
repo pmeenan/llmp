@@ -32,70 +32,42 @@ struct DeviceMeasuredRank {
   std::uint32_t rank = 0;
   format::EncodingParams params{};
   std::uint8_t stacked = 1;
+  // The implementation's kernel version (Implementation::version) when
+  // measured; another version leaves the row inert.
+  std::uint32_t version = 1;
 };
-// Paired timings of a fused implementation and its own IR decomposition.
-// The query key is an exact operand/parameter/device identity, not a width
-// whitelist or an extrapolated interval. Implementation identities make stale
-// measurements explicitly unmeasured after code/toolchain changes.
-struct MeasuredImplementation {
-  std::string name;
-  base::Sha256Digest identity{};
-};
-struct FusionComparison {
-  std::string shape_class;  // descriptive, never a selection predicate
-  base::Sha256Digest query{};
-  base::Sha256Digest selection_environment{};
-  MeasuredImplementation fusion;
-  std::vector<MeasuredImplementation> decomposition;
+// A fused implementation measured against the planner's own decomposition of
+// the same node (benchmarks/fusion_ranks.cc: one graph planned with and
+// without `disable <pattern>`, lowered normally, both timed), as a coarse
+// class that survives unrelated code changes: the device class, the fused
+// operation, the implementation and the kernel version it was measured at
+// (Implementation::version), operand 0's encoding and layout, and inclusive
+// bands of the query's rows and width (its k: a row's elements). A row whose
+// implementation has another version is stale and decides nothing; a lookup
+// never extrapolates past its bands. Timings are medians in nanoseconds.
+struct FusionRank {
+  std::string device_class;
+  ir::OpKey op{};
+  std::string implementation;
+  std::uint32_t version = 1;
+  format::Encoding encoding = format::Encoding::kF32;
+  format::Layout layout = format::Layout::kDense;
+  std::uint64_t rows_min = 1, rows_max = ~std::uint64_t{0};
+  std::uint64_t width_min = 1, width_max = ~std::uint64_t{0};
   std::uint64_t fused_ns = 0, decomposition_ns = 0;
   std::uint32_t samples = 0;
-  std::string provenance;  // checked-in aggregate report and source receipt
+  std::string provenance;  // the checked-in aggregate report
 };
 
-enum class RecipeRunMode : std::uint8_t { kFull, kWarm };
-struct RecipeArmIdentity {
-  base::Sha256Digest planned_region{};
-  base::Sha256Digest physical_recipe{};
-  base::Sha256Digest backend_recipe{};
-  base::Sha256Digest backend_build{};
-  base::Sha256Digest backend_selection{};
-  bool operator==(const RecipeArmIdentity&) const = default;
-};
-struct RecipeComparisonKey {
-  std::uint32_t version = 1;
-  std::uint32_t region_canonicalizer = 2;
-  ir::OpKey discovery_operation{};
-  RecipeRunMode mode = RecipeRunMode::kFull;
-  base::Sha256Digest subject{};
-  base::Sha256Digest boundary{};
-  base::Sha256Digest policy{};
-  base::Sha256Digest device{};
-  base::Sha256Digest selection_environment{};
-  base::Sha256Digest preparation_domain{};
-  RecipeArmIdentity incumbent{};
-  RecipeArmIdentity alternative{};
-  bool operator==(const RecipeComparisonKey&) const = default;
-};
-enum class RecipeComparisonKind : std::uint8_t { kLatency, kRejectIncumbentQuality };
-struct RecipeComparison {
-  RecipeComparisonKey key{};
-  std::uint64_t incumbent_ns = 0;
-  std::uint64_t alternative_ns = 0;
-  std::uint32_t samples = 0;
-  base::Sha256Digest protocol{};
-  base::Sha256Digest receipt{};
-  std::string provenance;
-  std::string shape_class;
-  RecipeComparisonKind kind = RecipeComparisonKind::kLatency;
-};
 struct RankData {
   std::vector<DeviceMeasuredRank> records{};
-  std::vector<FusionComparison> fusions{};
-  std::vector<RecipeComparison> recipe_comparisons{};
+  std::vector<FusionRank> fusions{};
 };
+// `version`: the named implementation's kernel version in this build.
 std::optional<std::uint32_t> DeviceRank(const CapabilityQuery& query,
                                         std::string_view implementation,
-                                        std::span<const DeviceMeasuredRank> table);
+                                        std::span<const DeviceMeasuredRank> table,
+                                        std::uint32_t version = 1);
 base::Sha256Digest RankDataDigest(const RankData& data);
 }  // namespace llmp::execution
 #endif  // LLMP_EXECUTION_RANK_DATA_H_

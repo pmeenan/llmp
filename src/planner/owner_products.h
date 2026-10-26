@@ -21,8 +21,6 @@
 
 namespace llmp::planner {
 
-class PlannerMetadataAdmission;
-
 enum class RowBasis : std::uint8_t { kInput, kOutput };
 
 struct OwnerColumns {
@@ -93,9 +91,8 @@ struct OwnerRewritten {
 
 // The first bounded region is an ordinary dense product with <=16 physical
 // columns per owner. Unsupported regions refuse; never split rounded input.
-std::expected<OwnerRewritten, ir::VerifyError> SplitOwnerProducts(
-    const ir::Graph& graph, const OwnerProducts& proof,
-    PlannerMetadataAdmission* admission = nullptr);
+std::expected<OwnerRewritten, std::string> SplitOwnerProducts(const ir::Graph& graph,
+                                                              const OwnerProducts& proof);
 
 }  // namespace llmp::planner
 #endif  // LLMP_PLANNER_OWNER_PRODUCTS_H_

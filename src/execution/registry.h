@@ -60,11 +60,6 @@ struct BackendDeclaration {
   base::Sha256Digest recipe{};
   base::Sha256Digest build{};
   base::Sha256Digest selection{};
-  // Comparison-only execution identity. Unlike selection, this excludes
-  // measurement rows while retaining the same immutable backend facts.
-  // Backends that do not authenticate it leave it empty; callers must not
-  // substitute selection for it.
-  base::Sha256Digest comparison_selection{};
   bool operator==(const BackendDeclaration&) const = default;
 };
 
@@ -190,12 +185,6 @@ struct Capability {
   // (views, reshapes, permutes) and values the step returns or keeps then
   // read a compact copy, which the planner makes.
   bool pitched_output = false;
-  // A terminal node lowers to its own stable standalone launch recipe:
-  // no preparation, neighbor-dependent launch folding, or substitution.
-  // Wrapping unchanged consecutive launches in one host recipe is allowed.
-  // A backend certifies this property in source; it is not speed evidence.
-  // Own-decomposition comparisons require this contract for every child.
-  bool standalone_comparator = false;
 };
 
 // An output's format in a capability query: the operand at this index
@@ -306,14 +295,7 @@ struct CapabilityQuery {
   std::string_view device_class{}, device_model{};
   std::uint32_t multiprocessors = 0;
   bool automatic_fusion = false;
-  // Comparison alternatives bypass only checked fusion preference/rank data;
-  // all ordinary measured/device ranks and capability rules still apply.
-  bool fusion_comparisons = true;
   std::span<const std::string> preferred{};
-  // Planner proof of this exact node's immediate, terminal, stateless own
-  // decomposition: ordered single-node registry indices. Empty: unproved.
-  // It contains neither nested fusion choices nor rewrite/batch/group routing.
-  std::span<const std::size_t> terminal_decomposition{};
 };
 
 // One compiled implementation of an operation, as its module declares it.
@@ -332,6 +314,11 @@ struct Implementation {
   std::string build;
   // What it launches: kernels, fusion, launch configuration and tuning.
   std::string variant;
+  // Its kernel version, which its author bumps when a change to what it
+  // launches could move its measured speed: a measured rank or fusion row
+  // (rank_data.h) names the version it was measured at and is inert for any
+  // other (tests/unit/fusion_ranks_test.cc fails on such a row).
+  std::uint32_t version = 1;
   // What it computes, where its module declares it (part of its identity
   // then, all but the predicate, which the variant names).
   std::optional<Capability> capability{};
@@ -385,26 +372,7 @@ class Registry {
   const base::Sha256Digest& identity(std::size_t index) const;
   // Canonical implementation set and backend rank data, independent of declaration order.
   const base::Sha256Digest& Digest() const { return digest_; }
-  // Every implementation alternative/capability and ordinary device rank;
-  // excludes fusion comparison data to avoid a circular measurement identity.
-  const base::Sha256Digest& SelectionDigest() const { return selection_digest_; }
   const RankData& ranks() const { return ranks_; }
-  // Indexed once at construction. An unrelated operation never needs an exact
-  // query hash; matching queries expose only their own measured alternatives.
-  struct IndexedFusionComparison {
-    ir::OpKey operation;
-    const FusionComparison* comparison;
-  };
-  struct IndexedRecipeComparison {
-    ir::OpKey operation;
-    base::Sha256Digest key_digest{};
-    const RecipeComparison* comparison;
-  };
-  bool HasFusionComparisons(ir::OpKey operation) const;
-  std::span<const IndexedFusionComparison> FusionComparisons(ir::OpKey operation,
-                                                             const base::Sha256Digest& query) const;
-  bool HasRecipeComparisons(ir::OpKey operation) const;
-  const RecipeComparison* FindRecipeComparison(const RecipeComparisonKey& key) const;
   const base::Sha256Digest& RankDigest() const { return rank_digest_; }
 
  private:
@@ -413,10 +381,7 @@ class Registry {
 
   base::Sha256Digest digest_{};
   base::Sha256Digest rank_digest_{};
-  base::Sha256Digest selection_digest_{};
   RankData ranks_;
-  std::vector<IndexedFusionComparison> fusion_index_;
-  std::vector<IndexedRecipeComparison> recipe_comparison_index_;
   std::vector<Implementation> implementations_;
   std::vector<base::Sha256Digest> identities_;  // parallel to implementations_
   std::vector<std::size_t> by_name_;            // indices, sorted by name
@@ -498,9 +463,7 @@ std::optional<std::size_t> NextCandidate(const Registry& registry, const Capabil
                                          std::optional<std::size_t> after);
 bool IsCandidate(const Registry& registry, const CapabilityQuery& query, std::size_t index);
 // Whether any implementation passes the same eligibility filters as
-// Candidates(), without allocating or sorting a ranked result list. A fused
-// query with comparison rows may still allocate while constructing its
-// canonical comparison identity; primitive queries do not take that path.
+// Candidates(), without allocating or sorting a ranked result list.
 bool HasCandidate(const Registry& registry, const CapabilityQuery& query);
 
 }  // namespace llmp::execution

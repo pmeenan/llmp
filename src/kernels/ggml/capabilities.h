@@ -66,6 +66,10 @@ struct RecipeDeclaration {
 };
 std::span<const RecipeDeclaration> RecipeDeclarations();
 
+// An implementation's kernel version (execution::Implementation::version),
+// which measured rows name (measured_ranks.h): 1 unless its author bumped it.
+std::uint32_t KernelVersion(std::string_view implementation);
+
 // Structural registries for CPU planning/lowering checks. These declarations
 // include concrete helper recipes, carry their actual keys/numerical contracts,
 // and explicitly cannot bind executable kernels of any build.

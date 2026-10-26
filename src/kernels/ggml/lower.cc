@@ -55,7 +55,6 @@
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
-#include "planner/alternative.h"
 #include "planner/placement.h"
 #include "planner/plan.h"
 #include "planner/select.h"
@@ -486,7 +485,6 @@ class Lowering {
   // without it (the producer reads the whole positions input; a host mask
   // reads nothing on the device).
   bool MaskOnly(TensorId t) const;
-  std::expected<void, KernelFailure> AuthenticateUnstoredInputs() const;
 
   // The fast forms (slice G3b): a fused node llmpalooza's kernels run over
   // GGML tensors (one or several custom nodes, not the primitive nodes its
@@ -1052,43 +1050,6 @@ bool Lowering::MaskOnly(TensorId t) const {
   return !readers.empty() && std::ranges::all_of(readers, [&](NodeId r) {
     return p_.node(r).key == ir::Primitive(Op::kMaskBuild);
   });
-}
-
-std::expected<void, KernelFailure> Lowering::AuthenticateUnstoredInputs() const {
-  const auto* boundary = in_.comparison ? in_.comparison->expected_boundary : nullptr;
-  if (!boundary || boundary->unstored_inputs().empty()) return {};
-  if (!in_.token || boundary->source_identity() != g_.identity() ||
-      boundary->source_digest() != g_.Digest())
-    return Refused("typed unstored input lacks the actual token/source owner");
-  for (const auto& declaration : boundary->unstored_inputs()) {
-    const TensorId original = declaration.original_input;
-    if (declaration.reason !=
-            components::ComparisonUnstoredInputReason::kCellPositionsFoldedIntoMasks ||
-        !original.valid() || original.v >= g_.tensor_count() || g_.root(original) != original ||
-        !std::ranges::contains(g_.inputs(), original) ||
-        std::ranges::count(in_.token->step.inputs, original, &co::StepInput::tensor) != 1)
-      return Refused("typed unstored input differs from the source interface");
-    const auto input = std::ranges::find(in_.token->step.inputs, original, &co::StepInput::tensor);
-    if (input == in_.token->step.inputs.end() || input->kind != co::InputKind::kCellPositions ||
-        original.v >= in_.plan.tensors.size())
-      return Refused("typed unstored input is not the declared CellPositions token input");
-    const TensorId planned = in_.plan.tensors[original.v];
-    if (!planned.valid() || planned.v >= p_.tensor_count() ||
-        !std::ranges::contains(p_.inputs(), planned))
-      return Refused("typed unstored input is absent from the actual planned interface");
-    const NodeId producer = p_.producer(planned);
-    if (!producer.valid() || producer.v >= p_.nodes().size() ||
-        p_.node(producer).key != ir::Primitive(Op::kInput) ||
-        primitive_.at(planned.v) != original || made_.at(planned.v) != nullptr ||
-        !MaskOnly(planned))
-      return Refused("typed unstored input was not omitted solely for actual mask readers");
-    if (std::ranges::any_of(input_leaves_,
-                            [&](const auto& leaf) { return leaf.second.tensor == original; }) ||
-        std::ranges::any_of(out_.leaves,
-                            [&](const LoweredLeaf& leaf) { return leaf.primitive == original; }))
-      return Refused("typed unstored input has an actual physical leaf or input slot");
-  }
-  return {};
 }
 
 std::expected<void, KernelFailure> Lowering::Matches(const ir::TensorDesc& want,
@@ -2582,19 +2543,6 @@ std::expected<void, KernelFailure> Lowering::Bind() {
     const std::uint64_t address = save_at(s->layer, s->component, s->what, s->segment);
     if (address == 0 && !addresses.measuring()) return Refused("a verify's save has no buffer");
     TensorArena::Bind(t, address != 0 ? address : placeholder(t));
-    const auto saved = std::ranges::find(out_.saves, t, &SavedLeaf::tensor);
-    if (saved == out_.saves.end() || std::ranges::count(out_.saves, t, &SavedLeaf::tensor) != 1)
-      return Refused("a verify's save lost its retained comparison record");
-    saved->owner_range_current = false;
-    if (saved->owner_range && addresses.save_range && address != 0) {
-      const auto current = addresses.save_range(s->layer, s->component, s->what, s->segment);
-      const auto& range = *saved->owner_range;
-      const auto required = static_cast<std::uint64_t>(ggml_nbytes(t));
-      saved->owner_range_current =
-          current && *current == range && range.base == address && range.bytes >= required &&
-          range.bytes != 0 && range.alignment != 0 && std::has_single_bit(range.alignment) &&
-          address % range.alignment == 0 && range.base <= UINT64_MAX - range.bytes;
-    }
   }
   for (const auto& [t, input] : external_) {
     state_tensors_.insert(t);
@@ -3827,141 +3775,6 @@ std::expected<void, KernelFailure> Lowering::EmitSchedule() {
                                  .last = static_cast<std::uint32_t>(physical_prefix + r.last)});
   scheduled_ = true;
   out_.plan = std::move(gp);
-  if (in_.comparison_region) {
-    const auto& capture = *in_.comparison_region;
-    if (!capture.origins || !capture.final_nodes || !capture.seed ||
-        capture.seed->source_identity() != g_.identity() ||
-        capture.final_nodes->source_graph_identity != g_.identity() ||
-        capture.final_nodes->planned_graph_identity != p_.identity() ||
-        capture.final_nodes->node_origins.size() != p_.nodes().size())
-      return Refused("comparison region provenance changed during lowering");
-    LoweredStep::ComparisonOrigins relation;
-    relation.source_identity = g_.identity();
-    relation.planned_identity = p_.identity();
-    std::uint64_t total_origins = 0;
-    for (const auto set : capture.final_nodes->node_origins.values) {
-      const auto count = capture.origins->OriginCount(set);
-      if (!count ||
-          __builtin_add_overflow(total_origins, static_cast<std::uint64_t>(*count),
-                                 &total_origins) ||
-          total_origins > SIZE_MAX)
-        return Refused("comparison region origin inventory changed during lowering");
-    }
-    relation.offsets.reserve(p_.nodes().size() + 1);
-    relation.source_nodes.reserve(static_cast<std::size_t>(total_origins));
-    relation.membership.resize(g_.nodes().size());
-    relation.expansion.reserve(g_.nodes().size());
-    relation.planned_nodes.assign(p_.nodes().begin(), p_.nodes().end());
-    relation.planned_tensors.reserve(p_.tensor_count());
-    for (std::uint32_t i = 0; i < p_.tensor_count(); ++i)
-      relation.planned_tensors.push_back(p_.tensor(TensorId{i}));
-    if (in_.plan.tensors.size() != g_.tensor_count())
-      return Refused("comparison region original-to-planned map has the wrong size");
-    relation.original_to_planned = in_.plan.tensors;
-    relation.input_facts.reserve(g_.inputs().size());
-    for (const TensorId original_input : g_.inputs()) {
-      if (!original_input.valid() || original_input.v >= g_.tensor_count())
-        return Refused("comparison region source input inventory is invalid");
-      ComparisonInputFact fact{.original_tensor = original_input,
-                               .token_input = in_.token.has_value()};
-      if (in_.token) {
-        const auto at =
-            std::ranges::find(in_.token->step.inputs, original_input, &co::StepInput::tensor);
-        if (at != in_.token->step.inputs.end()) {
-          if (std::ranges::count(in_.token->step.inputs, original_input, &co::StepInput::tensor) !=
-              1)
-            return Refused("comparison region token input classification is ambiguous");
-          fact.token_kind = at->kind;
-          fact.token_segment = at->segment;
-          fact.token_component = at->component;
-          fact.token_read = at->read;
-        }
-      }
-      const auto* expected_boundary = in_.comparison ? in_.comparison->expected_boundary : nullptr;
-      if (expected_boundary) {
-        const auto declaration =
-            std::ranges::find(expected_boundary->unstored_inputs(), original_input,
-                              &components::ComparisonBoundaryUnstoredInput::original_input);
-        if (declaration != expected_boundary->unstored_inputs().end()) {
-          if (declaration->reason !=
-                  components::ComparisonUnstoredInputReason::kCellPositionsFoldedIntoMasks ||
-              !in_.token || !fact.token_kind || *fact.token_kind != co::InputKind::kCellPositions ||
-              original_input.v >= relation.original_to_planned.size())
-            return Refused("typed unstored input does not match the actual token contract");
-          const TensorId planned_input = relation.original_to_planned[original_input.v];
-          const NodeId input_producer = planned_input.valid() && planned_input.v < p_.tensor_count()
-                                            ? p_.producer(planned_input)
-                                            : NodeId{};
-          if (!planned_input.valid() || planned_input.v >= p_.tensor_count() ||
-              !std::ranges::contains(p_.inputs(), planned_input) || !input_producer.valid() ||
-              input_producer.v >= p_.nodes().size() ||
-              p_.node(input_producer).key != ir::Primitive(Op::kInput) ||
-              primitive_.at(planned_input.v) != original_input ||
-              made_.at(planned_input.v) != nullptr || !MaskOnly(planned_input) ||
-              std::ranges::any_of(
-                  input_leaves_,
-                  [&](const auto& leaf) { return leaf.second.tensor == original_input; }) ||
-              std::ranges::any_of(out_.leaves, [&](const LoweredLeaf& leaf) {
-                return leaf.primitive == original_input;
-              }))
-            return Refused("typed unstored input was not omitted solely for actual mask readers");
-          fact.unstored_reason = declaration->reason;
-          fact.unstored_verified = true;
-        }
-      }
-      relation.input_facts.push_back(fact);
-    }
-    if (in_.comparison)
-      relation.original_bindings.assign(in_.comparison->bindings.begin(),
-                                        in_.comparison->bindings.end());
-    relation.node_local.resize(p_.nodes().size());
-    relation.tensor_local.resize(p_.tensor_count());
-    relation.physical_local.resize(out_.descriptor_bound);
-    relation.lifetimes.resize(out_.descriptor_bound);
-    const auto value_port_capacity = ComparisonRegionEdgeOccurrenceCapacity(g_.nodes());
-    const auto access_capacity = ComparisonRegionAccessCapacity(p_.nodes());
-    if (!value_port_capacity || !access_capacity || *value_port_capacity > SIZE_MAX ||
-        *access_capacity > SIZE_MAX)
-      return Refused("comparison region value-port inventory overflows");
-    relation.value_ports.reserve(static_cast<std::size_t>(*value_port_capacity));
-    relation.accesses.reserve(static_cast<std::size_t>(*access_capacity));
-    for (const auto& seed_node : capture.seed->nodes()) {
-      const auto source = seed_node.original_node;
-      if (!source.valid() || source.v >= relation.membership.size() ||
-          relation.membership[source.v] != 0)
-        return Refused("comparison region seed has invalid or repeated source membership");
-      relation.membership[source.v] = 1;
-    }
-    relation.offsets.push_back(0);
-    for (const auto set : capture.final_nodes->node_origins.values) {
-      const auto count = capture.origins->OriginCount(set);
-      if (!count || *count > SIZE_MAX - relation.source_nodes.size())
-        return Refused("comparison region contains an invalid final origin set");
-      const auto old_size = relation.source_nodes.size();
-      relation.source_nodes.resize(old_size + *count);
-      std::size_t written = 0;
-      if (!capture.origins->CopyOrigins(
-              set, std::span<ir::NodeId>(relation.source_nodes).subspan(old_size, *count),
-              written) ||
-          written != *count)
-        return Refused("comparison region could not copy a complete final origin set");
-      for (std::size_t i = old_size; i < relation.source_nodes.size(); ++i) {
-        const auto node = relation.source_nodes[i];
-        if (!node.valid() || node.v >= g_.nodes().size())
-          return Refused("comparison region origin is outside its authenticated source graph");
-      }
-      relation.offsets.push_back(static_cast<std::uint64_t>(relation.source_nodes.size()));
-    }
-    out_.comparison_origins.emplace(std::move(relation));
-  } else if (in_.comparison && in_.comparison->scope == ComparisonProofScope::kWholeProgramNative &&
-             !out_.selected.empty()) {
-    LoweredStep::SelectedComparisonGraph facts;
-    facts.planned_nodes.assign(p_.nodes().begin(), p_.nodes().end());
-    facts.planned_tensors.reserve(p_.tensor_count());
-    for (std::uint32_t i = 0; i < p_.tensor_count(); ++i)
-      facts.planned_tensors.push_back(p_.tensor(TensorId{i}));
-    out_.comparison_selected_graph.emplace(std::move(facts));
-  }
   return {};
 }
 
@@ -5334,21 +5147,13 @@ std::expected<void, KernelFailure> Lowering::MakeSaves() {
     out_.nodes.push_back(store);
     extra_.insert(store);
     out_.keep.push_back(store);
-    out_.saves.push_back(
-        {.tensor = buffer,
-         .source = planned,
-         .rows = rows_input,
-         .original_source = s.tensor,
-         .original_rows = s.rows,
-         .store = store,
-         .packed = packed,
-         .owner_range = in_.addresses.save_range
-                            ? in_.addresses.save_range(s.layer, s.component, s.what, s.segment)
-                            : std::nullopt,
-         .layer = s.layer,
-         .component = s.component,
-         .what = s.what,
-         .segment = s.segment});
+    out_.saves.push_back({.tensor = buffer,
+                          .source = planned,
+                          .packed = packed,
+                          .layer = s.layer,
+                          .component = s.component,
+                          .what = s.what,
+                          .segment = s.segment});
   }
   return {};
 }
@@ -5658,9 +5463,6 @@ std::expected<void, KernelFailure> Lowering::MakeRouting() {
 std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   auto inventory = LowerConstructionOf(in_);
   if (!inventory) return std::unexpected(inventory.error());
-  // Schedule() builds the paid comparison-origin lookup tables against this
-  // descriptor bound, before the finalized arena descriptor table is emitted.
-  out_.descriptor_bound = inventory->descriptors;
   if (!std::ranges::equal(in_.io.inputs, g_.inputs()) ||
       !std::ranges::equal(in_.io.outputs, g_.outputs()))
     return Refused("lowering needs the graph's exact typed ports");
@@ -5894,8 +5696,6 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   out_.extent = save_aux_extent_;
   if (auto routed = MakeRouting(); !routed) return std::unexpected(routed.error());
   if (auto slots = Slots(); !slots) return std::unexpected(slots.error());
-  if (auto unstored = AuthenticateUnstoredInputs(); !unstored)
-    return std::unexpected(unstored.error());
   // Count the actual finalized arena, including leaves and auxiliary views.
   // The source's descriptor inventory prepays this exact typed table; its
   // retained capacity is included in program HostBytes and transfers with it.
@@ -6075,34 +5875,6 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
          .nb = {save.packed->nb[0], save.packed->nb[1], save.packed->nb[2], save.packed->nb[3]},
          .encoding = Encoding::kF32});
   }
-  if (in_.comparison && in_.comparison->scope == ComparisonProofScope::kWholeProgramNative) {
-    // CheckQsaInputs and Needed ran before materialization. Retain only exact
-    // source Input roots omitted by that existing backend dependency closure;
-    // unmatched bindings by themselves never authorize this exception.
-    out_.comparison_omitted_inputs.reserve(g_.inputs().size());
-    for (const TensorId original : g_.inputs()) {
-      if (!original.valid() || original.v >= in_.plan.tensors.size())
-        return Refused("whole input omission has no original-to-planned mapping");
-      const TensorId planned = in_.plan.tensors[original.v];
-      if (!planned.valid() || planned.v >= p_.tensor_count()) continue;
-      const NodeId producer = p_.producer(planned);
-      if (!producer.valid() || producer.v >= needed_.size() || needed_[producer.v]) continue;
-      if (g_.root(original) != original || p_.root(planned) != planned ||
-          g_.tensor(original).role != ir::Role::kInput ||
-          p_.tensor(planned).role != ir::Role::kInput ||
-          g_.node(g_.producer(original)).key != ir::Primitive(Op::kInput) ||
-          p_.node(producer).key != ir::Primitive(Op::kInput) ||
-          !std::ranges::contains(p_.inputs(), planned) || primitive_.at(planned.v) != original ||
-          made_.at(planned.v) != nullptr ||
-          std::ranges::any_of(input_leaves_,
-                              [&](const auto& leaf) { return leaf.second.tensor == original; }))
-        return Refused("whole input omission differs from its actual source/input identity");
-      out_.comparison_omitted_inputs.push_back({original, planned, producer});
-      if (!CheckComparisonOmittedInput(out_, original))
-        return Refused("whole input omission has a materialized native descriptor or slot");
-    }
-  }
-  out_.whole_checkpoint_only = in_.plan.whole_checkpoint.whole_only();
   out_.measuring = in_.addresses.measuring();
   return std::move(out_);
 }
@@ -6348,27 +6120,6 @@ std::uint64_t WrittenBytes(const ir::Graph& graph, ir::TensorId root) {
   const std::int64_t bytes =
       Q8Bytes(static_cast<std::int64_t>(t.ne(0)), static_cast<std::int64_t>(t.ne(1) * t.ne(2)));
   return bytes > 0 ? static_cast<std::uint64_t>(bytes) : 0;
-}
-
-bool CheckComparisonOmittedInput(const LoweredStep& lowered, ir::TensorId original) {
-  const auto& facts = lowered.comparison_omitted_inputs;
-  const auto fact = std::ranges::find(facts, original, &ComparisonOmittedInput::original);
-  if (!original.valid() || fact == facts.end() || !fact->planned.valid() ||
-      !fact->producer.valid() ||
-      std::ranges::count(facts, original, &ComparisonOmittedInput::original) != 1 ||
-      std::ranges::count(facts, fact->planned, &ComparisonOmittedInput::planned) != 1 ||
-      std::ranges::count(facts, fact->producer, &ComparisonOmittedInput::producer) != 1)
-    return false;
-  return !std::ranges::any_of(
-             lowered.leaves, [&](const LoweredLeaf& leaf) { return leaf.primitive == original; }) &&
-         !std::ranges::contains(lowered.inputs, original, &InputSlot::tensor) &&
-         !std::ranges::any_of(lowered.physical_tensors,
-                              [&](const PhysicalTensor& tensor) {
-                                return tensor.tensor == fact->planned ||
-                                       tensor.root == fact->planned ||
-                                       tensor.producer == fact->producer;
-                              }) &&
-         !std::ranges::contains(lowered.physical_roots, fact->planned, &PhysicalRoot::root);
 }
 
 const PhysicalTensor* PhysicalTensorOf(const LoweredStep& step, const ggml_tensor* tensor) {
@@ -6692,22 +6443,6 @@ std::expected<LowerConstructionInventory, KernelFailure> LowerConstructionOf(
       original.nodes().size() > UINT32_MAX || input.plan.tensors.size() > original.tensor_count() ||
       input.plan.from.size() > planned.nodes().size())
     return Refused("native construction ID width or pointer ABI exceeds its inventory");
-  std::uint64_t region_origins = 0;
-  if (input.comparison_region) {
-    const auto& capture = *input.comparison_region;
-    if (!capture.seed || !capture.origins || !capture.final_nodes ||
-        capture.seed->source_identity() != original.identity() ||
-        capture.final_nodes->source_graph_identity != original.identity() ||
-        capture.final_nodes->planned_graph_identity != planned.identity() ||
-        capture.final_nodes->node_origins.size() != planned.nodes().size())
-      return Refused("comparison region provenance is missing or belongs to another graph");
-    for (const auto set : capture.final_nodes->node_origins.values) {
-      const auto count = capture.origins->OriginCount(set);
-      if (!count || __builtin_add_overflow(region_origins, static_cast<std::uint64_t>(*count),
-                                           &region_origins))
-        return Refused("comparison region origin relation is invalid or too large");
-    }
-  }
   std::uint64_t descriptors = planned.tensor_count();
   const auto add = [&](std::uint64_t n) {
     return !__builtin_add_overflow(descriptors, n, &descriptors);
@@ -6762,7 +6497,7 @@ std::expected<LowerConstructionInventory, KernelFailure> LowerConstructionOf(
   if (descriptors > UINT32_MAX || descriptors > SIZE_MAX || overhead == 0 || overhead > 512 ||
       __builtin_mul_overflow(static_cast<std::size_t>(descriptors), overhead, &arena_bytes))
     return Refused("native arena descriptor count, ABI or byte inventory overflows");
-  std::uint64_t bytes = 0, roots = 0, comparison_bytes = 0;
+  std::uint64_t bytes = 0, roots = 0;
   std::uint64_t physical_root_bound = planned.tensor_count();
   if (input.token &&
       __builtin_add_overflow(physical_root_bound,
@@ -6770,10 +6505,7 @@ std::expected<LowerConstructionInventory, KernelFailure> LowerConstructionOf(
                              &physical_root_bound))
     return Refused("physical-root inventory overflows");
   if (__builtin_mul_overflow(descriptors,
-                             std::uint64_t{512 + 1024 + 32 + 2 * sizeof(PhysicalTensor) +
-                                           2 * sizeof(std::optional<ComparisonExpertSlab>) +
-                                           2 * sizeof(std::optional<ComparisonStagedInput>)},
-                             &bytes) ||
+                             std::uint64_t{512 + 1024 + 32 + 2 * sizeof(PhysicalTensor)}, &bytes) ||
       __builtin_mul_overflow(physical_root_bound, std::uint64_t{2 * sizeof(PhysicalRoot)},
                              &roots) ||
       __builtin_add_overflow(bytes, roots, &bytes) ||
@@ -6794,147 +6526,8 @@ std::expected<LowerConstructionInventory, KernelFailure> LowerConstructionOf(
         return Refused("saved-leaf name inventory overflows");
     }
   }
-  if (input.comparison) {
-    const auto ranges = static_cast<std::uint64_t>(input.comparison->bindings.size());
-    const auto boundary_roots = static_cast<std::uint64_t>(input.io.graph.tensor_count());
-    const auto external_record_bytes =
-        static_cast<std::uint64_t>(sizeof(components::ComparisonExternalBinding));
-    constexpr std::uint64_t kCanonicalRootScratch =
-        sizeof(std::pair<const std::uint32_t, std::uint32_t>) + 8 * sizeof(void*);
-    std::uint64_t canonical_scratch = 0;
-    if (__builtin_mul_overflow(ranges, static_cast<std::uint64_t>(sizeof(ComparisonBindingRange)),
-                               &comparison_bytes) ||
-        __builtin_mul_overflow(ranges, external_record_bytes, &canonical_scratch) ||
-        __builtin_add_overflow(comparison_bytes, canonical_scratch, &comparison_bytes) ||
-        __builtin_mul_overflow(boundary_roots, kCanonicalRootScratch, &canonical_scratch) ||
-        __builtin_add_overflow(comparison_bytes, canonical_scratch, &comparison_bytes) ||
-        __builtin_add_overflow(comparison_bytes,
-                               static_cast<std::uint64_t>(sizeof(ComparisonRecipeSeal) + 2 * 64),
-                               &comparison_bytes) ||
-        __builtin_add_overflow(bytes, comparison_bytes, &bytes))
-      return Refused("comparison proof storage inventory overflows");
-  }
-  if (input.comparison && input.comparison->scope == ComparisonProofScope::kWholeProgramNative) {
-    std::uint64_t omitted_bytes = 0;
-    if (__builtin_mul_overflow(static_cast<std::uint64_t>(original.inputs().size()),
-                               std::uint64_t{sizeof(ComparisonOmittedInput)}, &omitted_bytes) ||
-        __builtin_add_overflow(omitted_bytes,
-                               std::uint64_t{2 * sizeof(void*) + alignof(std::max_align_t)},
-                               &omitted_bytes) ||
-        __builtin_add_overflow(comparison_bytes, omitted_bytes, &comparison_bytes) ||
-        __builtin_add_overflow(bytes, omitted_bytes, &bytes))
-      return Refused("whole input omission inventory overflows");
-  }
-  if (input.comparison_region) {
-    constexpr std::uint64_t kVectorEnvelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-    const auto planned_nodes = static_cast<std::uint64_t>(planned.nodes().size());
-    const auto source_nodes = static_cast<std::uint64_t>(original.nodes().size());
-    std::uint64_t offsets = 0, flattened = 0, membership = 0, expansion = 0;
-    std::uint64_t planned_node_facts = 0, planned_tensor_facts = 0, tensor_map = 0;
-    std::uint64_t original_bindings = 0, input_facts = 0;
-    std::uint64_t node_local = 0, tensor_local = 0, physical_local = 0;
-    std::uint64_t value_ports = 0, accesses = 0, lifetimes = 0;
-    const auto value_port_capacity = ComparisonRegionEdgeOccurrenceCapacity(original.nodes());
-    const auto access_capacity = ComparisonRegionAccessCapacity(planned.nodes());
-    std::uint64_t region_bytes = sizeof(LoweredStep::ComparisonOrigins);
-    if (!value_port_capacity || !access_capacity ||
-        __builtin_add_overflow(planned_nodes, std::uint64_t{1}, &offsets) ||
-        __builtin_mul_overflow(offsets, std::uint64_t{sizeof(std::uint64_t)}, &offsets) ||
-        __builtin_mul_overflow(region_origins, std::uint64_t{sizeof(ir::NodeId)}, &flattened) ||
-        __builtin_mul_overflow(source_nodes, std::uint64_t{sizeof(std::uint8_t)}, &membership) ||
-        __builtin_mul_overflow(source_nodes, std::uint64_t{sizeof(ir::NodeId)}, &expansion) ||
-        __builtin_mul_overflow(planned_nodes, std::uint64_t{sizeof(ir::Node)},
-                               &planned_node_facts) ||
-        __builtin_mul_overflow(static_cast<std::uint64_t>(planned.tensor_count()),
-                               std::uint64_t{sizeof(ir::TensorDesc)}, &planned_tensor_facts) ||
-        __builtin_mul_overflow(static_cast<std::uint64_t>(original.tensor_count()),
-                               std::uint64_t{sizeof(ir::TensorId)}, &tensor_map) ||
-        __builtin_mul_overflow(
-            static_cast<std::uint64_t>(input.comparison ? input.comparison->bindings.size() : 0),
-            std::uint64_t{sizeof(ComparisonBindingRange)}, &original_bindings) ||
-        __builtin_mul_overflow(static_cast<std::uint64_t>(original.inputs().size()),
-                               std::uint64_t{sizeof(ComparisonInputFact)}, &input_facts) ||
-        __builtin_mul_overflow(planned_nodes, std::uint64_t{sizeof(std::uint32_t)}, &node_local) ||
-        __builtin_mul_overflow(static_cast<std::uint64_t>(planned.tensor_count()),
-                               std::uint64_t{sizeof(std::uint32_t)}, &tensor_local) ||
-        __builtin_mul_overflow(descriptors, std::uint64_t{sizeof(std::uint32_t)},
-                               &physical_local) ||
-        __builtin_mul_overflow(*value_port_capacity,
-                               std::uint64_t{sizeof(kernels::ComparisonRegionValuePort)},
-                               &value_ports) ||
-        __builtin_mul_overflow(*access_capacity, std::uint64_t{sizeof(ComparisonRegionAccessFact)},
-                               &accesses) ||
-        __builtin_mul_overflow(descriptors, std::uint64_t{sizeof(ComparisonLifetimeFact)},
-                               &lifetimes) ||
-        __builtin_add_overflow(region_bytes, offsets, &region_bytes) ||
-        __builtin_add_overflow(region_bytes, flattened, &region_bytes) ||
-        __builtin_add_overflow(region_bytes, membership, &region_bytes) ||
-        __builtin_add_overflow(region_bytes, expansion, &region_bytes) ||
-        __builtin_add_overflow(region_bytes, planned_node_facts, &region_bytes) ||
-        __builtin_add_overflow(region_bytes, planned_tensor_facts, &region_bytes) ||
-        __builtin_add_overflow(region_bytes, tensor_map, &region_bytes) ||
-        __builtin_add_overflow(region_bytes, original_bindings, &region_bytes) ||
-        __builtin_add_overflow(region_bytes, input_facts, &region_bytes) ||
-        __builtin_add_overflow(region_bytes, node_local, &region_bytes) ||
-        __builtin_add_overflow(region_bytes, tensor_local, &region_bytes) ||
-        __builtin_add_overflow(region_bytes, physical_local, &region_bytes) ||
-        __builtin_add_overflow(region_bytes, value_ports, &region_bytes) ||
-        __builtin_add_overflow(region_bytes, accesses, &region_bytes) ||
-        __builtin_add_overflow(region_bytes, lifetimes, &region_bytes) ||
-        __builtin_add_overflow(region_bytes, std::uint64_t{15 * kVectorEnvelope}, &region_bytes) ||
-        __builtin_add_overflow(comparison_bytes, region_bytes, &comparison_bytes) ||
-        __builtin_add_overflow(bytes, region_bytes, &bytes))
-      return Refused("comparison region provenance storage inventory overflows");
-  }
-  if (input.comparison && input.comparison->scope == ComparisonProofScope::kWholeProgramNative &&
-      !input.comparison_region) {
-    // The selected source is resolved later. Prepay the maximum two typed
-    // vectors; non-selected whole programs simply leave this allowance unused.
-    constexpr std::uint64_t kVectorEnvelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-    std::uint64_t nodes = 0, tensors = 0;
-    std::uint64_t selected_bytes =
-        sizeof(LoweredStep::SelectedComparisonGraph) + 2 * kVectorEnvelope;
-    if (__builtin_mul_overflow(static_cast<std::uint64_t>(planned.nodes().size()),
-                               std::uint64_t{sizeof(ir::Node)}, &nodes) ||
-        __builtin_mul_overflow(static_cast<std::uint64_t>(planned.tensor_count()),
-                               std::uint64_t{sizeof(ir::TensorDesc)}, &tensors) ||
-        __builtin_add_overflow(selected_bytes, nodes, &selected_bytes) ||
-        __builtin_add_overflow(selected_bytes, tensors, &selected_bytes) ||
-        __builtin_add_overflow(comparison_bytes, selected_bytes, &comparison_bytes) ||
-        __builtin_add_overflow(bytes, selected_bytes, &bytes))
-      return Refused("selected whole graph inventory overflows");
-  }
   return LowerConstructionInventory{.descriptors = static_cast<std::size_t>(descriptors),
-                                    .bytes = bytes,
-                                    .comparison_bytes = comparison_bytes};
-}
-
-std::optional<std::uint64_t> ComparisonRegionEdgeOccurrenceCapacity(
-    std::span<const ir::Node> source_nodes) noexcept {
-  std::uint64_t occurrences = 0;
-  for (const auto& node : source_nodes) {
-    if (node.nsrc > node.src.size() || node.nout > node.out.size()) return {};
-    const auto count = static_cast<std::uint64_t>(node.nsrc) + node.nout;
-    if (__builtin_add_overflow(occurrences, count, &occurrences)) return {};
-  }
-  return occurrences;
-}
-
-std::optional<std::uint64_t> ComparisonRegionAccessCapacity(
-    std::span<const ir::Node> planned_nodes) noexcept {
-  auto accesses = ComparisonRegionEdgeOccurrenceCapacity(planned_nodes);
-  if (!accesses) return {};
-  std::uint64_t ordinary_mmvq_scratch_pairs = 0;
-  for (const auto& node : planned_nodes) {
-    if (node.key.op != ir::Op::kMatMul) continue;
-    // The actual ordinary MMVQ recipe has a private quantizer write followed
-    // by a private packed-input read, in addition to the IR access edges.
-    if (__builtin_add_overflow(ordinary_mmvq_scratch_pairs, std::uint64_t{2},
-                               &ordinary_mmvq_scratch_pairs))
-      return {};
-  }
-  if (__builtin_add_overflow(*accesses, ordinary_mmvq_scratch_pairs, &*accesses)) return {};
-  return accesses;
+                                    .bytes = bytes};
 }
 
 std::expected<void, KernelFailure> CheckIrIndexBounds(const ir::Graph& graph) {
@@ -6971,10 +6564,6 @@ std::expected<LoweredStep, KernelFailure> LowerStep(const LowerInput& input,
                                                     const execution::Registry& registry,
                                                     const DeviceChoices& device,
                                                     const LowerOptions& options) {
-  if (input.plan.whole_checkpoint.whole_only() &&
-      (!input.plan.whole_checkpoint.source_matches(input.io.graph.identity()) ||
-       !input.comparison || input.comparison->scope != ComparisonProofScope::kWholeProgramNative))
-    return Refused("checkpoint-only comparison requires native whole-program proof");
   // The original graph preserves primitive stride requirements that a fusion
   // hides; the planned graph also authenticates any generated descriptors.
   if (auto bounds = CheckIrIndexBounds(input.io.graph); !bounds)

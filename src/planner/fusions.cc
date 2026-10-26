@@ -3,9 +3,6 @@
 
 #include "planner/fusions.h"
 
-#include <bits/shared_ptr_base.h>
-#include <bits/stl_tree.h>
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -29,7 +26,6 @@
 #include "ir/decompose.h"
 #include "ir/graph.h"
 #include "ir/op.h"
-#include "planner/alternative.h"
 #include "planner/pattern.h"
 #include "planner/select.h"
 #include "planner/step_shape.h"
@@ -129,54 +125,6 @@ bool Has(const MatchContext& c, ir::OpKey key, std::span<const ir::TensorDesc* c
   return c.view().HasCandidate(key, sources, outputs, params, state_span);
 }
 
-constexpr std::uint64_t kMatcherVectorEnvelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-
-bool FundDefinitionBuilder(const MatchContext& c, ir::Builder& builder) {
-  if (c.metadata_admission() != nullptr && c.metadata_admission()->refused()) return false;
-  builder.SetDiagnosticAdmission(c.metadata_admission());
-  if (auto funder = c.graph().storage_funder();
-      funder && !builder.SetStorageFunder(std::move(funder))) {
-    c.RefuseMatchTrial();
-    return false;
-  }
-  return builder.ok();
-}
-
-bool FundTensorMap(const MatchContext& c, std::size_t count, ir::StorageLoan& loan) {
-  if (c.metadata_admission() != nullptr && c.metadata_admission()->refused()) return false;
-  const auto funder = c.graph().storage_funder();
-  if (!funder) return true;
-  if (count >
-      (std::numeric_limits<std::uint64_t>::max() - kMatcherVectorEnvelope) / sizeof(TensorId)) {
-    c.RefuseMatchTrial();
-    return false;
-  }
-  auto paid = ir::AcquireStorageLoan(
-      funder, static_cast<std::uint64_t>(count) * sizeof(TensorId) + kMatcherVectorEnvelope);
-  if (!paid) {
-    c.RefuseMatchTrial();
-    return false;
-  }
-  loan = std::move(*paid);
-  return true;
-}
-
-bool PropagateDefinitionAdmission(const MatchContext& c, const ir::Builder& builder) {
-  if (builder.error() && builder.error()->error == ir::GraphError::kAdmission) {
-    c.RefuseMatchTrial();
-    return true;
-  }
-  return false;
-}
-
-bool PropagateDefinitionAdmission(const MatchContext& c, const ir::VerifyError& error) {
-  if (error.error == ir::GraphError::kAdmission) {
-    c.RefuseMatchTrial();
-    return true;
-  }
-  return false;
-}
-
 // The sources' descriptions (absent ones null). A node/query has at most
 // kMaxSources entries, so keep this transient on the matcher stack.
 struct DescPointers {
@@ -215,10 +163,6 @@ struct Emissions final : MatchDetail {
   std::vector<int> at;
   std::function<void(RewriteContext&, int)> emit;
 };
-using EmissionsSharedControl =
-    std::_Sp_counted_ptr_inplace<Emissions, std::allocator<void>, std::_S_atomic>;
-static_assert(sizeof(EmissionsSharedControl) >=
-              sizeof(Emissions) + sizeof(std::_Sp_counted_base<std::_S_atomic>));
 
 // A match under construction: its nodes, and where it emits.
 class Building {
@@ -230,7 +174,6 @@ class Building {
       return false;
     }
     if (!std::ranges::contains(nodes_, n)) {
-      if (!EnsurePushCapacity(nodes_)) return false;
       nodes_.push_back(n);
     }
     return true;
@@ -259,7 +202,6 @@ class Building {
       if (!Add(leaf)) {
         return false;
       }
-      if (!EnsurePushCapacity(pulled_)) return false;
       pulled_.push_back(leaf);
     }
     return true;
@@ -315,28 +257,26 @@ class Building {
   // The match: `emit` at the places `places` give (node, emission).
   template <class Emit>
   std::optional<Match> Finish(std::initializer_list<std::pair<NodeId, int>> places, Emit&& emit,
-                              std::span<const TensorId> sources = {}, std::size_t local_slots = 0) {
+                              std::span<const TensorId> sources = {}) {
     return Finish(std::span<const std::pair<NodeId, int>>(places.begin(), places.size()),
-                  std::forward<Emit>(emit), sources, local_slots);
+                  std::forward<Emit>(emit), sources);
   }
   template <class Emit>
   std::optional<Match> Finish(std::initializer_list<std::pair<NodeId, int>> places, Emit&& emit,
-                              std::initializer_list<TensorId> sources,
-                              std::size_t local_slots = 0) {
+                              std::initializer_list<TensorId> sources) {
     return Finish(std::span<const std::pair<NodeId, int>>(places.begin(), places.size()),
                   std::forward<Emit>(emit),
-                  std::span<const TensorId>(sources.begin(), sources.size()), local_slots);
+                  std::span<const TensorId>(sources.begin(), sources.size()));
   }
   template <class Emit>
   std::optional<Match> Finish(std::span<const std::pair<NodeId, int>> places, Emit&& emit,
-                              std::initializer_list<TensorId> sources,
-                              std::size_t local_slots = 0) {
+                              std::initializer_list<TensorId> sources) {
     return Finish(places, std::forward<Emit>(emit),
-                  std::span<const TensorId>(sources.begin(), sources.size()), local_slots);
+                  std::span<const TensorId>(sources.begin(), sources.size()));
   }
   template <class Emit>
   std::optional<Match> Finish(std::span<const std::pair<NodeId, int>> places, Emit&& emit,
-                              std::span<const TensorId> sources = {}, std::size_t local_slots = 0) {
+                              std::span<const TensorId> sources = {}) {
     // These compound substitutions have no transfer proof for an already
     // constrained product recipe. Keep its explicit preparation/product chain;
     // neither another fusion nor a different decomposition may erase the seal.
@@ -352,33 +292,6 @@ class Building {
     // patterns' order check. Conservatively reject an intervening access
     // that could change a cached read or observe a moved write.
     const ir::Graph& g = c_.graph();
-    std::uint64_t read_write_scratch_bytes = 0;
-    if (c_.metadata_admission() != nullptr) {
-      std::uint64_t reads = 0;
-      std::uint64_t writes = 0;
-      for (const NodeId id : nodes_) {
-        const auto& node = c_.node(id);
-        for (const TensorId source : node.sources())
-          if (source.valid()) ++reads;
-        ir::ForEachWrite(g, node, [&](TensorId) { ++writes; });
-      }
-      constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-      const std::uint64_t tree_node_bytes = sizeof(std::_Rb_tree_node<TensorId>) + envelope;
-      const auto tree_bytes = [&](std::uint64_t count) {
-        if (count > std::numeric_limits<std::uint64_t>::max() / tree_node_bytes)
-          return std::optional<std::uint64_t>{};
-        return std::optional<std::uint64_t>{count * tree_node_bytes};
-      };
-      const auto read_bytes = tree_bytes(reads);
-      const auto write_bytes = tree_bytes(writes);
-      if (!read_bytes || !write_bytes ||
-          *read_bytes > std::numeric_limits<std::uint64_t>::max() - *write_bytes) {
-        c_.RefuseMatchTrial();
-        return std::nullopt;
-      }
-      if (!c_.ChargeMatchTrial(*read_bytes + *write_bytes)) return std::nullopt;
-      read_write_scratch_bytes = *read_bytes + *write_bytes;
-    }
     std::set<TensorId> reads, writes;
     const auto written = [&](const ir::Node& n, auto&& f) { ir::ForEachWrite(g, n, f); };
     for (const NodeId id : nodes_) {
@@ -398,33 +311,6 @@ class Building {
       }
       if (hazard) return std::nullopt;
     }
-    constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-    const std::uint64_t at_count = nodes_.size();
-    if (at_count > (std::numeric_limits<std::uint64_t>::max() - envelope) / sizeof(int)) {
-      c_.RefuseMatchTrial();
-      return std::nullopt;
-    }
-    const std::uint64_t at_bytes = at_count * sizeof(int) + (at_count == 0 ? 0 : envelope);
-    const std::uint64_t callable_bytes = sizeof(std::remove_cvref_t<Emit>) + envelope;
-    if (sources.size() >
-        (std::numeric_limits<std::uint64_t>::max() - envelope) / sizeof(TensorId)) {
-      c_.RefuseMatchTrial();
-      return std::nullopt;
-    }
-    const std::uint64_t sources_bytes =
-        sources.size() * sizeof(TensorId) + (sources.empty() ? 0 : envelope);
-    if (at_bytes > std::numeric_limits<std::uint64_t>::max() - envelope ||
-        callable_bytes > std::numeric_limits<std::uint64_t>::max() - at_bytes - envelope ||
-        sizeof(EmissionsSharedControl) >
-            std::numeric_limits<std::uint64_t>::max() - at_bytes - callable_bytes - envelope ||
-        sources_bytes > std::numeric_limits<std::uint64_t>::max() - at_bytes - callable_bytes -
-                            sizeof(EmissionsSharedControl) - 2 * envelope) {
-      c_.RefuseMatchTrial();
-      return std::nullopt;
-    }
-    if (!c_.ChargeMatchTrial(at_bytes + callable_bytes + sizeof(EmissionsSharedControl) + envelope +
-                             sources_bytes))
-      return std::nullopt;
     auto detail = std::make_shared<Emissions>();
     detail->at.assign(nodes_.size(), -1);
     for (const auto& [node, id] : places) {
@@ -434,57 +320,12 @@ class Building {
     static_assert(!std::is_lvalue_reference_v<Emit>, "Finish consumes its callable");
     detail->emit = std::move(emit);
     std::vector<TensorId> owned_sources(sources.begin(), sources.end());
-    if (read_write_scratch_bytes != 0) {
-      reads.clear();
-      writes.clear();
-      if (!c_.ReleaseMatchTrial(read_write_scratch_bytes)) return std::nullopt;
-    }
     return Match{.nodes = std::move(nodes_),
-                 .rewrite_local_slots = local_slots,
                  .sources = std::move(owned_sources),
                  .detail = std::move(detail)};
   }
 
  private:
-  bool EnsurePushCapacity(std::vector<NodeId>& values) const {
-    if (values.size() < values.capacity()) return true;
-    if (c_.metadata_admission() == nullptr) return true;
-
-    const std::uint64_t old_capacity = values.capacity();
-    const std::uint64_t max_size = values.max_size();
-    if (old_capacity >= max_size) {
-      c_.RefuseMatchTrial();
-      return false;
-    }
-    const std::uint64_t doubled = old_capacity > max_size / 2 ? max_size : old_capacity * 2;
-    const std::uint64_t next_capacity = std::max<std::uint64_t>(1, doubled);
-    constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-    if (next_capacity > (std::numeric_limits<std::uint64_t>::max() - envelope) / sizeof(NodeId) ||
-        old_capacity > (std::numeric_limits<std::uint64_t>::max() - envelope) / sizeof(NodeId)) {
-      c_.RefuseMatchTrial();
-      return false;
-    }
-    const std::uint64_t old_bytes =
-        old_capacity == 0 ? 0 : old_capacity * sizeof(NodeId) + envelope;
-    const std::uint64_t next_bytes = next_capacity * sizeof(NodeId) + envelope;
-    if (old_bytes > std::numeric_limits<std::uint64_t>::max() - next_bytes) {
-      c_.RefuseMatchTrial();
-      return false;
-    }
-    // The current trial ledger already pays for the old allocation. Charging
-    // the prospective allocation before reserve covers their overlapping peak.
-    if (!c_.ChargeMatchTrial(next_bytes)) return false;
-
-    // The pinned libstdc++ reserve allocates exactly the requested capacity.
-    // After reserve the old allocation is gone, so drop its live charge.
-    values.reserve(static_cast<std::size_t>(next_capacity));
-    if (values.capacity() != next_capacity) {
-      c_.RefuseMatchTrial();
-      return false;
-    }
-    return old_bytes == 0 || c_.ReleaseMatchTrial(old_bytes);
-  }
-
   const MatchContext& c_;
   std::vector<NodeId> nodes_;
   std::vector<NodeId> pulled_;
@@ -609,99 +450,6 @@ std::optional<Combine> CombineAt(const MatchContext& c, NodeId add) {
   return m;
 }
 
-// Temporary match storage is admitted before reserve and refunded only after
-// the owning vector has been destroyed.
-std::optional<std::uint64_t> VectorAllocationBytes(std::uint64_t count, std::uint64_t element) {
-  constexpr std::uint64_t envelope = 2 * sizeof(void*) + alignof(std::max_align_t);
-  if (count == 0) return std::uint64_t{0};
-  if (count > (std::numeric_limits<std::uint64_t>::max() - envelope) / element) return std::nullopt;
-  return count * element + envelope;
-}
-
-class FusionVectorInventory {
- public:
-  explicit FusionVectorInventory(const MatchContext& context) : context_(context) {}
-  FusionVectorInventory(const FusionVectorInventory&) = delete;
-  FusionVectorInventory& operator=(const FusionVectorInventory&) = delete;
-  ~FusionVectorInventory() {
-    if (bytes_ != 0) (void)context_.ReleaseMatchTrial(bytes_);
-  }
-
-  template <class T>
-  bool Reserve(std::vector<T>& values, std::size_t requested) {
-    if (requested <= values.capacity() || context_.metadata_admission() == nullptr) return true;
-    const std::uint64_t old_capacity = values.capacity();
-    const std::uint64_t maximum = values.max_size();
-    if (requested > maximum || old_capacity >= maximum) {
-      context_.RefuseMatchTrial();
-      return false;
-    }
-    const std::uint64_t doubled = old_capacity > maximum / 2 ? maximum : 2 * old_capacity;
-    const std::uint64_t next_capacity =
-        std::max<std::uint64_t>(requested, std::max<std::uint64_t>(1, doubled));
-    const auto old_bytes = VectorAllocationBytes(old_capacity, sizeof(T));
-    const auto next_bytes = VectorAllocationBytes(next_capacity, sizeof(T));
-    if (!old_bytes || !next_bytes ||
-        *next_bytes > std::numeric_limits<std::uint64_t>::max() - bytes_) {
-      context_.RefuseMatchTrial();
-      return false;
-    }
-    if (!context_.ChargeMatchTrial(*next_bytes)) return false;
-    values.reserve(static_cast<std::size_t>(next_capacity));
-    if (values.capacity() != next_capacity) {
-      context_.RefuseMatchTrial();
-      return false;
-    }
-    if (*old_bytes != 0 && !context_.ReleaseMatchTrial(*old_bytes)) return false;
-    bytes_ = bytes_ - *old_bytes + *next_bytes;
-    return true;
-  }
-
-  void Retain() { bytes_ = 0; }
-
-  bool TransferFrom(FusionVectorInventory& other) {
-    if (other.bytes_ > std::numeric_limits<std::uint64_t>::max() - bytes_) {
-      context_.RefuseMatchTrial();
-      return false;
-    }
-    bytes_ += other.bytes_;
-    other.bytes_ = 0;
-    return true;
-  }
-
- private:
-  const MatchContext& context_;
-  std::uint64_t bytes_ = 0;
-};
-
-bool SetNumericalSites(const MatchContext& context, Match& match,
-                       std::span<const NodeId> numerical_sites) {
-  FusionVectorInventory inventory(context);
-  std::vector<NodeId> owned;
-  if (!inventory.Reserve(owned, numerical_sites.size())) return false;
-  owned.assign(numerical_sites.begin(), numerical_sites.end());
-  match.numerical_sites = std::move(owned);
-  inventory.Retain();
-  return true;
-}
-
-class MatchTrialScratchCharge {
- public:
-  MatchTrialScratchCharge(const MatchContext& context, std::uint64_t bytes)
-      : context_(&context), bytes_(bytes), admitted_(context.ChargeMatchTrial(bytes)) {}
-  MatchTrialScratchCharge(const MatchTrialScratchCharge&) = delete;
-  MatchTrialScratchCharge& operator=(const MatchTrialScratchCharge&) = delete;
-  ~MatchTrialScratchCharge() {
-    if (admitted_ && bytes_ != 0) (void)context_->ReleaseMatchTrial(bytes_);
-  }
-  bool admitted() const { return admitted_; }
-
- private:
-  const MatchContext* context_;
-  std::uint64_t bytes_;
-  bool admitted_;
-};
-
 // hc.mix's nodes (components/hc.cc MixEmit): each stream's norm and its
 // weight (xn), the low-rank gate, the gated streams' fold.
 struct Mix {
@@ -808,18 +556,7 @@ std::optional<Mix> MixAt(const MatchContext& c, NodeId anchor) {
     return std::nullopt;
   }
   const auto gated_readers = c.readers(gated);
-  std::optional<MatchTrialScratchCharge> views_charge;
-  if (c.metadata_admission() != nullptr) {
-    const auto bytes = VectorAllocationBytes(gated_readers.size(), sizeof(NodeId));
-    if (!bytes) {
-      c.RefuseMatchTrial();
-      return std::nullopt;
-    }
-    views_charge.emplace(c, *bytes);
-    if (!views_charge->admitted()) return std::nullopt;
-  }
   std::vector<NodeId> views;
-  if (c.metadata_admission() != nullptr) views.reserve(gated_readers.size());
   for (const NodeId r : gated_readers) {
     if (!Is(c, r, Op::kView) || c.taken(r)) {
       return std::nullopt;
@@ -841,15 +578,6 @@ std::optional<Mix> MixAt(const MatchContext& c, NodeId anchor) {
   const auto c0 = OnlyOf(c, c.node(views[0]).out[0], Op::kCont);
   if (!c0) {
     return std::nullopt;
-  }
-  if (c.metadata_admission() != nullptr) {
-    if (m.hc > std::numeric_limits<std::uint64_t>::max() / 2) {
-      c.RefuseMatchTrial();
-      return std::nullopt;
-    }
-    const auto bytes = VectorAllocationBytes(2 * m.hc, sizeof(NodeId));
-    if (!bytes || !c.ChargeMatchTrial(*bytes)) return std::nullopt;
-    m.fold.reserve(static_cast<std::size_t>(2 * m.hc));
   }
   m.fold = views;
   m.fold.push_back(*c0);
@@ -2025,7 +1753,6 @@ std::optional<Match> InverseRopeGroupedMatMulMatch(const MatchContext& c, NodeId
   // Authenticate the complete assembly: valid overall input/output sizes
   // alone do not establish which rows and groups the product multiplies.
   ir::Builder definition_builder;
-  if (!FundDefinitionBuilder(c, definition_builder)) return std::nullopt;
   std::array<TensorId, 3> inputs{};
   for (std::size_t i = 0; i < sources.size(); ++i)
     inputs[i] = definition_builder.Input(c.tensor(sources[i]).format);
@@ -2033,19 +1760,15 @@ std::optional<Match> InverseRopeGroupedMatMulMatch(const MatchContext& c, NodeId
       ir::Decompose(definition_builder, ir::Fused(FusedKind::kInverseRopeGroupedMatMul),
                     ir::ToBytes(rp), inputs, {});
   if (!definition_builder.ok()) {
-    PropagateDefinitionAdmission(c, definition_builder);
     return std::nullopt;
   }
   if (expanded.n != 1) return std::nullopt;
   definition_builder.Output(expanded[0]);
   auto definition = std::move(definition_builder).Finish();
   if (!definition) {
-    PropagateDefinitionAdmission(c, definition.error());
     return std::nullopt;
   }
   Building b(c);
-  ir::StorageLoan mapped_loan;
-  if (!FundTensorMap(c, definition->tensor_count(), mapped_loan)) return std::nullopt;
   std::vector<TensorId> mapped(definition->tensor_count());
   if (!PrimitiveDefinition(c, b, *definition, definition->outputs()[0], outputs[0], sources, inputs,
                            cont, mapped) ||
@@ -2165,25 +1888,20 @@ std::optional<Match> SoftmaxPoolCompressMatch(const MatchContext& c, NodeId anch
            ir::ToBytes(params)))
     return std::nullopt;
   ir::Builder b;
-  if (!FundDefinitionBuilder(c, b)) return std::nullopt;
   std::array<TensorId, 5> inputs{};
   for (std::size_t i = 0; i < sources.size(); ++i) inputs[i] = b.Input(c.tensor(sources[i]).format);
   const auto expanded =
       ir::Decompose(b, ir::Fused(FusedKind::kSoftmaxPoolCompress), ir::ToBytes(params), inputs, {});
   if (!b.ok()) {
-    PropagateDefinitionAdmission(c, b);
     return std::nullopt;
   }
   if (expanded.n != 1) return std::nullopt;
   b.Output(expanded[0]);
   auto definition = std::move(b).Finish();
   if (!definition) {
-    PropagateDefinitionAdmission(c, definition.error());
     return std::nullopt;
   }
   Building match(c);
-  ir::StorageLoan mapped_loan;
-  if (!FundTensorMap(c, definition->tensor_count(), mapped_loan)) return std::nullopt;
   std::vector<TensorId> mapped(definition->tensor_count());
   if (!PrimitiveDefinition(c, match, *definition, definition->outputs()[0], outputs[0], sources,
                            inputs, pool, mapped) ||
@@ -2239,40 +1957,31 @@ std::optional<Match> SinkhornHcPreMatch(const MatchContext& c, NodeId anchor) {
                                        .hc_eps = hp.eps,
                                        .iterations = hp.iterations};
     ir::Builder b;
-    if (!FundDefinitionBuilder(c, b)) return std::nullopt;
     std::array<TensorId, 5> inputs{};
     for (std::size_t i = 0; i < sources.size(); ++i)
       inputs[i] = b.Input(c.tensor(sources[i]).format);
     const auto expanded =
         ir::Decompose(b, ir::Fused(FusedKind::kSinkhornHcPre), ir::ToBytes(params), inputs, {});
     if (!b.ok()) {
-      if (PropagateDefinitionAdmission(c, b)) return std::nullopt;
       continue;
     }
     if (expanded.n != 3) continue;
     for (const TensorId out : expanded.span()) b.Output(out);
     auto definition = std::move(b).Finish();
     if (!definition) {
-      if (PropagateDefinitionAdmission(c, definition.error())) return std::nullopt;
       continue;
     }
     for (std::uint32_t j = product.v + 1; j < anchor.v; ++j) {
       const NodeId post_id{j};
       if (!Is(c, post_id, Op::kScale)) continue;
       const std::array<TensorId, 3> outputs{last.out[0], c.node(post_id).out[0], comb.out[0]};
-      ir::StorageLoan mapped_loan;
-      if (!FundTensorMap(c, definition->tensor_count(), mapped_loan)) return std::nullopt;
       std::vector<TensorId> mapped(definition->tensor_count());
       Building match(c);
       bool matches = true;
       for (std::size_t i = 0; i < outputs.size() && matches; ++i)
         matches = PrimitiveDefinition(c, match, *definition, definition->outputs()[i], outputs[i],
                                       sources, inputs, last, mapped);
-      if (!matches || !match.Closed(outputs)) {
-        if (c.metadata_admission() != nullptr && c.metadata_admission()->refused())
-          return std::nullopt;
-        continue;
-      }
+      if (!matches || !match.Closed(outputs)) continue;
       // Both carries were computed earlier in the primitive graph. They
       // must not escape to a reader before their replacement is emitted.
       for (const TensorId out : outputs)
@@ -2651,11 +2360,11 @@ std::optional<Match> PreparedHeadGateMatch(const MatchContext& c, NodeId anchor)
     const std::array<ir::TensorDesc, 1> req = {g.tensor(q.out[0])};
     r.Set(q.out[0], bl.Emit(q.key, q.params, src, req)[0]);
   };
-  auto match = b.Finish({{anchor, 0}, {product, 1}}, std::move(emit), {}, 1);
+  auto match = b.Finish({{anchor, 0}, {product, 1}}, std::move(emit));
   if (match) {
     match->numerical_change = NumericalChange::kMxfp8ProductInput;
     const std::array sites{product};
-    if (!SetNumericalSites(c, *match, sites)) return std::nullopt;
+    match->numerical_sites.assign(sites.begin(), sites.end());
   }
   return match;
 }
@@ -3001,12 +2710,7 @@ std::optional<Match> PreparedInputs(
     const MatchContext& c, NodeId anchor, TensorId x, const ir::TensorDesc& prepared, Takes&& takes,
     Encoding encoding, format::Layout layout,
     ir::ProductArithmetic arithmetic = ir::ProductArithmetic::kImplementation) {
-  FusionVectorInventory products_inventory(c);
-  FusionVectorInventory unqualified_inventory(c);
   std::vector<NodeId> products, unqualified;
-  if (!products_inventory.Reserve(products, c.readers(x).size()) ||
-      !unqualified_inventory.Reserve(unqualified, c.readers(x).size()))
-    return std::nullopt;
   const auto change = encoding == Encoding::kMxfp8 ? NumericalChange::kMxfp8ProductInput
                                                    : NumericalChange::kQ8VectorReduction;
   for (const NodeId r : c.readers(x)) {
@@ -3066,9 +2770,7 @@ std::optional<Match> PreparedInputs(
   Building b(c);
   for (const NodeId n : products)
     if (!b.Add(n)) return std::nullopt;
-  FusionVectorInventory capture_inventory(c);
   std::vector<NodeId> nodes;
-  if (!capture_inventory.Reserve(nodes, products.size())) return std::nullopt;
   nodes.assign(products.begin(), products.end());
   auto emit = [x, nodes = std::move(nodes), encoding, layout, arithmetic](RewriteContext& r,
                                                                           int id) {
@@ -3096,20 +2798,15 @@ std::optional<Match> PreparedInputs(
         b.Emit(q.key, params, std::span(src).first(q.nsrc), std::span(req).first(q.nout));
     for (std::size_t i = 0; i < q.nout; ++i) r.Set(q.out.at(i), out[i]);
   };
-  FusionVectorInventory places_inventory(c);
   std::vector<std::pair<NodeId, int>> places;
-  if (!places_inventory.Reserve(places, products.size())) return std::nullopt;
   for (std::size_t i = 0; i < products.size(); ++i) {
     places.emplace_back(products[i], static_cast<int>(i));
   }
-  auto match = b.Finish(places, std::move(emit), {x}, 1);
+  auto match = b.Finish(places, std::move(emit), {x});
   if (match) {
-    capture_inventory.Retain();
     if (arithmetic == ir::ProductArithmetic::kImplementation) {
       match->numerical_sites = std::move(products);
-      products_inventory.Retain();
       match->unqualified_sites = std::move(unqualified);
-      unqualified_inventory.Retain();
     }
   }
   return match;
@@ -3238,7 +2935,7 @@ std::optional<Match> VecQGluMatch(const MatchContext& c, NodeId anchor) {
     auto match = b.Finish({{anchor, 0}}, std::move(emit));
     if (match) {
       const std::array sites{pg, pu};
-      if (!SetNumericalSites(c, *match, sites)) return std::nullopt;
+      match->numerical_sites.assign(sites.begin(), sites.end());
     }
     return match;
   }
@@ -3267,7 +2964,7 @@ std::optional<Match> VecQGluMatch(const MatchContext& c, NodeId anchor) {
   auto match = b.Finish({{anchor, 0}}, std::move(emit));
   if (match) {
     const std::array sites{pg, pu};
-    if (!SetNumericalSites(c, *match, sites)) return std::nullopt;
+    match->numerical_sites.assign(sites.begin(), sites.end());
   }
   return match;
 }
@@ -3369,9 +3066,7 @@ std::optional<Match> Bf16InputsMatch(const MatchContext& c, NodeId anchor) {
   rounded.view_of = {};
   rounded.view_offset = 0;
   // A conversion, not a preparation: llmp.bf16.
-  FusionVectorInventory products_inventory(c);
   std::vector<NodeId> products;
-  if (!products_inventory.Reserve(products, c.readers(x).size())) return std::nullopt;
   for (const NodeId r : c.readers(x)) {
     if (r < anchor || c.taken(r) || std::ranges::contains(products, r)) continue;
     if (!Unwritten(c, anchor, r, x)) continue;
@@ -3395,9 +3090,7 @@ std::optional<Match> Bf16InputsMatch(const MatchContext& c, NodeId anchor) {
   Building b(c);
   for (const NodeId q : products)
     if (!b.Add(q)) return std::nullopt;
-  FusionVectorInventory capture_inventory(c);
   std::vector<NodeId> nodes;
-  if (!capture_inventory.Reserve(nodes, products.size())) return std::nullopt;
   nodes.assign(products.begin(), products.end());
   auto emit = [x, nodes = std::move(nodes)](RewriteContext& r, int id) {
     const ir::Graph& g = r.original();
@@ -3417,16 +3110,12 @@ std::optional<Match> Bf16InputsMatch(const MatchContext& c, NodeId anchor) {
     params.arithmetic = ir::ProductArithmetic::kBf16F32;
     r.Set(q.out[0], b.Emit(q.key, ir::ToBytes(params), src, req)[0]);
   };
-  FusionVectorInventory places_inventory(c);
   std::vector<std::pair<NodeId, int>> places;
-  if (!places_inventory.Reserve(places, products.size())) return std::nullopt;
   for (std::size_t i = 0; i < products.size(); ++i)
     places.emplace_back(products[i], static_cast<int>(i));
-  auto match = b.Finish(places, std::move(emit), {x}, 1);
+  auto match = b.Finish(places, std::move(emit), {x});
   if (match) {
-    capture_inventory.Retain();
     match->numerical_sites = std::move(products);
-    products_inventory.Retain();
   }
   return match;
 }
@@ -3444,26 +3133,8 @@ std::optional<Match> Bf16RowsMatch(const MatchContext& c, NodeId anchor) {
   // Its readers through reshapes and views (an owner's rows): a
   // convolution's rows or a gated norm's gate only. The reshapes and views
   // are the match's, made again over the BF16 rows.
-  std::uint64_t source_positions = 0;
-  for (const auto& graph_node : c.graph().nodes()) {
-    if (graph_node.nsrc > std::numeric_limits<std::uint64_t>::max() - source_positions) {
-      c.RefuseMatchTrial();
-      return std::nullopt;
-    }
-    source_positions += graph_node.nsrc;
-  }
-  if (source_positions >= std::numeric_limits<std::size_t>::max() ||
-      source_positions == std::numeric_limits<std::uint64_t>::max()) {
-    c.RefuseMatchTrial();
-    return std::nullopt;
-  }
-  FusionVectorInventory frontier_inventory(c);
-  FusionVectorInventory shaped_inventory(c);
   std::vector<TensorId> frontier;
   std::vector<NodeId> shaped;
-  if (!frontier_inventory.Reserve(frontier, static_cast<std::size_t>(source_positions + 1)) ||
-      !shaped_inventory.Reserve(shaped, static_cast<std::size_t>(source_positions)))
-    return std::nullopt;
   frontier.push_back(p.out[0]);
   bool any = false;
   while (!frontier.empty()) {
@@ -3501,11 +3172,7 @@ std::optional<Match> Bf16RowsMatch(const MatchContext& c, NodeId anchor) {
   std::ranges::sort(shaped);
   for (const NodeId n : shaped)
     if (!b.Add(n)) return std::nullopt;
-  FusionVectorInventory places_inventory(c);
   std::vector<std::pair<NodeId, int>> places;
-  if (shaped.size() == std::numeric_limits<std::size_t>::max() ||
-      !places_inventory.Reserve(places, shaped.size() + 1))
-    return std::nullopt;
   places.emplace_back(anchor, 0);
   for (std::size_t i = 0; i < shaped.size(); ++i)
     places.emplace_back(shaped[i], static_cast<int>(i + 1));
@@ -3537,7 +3204,6 @@ std::optional<Match> Bf16RowsMatch(const MatchContext& c, NodeId anchor) {
     r.Set(q.out[0], bl.View(src, qd.shape(), nb, offset));
   };
   auto match = b.Finish(places, std::move(emit));
-  if (match) shaped_inventory.Retain();
   return match;
 }
 
@@ -3721,7 +3387,7 @@ std::optional<Match> GroupedVecQMatch(const MatchContext& c, NodeId anchor) {
     if (match) {
       match->numerical_change = NumericalChange::kQ8VectorReduction;
       const std::array sites{product_id};
-      if (!SetNumericalSites(c, *match, sites)) return std::nullopt;
+      match->numerical_sites.assign(sites.begin(), sites.end());
     }
     return match;
   }
@@ -3736,7 +3402,7 @@ std::optional<Match> GroupedVecQMatch(const MatchContext& c, NodeId anchor) {
   if (match) {
     match->numerical_change = NumericalChange::kQ8VectorReduction;
     const std::array sites{product_id};
-    if (!SetNumericalSites(c, *match, sites)) return std::nullopt;
+    match->numerical_sites.assign(sites.begin(), sites.end());
   }
   return match;
 }
@@ -3782,9 +3448,7 @@ std::optional<Match> Exl3ProductsMatch(const MatchContext& c, NodeId anchor) {
     bool store_f16 = false;
     std::vector<NodeId> shaped{};
   };
-  FusionVectorInventory items_inventory(c);
   std::vector<Item> items;
-  if (!items_inventory.Reserve(items, c.readers(x).size())) return std::nullopt;
   for (const NodeId r : c.readers(x)) {
     if (r < anchor || c.taken(r) ||
         std::ranges::any_of(items, [&](const Item& it) { return it.matmul == r; })) {
@@ -3813,10 +3477,7 @@ std::optional<Match> Exl3ProductsMatch(const MatchContext& c, NodeId anchor) {
                std::array<const ir::TensorDesc*, 1>{&out_f16}, {})) {
         continue;
       }
-      FusionVectorInventory frontier_inventory(c);
-      FusionVectorInventory shaped_inventory(c);
       std::vector<TensorId> frontier;
-      if (!frontier_inventory.Reserve(frontier, 1)) return std::nullopt;
       frontier.push_back(add_out);
       std::vector<NodeId> shaped;
       bool store_f16 = true;
@@ -3836,10 +3497,8 @@ std::optional<Match> Exl3ProductsMatch(const MatchContext& c, NodeId anchor) {
           const ir::Node& nq = c.node(nr);
           if (nq.key == Prim(Op::kReshape) || nq.key == Prim(Op::kView)) {
             if (!std::ranges::contains(shaped, nr)) {
-              if (!shaped_inventory.Reserve(shaped, shaped.size() + 1)) return std::nullopt;
               shaped.push_back(nr);
             }
-            if (!frontier_inventory.Reserve(frontier, frontier.size() + 1)) return std::nullopt;
             frontier.push_back(nq.out[0]);
           } else if (nq.key == Prim(Op::kCacheStore) && nq.src[1] == t &&
                      c.tensor(nq.src[0]).format.encoding == Encoding::kF16) {
@@ -3856,13 +3515,11 @@ std::optional<Match> Exl3ProductsMatch(const MatchContext& c, NodeId anchor) {
         continue;
       }
       std::ranges::sort(shaped);
-      if (!items_inventory.Reserve(items, items.size() + 1)) return std::nullopt;
       items.push_back({.matmul = r,
                        .kind = Kind::kBiasedF16,
                        .add = *add_id,
                        .store_f16 = store_f16,
                        .shaped = std::move(shaped)});
-      if (!items_inventory.TransferFrom(shaped_inventory)) return std::nullopt;
       continue;
     }
     const bool feeds_glu =
@@ -3879,13 +3536,10 @@ std::optional<Match> Exl3ProductsMatch(const MatchContext& c, NodeId anchor) {
         Has(c, Prim(Op::kConvert), std::array<const ir::TensorDesc*, 1>{&out_f16},
             std::array<const ir::TensorDesc*, 1>{&out_f32}, {});
     if (!c.external(q.out[0]) && can_f32) {
-      if (!items_inventory.Reserve(items, items.size() + 1)) return std::nullopt;
       items.push_back({.matmul = r, .kind = Kind::kF32Out});
     } else if (can_f16) {
-      if (!items_inventory.Reserve(items, items.size() + 1)) return std::nullopt;
       items.push_back({.matmul = r, .kind = Kind::kF16Widen});
     } else if (can_f32) {
-      if (!items_inventory.Reserve(items, items.size() + 1)) return std::nullopt;
       items.push_back({.matmul = r, .kind = Kind::kF32Out});
     }
   }
@@ -3905,26 +3559,8 @@ std::optional<Match> Exl3ProductsMatch(const MatchContext& c, NodeId anchor) {
     ActKind kind = ActKind::kMatMulF32;
   };
   Building b(c);
-  std::size_t action_count = 0;
-  std::size_t source_count = 1;
-  for (const Item& it : items) {
-    const std::size_t item_actions = it.kind == Kind::kBiasedF16 ? 2 + it.shaped.size() : 1;
-    const std::size_t item_sources = it.kind == Kind::kBiasedF16 ? 2 : 1;
-    if (item_actions > std::numeric_limits<std::size_t>::max() - action_count ||
-        item_sources > std::numeric_limits<std::size_t>::max() - source_count) {
-      c.RefuseMatchTrial();
-      return std::nullopt;
-    }
-    action_count += item_actions;
-    source_count += item_sources;
-  }
-  FusionVectorInventory actions_inventory(c);
-  FusionVectorInventory sources_inventory(c);
   std::vector<Action> actions;
   std::vector<TensorId> sources;
-  if (!actions_inventory.Reserve(actions, action_count) ||
-      !sources_inventory.Reserve(sources, source_count))
-    return std::nullopt;
   sources.push_back(x);
   for (const Item& it : items) {
     if (!b.Add(it.matmul)) return std::nullopt;
@@ -3945,9 +3581,7 @@ std::optional<Match> Exl3ProductsMatch(const MatchContext& c, NodeId anchor) {
       }
     }
   }
-  FusionVectorInventory places_inventory(c);
   std::vector<std::pair<NodeId, int>> places;
-  if (!places_inventory.Reserve(places, actions.size())) return std::nullopt;
   for (std::size_t i = 0; i < actions.size(); ++i) {
     places.emplace_back(actions[i].node, static_cast<int>(i));
   }
@@ -4008,8 +3642,7 @@ std::optional<Match> Exl3ProductsMatch(const MatchContext& c, NodeId anchor) {
       }
     }
   };
-  auto match = b.Finish(places, std::move(emit), sources, 1);
-  if (match) actions_inventory.Retain();
+  auto match = b.Finish(places, std::move(emit), sources);
   return match;
 }
 

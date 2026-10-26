@@ -61,61 +61,6 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatQ(const LaunchContext& lau
 std::expected<void, KernelFailure> MulMatVecQ(LaunchContext& launch, ggml_tensor* node);
 // Same ordinary MMVQ consumer, with its original padded Q8_1 draw supplied
 // as a graph activation. Validates the original device route; no pool draw.
-struct MmvqDispatchDescriptor {
-  int device = -1;
-  int compute_capability = 0;
-  int parameter_table = 0;
-  int warp_size = 0;
-  ggml_type weight_type = GGML_TYPE_COUNT;
-  int columns = 0;
-  int k = 0;
-  int padded_k = 0;
-  int row_low = 0;
-  int row_high = 0;
-  int stride_col_dst = 0;
-  int rows_per_block = 0;
-  int nwarps = 0;
-  int grid_x = 0, grid_y = 0, grid_z = 0;
-  int block_x = 0, block_y = 0, block_z = 0;
-  int dynamic_shared_bytes = 0;
-  int static_shared_bytes = 0;
-  bool small_k = false;
-  bool halve_iters = false;
-  bool immutable_weights = false;
-  bool pdl_enabled = false;
-  bool immutable_prefetch = false;
-  bool streaming_prefetch = false;
-  bool fused = false;
-};
-
-// Describe the exact terminal specialization selected by upstream's shared
-// MMVQ dispatcher. `prepared_q8` asks for the same consumer with its original
-// padded Q8_1 row supplied; no launch or pool allocation occurs.
-std::expected<MmvqDispatchDescriptor, KernelFailure> DescribeMmvqDispatch(
-    const LaunchContext& launch, const ggml_tensor* node, bool prepared_q8 = false);
-struct Q8QuantizeDispatchDescriptor {
-  ggml_type source_type = GGML_TYPE_COUNT;
-  std::int64_t k = 0, padded_k = 0;
-  std::int64_t stride_row = 0, stride_channel = 0, stride_sample = 0;
-  std::int64_t rows = 0, channels = 0, samples = 0;
-  int grid_x = 0, grid_y = 0, grid_z = 0;
-  int block_x = 0, block_y = 0, block_z = 0;
-  int dynamic_shared_bytes = 0;
-  std::uint64_t output_bytes = 0;
-};
-struct Q8MainPoolDescriptor {
-  std::uint64_t base = 0;
-  std::uint64_t bytes = 0;
-  std::uint32_t lanes = 0;
-  bool faulted = false;
-};
-// Synchronous current-main-pool facts for proof analysis. The portable
-// comparison library consumes only this POD and never calls CUDA runtime
-// methods through LaunchContext itself.
-std::expected<Q8MainPoolDescriptor, KernelFailure> DescribeQ8MainPool(const LaunchContext& launch);
-std::expected<Q8QuantizeDispatchDescriptor, KernelFailure> DescribeQuantizeQ8(
-    const ggml_tensor* node);
-
 std::expected<std::uint64_t, KernelFailure> PlanMmvqPrepared(const LaunchContext& launch,
                                                              const ggml_tensor* node);
 std::expected<void, KernelFailure> MulMatQ(LaunchContext& launch, ggml_tensor* node);

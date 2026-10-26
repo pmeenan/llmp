@@ -84,10 +84,10 @@ inline constexpr std::string_view kRopeSetRowsQuantName = "llmp.rope_set_rows.qu
 inline constexpr std::size_t kSetRowsQuantGroupMax = 16;
 inline constexpr std::uint32_t kQuantStoreThreads = 256;
 
-// Address-free launch facts shared by the CUDA launchers and comparison
-// proof. The CUDA kernels add live tensor addresses separately; these
-// descriptors contain every geometry/format/launch choice that affects the
-// kernel's reads, writes, and dispatch.
+// Address-free launch facts the CUDA launchers derive from the checked
+// descriptors. The kernels add live tensor addresses separately; these hold
+// every geometry/format/launch choice that affects the kernel's reads,
+// writes, and dispatch.
 struct QuantStoreMemberRecipe {
   std::uint64_t values_stride[3]{};
   std::uint64_t ids_stride[3]{};

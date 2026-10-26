@@ -3697,4 +3697,94 @@ TEST(GgmlRoundedConsumerGpu, RealMappedSourceBuildsAndExecutesItsAttentionPipeli
   RecordProperty("source_device_inventory", std::to_string(rounded_corridor::kDevice));
 }
 
+// A verify's save of a strided (nonpacked) view: the lowering copies it
+// into a packed CONT result placed in the activation tail past the
+// planner's placement, then stores its rows at the step's save rows.
+// Formerly covered only by the exact-site comparison tests.
+TEST_F(GgmlLowerDsv4Gpu, NonpackedVerifySaveStoresItsPackedCopyAtTheSaveRows) {
+  ir::Builder builder;
+  builder.SetOwner(0);
+  const auto x = builder.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({16, 2})), "features");
+  const auto value = builder.Scale(x, 2.0F);
+  // The first four values of each 16-value row: a strided view.
+  const std::array<std::uint64_t, llmp::format::kMaxDims> strides{4, 64, 128, 128};
+  const auto saved = builder.View(value, ir::ShapeOf({4, 2}), strides, 0);
+  const auto rows = builder.Input(ir::Dense(Encoding::kI64, ir::ShapeOf({2})), "save_rows");
+  builder.Keep(saved);
+  builder.Keep(rows);
+  builder.Output(value);
+  auto graph = std::move(builder).Finish();
+  ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+  ASSERT_FALSE(ir::IsContiguous(graph->tensor(saved)));
+  co::StepGraph step{.graph = std::move(*graph),
+                     .inputs = {{.tensor = x, .kind = co::InputKind::kFeatures, .segment = 0},
+                                {.tensor = rows,
+                                 .kind = co::InputKind::kStoreCells,
+                                 .segment = 0,
+                                 .cells = {.capacity = 2, .per_row = true}}},
+                     .weights = {},
+                     .state = {},
+                     .saves = {{.layer = 0,
+                                .component = 0,
+                                .what = "cache",
+                                .segment = 0,
+                                .tensor = saved,
+                                .rows = rows}}};
+  const pl::StepShape shape{
+      .stage = 0,
+      .phase = pl::Phase::kVerify,
+      .segments = {{.slot = 0, .rows = 2, .past = 0, .read_cells = 2, .outputs = 2}}};
+  const std::vector<ir::TensorId> staged{x, rows};
+  auto plan = pl::Plan(
+      step.graph.Clone(), *registry, {.device_class = "sm_121", .arch = 121}, {},
+      {.staged = staged, .written = kg::WrittenBytes, .within = kg::WithinRoot, .shape = &shape});
+  ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+  const std::uint64_t save = Allocate(4 * 2 * sizeof(float));
+  // Room past the planner's placement for the packed copy.
+  const std::uint64_t activation_bytes = plan->placement.extent + (1U << 16);
+  kn::Addresses addresses{};
+  addresses.activations = Allocate(activation_bytes);
+  addresses.activation_bytes = activation_bytes;
+  addresses.save = [save](std::uint32_t layer, std::uint16_t component, std::string_view what,
+                          std::uint8_t segment) {
+    return layer == 0 && component == 0 && segment == 0 && what == "cache" ? save
+                                                                           : std::uint64_t{0};
+  };
+  auto result = kg::LowerStep({*plan, step, shape, addresses, 65536}, *registry,
+                              kg::DeviceChoicesOf(*launch));
+  ASSERT_TRUE(result) << (result ? "" : result.error().detail);
+  lowered.push_back(std::make_unique<kg::LoweredStep>(std::move(*result)));
+  auto& lowered_step = *lowered.back();
+  ASSERT_EQ(lowered_step.saves.size(), 1U);
+  const auto& saved_leaf = lowered_step.saves.front();
+  ASSERT_NE(saved_leaf.packed, nullptr);
+  EXPECT_EQ(saved_leaf.packed->op, GGML_OP_CONT);
+  EXPECT_NE(saved_leaf.scratch_bytes, 0U);
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(saved_leaf.packed->data),
+            addresses.activations + saved_leaf.scratch_offset);
+  EXPECT_LE(saved_leaf.scratch_offset + saved_leaf.scratch_bytes, lowered_step.extent);
+  EXPECT_LE(lowered_step.extent, activation_bytes);
+
+  std::vector<float> features(32);
+  for (std::size_t i = 0; i < features.size(); ++i) features[i] = 0.25F * static_cast<float>(i);
+  const std::vector<std::int64_t> save_rows{1, 0};
+  Upload(Leaf(lowered_step, x), features);
+  Upload(Leaf(lowered_step, rows), save_rows);
+  ASSERT_FALSE(HasFatalFailure());
+  auto bound = kg::BoundGraph::Bind(*registry, lowered_step.plan);
+  ASSERT_TRUE(bound) << (bound ? "" : bound.error().detail);
+  const auto ran = bound->Run(*launch);
+  ASSERT_TRUE(ran) << (ran ? "" : ran.error().detail);
+  ASSERT_TRUE(Finish());
+  std::array<float, 8> stored{};
+  ASSERT_EQ(cudaMemcpy(stored.data(), reinterpret_cast<const void*>(save), sizeof(stored),
+                       cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  for (std::size_t row = 0; row < 2; ++row)
+    for (std::size_t col = 0; col < 4; ++col)
+      EXPECT_EQ(stored[static_cast<std::size_t>(save_rows[row]) * 4 + col],
+                2.0F * features[row * 16 + col])
+          << row << "," << col;
+}
+
 }  // namespace

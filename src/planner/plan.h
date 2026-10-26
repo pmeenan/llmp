@@ -53,22 +53,12 @@
 
 namespace llmp::planner {
 
-class ComparisonCaptureSession;
-class ComparisonOriginDag;
-class PlannerMetadataAdmission;
-struct ComparisonFinalNodeOrigins;
-using ComparisonOriginSetId = std::uint32_t;
-
 enum class PlanError : std::uint8_t {
   kNoImplementation,  // a node no implementation computes and nothing decomposes
   kPattern,           // a rewrite or decomposition the IR refused (a planner bug)
   kPlacement,         // the activations could not be placed
   kBounds,            // past a bound (the decomposition passes)
   kPolicy,            // the policy breaks its own rules
-  kAdmission,         // comparison-owned construction payment was refused
-  kStaleComparisonSite,
-  kAmbiguousComparisonSite,
-  kMissingComparisonSite,
 };
 std::string_view PlanErrorName(PlanError error);
 
@@ -78,7 +68,6 @@ struct PlanFailure {
 };
 
 struct PlanOptions {
-  SelectionView::FusionComparisons fusion_comparisons = SelectionView::FusionComparisons::enabled;
   // A D-092 verify's plan: every implementation row-invariant (also the
   // policy's row_invariant).
   bool row_invariant = false;
@@ -129,45 +118,9 @@ struct PlanOptions {
   // Report-only identities supplied by the actual component source, never
   // inspected by selection/qualification or parsed as policy permission.
   base::Sha256Digest observed_bound_model{}, observed_model_spec{};
-  // Internal, synchronous comparison capture. Public callers use the owned
-  // APIs in alternative.h; ordinary plans leave this null.
-  ComparisonCaptureSession* comparison_capture = nullptr;
-  ComparisonOriginDag* comparison_origins = nullptr;
-  std::span<const ComparisonOriginSetId> comparison_node_origins{};
-  // Directional original-source maps for an owned alternative seed. Ordinary
-  // and incumbent plans leave these empty, in which case capture uses identity.
-  std::span<const ir::TensorId> comparison_source_to_graph{};
-  std::span<const ir::NodeId> comparison_graph_node_to_source{};
-  // Comparison-only retained metadata admission. Ordinary planning leaves
-  // this null and keeps its existing allocation behavior.
-  PlannerMetadataAdmission* metadata_admission = nullptr;
-  // Optional comparison-only sink populated by a successful tracked Plan.
-  // The wrapper supplies the authenticated original source identity; Plan
-  // moves its existing paid final lineage vector into this owner at return.
-  ComparisonFinalNodeOrigins* comparison_final_lineage = nullptr;
-};
-
-// Opaque authority minted only by an authenticated whole-comparison capture.
-// It never grants a local region projection or a caller-declared access fact.
-class WholeComparisonCheckpoint {
- public:
-  bool whole_only() const { return source_identity_ != 0; }
-  const base::Sha256Digest& subject() const { return subject_; }
-  bool source_matches(std::uint64_t source) const {
-    return whole_only() && source_identity_ == source;
-  }
-  bool belongs_to(std::uint64_t source, std::uint64_t checkpoint) const {
-    return whole_only() && source == source_identity_ && checkpoint == checkpoint_identity_;
-  }
-
- private:
-  friend struct ComparisonCheckpointAuthorityAccess;
-  std::uint64_t source_identity_ = 0, checkpoint_identity_ = 0;
-  base::Sha256Digest subject_{};
 };
 
 struct StepPlan {
-  WholeComparisonCheckpoint whole_checkpoint{};
   base::Sha256Digest primitive_digest{};
   // Computed when planning finishes; report capture never hashes the graph.
   base::Sha256Digest graph_digest{};
