@@ -2041,7 +2041,9 @@ codes copied, and each projection's per-matrix tensor scales gathered into
 an F32 [experts] vector (the converted form's `ffn_*_exps.weight_scale_2`
 roles, which the grouped GEMM and the moe component read). It applies only
 where no byte is added (rows whole atoms, a whole number of 4-scale atom
-columns, at most 256 scales a row); otherwise the table stays `split`. In
+columns, any number of them: the writer sizes its publication workspace to
+the widest route's two bands, so NVFP4 tables at hidden 5120 or 7168 take
+the atoms too); otherwise the table stays `split`. In
 an expert group the writer places a stacked table first, each table's
 codes before its scales, the slot the grouped GEMM reads at fixed offsets
 (`moe_layout.h` `ExpertLayout`), which admission checks
@@ -3312,8 +3314,10 @@ LLM families; decision models, embeddings and speech arrive as specs.
 
 An image pipeline's graphs depend on each request's geometry. Flow and VAE
 component artifacts store their complete topology and `Stage::scalar_bindings`
-for integer geometry parameters (D-122). Serving copies and binds those specs
-using checked request dimensions and the stored family profile, then verifies
+for integer geometry parameters (D-122), named from one closed vocabulary
+(`spec::kStageScalarNames`, checked at import and admission). Serving copies
+and binds those specs using checked request dimensions (it supplies every
+name; each stage binds what it needs) and the stored family profile, then verifies
 actual inferred stage outputs against that geometry. It preserves stored
 components, weight bindings, links and exports. The text encoder still builds
 its request graph through `spec/image_spatial.h`. Mapping-owned `StageRecipe`

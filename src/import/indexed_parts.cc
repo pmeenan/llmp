@@ -413,4 +413,9 @@ std::optional<std::uint32_t> IndexedPartPlan::FindSource(std::string_view name) 
   if (at == names_.end() || source_.tensors[*at].name != name) return std::nullopt;
   return *at;
 }
+std::uint64_t IndexedPartPlan::route_workspace_bytes() const {
+  std::uint64_t bytes = 0;
+  for (const auto& member : members_) bytes = std::max(bytes, member.route.workspace_bytes());
+  return bytes;
+}
 }  // namespace llmp::import

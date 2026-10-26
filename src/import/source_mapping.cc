@@ -128,6 +128,9 @@ std::uint8_t KeyTypes(const spec::Mapping& m, std::string_view key, bool allow_u
     if (!key.empty() && (matches(rule.numerator_key) || matches(rule.divisor_key))) {
       add(kInteger | kReal);
     }
+    // A gate compares its key's string (spec::ParamRule::when_key): the key
+    // is selected, so a present gate key is never read as absent.
+    if (!key.empty() && matches(rule.when_key)) add(kText);
     if (!matches(rule.key)) continue;
     switch (rule.type) {
       case spec::ValueType::kInt:

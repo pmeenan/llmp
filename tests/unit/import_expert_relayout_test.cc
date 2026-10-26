@@ -55,7 +55,11 @@ TEST(ImportExpertRelayoutTest, RelaysOutOnlyLosslessBlockScaledTables) {
   EXPECT_FALSE(RelaysOut(Split(2560, 640)));       // not a table of experts
   EXPECT_FALSE(RelaysOut(Split(2560, 600, 512)));  // rows not whole atoms: would grow
   EXPECT_FALSE(RelaysOut(Split(2576, 640, 512)));  // 161 scales a row: not whole atoms
-  EXPECT_FALSE(RelaysOut(Split(8192, 640, 512)));  // 512 scales a row: past the route's band
+  // Any whole number of atom columns: NVFP4 at hidden 5120, 7168 and 8192
+  // (320, 448 and 512 scales a row; the writer sizes the route's bands).
+  EXPECT_TRUE(RelaysOut(Split(5120, 640, 16)));
+  EXPECT_TRUE(RelaysOut(Split(7168, 640, 16)));
+  EXPECT_TRUE(RelaysOut(Split(8192, 640, 512)));
   auto mx = Split(2560, 640, 512);
   mx.encoding = Encoding::kMxfp8;
   mx.params.tensor_scale = false;
@@ -102,7 +106,9 @@ std::map<std::pair<std::uint32_t, PartRole>, std::vector<std::byte>> Publish(
   for (std::uint32_t o = 0; o < plan.outputs().size(); ++o)
     for (const auto& part : plan.outputs()[o].parts.parts())
       out[{o, part.role}].resize(static_cast<std::size_t>(part.bytes));
-  std::vector<std::byte> workspace(65536);
+  // As the writer sizes it: the widest route's own need (the writer keeps at
+  // least 64 KiB for folds; none here).
+  std::vector<std::byte> workspace(static_cast<std::size_t>(plan.route_workspace_bytes()));
   for (const auto& member : plan.members()) {
     auto run = member.route.Start(workspace);
     EXPECT_TRUE(run);
@@ -134,10 +140,16 @@ std::vector<float> Decode(const TensorFormat& f,
   return out;
 }
 
-TEST(ImportExpertRelayoutTest, RelaidTablesDecodeToTheSplitSourcesValues) {
-  // Gate and up [K 64, N 128], down [K 128, N 128]: whole atoms.
+// Gate and up [K hidden, N 128], down [K 128, N 128]: whole atoms. Hidden
+// 5120 and 7168 (Llama 4 Scout's and the DeepSeek V3 class's) have 320 and
+// 448 scales a row, wider than a 64 KiB workspace's two bands.
+class RelaidTables : public ::testing::TestWithParam<std::uint64_t> {};
+INSTANTIATE_TEST_SUITE_P(Hidden, RelaidTables, ::testing::Values(64U, 5120U, 7168U));
+
+TEST_P(RelaidTables, DecodeToTheSplitSourcesValues) {
+  const std::uint64_t hidden = GetParam();
   const std::array<std::pair<std::string, TensorFormat>, 3> projections{
-      {{"gate", Split(64, 128)}, {"up", Split(64, 128)}, {"down", Split(128, 128)}}};
+      {{"gate", Split(hidden, 128)}, {"up", Split(hidden, 128)}, {"down", Split(128, 128)}}};
   Source s;
   for (std::uint32_t e = 0; e < kExperts; ++e)
     for (std::size_t p = 0; p < projections.size(); ++p)
@@ -180,6 +192,7 @@ TEST(ImportExpertRelayoutTest, RelaidTablesDecodeToTheSplitSourcesValues) {
   EXPECT_EQ(outputs[0].format.layout, Layout::kScaleAtoms);
   EXPECT_EQ(outputs[0].format.stacked, 2U);
   EXPECT_EQ(outputs[0].format.shape.ne[1], 256U);
+  EXPECT_EQ(outputs[0].format.shape.ne[0], hidden);
   EXPECT_FALSE(outputs[0].format.params.tensor_scale);
   EXPECT_EQ(outputs[1].name, "blk.0.ffn_down_exps.weight");
   EXPECT_EQ(outputs[2].name, "blk.0.ffn_gate_exps.weight_scale_2");
@@ -200,6 +213,8 @@ TEST(ImportExpertRelayoutTest, RelaidTablesDecodeToTheSplitSourcesValues) {
   EXPECT_EQ(plan->outputs()[0].relayout_from, Layout::kSplit);
   EXPECT_EQ(plan->outputs()[1].relayout_from, Layout::kSplit);
   EXPECT_FALSE(plan->outputs()[2].relayout_from);
+  EXPECT_EQ(plan->route_workspace_bytes(),
+            2 * format::kScaleAtomRows * std::max<std::uint64_t>(hidden, 128) / 16);
 
   const auto published = Publish(*plan, s.file);
   const auto& src = plan->source();

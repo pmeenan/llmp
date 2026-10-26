@@ -518,7 +518,7 @@ const RecipeNode kHeadProjection{.name = "head.full",
                                  .params = kHeadProjectionParams,
                                  .weights = kHeadProjectionWeights,
                                  .input = V("head.norm")};
-const std::array kSliceParams{P("start", I(0)), P("rows", I(32), "image_rows"),
+const std::array kSliceParams{P("start", I(0)), P("rows", I(32), "latent_rows"),
                               P("input_rows", I(64), "joint_rows")};
 const RecipeNode kPrediction{.name = "prediction",
                              .component_kind = "slice.spatial",

@@ -199,6 +199,15 @@ struct ParamRule {
   // catalog): a convention the importer's fold already applied to the bytes
   // (a zero-centered norm's flag beside norm.plus_one; D-108 as amended).
   std::string_view unless_fold{};
+  // A rule (a requirement too) that applies only when the source key
+  // `when_key` holds the string `when_value`, or, with `when_value` empty,
+  // only when `when_key` is absent: one key's value selecting what another
+  // means (rope.scaling.type selecting what rope.scaling.factor scales). A
+  // string-matched flag rule on `when_key` admits these values as ones the
+  // mapping implements. A dialect's key spellings respell `when_key` as they
+  // respell `key`, and the importer selects it as text.
+  std::string_view when_key{};
+  std::string_view when_value{};
 };
 
 struct FoldRule {

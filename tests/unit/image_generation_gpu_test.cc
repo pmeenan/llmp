@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Default-off complete source generation through the shared typed pipeline.
+// Complete source generation through the shared typed pipeline. One check
+// runs in the standard models set (PublishedCompositionMatchesFrozenPixels:
+// the published composition against its frozen pixel pin); the longer
+// diagnostics stay behind their LLMP_RUN_* opt-ins.
 #include <gtest/gtest.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -1506,6 +1509,69 @@ TEST(ImageGenerationGpu, SameSourceMigrationScreen) {
   RecordProperty("native_report", life->native_report);
 }
 
+// One generation of `composition` from the reference fixture's prompt, noise
+// and geometry (1,024², 40 steps) on the imported-source path; null after a
+// recorded failure.
+std::unique_ptr<Lifetime> ExecuteFixtureGeneration(const fs::path& store, const fs::path& fixture,
+                                                   std::string composition) {
+  auto life = std::make_unique<Lifetime>();
+  life->imported_source = true;
+  life->single_generation = true;
+  life->requested_composition = std::move(composition);
+  life->numerical_fixture = fixture;
+  const fs::path noise = life->numerical_fixture / "latents_init.bf16";
+  auto result = life->Run(store, noise);
+  auto retired = life->Retire();
+  if (!retired) {
+    std::ignore = life.release();
+    ADD_FAILURE() << Failed(retired).value_or("");
+    return {};
+  }
+  if (!result) {
+    ADD_FAILURE() << Failed(result).value_or("");
+    return {};
+  }
+  return life;
+}
+
+// The reference fixture on the Sparks: LLMP_IMAGE_NUMERICAL_FIXTURE, else the
+// models directory's Qwen-Image-2.1 reference.
+fs::path ReferenceFixture() {
+  if (const char* fixture = std::getenv("LLMP_IMAGE_NUMERICAL_FIXTURE")) return fixture;
+  const auto base = llmp::test_support::StandingModelsDir();
+  return base.empty() ? fs::path{}
+                      : fs::path(base) / "references" / "qwen-image-2.1" / "native" / "ref1";
+}
+
+// The image check of the standard models set (no opt-in): the published v1
+// composition generates the reference request through the stored-graph
+// binding and the shared runner, and its pixels match the frozen pin.
+TEST(ImageGenerationGpu, PublishedCompositionMatchesFrozenPixels) {
+  const char* override_store = std::getenv("LLMP_IMAGE_IMPORT_STORE");
+  const fs::path store = override_store != nullptr ? fs::path(override_store)
+                                                   : fs::path(llmp::test_support::V1Store());
+  const fs::path fixture = ReferenceFixture();
+  ASSERT_FALSE(kComposition.empty()) << "the pinned v1 map names no qwen-image composition";
+  std::error_code error;
+  ASSERT_TRUE(fs::is_directory(store / kComposition, error))
+      << "no published Qwen-Image composition in " << store;
+  ASSERT_TRUE(fs::is_regular_file(fixture / "latents_init.bf16", error))
+      << "no reference fixture at " << fixture;
+  auto published = ExecuteFixtureGeneration(store, fixture, kComposition);
+  ASSERT_NE(published, nullptr);
+  ASSERT_EQ(published->fixture_width, 1024U);
+  ASSERT_EQ(published->fixture_height, 1024U);
+  ASSERT_EQ(published->fixture_steps, 40U);
+  ASSERT_EQ(published->final[0].size(), 64U);
+  ASSERT_EQ(std::getenv("LLMP_TEST_V1_RECORD"), nullptr)
+      << "the frozen pixel check never writes a new frozen record";
+  llmp::test_support::FrozenDigests frozen("qwen_image");
+  ASSERT_TRUE(frozen.loaded()) << "the published v1 pixel pin must be available";
+  frozen.Expect("pixels.1024x1024.40", published->final[0]);
+  RecordProperty("published_composition", kComposition);
+  RecordProperty("published_pixel_sha256", published->final[0]);
+}
+
 TEST(ImageGenerationGpu, ImportedBf16RecipeMatchesPublishedPixelsAndSource) {
   if (!std::getenv("LLMP_RUN_IMPORTED_IMAGE_BF16_PROOF"))
     GTEST_SKIP() << "explicit published-versus-imported BF16 proof required";
@@ -1517,24 +1583,7 @@ TEST(ImageGenerationGpu, ImportedBf16RecipeMatchesPublishedPixelsAndSource) {
   ASSERT_NE(fixture, nullptr);
 
   const auto execute = [&](std::string composition) {
-    auto life = std::make_unique<Lifetime>();
-    life->imported_source = true;
-    life->single_generation = true;
-    life->requested_composition = std::move(composition);
-    life->numerical_fixture = fixture;
-    const fs::path noise = life->numerical_fixture / "latents_init.bf16";
-    auto result = life->Run(store, noise);
-    auto retired = life->Retire();
-    if (!retired) {
-      std::ignore = life.release();
-      ADD_FAILURE() << Failed(retired).value_or("");
-      return std::unique_ptr<Lifetime>{};
-    }
-    if (!result) {
-      ADD_FAILURE() << Failed(result).value_or("");
-      return std::unique_ptr<Lifetime>{};
-    }
-    return life;
+    return ExecuteFixtureGeneration(store, fixture, std::move(composition));
   };
 
   auto published = execute(kComposition);

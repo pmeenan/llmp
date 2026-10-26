@@ -889,6 +889,49 @@ D-122).
       bounds, checked image payload sums, kept-pipeline JSON identity and
       writer permission-error handling are present at HEAD.
 
+**Foundation review follow-ups (owner, 2026-10-25).** A cross-verified review
+of `ca32156b..265c821a` found that broken image serving, the memory modes, the
+agent (tool-call) path and the exact-site comparison machinery in production keep
+the U-series from being a clean foundation; the owner asked for every finding
+and suggestion to be fixed. Each item lands as one reviewed commit.
+
+- [x] **F1 Image binding and RoPE scaling:** a closed request-scalar vocabulary
+      (every Qwen-Image request was refused at `265c821a`, and its text encoder
+      could not import), image generation in the default models set, dense RoPE
+      scaling types mapped or refused instead of run as YaRN, the IMROPE
+      capability aligned with its check, and the 256-block scale-atom cap removed.
+- [ ] **F2 Memory policy:** a live pool target (dedicated pool charged within the
+      budget; pressure and release free backings first), the shared-mode shrink
+      formula and floor, `SetBudget` as a scheduler command, a device-aware
+      default mode and discrete sizing, the follow-up switch release tail; D-124
+      accepted.
+- [ ] **F3a Tool-call correctness:** bounded JSON depth, growth-funded tool
+      output, one request-local refusal channel, one grammar shared by parser,
+      sampler and judge, Llama leading-JSON calls, self-opened reasoning, marked
+      forced spans, linear-time result association.
+- [ ] **F3b Tool-call hot path:** device greedy and verify kept when the mask is
+      the identity, lazy and class-based masks, template-derived openers, every
+      declared tool rendered.
+- [ ] **F4 Engine recovery:** one fence-proof unproven-work contract with
+      recover-then-serve tests per owner, MTP drafting after plain steps, step
+      failure classification, image fence acknowledgement, history copies.
+- [ ] **F5 Serving:** output delivery as host-only state, one cohort decision
+      function, kept-record commit by descriptor, clock-skew and lock-file edges.
+- [ ] **F6 Comparison out of production:** exact-site recipe comparison moved to
+      `benchmarks/` (dense decoders could not finish a prefill plan at
+      `265c821a`); coarse, versioned rank rows in `src/`.
+- [ ] **F7 Decode GEMV and planner cost:** one-pass VecQ at 5–8 columns, rank
+      data instead of capability vetoes, upstream prefetch, stable op identity in
+      digests, cheaper inference, geometric decode buckets.
+- [ ] **F8 Kernel-source boundaries:** a vendor-free selected-operation interface,
+      no kernel-source include cycles, a stricter boundary check.
+- [ ] **F9a Import throughput and leftovers** and **F9b one mapping value
+      language,** one Qwen-Image VAE mapping, shared tensor-name dictionary.
+- [ ] **F10 Hygiene and docs:** raw experiment dumps and unused scripts removed,
+      one test-store resolver, `m35-record.md`, doc drift.
+- [ ] **F11 Swap continuation at 8K:** the DeepSeek-to-Qwen3.8 8K continuation
+      differs (15 of 16 logits) at `265c821a`; bisect and fix.
+
 - [x] **Family selection** (approved by the owner 2026-09-29: all 13
       checkpoints of [m35-families.md](m35-families.md), with the answers
       recorded there). The goal is

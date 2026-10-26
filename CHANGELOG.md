@@ -145,6 +145,26 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Qwen-Image requests are served again: binding a stored stage graph accepts
+  request scalars the stage does not use, and recipe scalar names come from
+  one closed vocabulary checked at import and admission. `llmp import` of a
+  Qwen-Image pipeline works again (its text encoder, which has no stage
+  recipe, was refused). A Qwen-Image frozen
+  pixel check (`ImageGenerationGpu.PublishedCompositionMatchesFrozenPixels`)
+  now runs in the standard `models` test set.
+
+- Dense decoders (Llama, Mistral) map `rope_scaling` by type: linear scaling
+  becomes a frequency scale of 1 / factor instead of being refused, while
+  `dynamic`, `longrope` and other types, and a factor other than 1 with no,
+  `none` or `default` type, are refused at import instead of running as
+  YaRN. Llama 3 scaling beside `rope_freqs` factors is refused (it would
+  apply twice).
+
+- NVFP4/MXFP4 routed-expert tables wider than 256 scales a row (hidden above
+  4096 for NVFP4, such as Llama 4 Scout's 5120) are relaid out to the scale
+  atoms the grouped GEMM reads; the importer sizes its route workspace from
+  the widest table.
+
 - Shared attention fallbacks preserve head/token geometry, BF16 batch views,
   declared mask dtype and row extents. Supported strided scalar conversions use
   the existing native copy path with checked owner bounds. Mixed F32/F16 addition

@@ -565,6 +565,15 @@ bool AcceptsRopeExt(const ex::CapabilityQuery& q) {
   const auto* x = Operand(q, 0);
   const auto* positions = Operand(q, 1);
   const auto* out = Operand(q, ex::kOutputOperand);
+  // CheckRopeExt's (validate_ext.cc) scalar domain: finite parameters with
+  // positive frequency base, scale and attention factor, and no YaRN or
+  // Llama 3 scaling in a multi-section mode (the lowering passes Llama 3 as
+  // ext_factor -1), so the planner falls back instead of failing to lower.
+  if (r->llama3 || r->ext_factor != 0.0F || !std::isfinite(r->base) || !std::isfinite(r->scale) ||
+      !std::isfinite(r->attn_factor) || !std::isfinite(r->beta_fast) ||
+      !std::isfinite(r->beta_slow) || !(r->base > 0.0F) || !(r->scale > 0.0F) ||
+      !(r->attn_factor > 0.0F))
+    return false;
   if (r->table || r->inverse || r->mode != ir::RopeMode::kInterleavedMulti ||
       r->rotated_dims != UINT32_MAX || !x || !positions || x->encoding != Encoding::kF32 ||
       x->layout != Layout::kDense || positions->encoding != Encoding::kI32 ||

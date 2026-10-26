@@ -118,6 +118,26 @@ std::expected<spec::ModelSpec, Error> Family(const Checkpoint& source,
   return std::move(*family);
 }
 
+// A null recipe is the text encoder's (spec/image_family.h
+// ImageComponentRule::recipe): its stored spec is the family profile's
+// ImageTextSpec at a minimal geometry (one prompt row), over its tensors.
+bool TextEncoderRule(const spec::ImageComponentRule& rule) {
+  return rule.recipe == nullptr && !rule.kinds.empty() &&
+         rule.kinds.front() == spec::kImageTextKind;
+}
+
+// The text encoder's groups, as its spec binds them: the token table, then
+// one group a layer.
+std::vector<ComponentGroup> TextEncoderGroups(std::span<const model::ImageTensor> tensors) {
+  constexpr auto kPerLayer = static_cast<std::size_t>(model::TextTensor::kCount);
+  std::vector<ComponentGroup> out(tensors.size());
+  for (std::size_t i = 0; i < tensors.size(); ++i)
+    out[i] = i == 0 ? ComponentGroup{.kind = ComponentGroup::Kind::kTable}
+                    : ComponentGroup{.kind = ComponentGroup::Kind::kLayer,
+                                     .layer = static_cast<std::uint32_t>((i - 1) / kPerLayer)};
+  return out;
+}
+
 }  // namespace
 
 bool IsImagePipeline(const Checkpoint& source) {
@@ -376,6 +396,19 @@ std::expected<NormalizationCost, Error> ImagePipelineBound(const Checkpoint& sou
     std::vector<SourceFile> pipeline_files = source.files;
     if (auto family = Family(source, mapping, pipeline_files)) {
       for (const auto& rule : mapping.components) {
+        if (TextEncoderRule(rule)) {
+          // Its spec's mapping bound, as ImageTextSpec pays it.
+          const auto profile = spec::ImageProfileOf(*family, mapping);
+          if (!profile) return Bad("the family spec does not read back");
+          const auto tensors = model::TextEncoderTensors(profile->text, mapping.names.text);
+          const auto text_bound = spec::ImageTextSpecBound(profile->text, tensors);
+          if (!text_bound) return Bad("cannot bound the text encoder's spec", Rule::kBounds);
+          if (__builtin_add_overflow(metadata_bytes, *text_bound, &metadata_bytes) ||
+              __builtin_add_overflow(work_units, std::uint64_t{tensors.size()}, &work_units)) {
+            return Bad("image pipeline recipe bound overflows", Rule::kBounds);
+          }
+          continue;
+        }
         if (rule.recipe == nullptr) {
           return Bad("an image component has no mapping-owned stage recipe");
         }
@@ -419,7 +452,8 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
   std::vector<SourceFile> pipeline_files = source.files;
   auto family = Family(source, mapping, pipeline_files);
   if (!family) return std::unexpected(family.error());
-  if (!spec::ImageProfileOf(*family, mapping)) return Bad("the family spec does not read back");
+  const auto profile = spec::ImageProfileOf(*family, mapping);
+  if (!profile) return Bad("the family spec does not read back");
 
   ImagePipelinePlan out;
   out.files = std::move(pipeline_files);
@@ -430,6 +464,20 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
     if (!std::ranges::contains(rule.containers, comp->container))
       return Bad("an image component uses a container its mapping does not allow",
                  Rule::kContainer);
+    if (TextEncoderRule(rule)) {
+      const auto tensors = model::TextEncoderTensors(profile->text, mapping.names.text);
+      auto text_spec = spec::ImageTextSpec(profile->text, 1, 0, tensors);
+      if (!text_spec) return Bad("cannot build the text encoder's spec");
+      auto plan =
+          image_pipeline_detail::PlanComponent(*comp, tensors, rule.ignored_tensors,
+                                               text_spec->spec, TextEncoderGroups(tensors), {}, {});
+      if (!plan) return std::unexpected(plan.error());
+      if (__builtin_add_overflow(out.payload_bytes, plan->payload_bytes, &out.payload_bytes)) {
+        return Bad("image pipeline payload exceeds 64-bit bounds", Rule::kBounds);
+      }
+      out.components.push_back(std::move(*plan));
+      continue;
+    }
     if (rule.recipe == nullptr) {
       return Bad("an image component has no mapping-owned stage recipe");
     }

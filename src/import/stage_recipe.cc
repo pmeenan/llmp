@@ -22,7 +22,7 @@
 #include "components/spatial.h"
 #include "components/step.h"
 #include "spec/mapping.h"
-#include "spec/names.h"
+#include "spec/spec.h"
 
 namespace llmp::import {
 namespace {
@@ -731,8 +731,9 @@ std::expected<void, std::string> CheckRecipeSteps(std::span<const RecipeStep> st
           if (auto checked = CheckRefTemplate(step.node->carry, indices); !checked) return checked;
         for (const auto& param : step.node->params) {
           if (auto checked = CheckTemplate(param.name, indices); !checked) return checked;
-          if (!param.request_scalar.empty() && !names::IsName(param.request_scalar))
-            return std::unexpected("recipe request scalar source name is invalid");
+          if (!param.request_scalar.empty() && !spec::IsStageScalarName(param.request_scalar))
+            return std::unexpected(std::format(
+                "recipe request scalar {} is not one the runtime supplies", param.request_scalar));
           if (auto checked_value =
                   CheckExpression(param.value, family, source_values, active_values);
               !checked_value)

@@ -367,6 +367,11 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   if (d.llama3_rope && in.params.Flag("yarn")) {
     return std::unexpected("Llama 3 RoPE and YaRN cannot both be enabled");
   }
+  // llama.cpp's converters store Llama 3 scaling as precomputed per-pair
+  // factors (rope_freqs); applying both would scale the frequencies twice.
+  if (d.llama3_rope && d.freqs) {
+    return std::unexpected("Llama 3 RoPE scaling and rope_freqs factors cannot both be applied");
+  }
   if (d.llama3_rope && (d.rope_axes[1] != 0 || d.rope_axes[2] != 0 || !(d.yarn.factor > 1.0F) ||
                         d.yarn.context == 0 || !(d.low_freq_factor > 0.0F) ||
                         !(d.high_freq_factor > d.low_freq_factor))) {

@@ -156,8 +156,10 @@ TEST(MingTransformer, ExpandsPinnedLearnedCoreToCompleteTopologyAndInventory) {
   canonical.pipeline = spec::PipelineKind::kImage;
   canonical.stages.push_back(stage);
   spec::Canonicalize(canonical);
+  // Re-recorded 2026-10-25: the output slice binds latent_rows, a request
+  // scalar the runtime supplies (spec::kStageScalarNames), not image_rows.
   EXPECT_EQ(base::ToHex(canonical.Digest()),
-            "70a476a571aeb468fdb3708b92522cea5d4a7c005bb4f93c26f008fe69279a64");
+            "b0368f3d04eaaeeb9840bfa5238366577c96146e410b0089248a8b5b292a27dc");
 
   const auto count = [&](std::string_view kind) {
     return std::ranges::count(components, kind, &spec::ComponentRef::kind);

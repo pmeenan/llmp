@@ -42,6 +42,7 @@
 #ifndef LLMP_SPEC_SPEC_H_
 #define LLMP_SPEC_SPEC_H_
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -200,6 +201,16 @@ struct StageScalar {
   std::int64_t value = 0;
 };
 
+// The closed vocabulary of request scalars a stored stage may bind, sorted.
+// The runtime supplies every one of them for each image stage request
+// (runtime/image_stage.h); Validate refuses a binding to any other name, so
+// a recipe naming a scalar nothing supplies fails at import, not at a
+// request. latent_width/latent_height are the latent grid, latent_rows its
+// area, text_rows the conditioning rows and joint_rows their sum.
+inline constexpr std::array<std::string_view, 5> kStageScalarNames{
+    "joint_rows", "latent_height", "latent_rows", "latent_width", "text_rows"};
+[[nodiscard]] bool IsStageScalarName(std::string_view name) noexcept;
+
 // Execution protocol, independent of the checkpoint dialect and performance
 // defaults. A selected map names an existing own output-role binding.
 struct AnchoredDraft {
@@ -306,7 +317,9 @@ std::expected<void, std::string> Validate(const ModelSpec& spec);
 
 // Copy a validated template and resolve its integer scalar bindings. Scalars
 // are sorted by name and unique; missing names refuse rather than using the
-// template's literals. The caller pays for the copied spec before this call.
+// template's literals. Scalars no binding uses are accepted: the runtime
+// supplies the whole vocabulary to every stage, and each stage binds only
+// what its graph needs. The caller pays for the copied spec before this call.
 // Component schema and shape validation still apply to the resulting values.
 std::expected<ModelSpec, std::string> BindStageScalars(const ModelSpec& spec,
                                                        std::span<const StageScalar> scalars);

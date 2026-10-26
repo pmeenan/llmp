@@ -228,7 +228,7 @@ constexpr std::array kExl3TensorRules = {
       FromOrRatio("attention", "rope_dims", "attention.key_length", "embedding_length",         \
                   "attention.head_count", kInt),                                                \
       FromKey("attention", "rope_base", "rope.freq_base", kReal),                               \
-      Real("attention", "rope_base", 10000.0), Real("attention", "rope_scale", 1.0),            \
+      Real("attention", "rope_base", 10000.0),                                                  \
       FromTensor("attention", "rope_freqs", "rope_freqs.weight"),                               \
       Flag("attention", "scale_scores", true), Flag("attention", "explicit_scores", false),     \
       Name("ffn", "placement", "pre"),                                                          \
@@ -236,21 +236,40 @@ constexpr std::array kExl3TensorRules = {
       Name("ffn", "activation", "silu"), FromKey("ffn", "hidden", "feed_forward_length", kInt), \
       FromKey("final_norm", "eps", "attention.layer_norm_rms_epsilon", kReal, EPS_TRANSFORM)
 
-#define LLMP_DENSE_DECODER_YARN_PARAMS                                                          \
-  KeyEquals("attention", "yarn", "rope.scaling.type", "yarn"),                                  \
-      KeyEquals("attention", "llama3_rope", "rope.scaling.type", "llama3"),                     \
-      FromKey("attention", "rope_factor", "rope.scaling.factor", kReal, Transform::kNone, {},   \
-              true),                                                                            \
-      FromKey("attention", "yarn_context", "rope.scaling.original_context_length", kInt,        \
-              Transform::kNone, {}, true),                                                      \
-      FromKey("attention", "beta_fast", "rope.scaling.yarn_beta_fast", kReal, Transform::kNone, \
-              {}, true),                                                                        \
-      FromKey("attention", "beta_slow", "rope.scaling.yarn_beta_slow", kReal, Transform::kNone, \
-              {}, true),                                                                        \
-      FromKey("attention", "low_freq_factor", "rope.scaling.low_freq_factor", kReal,            \
-              Transform::kNone, {}, true),                                                      \
-      FromKey("attention", "high_freq_factor", "rope.scaling.high_freq_factor", kReal,          \
-              Transform::kNone, {}, true)
+// The dense decoders' rope.scaling.type: absent, none or default leave the
+// frequencies unscaled (a factor other than 1 beside them is ambiguous: YaRN
+// in the attention component's heuristic, linear in llama.cpp's reading of a
+// GGUF, ignored by transformers' default; refused); yarn and llama3 select
+// their component flags and read the factor, original context and their own
+// shape keys; linear is a frequency scale of 1 / factor, never YaRN. Any
+// other type (dynamic, longrope, ...) is refused by the flags' string match,
+// never run as YaRN. It holds the rope_scale rules (linear's, then the
+// unscaled constant); the core parameters leave rope_scale to their users.
+#define LLMP_DENSE_DECODER_ROPE_SCALING_PARAMS                                                    \
+  KeyEquals("attention", "yarn", "rope.scaling.type", "yarn"),                                    \
+      KeyEquals("attention", "llama3_rope", "rope.scaling.type", "llama3"),                       \
+      When(FromKey("attention", "rope_scale", "rope.scaling.factor", kReal,                       \
+                   Transform::kReciprocal, {}, true),                                             \
+           "rope.scaling.type", "linear"),                                                        \
+      Real("attention", "rope_scale", 1.0),                                                       \
+      LLMP_DENSE_DECODER_SCALED_KEY("rope_factor", "rope.scaling.factor", kReal, "yarn"),         \
+      LLMP_DENSE_DECODER_SCALED_KEY("rope_factor", "rope.scaling.factor", kReal, "llama3"),       \
+      LLMP_DENSE_DECODER_SCALED_KEY("yarn_context", "rope.scaling.original_context_length", kInt, \
+                                    "yarn"),                                                      \
+      LLMP_DENSE_DECODER_SCALED_KEY("yarn_context", "rope.scaling.original_context_length", kInt, \
+                                    "llama3"),                                                    \
+      LLMP_DENSE_DECODER_SCALED_KEY("beta_fast", "rope.scaling.yarn_beta_fast", kReal, "yarn"),   \
+      LLMP_DENSE_DECODER_SCALED_KEY("beta_slow", "rope.scaling.yarn_beta_slow", kReal, "yarn"),   \
+      LLMP_DENSE_DECODER_SCALED_KEY("low_freq_factor", "rope.scaling.low_freq_factor", kReal,     \
+                                    "llama3"),                                                    \
+      LLMP_DENSE_DECODER_SCALED_KEY("high_freq_factor", "rope.scaling.high_freq_factor", kReal,   \
+                                    "llama3"),                                                    \
+      When(RequireReal("rope.scaling.factor", 1.0, true), "rope.scaling.type", {}),               \
+      When(RequireReal("rope.scaling.factor", 1.0, true), "rope.scaling.type", "none"),           \
+      When(RequireReal("rope.scaling.factor", 1.0, true), "rope.scaling.type", "default")
+#define LLMP_DENSE_DECODER_SCALED_KEY(PARAM, KEY, TYPE, SCALING)                                \
+  When(FromKey("attention", PARAM, KEY, TYPE, Transform::kNone, {}, true), "rope.scaling.type", \
+       SCALING)
 
 #define LLMP_DENSE_DECODER_OPTIONAL_QKV_BIAS                                       \
   FromKey("attention", "qkv_bias", "attention_bias", kBool),                       \
@@ -300,6 +319,7 @@ constexpr std::array kQwen2Policies = {
 };
 constexpr std::array kQwen2Params{
     LLMP_DENSE_DECODER_CORE_PARAMS(Transform::kNone, "neox"),
+    Real("attention", "rope_scale", 1.0),
     Flag("attention", "qkv_bias", true),
 };
 constexpr std::array kQwen2GgufExtras{Require("rope.scaling.type", "none", true)};
@@ -376,7 +396,7 @@ constexpr std::array kDensePolicies = {
 };
 constexpr std::array kDenseCanonicalParams{
     LLMP_DENSE_DECODER_CORE_PARAMS(Transform::kNone, "normal"),
-    LLMP_DENSE_DECODER_YARN_PARAMS,
+    LLMP_DENSE_DECODER_ROPE_SCALING_PARAMS,
     LLMP_DENSE_DECODER_OPTIONAL_QKV_BIAS,
 };
 constexpr std::array kDenseHfExtras{Require("hidden_act", "silu", true)};

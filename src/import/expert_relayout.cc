@@ -37,7 +37,6 @@ constexpr std::array kEncodings = {Encoding::kNvfp4, Encoding::kMxfp8, Encoding:
 // with its readers; until then its table stays split, which its row
 // lookups read.
 constexpr std::array kRowTableEncodings = {Encoding::kNvfp4};
-constexpr std::uint64_t kMaxBlocks = 256;  // PartRoutePlan::ScaleAtoms
 
 std::unexpected<Error> Bad(std::string_view why) {
   return std::unexpected(Error{.rule = Rule::kConfig, .reason = why});
@@ -283,7 +282,7 @@ bool RelaysOut(const format::TensorFormat& t) {
   if (block == 0 || t.shape.ne[0] % block != 0) return false;
   const auto blocks = t.shape.ne[0] / block;
   return t.shape.ne[1] != 0 && t.shape.ne[1] % format::kScaleAtomRows == 0 &&
-         blocks % format::kScaleAtomBlocks == 0 && blocks <= kMaxBlocks;
+         blocks % format::kScaleAtomBlocks == 0;
 }
 
 std::expected<ExpertRelayoutSummary, Error> RelayoutExpertTables(

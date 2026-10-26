@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -145,6 +146,18 @@ TEST(ImageStage, RefusesUnresolvedUnknownAndInconsistentGeometryWithoutRegenerat
       ValidateImageStageOutputs(spec::StageRole::kVae, graph->outputs(), profile, {4, 6, 5, 2}));
   EXPECT_FALSE(ValidateImageStageOutputs(spec::StageRole::kVae, graph->outputs(), Profile(4),
                                          {12, 8, 5, 2}));
+}
+
+// The runtime supplies exactly the closed vocabulary stored graphs may bind
+// (spec::kStageScalarNames), so a validated stage never misses a scalar.
+TEST(ImageStage, SuppliesTheWholeRequestScalarVocabulary) {
+  const auto dimensions = ImageStageDimensionsOf(Profile(2), {6, 4, 5, 2});
+  ASSERT_TRUE(dimensions) << Failed(dimensions).value_or("");
+  const auto scalars = dimensions->Scalars();
+  ASSERT_EQ(scalars.size(), spec::kStageScalarNames.size());
+  for (std::size_t i = 0; i < scalars.size(); ++i)
+    EXPECT_EQ(scalars[i].name, spec::kStageScalarNames[i]);
+  EXPECT_EQ(scalars[0].value, 3 * 2 + 3);  // joint_rows = latent_rows + text_rows
 }
 
 TEST(ImageStage, BindingMetadataIsValidatedAndChangesStoredIdentity) {

@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <format>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -1291,6 +1292,171 @@ TEST(MappingTest, GenericDenseDecoderSynthesizesLlamaAndMistralWithRopeFreqsAndY
   EXPECT_EQ(mistral_spec->stages[0].heads.output->weights[0].tensor, "output.weight");
 }
 
+// The dense decoders' rope.scaling.type, on the GGUF and HF (safetensors)
+// dialects: absent, none or default leave frequencies unscaled (a factor
+// other than 1 beside them is ambiguous and refused); yarn and llama3 select
+// their component flags with the factor and original context; linear is a
+// frequency scale of 1 / factor and never YaRN; dynamic and every other type
+// are refused rather than run as YaRN.
+TEST(MappingTest, DenseDecoderRopeScalingTypesMapOrRefuse) {
+  struct Case {
+    std::string_view type;  // empty: no rope.scaling.type key
+    std::optional<double> factor;
+    bool context = true;  // carry rope.scaling.original_context_length
+    bool ok = true;
+    std::string_view flag{};  // "yarn" or "llama3_rope", else neither
+    double rope_scale = 1.0;
+  };
+  const std::array cases{
+      Case{.type = {}, .factor = std::nullopt},
+      Case{.type = {}, .factor = 1.0},
+      Case{.type = {}, .factor = 4.0, .ok = false},
+      Case{.type = {}, .factor = 4.0, .context = false, .ok = false},
+      Case{.type = "none", .factor = std::nullopt},
+      Case{.type = "none", .factor = 4.0, .ok = false},
+      Case{.type = "default", .factor = 1.0},
+      Case{.type = "default", .factor = 4.0, .ok = false},
+      Case{.type = "yarn", .factor = 4.0, .flag = "yarn"},
+      Case{.type = "llama3", .factor = 32.0, .flag = "llama3_rope"},
+      Case{.type = "linear", .factor = 4.0, .rope_scale = 0.25},
+      Case{.type = "linear", .factor = 4.0, .context = false, .rope_scale = 0.25},
+      Case{.type = "linear", .factor = std::nullopt},
+      Case{.type = "dynamic", .factor = 2.0, .ok = false},
+      Case{.type = "dynamic", .factor = 2.0, .context = false, .ok = false},
+      Case{.type = "longrope", .factor = 2.0, .ok = false},
+  };
+  for (const auto container : {"gguf", "safetensors"}) {
+    Source source{.architecture = "llama", .container = std::string(container)};
+    for (const auto* name :
+         {"token_embd.weight", "output_norm.weight", "output.weight", "blk.0.attn_norm.weight",
+          "blk.0.attn_q.weight", "blk.0.attn_k.weight", "blk.0.attn_v.weight",
+          "blk.0.attn_output.weight", "blk.0.ffn_norm.weight", "blk.0.ffn_gate.weight",
+          "blk.0.ffn_up.weight", "blk.0.ffn_down.weight"})
+      source.tensors.push_back({.name = name});
+    const Mapping& mapping = std::string_view(container) == "gguf"
+                                 ? mappings::LlamaGgufMapping()
+                                 : mappings::LlamaSafetensorsMapping();
+    for (const Case& c : cases) {
+      SCOPED_TRACE(std::format("{} type '{}' factor {} context {}", container, c.type,
+                               c.factor.value_or(0.0), c.context));
+      std::vector<SourceValue> values{
+          {.key = "llama.context_length", .value = std::int64_t{131072}},
+          {.key = "llama.embedding_length", .value = std::int64_t{2048}},
+          {.key = "llama.block_count", .value = std::int64_t{1}},
+          {.key = "llama.feed_forward_length", .value = std::int64_t{8192}},
+          {.key = "llama.attention.head_count", .value = std::int64_t{32}},
+          {.key = "llama.attention.head_count_kv", .value = std::int64_t{8}},
+          {.key = "llama.attention.key_length", .value = std::int64_t{64}},
+          {.key = "llama.attention.value_length", .value = std::int64_t{64}},
+          {.key = "llama.attention.layer_norm_rms_epsilon", .value = 1e-5},
+          {.key = "llama.rope.dimension_count", .value = std::int64_t{64}},
+          {.key = "llama.rope.freq_base", .value = 500000.0},
+      };
+      if (!c.type.empty())
+        values.push_back({.key = "llama.rope.scaling.type", .value = std::string(c.type)});
+      if (c.factor) values.push_back({.key = "llama.rope.scaling.factor", .value = *c.factor});
+      if (c.context)
+        values.push_back(
+            {.key = "llama.rope.scaling.original_context_length", .value = std::int64_t{8192}});
+      if (c.type == "llama3") {
+        values.push_back({.key = "llama.rope.scaling.low_freq_factor", .value = 1.0});
+        values.push_back({.key = "llama.rope.scaling.high_freq_factor", .value = 4.0});
+      }
+      if (c.type == "yarn") {
+        values.push_back({.key = "llama.rope.scaling.yarn_beta_fast", .value = 32.0});
+        values.push_back({.key = "llama.rope.scaling.yarn_beta_slow", .value = 1.0});
+      }
+      const auto spec = Synthesize(mapping, source, values);
+      if (!c.ok) {
+        ASSERT_FALSE(spec.has_value());
+        EXPECT_NE(spec.error().find("rope.scaling"), std::string::npos) << spec.error();
+        continue;
+      }
+      ASSERT_TRUE(spec.has_value()) << spec.error();
+      const ComponentRef& attn = spec->stages[0].layers[0].components[0];
+      ASSERT_EQ(attn.kind, "attention.dense");
+      const auto flag = [&](std::string_view name) {
+        const Param* p = attn.Find(name);
+        return p != nullptr && std::get<bool>(p->value);
+      };
+      EXPECT_EQ(flag("yarn"), c.flag == "yarn");
+      EXPECT_EQ(flag("llama3_rope"), c.flag == "llama3_rope");
+      EXPECT_DOUBLE_EQ(std::get<double>(P(attn, "rope_scale").value), c.rope_scale);
+      const Param* factor = attn.Find("rope_factor");
+      if (c.flag.empty()) {
+        EXPECT_EQ(factor, nullptr);
+        EXPECT_EQ(attn.Find("yarn_context"), nullptr);
+      } else {
+        ASSERT_NE(factor, nullptr);
+        EXPECT_DOUBLE_EQ(std::get<double>(factor->value), *c.factor);
+        EXPECT_EQ(P(attn, "yarn_context").value, ParamValue(std::int64_t{8192}));
+      }
+      if (c.flag == "llama3_rope") {
+        EXPECT_DOUBLE_EQ(std::get<double>(P(attn, "high_freq_factor").value), 4.0);
+        EXPECT_EQ(attn.Find("beta_fast"), nullptr);
+      }
+      if (c.flag == "yarn") {
+        EXPECT_DOUBLE_EQ(std::get<double>(P(attn, "beta_fast").value), 32.0);
+        EXPECT_EQ(attn.Find("high_freq_factor"), nullptr);
+      }
+    }
+  }
+}
+
+// A dialect that respells a source key respells the gates reading it
+// (ParamRule::when_key) with the rules themselves: otherwise a gate would
+// see the key absent while its rule reads the key present (linear refused
+// as a type no flag implements; an absent-type requirement applied).
+TEST(MappingTest, DialectKeySpellingRespellsSourceKeyGates) {
+  auto canonical = mappings::LlamaMapping();
+  auto dialect = canonical.dialects.front();
+  ASSERT_EQ(dialect.container, "gguf");
+  const std::array keys{SourceKey{"rope.scaling.type", "rope.scaling.kind"}};
+  dialect.keys = keys;
+  canonical.dialects = std::span(&dialect, 1);
+  ASSERT_TRUE(ValidateMapping(canonical)) << ValidateMapping(canonical).error();
+  const auto resolved = ResolveSourceMapping(canonical, "llama", "gguf");
+  ASSERT_TRUE(resolved) << resolved.error();
+  std::size_t gated = 0;
+  for (const auto& rule : resolved->mapping.params) {
+    EXPECT_NE(rule.when_key, "rope.scaling.type") << rule.slot << "." << rule.param;
+    if (!rule.when_key.empty()) {
+      EXPECT_EQ(rule.when_key, "rope.scaling.kind");
+      ++gated;
+    }
+  }
+  EXPECT_GT(gated, 0U);
+
+  Source source{.architecture = "llama", .container = "gguf"};
+  for (const auto* name :
+       {"token_embd.weight", "output_norm.weight", "output.weight", "blk.0.attn_norm.weight",
+        "blk.0.attn_q.weight", "blk.0.attn_k.weight", "blk.0.attn_v.weight",
+        "blk.0.attn_output.weight", "blk.0.ffn_norm.weight", "blk.0.ffn_gate.weight",
+        "blk.0.ffn_up.weight", "blk.0.ffn_down.weight"})
+    source.tensors.push_back({.name = name});
+  const std::vector<SourceValue> values{
+      {.key = "llama.context_length", .value = std::int64_t{131072}},
+      {.key = "llama.embedding_length", .value = std::int64_t{2048}},
+      {.key = "llama.block_count", .value = std::int64_t{1}},
+      {.key = "llama.feed_forward_length", .value = std::int64_t{8192}},
+      {.key = "llama.attention.head_count", .value = std::int64_t{32}},
+      {.key = "llama.attention.head_count_kv", .value = std::int64_t{8}},
+      {.key = "llama.attention.key_length", .value = std::int64_t{64}},
+      {.key = "llama.attention.value_length", .value = std::int64_t{64}},
+      {.key = "llama.attention.layer_norm_rms_epsilon", .value = 1e-5},
+      {.key = "llama.rope.dimension_count", .value = std::int64_t{64}},
+      {.key = "llama.rope.freq_base", .value = 500000.0},
+      {.key = "llama.rope.scaling.kind", .value = std::string("linear")},
+      {.key = "llama.rope.scaling.factor", .value = 4.0},
+  };
+  const auto spec = Synthesize(canonical, source, values);
+  ASSERT_TRUE(spec.has_value()) << spec.error();
+  const ComponentRef& attn = spec->stages[0].layers[0].components[0];
+  ASSERT_EQ(attn.kind, "attention.dense");
+  EXPECT_DOUBLE_EQ(std::get<double>(P(attn, "rope_scale").value), 0.25);
+  EXPECT_EQ(attn.Find("rope_factor"), nullptr);
+}
+
 TEST(MappingTest, CheckLayerFlagsRefusesFlagWhenScheduleResolvesToAllA) {
   const Mapping& canonical = mappings::Gemma4Mapping();
   const auto source = test_support::Gemma4Source(26);
@@ -1687,7 +1853,7 @@ TEST(SpecTest, DraftingContractIsCanonicalShapeSpecificAndChangesIdentity) {
   }
 }
 
-TEST(SpecTest, BindStageScalarsRejectsUnknownScalarsAndExcessScalarCount) {
+TEST(SpecTest, BindStageScalarsRequiresBoundNamesAndAcceptsTheWholeVocabulary) {
   ModelSpec spec{.pipeline = PipelineKind::kImage};
   Stage flow{.name = "flow", .role = StageRole::kDenoiser};
   flow.stream.width = 4;
@@ -1697,32 +1863,56 @@ TEST(SpecTest, BindStageScalarsRejectsUnknownScalarsAndExcessScalarCount) {
   vae.layers = {{{{.kind = "spatial.pad", .params = {{"height", std::int64_t{8}}}}}}};
   vae.links = {{0, {}}};
   vae.exports = {1};
-  vae.scalar_bindings = {{.component = 1, .parameter = "height", .source = "image_height"}};
+  vae.scalar_bindings = {{.component = 1, .parameter = "height", .source = "latent_height"}};
   spec.stages = {std::move(flow), std::move(vae)};
   Canonicalize(spec);
   ASSERT_TRUE(Validate(spec)) << Validate(spec).error();
 
-  // Unknown scalar name (missing required "image_height") is rejected.
+  // A required scalar that is absent is refused.
   const std::array<StageScalar, 1> unknown{{{.name = "unknown_scalar", .value = 16}}};
   EXPECT_FALSE(BindStageScalars(spec, unknown));
 
-  // Extra unreferenced scalar alongside a required scalar is rejected.
+  // Scalars no binding uses are accepted: the runtime supplies the whole
+  // vocabulary to every stage (a flow stage binds three, a VAE two).
   const std::array<StageScalar, 2> extra{
-      {{.name = "extra_scalar", .value = 32}, {.name = "image_height", .value = 16}}};
-  EXPECT_FALSE(BindStageScalars(spec, extra));
+      {{.name = "extra_scalar", .value = 32}, {.name = "latent_height", .value = 16}}};
+  EXPECT_TRUE(BindStageScalars(spec, extra));
+  std::vector<StageScalar> vocabulary;
+  for (const auto name : kStageScalarNames) vocabulary.push_back({.name = name, .value = 16});
+  EXPECT_TRUE(BindStageScalars(spec, vocabulary));
 
-  // Exceeding kMaxNamed scalars is rejected.
+  // Unsorted or duplicated scalars, and more than kMaxNamed, are refused.
+  const std::array<StageScalar, 2> unsorted{
+      {{.name = "latent_height", .value = 16}, {.name = "extra_scalar", .value = 32}}};
+  EXPECT_FALSE(BindStageScalars(spec, unsorted));
+  const std::array<StageScalar, 2> twice{
+      {{.name = "latent_height", .value = 16}, {.name = "latent_height", .value = 16}}};
+  EXPECT_FALSE(BindStageScalars(spec, twice));
   std::vector<StageScalar> too_many(kMaxNamed + 1,
-                                    StageScalar{.name = "image_height", .value = 16});
+                                    StageScalar{.name = "latent_height", .value = 16});
   EXPECT_FALSE(BindStageScalars(spec, too_many));
 
   // Valid scalar binding succeeds and clears scalar_bindings on the bound stage.
-  const std::array<StageScalar, 1> valid_scalar{{{.name = "image_height", .value = 16}}};
+  const std::array<StageScalar, 1> valid_scalar{{{.name = "latent_height", .value = 16}}};
   const auto bound = BindStageScalars(spec, valid_scalar);
   ASSERT_TRUE(bound) << bound.error();
   EXPECT_TRUE(bound->stages.back().scalar_bindings.empty());
   EXPECT_EQ(std::get<std::int64_t>(bound->stages.back().layers[0].components[0].params[0].value),
             16);
+
+  // A binding to a name outside the closed vocabulary is refused when the
+  // spec is validated (at import and admission), not at a request.
+  for (const auto source : {"image_height", "image_rows"}) {
+    auto foreign = spec;
+    foreign.stages.back().scalar_bindings[0].source = source;
+    const auto refused = Validate(foreign);
+    ASSERT_FALSE(refused) << source;
+    EXPECT_NE(refused.error().find("request scalar"), std::string::npos) << refused.error();
+    EXPECT_FALSE(BindStageScalars(foreign, vocabulary)) << source;
+  }
+  for (const auto name : kStageScalarNames) EXPECT_TRUE(IsStageScalarName(name)) << name;
+  EXPECT_FALSE(IsStageScalarName(""));
+  EXPECT_FALSE(IsStageScalarName("image_rows"));
 }
 
 }  // namespace

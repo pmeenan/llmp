@@ -80,10 +80,13 @@ std::expected<PartRoutePlan, Error> PartRoutePlan::PermuteFold(const HeadPermuta
 }
 std::expected<PartRoutePlan, Error> PartRoutePlan::ScaleAtoms(std::uint64_t rows,
                                                               std::uint64_t blocks) {
+  // The workspace holds two bands of 128 rows; any whole-atom width fits
+  // once that size is representable (the writer sizes and funds it).
   if (rows == 0 || rows % format::kScaleAtomRows != 0 || blocks == 0 ||
-      blocks % format::kScaleAtomBlocks != 0 || blocks > 256 ||
+      blocks % format::kScaleAtomBlocks != 0 ||
+      blocks > std::numeric_limits<std::uint64_t>::max() / (2 * format::kScaleAtomRows) ||
       rows > std::numeric_limits<std::uint64_t>::max() / blocks)
-    return Bad("scale atoms need whole 128-row atoms of 4 to 256 scales a row");
+    return Bad("scale atoms need whole 128-row atoms of a multiple of 4 scales a row");
   PartRoutePlan out;
   out.input_bytes_ = out.output_bytes_ = rows * blocks;
   out.atom_blocks_ = blocks;
@@ -102,6 +105,11 @@ std::expected<PartRoutePlan, Error> PartRoutePlan::Strided(std::uint64_t rows,
   out.stride_ = stride;
   out.lane_ = lane;
   return out;
+}
+std::uint64_t PartRoutePlan::workspace_bytes() const {
+  if (atom_blocks_ != 0) return 2 * format::kScaleAtomRows * atom_blocks_;
+  if (fold_ && permutation_) return input_bytes_ + output_bytes_;
+  return fold_ ? 4 : 0;
 }
 std::expected<PartRouteExecution, Error> PartRoutePlan::Start(
     std::span<std::byte> workspace) const {

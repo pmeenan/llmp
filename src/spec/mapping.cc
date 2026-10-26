@@ -168,6 +168,15 @@ const ParamValue* FindValue(const Mapping& m, const Values& values, std::string_
   return nullptr;
 }
 
+// Whether the rule's when_key gate holds (ParamRule::when_key).
+bool GateHolds(const Mapping& m, const ParamRule& r, const Values& values) {
+  if (r.when_key.empty()) return true;
+  const ParamValue* found = FindValue(m, values, r.when_key);
+  if (r.when_value.empty()) return found == nullptr;
+  const auto* text = found != nullptr ? std::get_if<std::string>(found) : nullptr;
+  return text != nullptr && *text == r.when_value;
+}
+
 std::expected<double, std::string> Transformed(double x, Transform t, std::string_view where) {
   double y = x;
   switch (t) {
@@ -369,12 +378,15 @@ std::expected<std::optional<ParamValue>, std::string> Evaluate(
         }
         if (*s == "none" || *s == "default" ||
             std::ranges::any_of(m.params, [&](const ParamRule& other) {
-              return other.type == ValueType::kBool && !other.value.text.empty() &&
-                     MatchesCanonicalKey(m, other.key, r.key) && *s == other.value.text;
+              return (other.type == ValueType::kBool && !other.value.text.empty() &&
+                      MatchesCanonicalKey(m, other.key, r.key) && *s == other.value.text) ||
+                     (!other.when_value.empty() && MatchesCanonicalKey(m, other.when_key, r.key) &&
+                      *s == other.when_value);
             })) {
           return std::optional<ParamValue>();
         }
-        return Refuse(at, "not the value the mapping's components implement");
+        return Refuse(at,
+                      std::format("'{}' is not a value the mapping's components implement", *s));
       }
       if (const auto* b = std::get_if<bool>(&v)) {
         return ParamValue(*b);
@@ -411,7 +423,8 @@ std::expected<std::optional<ParamValue>, std::string> Resolve(
   bool optional = false;
   for (const ParamRule& r : m.params) {
     if (r.slot != slot || r.param != param || (type != 0 && !Applies(r.layer_types, type)) ||
-        (!r.unless_fold.empty() && std::ranges::contains(folds, r.unless_fold))) {
+        (!r.unless_fold.empty() && std::ranges::contains(folds, r.unless_fold)) ||
+        !GateHolds(m, r, values)) {
       continue;
     }
     applied = true;
@@ -433,7 +446,7 @@ std::expected<std::optional<ParamValue>, std::string> Resolve(
 
 std::expected<void, std::string> CheckRequirements(const Mapping& m, const Values& values) {
   for (const ParamRule& r : m.params) {
-    if (!r.slot.empty()) {
+    if (!r.slot.empty() || !GateHolds(m, r, values)) {
       continue;
     }
     auto v = Evaluate(m, r, values, std::format("requirement {}", r.key));
@@ -1353,7 +1366,7 @@ std::expected<ResolvedMapping, std::string> ResolveSourceMapping(const Mapping& 
                         key.canonical == canonical.softcap_key;
     const bool parameter = std::ranges::any_of(canonical.params, [&](const auto& p) {
       return key.canonical == p.key || key.canonical == p.numerator_key ||
-             key.canonical == p.divisor_key;
+             key.canonical == p.divisor_key || key.canonical == p.when_key;
     });
     if (!scalar && !parameter)
       return Refuse(key.canonical, "source spelling has no supported canonical input");
@@ -1468,6 +1481,9 @@ std::expected<ResolvedMapping, std::string> ResolveSourceMapping(const Mapping& 
         p.key = key(p.key);
         p.numerator_key = key(p.numerator_key);
         p.divisor_key = key(p.divisor_key);
+        // A gate reads its key under the dialect's spelling too, or it
+        // would see the key absent where the rule's own key is present.
+        p.when_key = key(p.when_key);
         out.params.push_back(p);
       }
     }
@@ -1735,6 +1751,7 @@ std::vector<std::string> SourceKeys(const Mapping& m) {
     add(p.key);
     add(p.numerator_key);
     add(p.divisor_key);
+    add(p.when_key);
   }
   for (const auto& list : m.lists) {
     add(list.key);
@@ -2070,6 +2087,11 @@ Status ValidateMapping(const Mapping& m) {
     }
     if (!r.unless_fold.empty() && FindFold(r.unless_fold) == nullptr) {
       return Refuse(at, "unless a fold the catalog does not have");
+    }
+    if ((!r.when_key.empty() && !IsText(r.when_key)) ||
+        (!r.when_value.empty() && (r.when_key.empty() || !IsName(r.when_value))) ||
+        (!r.when_key.empty() && (r.when_key == r.key || !r.tensor.empty()))) {
+      return Refuse(at, "an invalid source-key gate");
     }
     if (r.slot.empty()) {
       if (r.type == ValueType::kInts || r.key.empty() || !r.param.empty() ||

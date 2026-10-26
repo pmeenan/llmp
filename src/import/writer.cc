@@ -243,6 +243,16 @@ struct GroupKey {
   std::uint32_t order = 0, layer = 0;
   auto operator<=>(const GroupKey&) const = default;
 };
+// The shared workspace every route cursor borrows (one route streams at a
+// time): 64 KiB covers the folds and permuted folds; a scale-atom route
+// needs two of its 128-row bands, so a wide table (NVFP4 at hidden 7168:
+// 448 scales a row, 112 KiB) sizes it. Place funds it before Transfers
+// allocates it.
+std::uint64_t PublicationWorkspaceBytes(const PublicationView& plan) {
+  constexpr std::uint64_t kFoldWorkspace = 65536;
+  return plan.parts != nullptr ? std::max(kFoldWorkspace, plan.parts->route_workspace_bytes())
+                               : kFoldWorkspace;
+}
 std::expected<void, Error> Transfers(const PublicationView& plan, Layout& layout) {
   const auto& source = plan.source();
   const auto& tensors = plan.canonical().tensors;
@@ -330,7 +340,7 @@ std::expected<void, Error> Transfers(const PublicationView& plan, Layout& layout
     if (binding.size() != required)
       return Bad("part publication omits an output part", Rule::kConfig);
   }
-  layout.workspace.resize(65536);
+  layout.workspace.resize(static_cast<std::size_t>(PublicationWorkspaceBytes(plan)));
   layout.copies.reserve(plan.members());
   const auto add = [&](std::uint32_t si, std::uint32_t ti, Extent extent, std::uint64_t destination,
                        const PartRoutePlan& route) -> std::expected<void, Error> {
@@ -484,10 +494,12 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
   const std::uint64_t chunk_bound = payload / artifact::kChunkBytes + expanded * 2;
   if (chunk_bound > artifact::kMaxIndexBytes / 128)
     return Bad("output chunk metadata exceeds index cap", Rule::kBounds);
+  const std::uint64_t workspace = PublicationWorkspaceBytes(plan);
+  if (workspace > kMaxOutput) return Bad("publication route workspace bound", Rule::kBounds);
   const std::uint64_t bound =
       (std::uint64_t{256} << 20U) + expanded * 8192 + chunk_bound * 512 +
       plan.source().files.size() * 1024 + plan.members() * 512 + plan.source().tensors.size() * 32 +
-      plan.semantic.size() * 256 + fold_outputs * 8192 + 65536 +
+      plan.semantic.size() * 256 + fold_outputs * 8192 + workspace +
       (plan.source_folds.size() + plan.planned_folds.size()) *
           (tensors.size() * (4 * sizeof(spec::FoldReceipt) + 8 * sizeof(std::string) + 256) +
            tensor_name_bytes * 8) +

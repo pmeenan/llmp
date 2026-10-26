@@ -3417,6 +3417,34 @@ TEST(GgmlLowerTest, ForwardInterleavedRopeCapabilityRequiresActualSectionsAndPos
   EXPECT_FALSE(accepts(params));
   params.mode = ir::RopeMode::kMulti;
   EXPECT_FALSE(accepts(params));
+  // CheckRopeExt's scalar domain: no YaRN or Llama 3 scaling in a
+  // multi-section mode, finite parameters, positive base, scale and
+  // attention factor; refused here so the planner falls back.
+  params = valid;
+  params.ext_factor = 1.0F;
+  EXPECT_FALSE(accepts(params));
+  params = valid;
+  params.llama3 = true;
+  EXPECT_FALSE(accepts(params));
+  for (const float bad : {0.0F, -1.0F, std::numeric_limits<float>::infinity(),
+                          std::numeric_limits<float>::quiet_NaN()}) {
+    params = valid;
+    params.scale = bad;
+    EXPECT_FALSE(accepts(params)) << bad;
+    params = valid;
+    params.base = bad;
+    EXPECT_FALSE(accepts(params)) << bad;
+    params = valid;
+    params.attn_factor = bad;
+    EXPECT_FALSE(accepts(params)) << bad;
+  }
+  params = valid;
+  params.beta_fast = std::numeric_limits<float>::infinity();
+  EXPECT_FALSE(accepts(params));
+  params = valid;
+  params.scale = 0.5F;
+  params.attn_factor = 1.5F;
+  EXPECT_TRUE(accepts(params));
   operands[2].ne[0] = 64;
   EXPECT_FALSE(accepts(valid));
   operands[2].ne[0] = 128;

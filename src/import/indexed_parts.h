@@ -153,6 +153,9 @@ class IndexedPartPlan {
   std::span<const std::uint32_t> physical_order() const { return physical_order_; }
   std::optional<std::uint32_t> FindSource(std::string_view name) const;
   IndexedPartCost cost() const { return cost_; }
+  // The widest workspace any member's route needs (PartRoutePlan::
+  // workspace_bytes): the shared buffer the writer lends each route in turn.
+  std::uint64_t route_workspace_bytes() const;
 
  private:
   IndexedPartPlan() = default;

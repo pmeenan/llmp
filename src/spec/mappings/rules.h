@@ -383,6 +383,17 @@ constexpr ParamRule Require(std::string_view key, std::string_view value, bool o
 constexpr ParamRule RequireInt(std::string_view key, std::int64_t value, bool optional) {
   return {.key = key, .type = ValueType::kInt, .value = {.integer = value}, .optional = optional};
 }
+constexpr ParamRule RequireReal(std::string_view key, double value, bool optional) {
+  return {.key = key, .type = ValueType::kReal, .value = {.real = value}, .optional = optional};
+}
+
+// `rule`, applying only when the source's `key` is the string `value`, or
+// (an empty `value`) only when `key` is absent (ParamRule::when_key).
+constexpr ParamRule When(ParamRule rule, std::string_view key, std::string_view value) {
+  rule.when_key = key;
+  rule.when_value = value;
+  return rule;
+}
 
 // A boolean parameter set true when `tensor` is present in the source;
 // absent when the tensor is absent, so a subsequent rule or optional omission

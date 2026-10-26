@@ -1069,6 +1069,15 @@ TEST(ComponentsTest, Llama3SmoothFrequencyScaledRopeMatchesReferenceAndRegimes) 
   std::ranges::sort(both_flags.params, {}, &Param::name);
   EXPECT_FALSE(MakeInstance(both_flags, kFacts, Site::kLayer, 0, 1).has_value());
 
+  // Rejects Llama 3 scaling together with per-pair rope_freqs factors, which
+  // already carry it (llama.cpp's converters): it would apply twice.
+  auto with_freqs = r;
+  with_freqs.params.push_back(P("rope_freqs", ParamValue(true)));
+  std::ranges::sort(with_freqs.params, {}, &Param::name);
+  const auto doubled = MakeInstance(with_freqs, kFacts, Site::kLayer, 0, 1);
+  ASSERT_FALSE(doubled.has_value());
+  EXPECT_NE(doubled.error().find("rope_freqs"), std::string::npos) << doubled.error();
+
   // Accepts llama3_rope with rope_scale < 1.0 when rope_factor is omitted.
   auto via_rope_scale = Attention(0, 0.0, true, "neox", "pre");
   for (Param& p : via_rope_scale.params) {

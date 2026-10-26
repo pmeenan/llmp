@@ -1061,6 +1061,10 @@ Status CheckStage(const ModelSpec& spec, const Stage& s, const std::string& wher
             !std::holds_alternative<std::int64_t>(parameter->value))
           return Refuse(where + ".scalar_bindings",
                         "target must be an existing integer parameter with a named source");
+        if (!IsStageScalarName(binding.source))
+          return Refuse(where + ".scalar_bindings",
+                        std::format("source {} is not a request scalar the runtime supplies",
+                                    binding.source));
       }
     }
   }
@@ -1215,6 +1219,12 @@ void Canonicalize(ModelSpec& spec) {
   }
 }
 
+static_assert(std::ranges::is_sorted(kStageScalarNames) &&
+              std::ranges::adjacent_find(kStageScalarNames) == kStageScalarNames.end());
+bool IsStageScalarName(std::string_view name) noexcept {
+  return std::ranges::binary_search(kStageScalarNames, name);
+}
+
 std::expected<ModelSpec, std::string> BindStageScalars(const ModelSpec& spec,
                                                        std::span<const StageScalar> scalars) {
   if (auto valid = Validate(spec); !valid) return std::unexpected(valid.error());
@@ -1225,16 +1235,14 @@ std::expected<ModelSpec, std::string> BindStageScalars(const ModelSpec& spec,
     if (i && scalars[i - 1].name >= scalars[i].name)
       return Refuse("scalars", "names not sorted or a name supplied twice");
   }
-  std::vector<bool> used(scalars.size(), false);
+  // A superset is accepted: every stage receives the whole vocabulary and
+  // binds only what its graph needs (Validate closed the binding names).
   for (const auto& stage : spec.stages)
     for (const auto& binding : stage.scalar_bindings) {
       const auto value = std::ranges::lower_bound(scalars, binding.source, {}, &StageScalar::name);
       if (value == scalars.end() || value->name != binding.source)
         return Refuse(binding.source, "required stage scalar is absent");
-      used[static_cast<std::size_t>(value - scalars.begin())] = true;
     }
-  for (std::size_t i = 0; i < scalars.size(); ++i)
-    if (!used[i]) return Refuse(scalars[i].name, "unused stage scalar");
   auto bound = spec;
   for (auto& stage : bound.stages) {
     std::size_t id = 0, binding_at = 0;

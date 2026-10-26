@@ -1023,6 +1023,11 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const spec::M
   // presence, before allocating mapping/synthesis/catalog validation.
   for (const auto& rule : m.params) {
     if (!rule.slot.empty()) continue;
+    if (!rule.when_key.empty()) {  // spec::ParamRule::when_key's gate
+      const auto* gate = value_for(rule.when_key);
+      const auto* text = gate ? std::get_if<std::string>(gate) : nullptr;
+      if (rule.when_value.empty() ? gate != nullptr : !text || *text != rule.when_value) continue;
+    }
     const auto* value = value_for(rule.key);
     if (!value) {
       if (rule.optional) continue;

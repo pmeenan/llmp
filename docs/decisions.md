@@ -298,6 +298,13 @@ their actual geometry fits. Template parsing, retention and request copies are
 paid from their stored inventory before allocation. Affected image artifacts
 must be re-imported; source provenance and numerical admission remain in force.
 
+*Amendment, 2026-10-25 (M3.5 review fix A1).* Binding sources come from one
+closed vocabulary, `spec::kStageScalarNames` (`joint_rows`, `latent_height`,
+`latent_rows`, `latent_width`, `text_rows`): `Validate` refuses any other
+source, so a recipe naming a scalar nothing supplies fails at import and
+admission rather than at a request. The runtime supplies the whole vocabulary
+to every stage, and binding accepts scalars a stage does not use.
+
 **Amendment, 2026-10-23 (M3.5 U8 import-time recipes).** Mapping-owned,
 finite `StageRecipe` data expands flow and VAE wiring into the ordinary stored
 stage before publication. Typed configuration values, checked scalar arithmetic,

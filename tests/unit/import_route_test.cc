@@ -206,13 +206,43 @@ TEST(ImportRouteTest, ScaleAtomsSwizzleWholeBandsLosslessly) {
   std::vector<std::byte> workspace(65536);
   for (const std::size_t chunk : {1U, 3U, 37U, 1536U, 4096U})
     Check(*plan, source, expected, chunk, workspace);
-  // Whole 128-row atoms of 4 to 256 scales only; two bands of workspace.
+  // Whole 128-row atoms of a multiple of 4 scales only; two bands of workspace.
   EXPECT_FALSE(PartRoutePlan::ScaleAtoms(100, 12));
   EXPECT_FALSE(PartRoutePlan::ScaleAtoms(128, 6));
-  EXPECT_FALSE(PartRoutePlan::ScaleAtoms(128, 260));
   EXPECT_FALSE(PartRoutePlan::ScaleAtoms(0, 4));
+  EXPECT_FALSE(PartRoutePlan::ScaleAtoms(128, 0));
+  // Two bands must be representable.
+  EXPECT_FALSE(
+      PartRoutePlan::ScaleAtoms(128, (std::numeric_limits<std::uint64_t>::max() / 256) + 4 -
+                                         ((std::numeric_limits<std::uint64_t>::max() / 256) % 4)));
+  EXPECT_EQ(plan->workspace_bytes(), 2 * 128 * kBlocks);
   EXPECT_FALSE(plan->Start(std::span(workspace).first(2 * 128 * kBlocks - 1)));
   EXPECT_TRUE(plan->Start(std::span(workspace).first(2 * 128 * kBlocks)));
+}
+
+// Past 256 scales a row (NVFP4 at hidden 5120 and 7168: 320 and 448), a
+// band outgrows half of 64 KiB: the route asks for its own two bands.
+TEST(ImportRouteTest, ScaleAtomsOfWideRowsNeedTheirOwnTwoBands) {
+  for (const std::uint64_t blocks : {260U, 320U, 448U}) {
+    SCOPED_TRACE(blocks);
+    constexpr std::uint64_t kRows = 256;
+    std::vector<std::byte> source(kRows * blocks);
+    for (std::size_t i = 0; i < source.size(); ++i)
+      source[i] = static_cast<std::byte>((i * 131 + 7) % 251);
+    std::vector<std::byte> expected(source.size());
+    for (std::uint64_t r = 0; r < kRows; ++r)
+      for (std::uint64_t b = 0; b < blocks; ++b)
+        expected[format::ScaleAtomOffset(r, b, blocks)] = source[(r * blocks) + b];
+    auto plan = PartRoutePlan::ScaleAtoms(kRows, blocks);
+    ASSERT_TRUE(plan);
+    EXPECT_EQ(plan->workspace_bytes(), 2 * 128 * blocks);
+    std::vector<std::byte> workspace(static_cast<std::size_t>(plan->workspace_bytes()));
+    if (blocks > 256) {
+      EXPECT_FALSE(plan->Start(std::span(workspace).first(65536)));
+    }
+    for (const std::size_t chunk : {1U, 37U, 4096U})
+      Check(*plan, source, expected, chunk, workspace);
+  }
 }
 
 // Two parts' rows side by side: each lane's rows at its offset in a row,

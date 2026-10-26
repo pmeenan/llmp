@@ -14,6 +14,7 @@
 #include <numeric>
 #include <set>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <variant>
@@ -1969,6 +1970,92 @@ TEST(ImportNormalizeSafetensorsTest, Qwen2SafetensorsMappingValidatesAndGgufSynt
   ASSERT_TRUE(spec.has_value()) << spec.error();
   EXPECT_EQ(spec->stages[0].stream.width, 3584U);
   EXPECT_EQ(spec->stages[0].layers.size(), 1U);
+}
+
+// A Llama config.json's rope_scaling through the HF route: unscaled,
+// default, YaRN and Llama 3 keep their meaning; linear (either spelling of
+// its type key) becomes a frequency scale of 1 / factor, never YaRN; dynamic
+// and other types are refused, as is a factor beside the default type.
+TEST(ImportNormalizeSafetensorsTest, DenseHfRopeScalingTypesMapOrRefuse) {
+  auto entries = fixtures::TinyQwen2HfEntries();
+  std::erase_if(entries, [](const fixtures::Entry& e) {
+    return e.name.ends_with("_proj.bias") || e.name == "unused.empty";
+  });
+  struct Case {
+    std::string_view scaling;
+    bool ok;
+    std::string_view flag;  // "yarn" or "llama3_rope", else neither
+    double rope_scale;
+  };
+  const std::array cases{
+      Case{"null", true, "", 1.0},
+      Case{R"({"rope_type":"default"})", true, "", 1.0},
+      // No type: a factor of 1 is unscaled; any other factor is ambiguous.
+      Case{R"({"factor":1.0})", true, "", 1.0},
+      Case{R"({"factor":4.0})", false, "", 1.0},
+      Case{R"({"rope_type":"default","factor":4.0})", false, "", 1.0},
+      Case{R"({"rope_type":"linear","factor":4.0})", true, "", 0.25},
+      Case{R"({"type":"linear","factor":2.0,"original_max_position_embeddings":64})", true, "",
+           0.5},
+      Case{R"({"rope_type":"dynamic","factor":2.0,"original_max_position_embeddings":64})", false,
+           "", 1.0},
+      Case{R"({"rope_type":"dynamic","factor":2.0})", false, "", 1.0},
+      Case{R"({"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32,)"
+           R"("beta_fast":32.0,"beta_slow":1.0})",
+           true, "yarn", 1.0},
+      Case{R"({"rope_type":"llama3","factor":8.0,"low_freq_factor":1.0,)"
+           R"("high_freq_factor":4.0,"original_max_position_embeddings":32})",
+           true, "llama3_rope", 1.0},
+  };
+  const auto config_of = [](std::string_view scaling) {
+    return std::format(
+        R"({{"architectures":["LlamaForCausalLM"],"model_type":"llama",
+        "hidden_size":8,"intermediate_size":16,"num_hidden_layers":1,
+        "num_attention_heads":2,"num_key_value_heads":1,"head_dim":4,
+        "max_position_embeddings":128,"rms_norm_eps":0.000001,"rope_theta":10000,
+        "hidden_act":"silu","vocab_size":10,"tie_word_embeddings":false,
+        "dtype":"float16","rope_scaling":{}}})",
+        scaling);
+  };
+  for (const Case& c : cases) {
+    SCOPED_TRACE(c.scaling);
+    auto source = ParseSafetensors(fixtures::Shard(entries), config_of(c.scaling));
+    ASSERT_TRUE(source) << test_support::Failed(source, &Error::ToString).value_or("");
+    auto plan = Normalize(std::move(*source), kFunded);
+    if (!c.ok) {
+      ASSERT_FALSE(plan);
+      // Refused by the mapping's rope.scaling rules (a gated factor
+      // requirement, or a type no flag implements), not by anything else.
+      const std::string_view reason = plan.error().reason;
+      EXPECT_TRUE(reason == "source profile requirement disagrees" ||
+                  reason == "source does not satisfy the architecture mapping")
+          << plan.error().ToString();
+      continue;
+    }
+    ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+    const auto& attn = plan->spec().stages.front().layers.front().components.front();
+    ASSERT_EQ(attn.kind, "attention.dense");
+    const auto flag = [&](std::string_view name) {
+      const auto* p = attn.Find(name);
+      return p != nullptr && std::get<bool>(p->value);
+    };
+    EXPECT_EQ(flag("yarn"), c.flag == "yarn");
+    EXPECT_EQ(flag("llama3_rope"), c.flag == "llama3_rope");
+    ASSERT_NE(attn.Find("rope_scale"), nullptr);
+    EXPECT_DOUBLE_EQ(std::get<double>(attn.Find("rope_scale")->value), c.rope_scale);
+    EXPECT_EQ(attn.Find("rope_factor") != nullptr, !c.flag.empty());
+  }
+  // A type that is not a string, or the two spellings of the type key
+  // disagreeing, never selects or skips a gated rule: both are refused
+  // before any rule is read.
+  for (const std::string_view scaling :
+       {R"({"rope_type":4,"factor":4.0})", R"({"rope_type":"linear","type":"yarn","factor":4.0})",
+        R"({"rope_type":"default","type":"linear","factor":4.0})"}) {
+    SCOPED_TRACE(scaling);
+    auto source = ParseSafetensors(fixtures::Shard(entries), config_of(scaling));
+    if (!source) continue;  // refused by the reader
+    EXPECT_FALSE(Normalize(std::move(*source), kFunded));
+  }
 }
 
 TEST(ImportNormalizeSafetensorsTest, ConditionalMetadataAliasesUseTheDeclaredPrimary) {

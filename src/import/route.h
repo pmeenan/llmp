@@ -77,7 +77,7 @@ class PartRoutePlan {
   // A matrix's row-major one-byte block scales (`rows` rows of `blocks`)
   // into the scale atoms of format::Layout::kScaleAtoms, losslessly and at
   // the same size: rows whole atoms (a multiple of 128) and blocks a
-  // multiple of 4, at most 256 (a 128-row band, at most 32 KiB, is the unit). A
+  // multiple of 4 (a 128-row band of 128 * blocks bytes is the unit). A
   // band's atoms occupy the band's own byte range, so the route buffers
   // one band in its workspace and emits it whole.
   static std::expected<PartRoutePlan, Error> ScaleAtoms(std::uint64_t rows, std::uint64_t blocks);
@@ -99,10 +99,12 @@ class PartRoutePlan {
   // No allocation: caller owns/funds workspace and keeps it alive through
   // execution. A fold needs >=4 bytes and uses at most 64 KiB; a permuted
   // fold its input and output (4 * 16 KiB = 64 KiB); a scale-atom
-  // route two bands (at most 64 KiB) and keeps a partial band there between
+  // route two bands (256 * blocks bytes) and keeps a partial band there between
   // Consume calls, so no other route may use the workspace until it
   // finishes (the writer streams one route at a time); other routes 0.
   std::expected<PartRouteExecution, Error> Start(std::span<std::byte> workspace = {}) const;
+  // The least workspace Start accepts (above).
+  std::uint64_t workspace_bytes() const;
   format::Encoding source_encoding() const { return source_encoding_; }
 
  private:

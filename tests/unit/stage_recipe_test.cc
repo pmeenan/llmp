@@ -10,6 +10,7 @@
 #include <bit>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "format/tensor_format.h"
@@ -955,37 +956,39 @@ TEST(StageRecipe, ValidatesTypedSpatialEdgesAndAllowsProjectedContextWidthDiffer
 TEST(StageRecipeTest, RejectsInvalidRequestScalarNameAndChargesScalarBindings) {
   static constexpr spec::RecipeValue one{.literal = std::int64_t{1}};
   static constexpr spec::RecipeValue width{.literal = std::int64_t{64}};
-  static constexpr std::array bad_params{
-      spec::RecipeParam{.name = "in_channels", .value = width},
-      spec::RecipeParam{.name = "out_channels", .value = width},
-      spec::RecipeParam{
-          .name = "gelu", .value = {.literal = false}, .request_scalar = "Invalid-Scalar"}};
   static constexpr std::array projection_weights{
       spec::RecipeWeight{.role = "weight", .tensor = "projection.weight"}};
-  static constexpr spec::RecipeNode bad_node{.name = "noise",
-                                             .component_kind = "projection.spatial",
-                                             .params = bad_params,
-                                             .weights = projection_weights,
-                                             .input = {.kind = spec::RecipeRefKind::kStageInput}};
-  static constexpr spec::RecipeStep bad_step{.kind = spec::RecipeStep::Kind::kNode,
-                                             .node = &bad_node};
-  static constexpr std::array bad_steps{bad_step};
   static constexpr std::array noise_export{
       spec::RecipeRef{.kind = spec::RecipeRefKind::kNamedValue, .name = "noise"}};
   static constexpr std::array projected_shape{
       spec::RecipeSpatialShape{.width = one, .height = one, .channels = width, .images = one}};
-  const spec::StageRecipe bad_recipe{
-      .name = "projected",
-      .role = spec::StageRole::kDenoiser,
-      .stream_width = width,
-      .primary_input = {.shape = {.width = one, .height = one, .channels = width, .images = one}},
-      .steps = bad_steps,
-      .exports = noise_export,
-      .expected_outputs = projected_shape};
   const spec::ModelSpec family{.pipeline = spec::PipelineKind::kImage};
-  const auto rejected = PreflightStageRecipe(bad_recipe, family, 1U << 20U);
-  ASSERT_FALSE(rejected);
-  EXPECT_NE(rejected.error().find("request scalar"), std::string::npos);
+  // A malformed name, and well-formed names outside the closed vocabulary of
+  // request scalars the runtime supplies (spec::kStageScalarNames).
+  for (const std::string_view scalar : {"Invalid-Scalar", "image_rows", "latent_depth"}) {
+    const std::array bad_params{
+        spec::RecipeParam{.name = "in_channels", .value = width},
+        spec::RecipeParam{.name = "out_channels", .value = width},
+        spec::RecipeParam{.name = "gelu", .value = {.literal = false}, .request_scalar = scalar}};
+    const spec::RecipeNode bad_node{.name = "noise",
+                                    .component_kind = "projection.spatial",
+                                    .params = bad_params,
+                                    .weights = projection_weights,
+                                    .input = {.kind = spec::RecipeRefKind::kStageInput}};
+    const spec::RecipeStep bad_step{.kind = spec::RecipeStep::Kind::kNode, .node = &bad_node};
+    const std::array bad_steps{bad_step};
+    const spec::StageRecipe bad_recipe{
+        .name = "projected",
+        .role = spec::StageRole::kDenoiser,
+        .stream_width = width,
+        .primary_input = {.shape = {.width = one, .height = one, .channels = width, .images = one}},
+        .steps = bad_steps,
+        .exports = noise_export,
+        .expected_outputs = projected_shape};
+    const auto rejected = PreflightStageRecipe(bad_recipe, family, 1U << 20U);
+    ASSERT_FALSE(rejected) << scalar;
+    EXPECT_NE(rejected.error().find("request scalar"), std::string::npos) << rejected.error();
+  }
 }
 
 }  // namespace
