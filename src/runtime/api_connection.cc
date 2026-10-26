@@ -561,7 +561,7 @@ void Server::OnRequest(Connection& c, http::Request request) {
     {
       const std::scoped_lock lock(mutex_);
       busy = !running_.empty() || !queue_.empty() || !parked_.empty() || suspended_requests_ != 0 ||
-             pending_release_.has_value();
+             dispatching_ != 0 || pending_release_.has_value();
       if (!busy) {
         pending_release_ = PendingRelease{
             .connection = c.id,

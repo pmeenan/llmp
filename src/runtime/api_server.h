@@ -553,6 +553,7 @@ class Server {
   bool EvictIdle();
 
   // Driver thread.
+  void ProcessPendingRelease();
   void Serve(Pending& pending, int wake_fd, const std::function<bool()>& on_wake);
   std::expected<void, std::string> ServeCooperative(Pending first, CooperativeBackend& cooperative,
                                                     int wake_fd,
@@ -633,6 +634,7 @@ class Server {
   std::deque<Pending> queue_;
   std::uint64_t enqueued_ = 0;          // requests ever queued (a waiting cohort's wake)
   std::size_t suspended_requests_ = 0;  // waiting for a substitute, driver-owned under mutex_
+  std::size_t dispatching_ = 0;         // popped from queue_ and transitioning into running_
   std::vector<std::uint64_t> dirty_;    // connections whose channels have new output
   bool stopping_ = false;
   // Requests ahead of the queue that the active ones keep waiting: a

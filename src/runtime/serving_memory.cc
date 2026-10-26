@@ -794,8 +794,7 @@ Status Server::MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out
                                                                   : nullptr);
   if (budget_ < configured_budget_) {
     const auto pressure = platform::ReadMemoryPressure();
-    if (pressure.available.has_value() &&
-        *pressure.available >= pressure_.limits().headroom_bytes) {
+    if (pressure.available.has_value() && *pressure.available >= pressure_.target_bytes()) {
       node_.SetBudget(base::Bytes(configured_budget_));
       budget_ = configured_budget_;
     }
@@ -872,7 +871,7 @@ Status Server::MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out
 
 bool Server::AnyResidentState() {
   for (const auto& m : models_) {
-    if (m->llm()) {
+    if (m->llm() && !std::ranges::contains(spilled_, m.get())) {
       auto& l = static_cast<Llm&>(*m);
       for (std::size_t i = 0; i < l.branches(); ++i) {
         if (auto b = l.branch(i); b && l.ResidentStateBytes(**b) > 0) {
@@ -911,29 +910,60 @@ std::expected<api::ReleaseReport, std::string> Server::ReleaseWorkingSet(std::st
     return std::unexpected("busy");
   }
   api::ReleaseReport report;
-  const std::uint64_t before_occupancy =
-      node_.catalog().OccupancyOf(node_.domain()).Total().value();
+  std::uint64_t before_occupancy = 0;
+  if (auto r = node_.Call(
+          [&]() -> Status {
+            before_occupancy = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+            return {};
+          },
+          "reading occupancy before release");
+      !r) {
+    return std::unexpected(r.error());
+  }
   for (const auto& m : models_) {
     m->DropPlans();
   }
+  std::vector<std::pair<Llm*, Llm::Branch*>> branches;
   for (const auto& m : models_) {
-    if (!m->llm()) continue;
+    if (!m->llm() || std::ranges::contains(spilled_, m.get())) continue;
     auto& l = static_cast<Llm&>(*m);
     for (std::size_t i = 0; i < l.branches(); ++i) {
       auto b = l.branch(i);
-      if (!b || !l.BranchIdle(**b) || (*b)->HeldByContinuation() || (*b)->history().empty()) {
+      if (!b || !l.BranchIdle(**b) || (*b)->HeldByContinuation()) {
         continue;
       }
-      const std::uint64_t held = l.ResidentStateBytes(**b);
-      if (held == 0) continue;
-      if (spill_budget_ > 0 && held <= spill_budget_ &&
-          KeepWithinSpillBudget(held, {.spilling = *b})) {
-        if (auto spilled = l.SpillIdle(**b); spilled) {
-          report.spilled_bytes += held;
+      if ((*b)->history().empty()) {
+        if (l.ResidentStateBytes(**b) != 0) {
+          if (auto released = (*b)->ReleaseIdleState(); !released) {
+            return std::unexpected(
+                std::format("releasing state of {}: {}", m->name(), released.error()));
+          }
         }
-      } else if (auto released = (*b)->ReleaseIdleState(); released) {
-        // State released on host/catalog
+        continue;
       }
+      if (l.ResidentStateBytes(**b) != 0) {
+        branches.emplace_back(&l, *b);
+      }
+    }
+  }
+  std::ranges::sort(branches, [](const auto& a, const auto& b) {
+    return a.first->LastUsed(*a.second) > b.first->LastUsed(*b.second);
+  });
+  for (const auto& [l, branch] : branches) {
+    const std::uint64_t held = l->ResidentStateBytes(*branch);
+    if (held == 0) continue;
+    if (spill_budget_ > 0 && held <= spill_budget_ &&
+        KeepWithinSpillBudget(held, {.spilling = branch}, l->LastUsed(*branch))) {
+      if (auto spilled = l->SpillIdle(*branch); spilled) {
+        report.spilled_bytes += held;
+      } else if (l->ResidentStateBytes(*branch) != 0) {
+        if (auto released = branch->ReleaseIdleState(); !released) {
+          return std::unexpected(
+              std::format("releasing state of {}: {}", l->name(), released.error()));
+        }
+      }
+    } else if (auto released = branch->ReleaseIdleState(); !released) {
+      return std::unexpected(std::format("releasing state of {}: {}", l->name(), released.error()));
     }
   }
   if (resident_ != nullptr) {
@@ -943,24 +973,60 @@ std::expected<api::ReleaseReport, std::string> Server::ReleaseWorkingSet(std::st
     if (auto evicted = EvictPaged(*m); !evicted) {
       return std::unexpected(std::format("evicting {}: {}", m->name(), evicted.error()));
     }
+    if (m->llm()) {
+      auto& l = static_cast<Llm&>(*m);
+      if (m->HasRetainedState()) {
+        m->StateWrittenBack(true);
+        if (!std::ranges::contains(spilled_, m.get())) {
+          spilled_.push_back(m.get());
+        }
+        for (std::size_t i = 0; i < l.branches(); ++i) {
+          if (auto b = l.branch(i); b && !(*b)->spilled()) {
+            l.KeepBranch(**b);
+          }
+        }
+      } else {
+        m->StateWrittenBack(false);
+        std::erase(spilled_, m.get());
+      }
+    }
   }
   resident_ = nullptr;
   DeactivateIdleModels();
 
   if (node_.workspace_pageable()) {
     std::vector<catalog::ExtentId> workspace_to_evict;
-    for (const catalog::ExtentId extent : node_.workspace_extents()) {
-      if (const auto view = node_.catalog().Describe(extent);
-          view && view->state == catalog::ExtentState::kResident) {
-        workspace_to_evict.push_back(extent);
-      }
+    if (auto r = node_.Call(
+            [&]() -> Status {
+              for (const catalog::ExtentId extent : node_.workspace_extents()) {
+                if (const auto view = node_.catalog().Describe(extent);
+                    view && view->state == catalog::ExtentState::kResident) {
+                  workspace_to_evict.push_back(extent);
+                }
+              }
+              return {};
+            },
+            "gathering resident workspace extents");
+        !r) {
+      return std::unexpected(r.error());
     }
     if (!workspace_to_evict.empty()) {
-      (void)node_.Evict(workspace_to_evict);
+      if (auto evicted = node_.Evict(workspace_to_evict); !evicted) {
+        return std::unexpected(std::format("evicting workspace: {}", evicted.error()));
+      }
     }
   }
   report.released_backings = node_.ReleaseUnusedBacking();
-  const std::uint64_t after_occupancy = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+  std::uint64_t after_occupancy = 0;
+  if (auto r = node_.Call(
+          [&]() -> Status {
+            after_occupancy = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+            return {};
+          },
+          "reading occupancy after release");
+      !r) {
+    return std::unexpected(r.error());
+  }
   report.reclaimed_bytes =
       before_occupancy > after_occupancy ? before_occupancy - after_occupancy : 0;
   platform::ReleaseFreeHeap();

@@ -890,7 +890,7 @@ LiveState::Status LiveState::Copy(PagedNode& node, const catalog::Closure& fence
       },
       to_host ? "saving used conversation state" : "restoring used conversation state", stream);
   if (!posted) {
-    node.KeepPinned(host);
+    node.KeepPinned(host, stream);
     if (retirement != nullptr) {
       *retirement = CopyRetirement::kUnproven;
     }
@@ -1194,7 +1194,7 @@ LiveState::Status LiveState::Read(PagedNode& node, const catalog::Closure& fence
       },
       what, stream);
   if (!posted) {
-    HostCopyUnproven();
+    HostCopyUnproven(stream);
     if (retirement != nullptr) {
       *retirement = CopyRetirement::kUnproven;
     }
@@ -1432,14 +1432,12 @@ void LiveState::Release(providers::VmmProvider& memory, std::vector<std::string>
       problems.push_back(std::format("{} could not be released", r.mapped.name));
     }
   }
-  if (host_copy_ != nullptr) {
-    if (host_copy_unproven_.active()) {
-      problems.emplace_back("the state's pinned copy retained until exit: completion unproven");
-    }
-    host_copy_ = nullptr;
-    host_node_ = nullptr;
-    host_capacity_ = 0;
+  if (host_copy_unproven_.active()) {
+    problems.emplace_back("the state's pinned copy retained until exit: completion unproven");
   }
+  host_copy_ = nullptr;
+  host_node_ = nullptr;
+  host_capacity_ = 0;
   if (spill_fd_ >= 0) {
     // An unnamed file goes with it; a named one stays for the next process
     // to adopt or empty (D-105).

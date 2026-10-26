@@ -1196,7 +1196,11 @@ std::size_t BackingService::DrainReserve(std::optional<std::size_t> down_to) {
   drain_requested_ = true;
   drain_target_ = target;
   (void)queue_.TryPush(DeviceCommand{}, base::PushKind::kCleanup);
-  cv_.wait(lock, [&] { return !drain_requested_; });
+  cv_.wait(lock, [&] { return !drain_requested_ || !worker_running_; });
+  if (drain_requested_) {
+    drain_result_ = DrainReserveWorkerLocked(target);
+    drain_requested_ = false;
+  }
   return drain_result_;
 }
 
@@ -1217,6 +1221,9 @@ bool BackingService::Turn() {
     std::optional<DeviceCommand> command = queue_.TryPop();
     if (!command) {
       break;
+    }
+    if (command->operation == OperationId{}) {
+      continue;
     }
     Handle(*command);
     progress = true;
@@ -1257,11 +1264,19 @@ void BackingService::Run() {
         cv_.notify_all();
       }
     }
+    if (command->operation == OperationId{}) {
+      continue;
+    }
     Handle(*command);
   }
   {
     std::lock_guard lock(mu_);
+    if (drain_requested_) {
+      drain_result_ = DrainReserveWorkerLocked(drain_target_.value_or(reserve_.target()));
+      drain_requested_ = false;
+    }
     worker_running_ = false;
+    cv_.notify_all();
   }
 }
 

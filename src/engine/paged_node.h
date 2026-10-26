@@ -668,8 +668,8 @@ class PagedNode {
   void ReturnStaging(void* pointer, bool proven);
   // Caller proves no access is in flight. Removes its staging extent.
   Status FreePinned(void* pointer);
-  // Unknown completion: retain the allocation until process exit.
-  void KeepPinned(void* pointer);
+  // Unknown completion: retain the allocation until a stream fence or teardown.
+  void KeepPinned(void* pointer, std::optional<std::uint32_t> stream = std::nullopt);
   // A model's own storage ring, at its end. With reads still in flight
   // (stalled ones, which may yet land), the ring and the pinned memory
   // (from Pinned) those reads write are kept to the process's end, neither
@@ -926,6 +926,9 @@ class PagedNode {
   // drops. Nothing is acknowledged when the fence is refused.
   Status RecoverAfterFence(PagedModel& model);
   bool InRequest(std::uint32_t stream) const { return requests_.contains(stream); }
+  bool HasUnprovenWork(std::uint32_t stream) const noexcept {
+    return InRequest(stream) || unproven_.HasStream(stream);
+  }
   // `body` run as one request on `stream` over `closure` (BeginRequest,
   // then EndRequest whatever `body` returned): its failure, else the end's.
   Status WithRequest(std::uint32_t stream, const catalog::Closure& closure, std::string_view what,
@@ -1123,6 +1126,7 @@ class PagedNode {
   std::shared_ptr<StagingLifetime> staging_lifetime_ = std::make_shared<StagingLifetime>();
   std::vector<void*> pinned_;
   NodeUnproven unproven_;
+  Status ReleaseQuarantinedPinned(void* pointer);
 
   // The host memory charged beside the catalog (ChargeHost).
   bool Recharge(std::uint64_t total, bool force, std::uint64_t* shortfall);

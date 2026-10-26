@@ -138,6 +138,8 @@ struct ComponentPreparation {
   // locally (including its mutable payments); never hold a global runtime lock.
   std::mutex mutex;
   std::shared_ptr<const OpenedModelArtifacts> model;
+  bool caller_prepared = false;
+  std::optional<std::uint32_t> prepared_draft_vocab;
   // These catalog extents are node-lifetime high-water reservations. Reuse
   // them across retries/copies; each live build owns a separate local charge.
   std::shared_ptr<engine::ExecutionMetadataAllowance> metadata;
@@ -576,6 +578,7 @@ std::expected<LlmBuildParts, std::string> AssembleComponentParts(
 LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config::ModelEntry& entry,
                            int index, ComponentBuildOptions options) {
   auto preparation = std::make_shared<ComponentPreparation>();
+  preparation->caller_prepared = options.prepared != nullptr;
   preparation->model = std::move(options.prepared);
   return [&node, store = std::move(store), entry, preparation = std::move(preparation),
           id = entry.artifact.value_or(""), drafter_id = entry.drafter.value_or(""), index,
@@ -632,6 +635,10 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
     if (settings.speculation.value && drafter_id.empty())
       return Error("component speculation needs an owned drafter artifact");
     auto prepared = preparation->model;
+    if (prepared && !preparation->caller_prepared && !drafter_id.empty() &&
+        preparation->prepared_draft_vocab != settings.draft_vocab.value) {
+      prepared.reset();
+    }
     if (!prepared) {
       // Diagnostics take the same path as Server::Start. A failed admission or
       // funding attempt is not cached, so a later resource/I/O retry is valid.
@@ -671,7 +678,10 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
       // target for this build, but do not memoize a failed optional preparation.
       // A later speculative attempt can retry transient selected-head I/O.
       prepared = owner;
-      if (!owner->drafter || owner->composition) preparation->model = std::move(owner);
+      if (!owner->drafter || owner->composition) {
+        preparation->model = std::move(owner);
+        preparation->prepared_draft_vocab = settings.draft_vocab.value;
+      }
     }
     if (!prepared->payment || !prepared->target || prepared->target->id() != id ||
         !prepared->target_admission ||

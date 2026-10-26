@@ -67,6 +67,7 @@ class PressureTrim {
   bool Trimmed(std::uint64_t freed, std::uint64_t needed, Clock::time_point now);
 
   const PressureTrimLimits& limits() const noexcept { return limits_; }
+  std::uint64_t target_bytes() const noexcept { return limits_.low_bytes + limits_.headroom_bytes; }
   bool pressed() const { return pressed_; }
   Clock::duration backoff() const { return backoff_; }
   std::uint64_t trims() const { return trims_; }
@@ -82,6 +83,17 @@ class PressureTrim {
   std::uint64_t trims_ = 0;
   std::uint64_t short_trims_ = 0;
 };
+
+// Shared-mode dynamic budget after any pressure trim has run: only shrinks
+// below `current_budget` when pressure is active (`pressed`) and `available`
+// remains below `limits.low_bytes + limits.headroom_bytes`, anchored to
+// `min(configured_budget, current_occupancy + available) - shortfall` and
+// clamped to `[fixed, configured_budget]`. Restores `configured_budget` once
+// `available >= limits.low_bytes + limits.headroom_bytes`.
+std::uint64_t AdjustSharedBudget(std::optional<std::uint64_t> available, bool pressed,
+                                 std::uint64_t current_occupancy, std::uint64_t fixed,
+                                 std::uint64_t current_budget, std::uint64_t configured_budget,
+                                 const PressureTrimLimits& limits = {});
 
 }  // namespace llmp::runtime
 

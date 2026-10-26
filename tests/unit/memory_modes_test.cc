@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "base/bytes.h"
@@ -228,6 +229,27 @@ TEST(PressureTrimModes, ObserveAndHysteresisRecovery) {
   now += kLook;
   EXPECT_FALSE(trim.Observe({.available = 1600 * (1ULL << 20U), .stall = {}}, now).now);
   EXPECT_FALSE(trim.pressed());
+}
+
+TEST(BackingServicePool, DrainReserveOnRunningServiceDoesNotEmitZeroOperationCompletion) {
+  pr::fake::FakeDeviceMemory memory(2_MiB, 32_MiB);
+  llmp::base::WakeFlag wake;
+  sc::CompletionBoard board(64, wake);
+  sc::BackingService service(&memory, board, {.capacity = 64, .reserved = 16, .batch = 8});
+
+  ASSERT_TRUE(service.SetReserve(0, 2_MiB, 4, /*preallocate_now=*/true).has_value());
+  EXPECT_EQ(service.ReserveAvailable(), 4U);
+
+  std::thread worker([&] { service.Run(); });
+  EXPECT_EQ(service.DrainReserve(1), 3U);
+  EXPECT_EQ(service.ReserveAvailable(), 1U);
+  service.Close();
+  worker.join();
+
+  EXPECT_EQ(board.publications(), 0U);
+  EXPECT_TRUE(board.Harvest(16).empty());
+  EXPECT_EQ(service.DrainReserve(0), 1U);
+  EXPECT_EQ(service.ReserveAvailable(), 0U);
 }
 
 }  // namespace

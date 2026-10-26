@@ -1256,7 +1256,8 @@ void SlotLifecycle::StateWrittenBack(bool whole) {
 std::expected<SlotMask, std::string> SlotLifecycle::RecoverInPlace(
     const std::function<void(std::uint32_t slot)>& before_discard) {
   if (released_ || !bound_) return Refuse("slots are not bound");
-  if (node_.InRequest(stream_)) return Refuse("a request is still open on the stream");
+  if (node_.InRequest(stream_) || node_.HasUnprovenWork(stream_))
+    return Refuse("a request or unproven work is still open on the stream");
   AcknowledgeFence();
   const bool faulted = cohort_.faulted();
   cohort_.Recover();

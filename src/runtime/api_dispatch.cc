@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/json.h"
 #include "runtime/api_server_internal.h"
 #include "scheduler/cohort_policy.h"
 
@@ -32,6 +33,42 @@ using server_detail::Refusal;
 using server_detail::Seconds;
 // ---------------------------------------------------------------- driver
 
+void Server::ProcessPendingRelease() {
+  std::optional<PendingRelease> release_req;
+  {
+    const std::scoped_lock lock(mutex_);
+    if (pending_release_.has_value()) {
+      release_req = std::move(pending_release_);
+      pending_release_.reset();
+    }
+  }
+  if (!release_req.has_value()) {
+    return;
+  }
+  auto report = backend_.ReleaseWorkingSet("http");
+  {
+    const std::scoped_lock lock(mutex_);
+    Channel& ch = *release_req->channel;
+    if (!report) {
+      ch.PutError(server_detail::Refusal(409, report.error(), "busy"));
+    } else {
+      std::string quoted_model;
+      base::json::AppendQuoted(report->evicted_model, quoted_model);
+      const std::string body = std::format(
+          R"({{"evicted_model":{},"spilled_bytes":{},"reclaimed_bytes":{},"released_backings":{}}})",
+          quoted_model, report->spilled_bytes, report->reclaimed_bytes, report->released_backings);
+      ch.PutHead(200, server_detail::kJson, body.size());
+      ch.PutBody(body);
+      ch.PutEnd();
+    }
+    if (!ch.dirty) {
+      ch.dirty = true;
+      dirty_.push_back(ch.connection);
+    }
+  }
+  WakeIo();
+}
+
 void Server::Serve(Pending& pending, int wake_fd, const std::function<bool()>& on_wake) {
   const auto started = Clock::now();
   Channel& channel = *pending.channel;
@@ -39,6 +76,9 @@ void Server::Serve(Pending& pending, int wake_fd, const std::function<bool()>& o
   bool gone = false;
   {
     const std::scoped_lock lock(mutex_);
+    if (dispatching_ > 0) {
+      --dispatching_;
+    }
     gone = channel.gone;
     if (!gone) {
       running_.push_back(pending.channel);
@@ -242,6 +282,9 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
     bool gone = false;
     {
       const std::scoped_lock lock(mutex_);
+      if (dispatching_ > 0) {
+        --dispatching_;
+      }
       gone = frame->pending.channel->gone;
       if (!gone) {
         running_.push_back(frame->pending.channel);
@@ -261,6 +304,7 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
     }
     if (!*created) {
       const std::scoped_lock lock(mutex_);
+      ++dispatching_;
       std::erase(running_, frame->pending.channel);
       return false;
     }
@@ -400,6 +444,7 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
         pending.emplace(std::move(head));
         queue_.pop_front();
         pending->channel->queued = false;
+        ++dispatching_;
       }
       ++attempts;
       auto frame = std::make_unique<Active>(*this, std::move(*pending), wake_fd, on_wake);
@@ -408,6 +453,9 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
         // (a yielded request's) goes back with it.
         frame->exchange.Carry(frame->pending, frame->pending.resume != nullptr);
         const std::scoped_lock lock(mutex_);
+        if (dispatching_ > 0) {
+          --dispatching_;
+        }
         frame->pending.channel->queued = true;
         queue_.push_front(std::move(frame->pending));
         policy.Deferred();
@@ -544,6 +592,7 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
         replacement.emplace(std::move(queue_.front()));
         replacement->channel->queued = false;
         queue_.pop_front();
+        ++dispatching_;
       }
     }
     if (replacement) {
@@ -619,38 +668,9 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
       continue;
     }
     ready_.Drain();
-    std::optional<PendingRelease> release_req;
-    {
-      const std::scoped_lock lock(mutex_);
-      if (pending_release_.has_value()) {
-        release_req = std::move(pending_release_);
-        pending_release_.reset();
-      }
-    }
-    if (release_req.has_value()) {
-      auto report = backend_.ReleaseWorkingSet("http");
-      {
-        const std::scoped_lock lock(mutex_);
-        Channel& ch = *release_req->channel;
-        if (!report) {
-          ch.PutError(server_detail::Refusal(409, report.error(), "busy"));
-        } else {
-          const std::string body = std::format(
-              R"({{"evicted_model":"{}","spilled_bytes":{},"reclaimed_bytes":{},"released_backings":{}}})",
-              report->evicted_model, report->spilled_bytes, report->reclaimed_bytes,
-              report->released_backings);
-          ch.PutHead(200, server_detail::kJson, body.size());
-          ch.PutBody(body);
-          ch.PutEnd();
-        }
-        if (!ch.dirty) {
-          ch.dirty = true;
-          dirty_.push_back(ch.connection);
-        }
-      }
-      WakeIo();
-    }
+    ProcessPendingRelease();
     for (;;) {
+      ProcessPendingRelease();
       std::optional<Pending> next;
       {
         const std::scoped_lock lock(mutex_);
@@ -660,6 +680,7 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
         next.emplace(std::move(queue_.front()));
         next->channel->queued = false;
         queue_.pop_front();
+        ++dispatching_;
       }
       if (cooperative != nullptr &&
           cooperative->Supports({.options = next->request,
@@ -670,6 +691,7 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
         Serve(*next, wake_fd, on_wake);
       }
       next.reset();
+      ProcessPendingRelease();
       TrimIfOwed();
       if (!result) {
         break;

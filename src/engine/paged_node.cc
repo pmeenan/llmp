@@ -267,11 +267,53 @@ void PagedNode::SetBudget(base::Bytes budget) noexcept {
   }
 }
 
-void PagedNode::KeepPinned(void* pointer) {
+void PagedNode::KeepPinned(void* pointer, std::optional<std::uint32_t> stream) {
   if (const auto at = std::ranges::find(pinned_, pointer); at != pinned_.end()) {
     pinned_.erase(at);
-    unproven_.KeepPinned(pointer);
+    unproven_.KeepPinned(pointer, stream);
+  } else if (stream.has_value()) {
+    unproven_.RecordStream(*stream);
   }
+}
+
+Status PagedNode::ReleaseQuarantinedPinned(void* pointer) {
+  if (pointer == nullptr) {
+    return {};
+  }
+  const auto mutate = [&](auto&& fn, std::string_view what) -> Status {
+    if (scheduler_ != nullptr && !stopped_.has_value()) {
+      return RegionCatalog(std::forward<decltype(fn)>(fn), what);
+    }
+    return fn();
+  };
+  catalog::Ticket ticket;
+  auto checked = mutate(
+      [&]() -> Status {
+        const auto span = std::ranges::find(spans_, Address(pointer), &Span::base);
+        if (span == spans_.end() || span->device || span->memory_class != MemoryClass::kStaging) {
+          return Error("no pinned staging extent at this address");
+        }
+        auto retiring = catalog_.BeginRetirePinned(span->extent);
+        if (!retiring) return Error("pinned staging is still held or referenced");
+        ticket = *retiring;
+        return {};
+      },
+      "checking retired pinned staging");
+  if (!checked) {
+    return checked;
+  }
+  providers::FreePinned(pointer);
+  auto forgotten = mutate(
+      [&]() -> Status {
+        if (!catalog_.CompleteEvict(ticket) || !catalog_.RemoveExtent(ticket.extent)) {
+          return Error("forgetting retired pinned staging");
+        }
+        EraseSpans([&](const Span& s) { return s.extent == ticket.extent; });
+        return {};
+      },
+      "forgetting pinned staging");
+  base::Check(forgotten.has_value(), "freed pinned staging must leave the catalog");
+  return {};
 }
 
 Status PagedNode::FreePinned(void* pointer) {
@@ -320,7 +362,7 @@ bool PagedNode::RetireRing(std::unique_ptr<providers::Storage> ring,
   for (void* const landing : landings) {
     if (const auto it = std::ranges::find(pinned_, landing); it != pinned_.end()) {
       pinned_.erase(it);
-      unproven_.KeepPinned(landing);
+      unproven_.KeepPinned(landing, std::nullopt, true);
     }
   }
   // Destroying a ring with reads in flight is fatal (UringStorage), and
@@ -646,9 +688,17 @@ Status PagedNode::FenceStream(std::uint32_t stream) {
   auto fenced = Job(
       catalog::Closure{}, [](providers::NativeStream) { return sc::JobResult::kQueued; },
       "fencing a model's stream after a failure", stream);
-  if (fenced && !supplemental_ &&
-      std::ranges::none_of(requests_, [](const auto& kv) { return kv.second->unproven; })) {
-    unproven_.ClearAfterFence();
+  if (fenced) {
+    for (void* pointer : unproven_.TakePinnedForStream(stream)) {
+      if (auto released = ReleaseQuarantinedPinned(pointer); !released) {
+        return released;
+      }
+    }
+    if (!supplemental_ &&
+        std::ranges::none_of(requests_, [](const auto& kv) { return kv.second->unproven; }) &&
+        !unproven_.has_streams()) {
+      unproven_.ClearAfterFence();
+    }
   }
   return fenced;
 }
@@ -854,6 +904,11 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
       problems.push_back(std::format("{} backings were left", memory_->backings()));
     }
   }
+  for (void* pointer : unproven_.TakeFencedPinned()) {
+    if (auto released = ReleaseQuarantinedPinned(pointer); !released) {
+      problems.push_back(released.error());
+    }
+  }
   for (void* pointer : pinned_) {
     providers::FreePinned(pointer);
   }
@@ -863,7 +918,8 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
 
 bool PagedNode::ReleaseMapped(Mapped& mapped) {
   if (memory_ == nullptr) return true;
-  return llmp::engine::ReleaseMapped(*memory_, mapped, backing_lane_.get());
+  return llmp::engine::ReleaseMapped(
+      *memory_, mapped, mapped.allocation_class == device_class_ ? backing_lane_.get() : nullptr);
 }
 
 }  // namespace llmp::engine

@@ -1636,45 +1636,49 @@ void Server::Maintain() {
   // the running model's in-use floor (Reclaim).
   const platform::MemoryPressure pressure = platform::ReadMemoryPressure();
   const PressureTrim::Trim trim = pressure_.Observe(pressure, now);
-  if (config_.memory.mode.value == config::MemoryMode::kShared && pressure.available.has_value() &&
-      configured_budget_ > 0) {
-    const std::uint64_t avail = *pressure.available;
-    const std::uint64_t target_headroom = pressure_.limits().headroom_bytes;
-    if (avail < target_headroom) {
-      const std::uint64_t shortfall = target_headroom - avail;
-      const std::uint64_t lower =
-          configured_budget_ > shortfall ? configured_budget_ - shortfall : fixed_;
-      const std::uint64_t new_budget = std::max(fixed_, lower);
-      if (new_budget < node_.budget().value()) {
-        node_.SetBudget(base::Bytes(new_budget));
-        budget_ = new_budget;
+  if (trim.now) {
+    std::uint64_t freed = Reclaim(trim.needed, true, trim.why, nullptr, std::nullopt, true);
+    if (config_.memory.mode.value == config::MemoryMode::kShared && freed < trim.needed &&
+        resident_ != nullptr && !HasActiveTurnWork()) {
+      auto rel = ReleaseWorkingSet("memory pressure");
+      if (rel) {
+        freed += rel->reclaimed_bytes;
       }
-    } else if (avail >= target_headroom && node_.budget().value() < configured_budget_) {
-      node_.SetBudget(base::Bytes(configured_budget_));
-      budget_ = configured_budget_;
+    }
+    if (pressure_.Trimmed(freed, trim.needed, now)) {
+      const auto mib = [](std::uint64_t b) { return static_cast<double>(b) / (1U << 20U); };
+      Log(std::format(
+          "memory pressure from outside ({:.0f} MiB available, a full stall {:.1f}% of the last 10 "
+          "s): gave back {:.1f} MiB of {:.1f} MiB, too little left to give without the running "
+          "model's floor; looking again in {} s ({} trims, {} short)",
+          mib(pressure.available.value_or(0)), pressure.stall ? pressure.stall->full_avg10 : 0.0,
+          mib(freed), mib(trim.needed),
+          std::chrono::duration_cast<std::chrono::seconds>(pressure_.backoff()).count(),
+          pressure_.trims(), pressure_.short_trims()));
     }
   }
-  if (!trim.now) {
-    return;
-  }
-  std::uint64_t freed = Reclaim(trim.needed, true, trim.why, nullptr, std::nullopt, true);
-  if (config_.memory.mode.value == config::MemoryMode::kShared && freed < trim.needed &&
-      resident_ != nullptr && !HasActiveTurnWork()) {
-    auto rel = ReleaseWorkingSet("memory pressure");
-    if (rel) {
-      freed += rel->reclaimed_bytes;
+  if (config_.memory.mode.value == config::MemoryMode::kShared && configured_budget_ > 0) {
+    const auto avail =
+        trim.now ? platform::AvailableMemoryBytes().or_else(
+                       [&]() -> std::optional<std::uint64_t> { return pressure.available; })
+                 : pressure.available;
+    const bool pressed = trim.now || pressure_.pressed();
+    std::uint64_t current_occupancy = 0;
+    if (pressed && avail.has_value() && *avail < pressure_.target_bytes()) {
+      (void)node_.Call(
+          [&]() -> Status {
+            current_occupancy = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+            return {};
+          },
+          "reading occupancy for shared-mode dynamic budget");
     }
-  }
-  if (pressure_.Trimmed(freed, trim.needed, now)) {
-    const auto mib = [](std::uint64_t b) { return static_cast<double>(b) / (1U << 20U); };
-    Log(std::format(
-        "memory pressure from outside ({:.0f} MiB available, a full stall {:.1f}% of the last 10 "
-        "s): gave back {:.1f} MiB of {:.1f} MiB, too little left to give without the running "
-        "model's floor; looking again in {} s ({} trims, {} short)",
-        mib(pressure.available.value_or(0)), pressure.stall ? pressure.stall->full_avg10 : 0.0,
-        mib(freed), mib(trim.needed),
-        std::chrono::duration_cast<std::chrono::seconds>(pressure_.backoff()).count(),
-        pressure_.trims(), pressure_.short_trims()));
+    const std::uint64_t new_budget =
+        AdjustSharedBudget(avail, pressed, current_occupancy, fixed_, node_.budget().value(),
+                           configured_budget_, pressure_.limits());
+    if (new_budget != node_.budget().value()) {
+      node_.SetBudget(base::Bytes(new_budget));
+      budget_ = new_budget;
+    }
   }
 }
 

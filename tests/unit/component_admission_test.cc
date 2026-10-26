@@ -1708,6 +1708,18 @@ TEST(ComponentAdmissionModelOptTest, EquivalentScaleDeclarationsHaveTheSameStruc
   if (*changed_encoding)
     for (const auto& grant : (*changed_encoding)->entries())
       EXPECT_NE(grant.change, llmp::planner::NumericalChange::kNvfp4ExpertIntermediates);
+
+  // A non-positive row_parameter ("used") on a routed FFN does not underflow
+  // when computing numerical evidence rows.
+  auto zero_used = fixture.model;
+  for (auto& stage : zero_used.stages)
+    for (auto& layer : stage.layers)
+      for (auto& component : layer.components)
+        if (component.kind == "ffn.routed")
+          for (auto& param : component.params)
+            if (param.name == "used") param.value = std::int64_t{0};
+  auto zero_used_numerics = bind(zero_used, nullptr, 1);
+  EXPECT_FALSE(zero_used_numerics);
 }
 
 TEST(ComponentAdmissionModelOptTest, GdnFoldClosureIncludesEveryPartButNotItsIndependentNorm) {

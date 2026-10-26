@@ -1629,6 +1629,7 @@ class FakeBackend final : public api::Backend {
   std::atomic<unsigned> resumes{0};
   std::atomic<bool> fail_release_working_set{false};
   std::string last_release_reason;
+  std::string release_evicted_model = "alpha";
 
   std::expected<api::ReleaseReport, std::string> ReleaseWorkingSet(
       std::string_view reason = "manual") override {
@@ -1637,7 +1638,7 @@ class FakeBackend final : public api::Backend {
       return std::unexpected("busy");
     }
     return api::ReleaseReport{
-        .evicted_model = "alpha",
+        .evicted_model = release_evicted_model,
         .spilled_bytes = 1048576,
         .reclaimed_bytes = 2097152,
         .released_backings = 8,
@@ -3263,6 +3264,16 @@ TEST_F(ServerTest, MemoryReleaseEndpoint) {
   EXPECT_EQ(In(doc->root(), {"spilled_bytes"}).int64(), 1048576);
   EXPECT_EQ(In(doc->root(), {"reclaimed_bytes"}).int64(), 2097152);
   EXPECT_EQ(In(doc->root(), {"released_backings"}).int64(), 8);
+
+  // Quotes and control characters in evicted_model are JSON-escaped.
+  backend_.release_evicted_model = "alpha\"\\beta\n";
+  const std::string escaped_post = Exchange(
+      "POST /llmp/v1/memory/release HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+  EXPECT_THAT(escaped_post, StartsWith("HTTP/1.1 200 OK\r\n"));
+  auto escaped_doc = json::Parse(BodyOf(escaped_post));
+  ASSERT_TRUE(escaped_doc.has_value()) << escaped_post;
+  EXPECT_EQ(In(escaped_doc->root(), {"evicted_model"}).string(), "alpha\"\\beta\n");
+  backend_.release_evicted_model = "alpha";
 
   // When backend returns error (e.g. busy with requests), 409 is returned.
   backend_.fail_release_working_set.store(true);

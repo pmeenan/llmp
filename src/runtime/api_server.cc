@@ -329,6 +329,13 @@ void Server::FailStalledLocked(Clock::duration idle, std::vector<std::uint64_t>&
       ended.push_back(ch.connection);
     }
     queue_.clear();
+    if (pending_release_.has_value()) {
+      Channel& ch = *pending_release_->channel;
+      lines.push_back(std::format("request {}: 503, the backend is not making progress", ch.id));
+      ch.PutError(Unresponsive());
+      ended.push_back(ch.connection);
+      pending_release_.reset();
+    }
   }
   drained_.notify_all();  // a paused request ends too
 }

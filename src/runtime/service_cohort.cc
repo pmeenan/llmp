@@ -965,16 +965,27 @@ void NodeBackend::Preempt(ChatWork& frame) {
     finished = frame.prompt_session->Finish();
     frame.prompt_session.reset();
   } else if (frame.generation_session != nullptr) {
-    frame.generation_session->Cancel();
+    if (!frame.generation_session->done()) {
+      frame.generation_session->Cancel();
+    }
     finished = frame.generation_session->Finish();
     frame.generation_session.reset();
     if (finished) {
-      // The prompt and the generated tokens the state holds; the anchor
-      // stays in frame.generation, already streamed.
-      frame.resume_tokens = frame.branch.history();
-      (void)frame.FundTokens(true);
-      frame.resume = true;
-      frame.stage = ChatWork::Stage::kPrompt;
+      if (frame.generation.stopped || frame.generation.tokens.size() >= frame.options.max_tokens) {
+        frame.resume = false;
+        frame.stage = frame.literal == nullptr ? ChatWork::Stage::kOutput : ChatWork::Stage::kDone;
+      } else {
+        // The prompt and the generated tokens the state holds; the anchor
+        // stays in frame.generation, already streamed.
+        frame.resume_tokens.assign(frame.rendered.tokens().begin(), frame.rendered.tokens().end());
+        if (frame.generation.tokens.size() > 1) {
+          frame.resume_tokens.insert(frame.resume_tokens.end(), frame.generation.tokens.begin(),
+                                     frame.generation.tokens.end() - 1);
+        }
+        (void)frame.FundTokens(true);
+        frame.resume = true;
+        frame.stage = ChatWork::Stage::kPrompt;
+      }
     }
   }
   if (!finished) {
@@ -986,7 +997,8 @@ void NodeBackend::Preempt(ChatWork& frame) {
   // restored exactly when it begins again, so it continues as if never
   // set aside (Llm::SpillSetAside). Only a state that cannot be spilled
   // is cleared, and then rebuilt by prefill.
-  if (auto spilled = frame.model.SpillSetAside(frame.branch); spilled) {
+  if ((!frame.resume || frame.resume_tokens.size() == held) &&
+      frame.model.SpillSetAside(frame.branch)) {
     Say(log_, std::format("{}'s request in slot {} set aside for its peers: its state spilled "
                           "at {} tokens, restored when they finish",
                           frame.model.name(), frame.slot, held));

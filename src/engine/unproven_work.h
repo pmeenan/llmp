@@ -4,9 +4,11 @@
 #ifndef LLMP_ENGINE_UNPROVEN_WORK_H_
 #define LLMP_ENGINE_UNPROVEN_WORK_H_
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -18,6 +20,8 @@ class StepTransaction;
 
 struct PinnedKeepAlive {
   void* pointer = nullptr;
+  std::optional<std::uint32_t> stream = std::nullopt;
+  bool storage_ring = false;
 };
 
 struct StorageRingKeepAlive {
@@ -32,7 +36,7 @@ class UnprovenWork {
 
   bool active() const noexcept {
     return tainted_ || step_ != nullptr || routed_ != nullptr || !pinned_.empty() ||
-           !storage_rings_.empty();
+           !storage_rings_.empty() || !streams_.empty();
   }
 
   explicit operator bool() const noexcept { return active(); }
@@ -56,12 +60,61 @@ class UnprovenWork {
     routed_.reset();
     pinned_.clear();
     storage_rings_.clear();
+    streams_.clear();
   }
 
-  void KeepPinned(void* ptr) {
+  void KeepPinned(void* ptr, std::optional<std::uint32_t> stream = std::nullopt,
+                  bool storage_ring = false) {
     if (ptr != nullptr) {
-      pinned_.push_back(PinnedKeepAlive{.pointer = ptr});
+      pinned_.push_back(
+          PinnedKeepAlive{.pointer = ptr, .stream = stream, .storage_ring = storage_ring});
     }
+    if (stream.has_value()) {
+      RecordStream(*stream);
+    }
+  }
+
+  void RecordStream(std::uint32_t stream) {
+    if (std::ranges::find(streams_, stream) == streams_.end()) {
+      streams_.push_back(stream);
+    }
+  }
+
+  bool HasStream(std::uint32_t stream) const noexcept {
+    return std::ranges::find(streams_, stream) != streams_.end();
+  }
+
+  void ClearStream(std::uint32_t stream) noexcept { std::erase(streams_, stream); }
+
+  bool has_streams() const noexcept { return !streams_.empty(); }
+  const std::vector<std::uint32_t>& streams() const noexcept { return streams_; }
+
+  std::vector<void*> TakePinnedForStream(std::uint32_t stream) {
+    std::vector<void*> out;
+    for (auto it = pinned_.begin(); it != pinned_.end();) {
+      if (!it->storage_ring && it->stream == stream) {
+        out.push_back(it->pointer);
+        it = pinned_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    ClearStream(stream);
+    return out;
+  }
+
+  std::vector<void*> TakeFencedPinned() {
+    std::vector<void*> out;
+    for (auto it = pinned_.begin(); it != pinned_.end();) {
+      if (!it->storage_ring) {
+        out.push_back(it->pointer);
+        it = pinned_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    streams_.clear();
+    return out;
   }
 
   void RetainStorageRing(providers::Storage* ring) {
@@ -95,6 +148,7 @@ class UnprovenWork {
   std::shared_ptr<void> routed_;
   std::vector<PinnedKeepAlive> pinned_;
   std::vector<StorageRingKeepAlive> storage_rings_;
+  std::vector<std::uint32_t> streams_;
 };
 
 using NodeUnproven = UnprovenWork;

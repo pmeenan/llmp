@@ -529,6 +529,12 @@ std::expected<void, std::string> CheckScaleAtomSlots(const artifact::Artifact& a
       return std::pair(-static_cast<int>(arrays[a].format->stacked), arrays[a].name) <
              std::pair(-static_cast<int>(arrays[b].format->stacked), arrays[b].name);
     });
+    for (const auto a : list) {
+      if (arrays[a].count != arrays[list.front()].count) {
+        return Refused(
+            std::format("layer {}'s scale-atom expert tables have different expert counts", layer));
+      }
+    }
     for (std::uint32_t e = 0; e < arrays[list.front()].count; ++e) {
       std::uint64_t at = 0;
       std::optional<std::uint32_t> group;
@@ -885,18 +891,22 @@ AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
                     continue;
                   }
                   std::uint64_t rows = evidence.rows_per_owner;
-                  if (evidence.rows.empty() &&
-                      (__builtin_mul_overflow(rows, std::uint64_t{envelope.slots}, &rows) ||
-                       (evidence.stream_rows &&
-                        __builtin_mul_overflow(rows, std::uint64_t{instance.stage.streams},
-                                               &rows)) ||
-                       (!evidence.row_parameter.empty() &&
-                        __builtin_mul_overflow(
-                            rows,
-                            static_cast<std::uint64_t>(instance.params.Int(evidence.row_parameter)),
-                            &rows)))) {
-                    invalid = true;
-                    continue;
+                  if (evidence.rows.empty()) {
+                    const std::int64_t param_rows =
+                        !evidence.row_parameter.empty()
+                            ? instance.params.Int(evidence.row_parameter)
+                            : 1;
+                    if (param_rows <= 0 ||
+                        __builtin_mul_overflow(rows, std::uint64_t{envelope.slots}, &rows) ||
+                        (evidence.stream_rows &&
+                         __builtin_mul_overflow(rows, std::uint64_t{instance.stage.streams},
+                                                &rows)) ||
+                        (!evidence.row_parameter.empty() &&
+                         __builtin_mul_overflow(rows, static_cast<std::uint64_t>(param_rows),
+                                                &rows))) {
+                      invalid = true;
+                      continue;
+                    }
                   }
                   const auto& shape = tensor->format.shape;
                   std::uint64_t k = 0, n = 0;

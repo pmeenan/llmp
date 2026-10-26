@@ -211,6 +211,16 @@ std::expected<Llm::GenerationSession::Step, std::string> Llm::GenerationSession:
     const auto cap = model_.caps_.max_segment_rows != 0 ? model_.caps_.max_segment_rows : left_;
     certain_rows_ = std::min({options_.tool_sampling->certain().size(), std::size_t{left_ - 1},
                               std::size_t{cap - 1}, std::size_t{model_.context_ - position_ - 2}});
+    if (certain_rows_ != 0) {
+      auto tentative = *options_.tool_sampling;
+      for (std::size_t i = 0; i < certain_rows_; ++i) {
+        const auto token = options_.tool_sampling->certain()[i];
+        if (IsStop(token, &tentative) || !tentative.Accept(token)) {
+          certain_rows_ = i;
+          break;
+        }
+      }
+    }
   }
   const auto step_tokens = certain_rows_ != 0  ? static_cast<std::uint32_t>(certain_rows_ + 1)
                            : model_.speculate_ ? model_.StepTokenBoundFor(branch_, left_)
@@ -405,7 +415,7 @@ Status Llm::GenerationSession::ApplyTokens(std::vector<std::int32_t> kept,
       out_.cancelled = !Report() || out_.cancelled;
     }
     if (out_.stopped || out_.cancelled) {
-      if (out_.cancelled && !out_.stopped && options_.tool_sampling && i + 1 < known) {
+      if (options_.tool_sampling && i + 1 < known) {
         // A callback can yield within this completed unit. Only delivered IDs
         // advanced the lexical cursor; preserve its still-known suffix for the
         // restored public prefix, rather than resampling or losing the grammar.

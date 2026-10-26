@@ -67,4 +67,28 @@ bool PressureTrim::Trimmed(std::uint64_t freed, std::uint64_t needed, Clock::tim
   return false;
 }
 
+std::uint64_t AdjustSharedBudget(std::optional<std::uint64_t> available, bool pressed,
+                                 std::uint64_t current_occupancy, std::uint64_t fixed,
+                                 std::uint64_t current_budget, std::uint64_t configured_budget,
+                                 const PressureTrimLimits& limits) {
+  if (!available.has_value() || configured_budget == 0) {
+    return current_budget;
+  }
+  const std::uint64_t target_headroom = limits.low_bytes + limits.headroom_bytes;
+  if (pressed && *available < target_headroom) {
+    const std::uint64_t shortfall = target_headroom - *available;
+    const std::uint64_t supportable =
+        *available > UINT64_MAX - current_occupancy
+            ? configured_budget
+            : std::min(configured_budget, current_occupancy + *available);
+    const std::uint64_t lower = supportable > shortfall ? supportable - shortfall : fixed;
+    const std::uint64_t new_budget = std::clamp(lower, fixed, configured_budget);
+    return std::min(current_budget, new_budget);
+  }
+  if (*available >= target_headroom && current_budget < configured_budget) {
+    return configured_budget;
+  }
+  return current_budget;
+}
+
 }  // namespace llmp::runtime

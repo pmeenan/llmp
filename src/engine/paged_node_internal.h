@@ -166,10 +166,14 @@ inline bool ReleaseMapped(providers::VmmProvider& memory, Mapped& mapped,
   if (!mapped.reservation.valid()) {
     return true;
   }
-  bool released =
+  const bool unmapped =
       mapped.backings.empty() ||
       memory.Unmap(mapped.reservation, Bytes(0), Bytes(mapped.backings.size() * kPagedExtent))
           .has_value();
+  if (!unmapped) {
+    return false;
+  }
+  bool released = true;
   for (const auto backing : mapped.backings) {
     if (backing_lane != nullptr && backing_lane->ReturnToReserve(backing)) {
       continue;

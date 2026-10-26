@@ -1493,4 +1493,16 @@ TEST_F(LowCapacitySlotTest, AnAdoptedRestoreRefusedPartwayResumesFromTheFiles) {
   EXPECT_EQ(p[2], 0x52);
 }
 
+TEST_F(SlotLifecycleTest, RecoverInPlaceRefusesWhileStreamHasUnprovenPinnedWork) {
+  Select({0});
+  en::LiveState scratch("scratch");
+  ASSERT_NE(scratch.HostCopy(node_, 256), nullptr);
+  scratch.HostCopyUnproven(0U);
+  EXPECT_TRUE(node_.HasUnprovenWork(0U));
+  EXPECT_FALSE(slots().RecoverInPlace());
+  ASSERT_TRUE(node_.FenceStream(0U));
+  EXPECT_FALSE(node_.HasUnprovenWork(0U));
+  EXPECT_TRUE(slots().RecoverInPlace());
+}
+
 }  // namespace

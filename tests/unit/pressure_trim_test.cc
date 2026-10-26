@@ -183,4 +183,35 @@ TEST(PressureTrim, ReliefStartsTheBackOffOver) {
   EXPECT_TRUE(trim.Trimmed(0, t.needed, now));  // a new episode logs again
 }
 
+TEST(PressureTrim, AdjustSharedBudgetShrinksOnlyUnderPressureAndRestoresAtTarget) {
+  constexpr std::uint64_t kFloor = 256 * kMiB;
+  constexpr std::uint64_t kCeiling = 8192 * kMiB;
+  constexpr std::uint64_t kTarget = 1536 * kMiB;
+  constexpr std::uint64_t kCurrentUse = 2048 * kMiB;
+
+  // When not under pressure, a temporary dip in available memory below target
+  // does not ratcheting-shrink the budget.
+  EXPECT_EQ(rt::AdjustSharedBudget(1200 * kMiB, /*pressed=*/false, kCurrentUse, kFloor, kCeiling,
+                                   kCeiling),
+            kCeiling);
+
+  // Under pressure with available below target, the budget shrinks by the
+  // deficit relative to current occupancy + available, clamped to [kFloor, kCeiling].
+  const std::uint64_t shrunk = rt::AdjustSharedBudget(1036 * kMiB, /*pressed=*/true, kCurrentUse,
+                                                      kFloor, kCeiling, kCeiling);
+  EXPECT_EQ(shrunk, (kCurrentUse + 1036 * kMiB) - (kTarget - 1036 * kMiB));
+
+  // While available is above the low mark (512 MiB) but still below target
+  // (1536 MiB), the budget does not restore to ceiling prematurely.
+  EXPECT_EQ(
+      rt::AdjustSharedBudget(900 * kMiB, /*pressed=*/false, kCurrentUse, kFloor, shrunk, kCeiling),
+      shrunk);
+
+  // Once available reaches target_bytes (low_bytes + headroom_bytes), the
+  // budget restores to the configured ceiling.
+  EXPECT_EQ(
+      rt::AdjustSharedBudget(kTarget, /*pressed=*/false, kCurrentUse, kFloor, shrunk, kCeiling),
+      kCeiling);
+}
+
 }  // namespace

@@ -545,6 +545,32 @@ TEST(ReleaseMapped, FailedReservationLeavesAnEmptyIdempotentOwner) {
   EXPECT_EQ(memory.reservations(), 0U);
 }
 
+TEST(ReleaseMapped, FailedUnmapRetainsBackingsUntilUnmapSucceeds) {
+  fake::FakeDeviceMemory memory(2_MiB, 4_MiB);
+  engine::Mapped mapped;
+  mapped.name = "region whose unmap fails once";
+  mapped.bytes = (2_MiB).value();
+  auto reservation = memory.Reserve(2_MiB);
+  ASSERT_TRUE(reservation.has_value());
+  mapped.reservation = *reservation;
+  auto backing = memory.Create(0, 2_MiB);
+  ASSERT_TRUE(backing.has_value());
+  ASSERT_TRUE(memory.Map(mapped.reservation, 0_MiB, *backing).has_value());
+  mapped.backings.push_back(*backing);
+
+  memory.FailNext(fake::Operation::kUnmap, providers::ProviderError::kInvalid);
+  EXPECT_FALSE(engine::ReleaseMapped(memory, mapped));
+  EXPECT_EQ(mapped.backings.size(), 1U);
+  EXPECT_EQ(memory.backings(), 1U);
+  EXPECT_EQ(memory.reservations(), 1U);
+
+  // A subsequent ReleaseMapped succeeds and releases both the backing and reservation.
+  EXPECT_TRUE(engine::ReleaseMapped(memory, mapped));
+  EXPECT_TRUE(mapped.backings.empty());
+  EXPECT_EQ(memory.backings(), 0U);
+  EXPECT_EQ(memory.reservations(), 0U);
+}
+
 // A small real writer/Open/Reserve fixture proves device/slab/host ordering.
 // No node Open/Start, scheduler, stream, page-in or device work is performed.
 class WeightIntervals : public testing::Test {

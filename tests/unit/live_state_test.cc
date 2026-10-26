@@ -1508,6 +1508,33 @@ TEST(LiveStateBufferTest, UnprovenCopyRefusesReuseAndKeepsItsDestinationUntilExi
   // Deliberately retained, as a real unknown-completion destination is.
 }
 
+TEST(LiveStateBufferTest, StreamTaggedUnprovenCopyReclaimsOnFenceStreamAndTearDown) {
+  en::PagedNode node(en::NodeSettings{});
+  ASSERT_TRUE(node.Open());
+  const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.Start(Bytes(fixed + kExtent)));
+  node.Run();
+  en::LiveState state("test");
+  ASSERT_NE(state.HostCopy(node, 256), nullptr);
+  state.HostCopyUnproven(0U);
+  en::LiveState untagged("untagged");
+  ASSERT_NE(untagged.HostCopy(node, 256), nullptr);
+  untagged.HostCopyUnproven();
+  EXPECT_TRUE(node.HasUnprovenWork(0U));
+  EXPECT_EQ(node.kept_pinned(), 2);
+
+  // Once stream 0 is fenced, its quarantined pinned destination is reclaimed,
+  // while the untagged destination remains quarantined until TearDown.
+  ASSERT_TRUE(node.FenceStream(0U));
+  state.AcknowledgeFence();
+  EXPECT_NE(state.HostCopy(node, 256), nullptr);
+  ASSERT_TRUE(node.FreePinned(state.HostCopy(node, 256)));
+  EXPECT_FALSE(node.HasUnprovenWork(0U));
+  EXPECT_EQ(node.kept_pinned(), 1);
+  ASSERT_TRUE(node.TearDown({}));
+  EXPECT_EQ(node.kept_pinned(), 0);
+}
+
 // After Run the device-memory provider is the backing lane's alone, and the
 // lane refills its handle reserve in the background from the moment it
 // starts: a state region reserved from another thread then (as the unknown-

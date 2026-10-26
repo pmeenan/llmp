@@ -253,13 +253,15 @@ class LiveState {
   // Pinned host memory of total_bytes() (allocated on first use; null if
   // that failed): Read's copy, and a harness's scratch.
   void* HostCopy(PagedNode& node, std::uint64_t bytes = 0);
-  // A failed copy may still own the DMA destination. Keep it until exit
-  // and refuse subsequent reuse, even when the requested size is smaller.
-  void HostCopyUnproven() {
+  // A failed copy may still own the DMA destination. Keep it until fenced or
+  // exit and refuse subsequent reuse, even when the requested size is smaller.
+  void HostCopyUnproven(std::optional<std::uint32_t> stream = std::nullopt) {
     host_copy_unproven_.Mark();
-    if (host_node_ != nullptr) {
-      host_node_->KeepPinned(host_copy_);
+    if (host_node_ != nullptr && host_copy_ != nullptr) {
+      host_node_->KeepPinned(host_copy_, stream);
     }
+    host_copy_ = nullptr;
+    host_capacity_ = 0;
   }
   void AcknowledgeFence() noexcept {
     if (host_copy_unproven_.active()) {

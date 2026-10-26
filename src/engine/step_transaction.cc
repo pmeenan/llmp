@@ -1204,6 +1204,21 @@ std::expected<void, StepRefusal> StepTransaction::PrepareState(Frame& frame) {
 
   // A verify's saves (D-068): what it writes in each stage, by row, into
   // that stage's snapshot, queued in its job before its run.
+  struct ResetSavingOnFailure {
+    std::vector<Frame::Saving>& entries;
+    bool committed = false;
+    ~ResetSavingOnFailure() {
+      if (!committed) {
+        for (const Frame::Saving& saved_entry : entries) {
+          if (saved_entry.live != nullptr) {
+            saved_entry.live->BeginSaves();
+          }
+        }
+        entries.clear();
+      }
+    }
+  } reset_saving{saving};
+
   if (verify) {
     for (const pl::Segment& s : shape.segments) {
       for (std::size_t stage = 0; stage < runner_.slots_.stages(); ++stage) {
@@ -1295,6 +1310,7 @@ std::expected<void, StepRefusal> StepTransaction::PrepareState(Frame& frame) {
     std::ranges::copy(read.plan.sources, table.sources);
     *table.count = static_cast<std::uint32_t>(read.plan.sources.size());
   }
+  reset_saving.committed = true;
   return {};
 }
 
