@@ -15,7 +15,7 @@
 #include "base/bytes.h"
 #include "base/json.h"
 #include "chat/chat.h"
-#include "engine/runner_resources.h"
+#include "engine/device_backend.h"
 #include "engine/support.h"
 #include "planner/construction.h"
 #include "planner/policy.h"
@@ -207,9 +207,7 @@ std::expected<std::vector<co::BoundTensor>, std::string> Table(
     shape.reserve(resource->format->shape.rank);
     for (std::size_t d = 0; d < resource->format->shape.rank; ++d)
       shape.push_back(resource->format->shape.ne[resource->format->shape.rank - 1 - d]);
-    if (shape != tensor.shape ||
-        (resource->format->layout != format::Layout::kDense &&
-         resource->format->layout != format::Layout::kGgmlBlocks) ||
+    if (shape != tensor.shape || !format::IsSinglePartBlockOrDense(resource->format->layout) ||
         resource->format->stacked != 1 || !format::PartsOf(*resource->format))
       return Error(std::format("image source tensor {} format differs from its stored binding",
                                tensor.name));
@@ -579,10 +577,10 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
   for (std::size_t i = 0; i < 3; ++i) {
     ImageStage stage;
     stage.graph = held->graphs[i];
-    auto numerical = AdmittedImageNumerics(model->family->spec, model->family->approval,
-                                           *source->composition, stage.graph->graph(), *mappings[i],
-                                           static_cast<std::uint16_t>(i), model->backend->device(),
-                                           model->backend->Backend().ConstructionFunding());
+    auto numerical =
+        AdmittedImageNumerics(model->family->spec, *source->composition, stage.graph->graph(),
+                              *mappings[i], static_cast<std::uint16_t>(i), model->backend->device(),
+                              model->backend->Backend().ConstructionFunding());
     if (!numerical) return Error(numerical.error());
     stage.numerical = std::move(*numerical);
     stage.weights = static_cast<std::uint16_t>(i);
@@ -715,18 +713,20 @@ EngineImageBuild ComponentImageGenerationBuild(
     auto backend = engine::CreateDeviceBackend(node, static_cast<std::uint32_t>(owner));
     if (!backend) return Error(backend.error());
     held->backend = std::move(*backend);
-    std::vector<execution::TunedShape> default_tuned;
+    // Without measured tuning, the backend pins its own image attention
+    // where this device's evidence qualifies it.
+    kernels::DeclaredDefaults defaults;
     if (!tuning && HasImageAttentionEvidence(held->backend->device(), p.denoiser.head_dim))
-      default_tuned = held->backend->ImageAttentionTuning(p.denoiser.head_dim);
+      defaults.image_attention_head_dim = p.denoiser.head_dim;
     const auto tuples = tuning ? std::span<const execution::TunedShape>(tuning->facts().tuned)
-                               : std::span<const execution::TunedShape>(default_tuned);
+                               : std::span<const execution::TunedShape>{};
     auto declared = held->backend->Declare(
         tuples,
         [construction, source](std::uint64_t bytes) {
           return ChargeExecutionMetadata(construction, bytes, source->construction_node,
                                          source->construction_cap);
         },
-        [construction](std::uint64_t bytes) { construction->Release(bytes); });
+        [construction](std::uint64_t bytes) { construction->Release(bytes); }, defaults);
     if (!declared) return Error(declared.error());
     auto funded = held->backend->FundConstruction(
         [construction, source](std::uint64_t bytes) {

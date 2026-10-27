@@ -15,6 +15,7 @@
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "spec/mapping.h"
+#include "spec/mappings/names.h"
 #include "spec/mappings/rules.h"
 #include "spec/spec.h"
 
@@ -86,7 +87,7 @@ constexpr std::array kSlots = {
 };
 
 constexpr std::array kTensors = {
-    Plain("token_embd.weight", "embedding", "table"),
+    Plain(names::kTokenEmbd.gguf, "embedding", "table"),
     // The n-gram table (a ModelOpt import's with its tensor scale); its
     // hash's constants, a ModelOpt import's tensors too, are parameters.
     Plain("per_layer_token_embd.weight", "ngram", "table"),
@@ -134,40 +135,40 @@ constexpr std::array kTensors = {
     Scales("blk.{layer}.hc_ffn_inject.weight_scale", "ffn_combine", "inject"),
     Biases("blk.{layer}.hc_ffn_inject.weight_bias", "ffn_combine", "inject"),
     // Gated DeltaNet.
-    Matrix("blk.{layer}.attn_qkv.weight", "linear", "qkv"),
+    Matrix(names::kAttnQkv.gguf, "linear", "qkv"),
     Scales("blk.{layer}.attn_qkv.weight_scale", "linear", "qkv"),
     Biases("blk.{layer}.attn_qkv.weight_bias", "linear", "qkv"),
-    Matrix("blk.{layer}.attn_gate.weight", "linear", "gate"),
+    Matrix(names::kAttnGate.gguf, "linear", "gate"),
     Scales("blk.{layer}.attn_gate.weight_scale", "linear", "gate"),
     Biases("blk.{layer}.attn_gate.weight_bias", "linear", "gate"),
-    Matrix("blk.{layer}.ssm_beta.weight", "linear", "beta"),
+    Matrix(names::kSsmBeta.gguf, "linear", "beta"),
     Scales("blk.{layer}.ssm_beta.weight_scale", "linear", "beta"),
     Biases("blk.{layer}.ssm_beta.weight_bias", "linear", "beta"),
-    Matrix("blk.{layer}.ssm_alpha.weight", "linear", "alpha"),
+    Matrix(names::kSsmAlpha.gguf, "linear", "alpha"),
     Scales("blk.{layer}.ssm_alpha.weight_scale", "linear", "alpha"),
     Biases("blk.{layer}.ssm_alpha.weight_bias", "linear", "alpha"),
-    Plain("blk.{layer}.ssm_dt.bias", "linear", "dt_bias"),
-    Plain("blk.{layer}.ssm_a", "linear", "a"),
-    Plain("blk.{layer}.ssm_conv1d.weight", "linear", "conv"),
-    Plain("blk.{layer}.ssm_norm.weight", "linear", "norm"),
-    Matrix("blk.{layer}.ssm_out.weight", "linear", "output"),
+    Plain(names::kSsmDt.gguf, "linear", "dt_bias"),
+    Plain(names::kSsmA.gguf, "linear", "a"),
+    Plain(names::kSsmConv1d.gguf, "linear", "conv"),
+    Plain(names::kSsmNorm.gguf, "linear", "norm"),
+    Matrix(names::kSsmOut.gguf, "linear", "output"),
     Scales("blk.{layer}.ssm_out.weight_scale", "linear", "output"),
     Biases("blk.{layer}.ssm_out.weight_bias", "linear", "output"),
     // QSA: the indexer's projection fused (ModelOpt) or split (GGUF).
-    Matrix("blk.{layer}.attn_q.weight", "attention", "q"),
+    Matrix(names::kAttnQ.gguf, "attention", "q"),
     Scales("blk.{layer}.attn_q.weight_scale", "attention", "q"),
     Biases("blk.{layer}.attn_q.weight_bias", "attention", "q"),
-    Matrix("blk.{layer}.attn_k.weight", "attention", "k"),
+    Matrix(names::kAttnK.gguf, "attention", "k"),
     Scales("blk.{layer}.attn_k.weight_scale", "attention", "k"),
     Biases("blk.{layer}.attn_k.weight_bias", "attention", "k"),
-    Matrix("blk.{layer}.attn_v.weight", "attention", "v"),
+    Matrix(names::kAttnV.gguf, "attention", "v"),
     Scales("blk.{layer}.attn_v.weight_scale", "attention", "v"),
     Biases("blk.{layer}.attn_v.weight_bias", "attention", "v"),
-    Matrix("blk.{layer}.attn_output.weight", "attention", "output"),
+    Matrix(names::kAttnOutput.gguf, "attention", "output"),
     Scales("blk.{layer}.attn_output.weight_scale", "attention", "output"),
     Biases("blk.{layer}.attn_output.weight_bias", "attention", "output"),
-    Plain("blk.{layer}.attn_q_norm.weight", "attention", "q_norm"),
-    Plain("blk.{layer}.attn_k_norm.weight", "attention", "k_norm"),
+    Plain(names::kAttnQNorm.gguf, "attention", "q_norm"),
+    Plain(names::kAttnKNorm.gguf, "attention", "k_norm"),
     TensorRule{.pattern = "blk.{layer}.indexer.qk_proj.weight",
                .slot = "attention",
                .role = "indexer_qk",
@@ -187,32 +188,32 @@ constexpr std::array kTensors = {
                .any_part = true},
     Plain("blk.{layer}.indexer.q_norm.weight", "attention", "indexer_q_norm"),
     Plain("blk.{layer}.indexer.k_norm.weight", "attention", "indexer_k_norm"),
-    // The MoE: router, shared expert and its gate, routed experts (GGML's
-    // layout, or the CUTLASS layout's stacked gate-up), their scales.
-    Matrix("blk.{layer}.ffn_gate_inp.weight", "moe", "router"),
-    Matrix("blk.{layer}.ffn_gate_inp_shexp.weight", "moe", "shared_gate"),
+    // The MoE: router, shared expert and its gate, routed experts (per-expert
+    // arrays, or the scale-atom layout's stacked gate-up), their scales.
+    Matrix(names::kFfnGateInp.gguf, "moe", "router"),
+    Matrix(names::kFfnGateInpShexp.gguf, "moe", "shared_gate"),
     Scales("blk.{layer}.ffn_gate_inp_shexp.weight_scale", "moe", "shared_gate"),
     Biases("blk.{layer}.ffn_gate_inp_shexp.weight_bias", "moe", "shared_gate"),
-    Matrix("blk.{layer}.ffn_gate_shexp.weight", "moe", "gate"),
+    Matrix(names::kFfnGateShexp.gguf, "moe", "gate"),
     Scales("blk.{layer}.ffn_gate_shexp.weight_scale", "moe", "gate"),
     Biases("blk.{layer}.ffn_gate_shexp.weight_bias", "moe", "gate"),
-    Matrix("blk.{layer}.ffn_up_shexp.weight", "moe", "up"),
+    Matrix(names::kFfnUpShexp.gguf, "moe", "up"),
     Scales("blk.{layer}.ffn_up_shexp.weight_scale", "moe", "up"),
     Biases("blk.{layer}.ffn_up_shexp.weight_bias", "moe", "up"),
-    Matrix("blk.{layer}.ffn_down_shexp.weight", "moe", "down"),
+    Matrix(names::kFfnDownShexp.gguf, "moe", "down"),
     Scales("blk.{layer}.ffn_down_shexp.weight_scale", "moe", "down"),
     Biases("blk.{layer}.ffn_down_shexp.weight_bias", "moe", "down"),
-    TensorRule{.pattern = "blk.{layer}.ffn_gate_exps.weight",
+    TensorRule{.pattern = names::kFfnGateExps.gguf,
                .slot = "moe",
                .role = "gate_experts",
                .experts = true,
                .optional = true},
-    TensorRule{.pattern = "blk.{layer}.ffn_up_exps.weight",
+    TensorRule{.pattern = names::kFfnUpExps.gguf,
                .slot = "moe",
                .role = "up_experts",
                .experts = true,
                .optional = true},
-    TensorRule{.pattern = "blk.{layer}.ffn_down_exps.weight",
+    TensorRule{.pattern = names::kFfnDownExps.gguf,
                .slot = "moe",
                .role = "down_experts",
                .experts = true,
@@ -260,79 +261,83 @@ constexpr std::array kTensors = {
     Matrix("output_hc_up.weight", "output_mix", "up"),
     Scales("output_hc_up.weight_scale", "output_mix", "up"),
     Biases("output_hc_up.weight_bias", "output_mix", "up"),
-    Matrix("output.weight", "output", "weight"),
+    Matrix(names::kOutput.gguf, "output", "weight"),
 };
 
 constexpr std::string_view kEps = "attention.layer_norm_rms_epsilon";
 
-// The QSA, MoE and mix parameters both mappings read.
-#define LLMP_QWEN38_BLOCK_PARAMS                                                                \
-  Name("streams", "mix", "sigmoid"),                                                            \
-      FromKey("attn_mix", "eps", "attention.layer_norm_rms_epsilon", kReal),                    \
-      FromKey("attn_mix", "rank", "hyper_connection.low_rank", kInt),                           \
-      Flag("attn_mix", "inject", true),                                                         \
-      FromKey("ffn_mix", "eps", "attention.layer_norm_rms_epsilon", kReal),                     \
-      FromKey("ffn_mix", "rank", "hyper_connection.low_rank", kInt),                            \
-      Flag("ffn_mix", "inject", true),                                                          \
-      FromKey("output_mix", "eps", "attention.layer_norm_rms_epsilon", kReal),                  \
-      FromKey("output_mix", "rank", "hyper_connection.low_rank", kInt),                         \
-      Flag("output_mix", "inject", false),                                                      \
-      FromKey("attention", "eps", "attention.layer_norm_rms_epsilon", kReal),                   \
-      FromKey("attention", "heads", "attention.head_count", kInt),                              \
-      FromKey("attention", "kv_heads", "attention.head_count_kv", kInt),                        \
-      FromKey("attention", "head_dim", "attention.key_length", kInt),                           \
-      FromKey("attention", "rope_dims", "rope.dimension_count", kInt),                          \
-      FromKey("attention", "rope_base", "rope.freq_base", kReal),                               \
-      FromKey("attention", "rope_sections", "rope.dimension_sections", kInts),                  \
-      FromKey("attention", "indexer_heads", "attention.indexer.head_count", kInt),              \
-      FromKey("attention", "indexer_dim", "attention.indexer.key_length", kInt),                \
-      PerLayer("attention", "ratio", "attention.compress_ratios", kInt),                        \
-      FromKey("attention", "budget", "attention.indexer.top_k", kInt),                          \
-      FromKey("attention", "indexer", kIndexer, kString, Transform::kNone, {}, true),           \
-      Name("attention", "indexer", "split"), Name("moe", "placement", "none"),                  \
-      FromKey("moe", "eps", "attention.layer_norm_rms_epsilon", kReal),                         \
-      Name("moe", "activation", "silu"),                                                        \
-      FromKey("moe", "hidden", "expert_shared_feed_forward_length", kInt),                      \
-      FromKey("moe", "experts", "expert_count", kInt),                                          \
-      FromKey("moe", "used", "expert_used_count", kInt),                                        \
-      FromKey("moe", "expert_hidden", "expert_feed_forward_length", kInt),                      \
-      Name("moe", "router", "softmax_topk"), Name("moe", "router_input", "stream"),             \
-      Flag("moe", "normalize", true), Flag("moe", "shared_gate", true),                         \
-      ParamRule{                                                                                \
-          .slot = "moe", .param = "stacked", .key = kStacked, .type = kBool, .optional = true}, \
-      Flag("moe", "stacked", false),                                                            \
-      ParamRule{.slot = "moe",                                                                  \
-                .param = "projection_scales",                                                   \
-                .key = kScaled,                                                                 \
-                .type = kBool,                                                                  \
-                .optional = true},                                                              \
-      Flag("moe", "projection_scales", false),                                                  \
-      FromKey(kStageSlot, "context", "context_length", kInt),                                   \
-      FromKey(kStreamSlot, "width", "embedding_length", kInt),                                  \
-      FromKey(kStreamSlot, "streams", "hyper_connection.count", kInt)
-
-constexpr std::array kParams = {
-    LLMP_QWEN38_BLOCK_PARAMS,
-    Real("embedding", "scale", 1.0),
-    // A verify's tokens as GGML's argmax picks them (the fast form's).
-    Flag("output", "native_argmax", true),
-    FromKey("ngram", "ngram", "ple.ngram_size", kInt),
-    FromKey("ngram", "heads_per_ngram", "ple.heads_per_ngram", kInt),
-    FromKey("ngram", "row", "embedding_length_per_layer_input", kInt),
-    FromKey("ngram", "eos", "ple.eos_token_id", kInt),
-    FromKey("ngram", "multipliers", "ple.layer_multipliers", kInts),
-    FromKey("ngram", "offsets", "ple.head_offsets", kInts),
-    FromKey("ngram", "vocab", "ple.head_vocab_sizes", kInts),
-    FromKey("ple", "eps", kEps, kReal),
-    Name("ple", "input", "ngram"),
-    FromKey("ple", "conv", "ple.conv_kernel", kInt),
-    FromKey("ple", "dilation", "ple.ngram_size", kInt),
-    FromKey("linear", "eps", kEps, kReal),
-    FromKey("linear", "k_heads", "ssm.group_count", kInt),
-    FromKey("linear", "v_heads", "ssm.time_step_rank", kInt),
-    FromKey("linear", "head_dim", "ssm.state_size", kInt),
-    FromKey("linear", "conv", "ssm.conv_kernel", kInt),
+// The QSA, MoE and mix parameters both mappings read (the drafter's
+// extraction values invert them: kMtpValues).
+constexpr std::array kBlockParams = {
+    Name("streams", "mix", "sigmoid"),
+    FromKey("attn_mix", "eps", "attention.layer_norm_rms_epsilon", kReal),
+    FromKey("attn_mix", "rank", "hyper_connection.low_rank", kInt),
+    Flag("attn_mix", "inject", true),
+    FromKey("ffn_mix", "eps", "attention.layer_norm_rms_epsilon", kReal),
+    FromKey("ffn_mix", "rank", "hyper_connection.low_rank", kInt),
+    Flag("ffn_mix", "inject", true),
+    FromKey("output_mix", "eps", "attention.layer_norm_rms_epsilon", kReal),
+    FromKey("output_mix", "rank", "hyper_connection.low_rank", kInt),
+    Flag("output_mix", "inject", false),
+    FromKey("attention", "eps", "attention.layer_norm_rms_epsilon", kReal),
+    FromKey("attention", "heads", "attention.head_count", kInt),
+    FromKey("attention", "kv_heads", "attention.head_count_kv", kInt),
+    FromKey("attention", "head_dim", "attention.key_length", kInt),
+    FromKey("attention", "rope_dims", "rope.dimension_count", kInt),
+    FromKey("attention", "rope_base", "rope.freq_base", kReal),
+    FromKey("attention", "rope_sections", "rope.dimension_sections", kInts),
+    FromKey("attention", "indexer_heads", "attention.indexer.head_count", kInt),
+    FromKey("attention", "indexer_dim", "attention.indexer.key_length", kInt),
+    PerLayer("attention", "ratio", "attention.compress_ratios", kInt),
+    FromKey("attention", "budget", "attention.indexer.top_k", kInt),
+    FromKey("attention", "indexer", kIndexer, kString, Transform::kNone, {}, true),
+    Name("attention", "indexer", "split"),
+    Name("moe", "placement", "none"),
+    FromKey("moe", "eps", "attention.layer_norm_rms_epsilon", kReal),
+    Name("moe", "activation", "silu"),
+    FromKey("moe", "hidden", "expert_shared_feed_forward_length", kInt),
+    FromKey("moe", "experts", "expert_count", kInt),
+    FromKey("moe", "used", "expert_used_count", kInt),
+    FromKey("moe", "expert_hidden", "expert_feed_forward_length", kInt),
+    Name("moe", "router", "softmax_topk"),
+    Name("moe", "router_input", "stream"),
+    Flag("moe", "normalize", true),
+    Flag("moe", "shared_gate", true),
+    ParamRule{.slot = "moe", .param = "stacked", .key = kStacked, .type = kBool, .optional = true},
+    Flag("moe", "stacked", false),
+    ParamRule{.slot = "moe",
+              .param = "projection_scales",
+              .key = kScaled,
+              .type = kBool,
+              .optional = true},
+    Flag("moe", "projection_scales", false),
+    FromKey(kStageSlot, "context", "context_length", kInt),
+    FromKey(kStreamSlot, "width", "embedding_length", kInt),
+    FromKey(kStreamSlot, "streams", "hyper_connection.count", kInt),
 };
+
+constexpr auto kParams =
+    Concat(kBlockParams, std::array{
+                             Real("embedding", "scale", 1.0),
+                             // A verify's tokens as GGML's argmax picks them (the fast form's).
+                             Flag("output", "native_argmax", true),
+                             FromKey("ngram", "ngram", "ple.ngram_size", kInt),
+                             FromKey("ngram", "heads_per_ngram", "ple.heads_per_ngram", kInt),
+                             FromKey("ngram", "row", "embedding_length_per_layer_input", kInt),
+                             FromKey("ngram", "eos", "ple.eos_token_id", kInt),
+                             FromKey("ngram", "multipliers", "ple.layer_multipliers", kInts),
+                             FromKey("ngram", "offsets", "ple.head_offsets", kInts),
+                             FromKey("ngram", "vocab", "ple.head_vocab_sizes", kInts),
+                             FromKey("ple", "eps", kEps, kReal),
+                             Name("ple", "input", "ngram"),
+                             FromKey("ple", "conv", "ple.conv_kernel", kInt),
+                             FromKey("ple", "dilation", "ple.ngram_size", kInt),
+                             FromKey("linear", "eps", kEps, kReal),
+                             FromKey("linear", "k_heads", "ssm.group_count", kInt),
+                             FromKey("linear", "v_heads", "ssm.time_step_rank", kInt),
+                             FromKey("linear", "head_dim", "ssm.state_size", kInt),
+                             FromKey("linear", "conv", "ssm.conv_kernel", kInt),
+                         });
 
 // The caller's owner-row arithmetic requirement. Graph patterns default by
 // semantic/capability proof; changed rounding needs admitted numerical facts.
@@ -412,12 +417,20 @@ constexpr Mapping kMapping{
     .gates = kGates,
 };
 
-// Closed GGUF target projection: whole encoded data parts, split indexer,
-// source-owned PLE constants, and the existing GGUF planning semantics.
+// The GGUF form of the canonical rules: each matrix whole of its type (its
+// data part, required and of that part only), the indexer's projection
+// split, the experts unscaled, the n-gram hash's constants in the metadata;
+// no rule of a role the form lacks (kGgufAbsent), of another part or unbound.
+struct RoleRef {
+  std::string_view slot{}, role{};
+};
+constexpr std::array kGgufAbsent{RoleRef{"attention", "indexer_qk"}, RoleRef{"moe", "gate_scale"},
+                                 RoleRef{"moe", "up_scale"}, RoleRef{"moe", "down_scale"}};
 constexpr bool GgufTensor(const TensorRule& r) {
-  return r.part == PartRole::kData && !r.unbound && !r.pattern.contains("weight_scale") &&
-         !r.pattern.ends_with(".weight_bias") && !r.pattern.contains("ffn_gate_up_exps") &&
-         !r.pattern.contains("indexer.qk_proj");
+  return r.part == PartRole::kData && !r.unbound &&
+         std::ranges::none_of(kGgufAbsent, [&](const RoleRef& absent) {
+           return absent.slot == r.slot && absent.role == r.role;
+         });
 }
 constexpr auto kGgufTensors = [] {
   std::array<TensorRule, std::ranges::count_if(kTensors, GgufTensor)> out{};
@@ -431,6 +444,7 @@ constexpr auto kGgufTensors = [] {
   return out;
 }();
 static_assert(kGgufTensors.size() == 47);
+// Its parameters: the canonical ones but the native importer's binding facts.
 constexpr auto kGgufParams = [] {
   constexpr auto count =
       std::ranges::count_if(kParams, [](const auto& p) { return !p.key.starts_with("llmp."); });
@@ -462,137 +476,152 @@ constexpr std::array kQwenLists{
     ListRequirement{.key = "ple.head_vocab_sizes", .size = kLayerLimit, .min_size = 1}};
 constexpr std::array kQwenRows{
     RowIndexRequirement{"ple.head_offsets", "ple.head_vocab_sizes", "per_layer_token_embd.weight"}};
-// Native normalization binds a checkpoint's split parts to the same shared
-// roles (MLX's affine experts and tables), and the importer's relaid-out
-// NVFP4 experts (import/expert_relayout.h): the scale-atom gate-up and
-// down tables, `.weight` and `.weight_scale`, beside their tensor scales'
-// F32 [experts] vectors (the converted form's roles). A rule binds one role
-// and part, so a down table's split and scale-atom forms share a pattern.
-constexpr auto kNativeTensors = [] {
-  std::array<TensorRule, kTensors.size() + 10> rules{};
-  std::size_t next = 0;
-  for (auto rule : kTensors) {
-    if (rule.pattern == "blk.{layer}.ffn_gate_up_exps.codes" ||
-        rule.pattern == "blk.{layer}.ffn_gate_up_exps.scales" ||
-        rule.pattern == "blk.{layer}.ffn_down_exps.codes" ||
-        rule.pattern == "blk.{layer}.ffn_down_exps.scales")
-      continue;
-    if (rule.pattern == "blk.{layer}.ffn_gate_exps.weight" ||
-        rule.pattern == "blk.{layer}.ffn_up_exps.weight" ||
-        rule.pattern == "blk.{layer}.ffn_down_exps.weight") {
-      rule.part = PartRole::kCodes;
-      rule.any_part = true;
-    }
+// The native form of the canonical rules (the ModelOpt and MLX imports,
+// import/normalize.h), as an overlay: a checkpoint's split parts bound to
+// the same shared roles (MLX's affine experts and tables), and the
+// importer's relaid-out NVFP4 experts (import/expert_relayout.h): the
+// scale-atom gate-up and down tables, `.weight` and `.weight_scale`, beside
+// their tensor scales' F32 [experts] vectors (the converted form's roles). A
+// rule binds one role and part, so a down table's split and scale-atom forms
+// share a pattern; the converted form's codes and scales tables are dropped.
+constexpr std::array kNativeTensorEdits{
+    TensorEdit{.slot = "moe", .role = "gate_up_experts", .drop = true},
+    TensorEdit{.slot = "moe", .role = "down_experts", .part = PartRole::kCodes, .drop = true},
+    TensorEdit{.slot = "moe", .role = "down_experts", .part = PartRole::kBlockScales, .drop = true},
+    TensorEdit{.slot = "moe",
+               .role = "gate_experts",
+               .part = PartRole::kData,
+               .set_part = PartRole::kCodes,
+               .any_part = true},
+    TensorEdit{.slot = "moe",
+               .role = "up_experts",
+               .part = PartRole::kData,
+               .set_part = PartRole::kCodes,
+               .any_part = true},
+    TensorEdit{.slot = "moe",
+               .role = "down_experts",
+               .part = PartRole::kData,
+               .set_part = PartRole::kCodes,
+               .any_part = true},
     // A table's codes (split) or its rows of codes and scales (interleaved).
-    if (rule.pattern == "token_embd.weight" || rule.pattern == "per_layer_token_embd.weight") {
-      rule.any_part = true;
-    }
-    rules[next++] = rule;
-  }
-  for (const auto& [codes, scales, role] : std::array<std::array<std::string_view, 3>, 1>{
-           {{"blk.{layer}.ffn_gate_up_exps.weight", "blk.{layer}.ffn_gate_up_exps.weight_scale",
-             "gate_up_experts"}}}) {
-    rules[next++] = TensorRule{.pattern = codes,
-                               .slot = "moe",
-                               .role = role,
-                               .part = PartRole::kCodes,
-                               .experts = true,
-                               .optional = true,
-                               .any_part = true};
-    rules[next++] = TensorRule{.pattern = scales,
-                               .slot = "moe",
-                               .role = role,
-                               .part = PartRole::kBlockScales,
-                               .experts = true,
-                               .optional = true};
-  }
-  rules[next++] = Scales("token_embd.weight_scale", "embedding", "table");
-  rules[next++] = Biases("token_embd.weight_bias", "embedding", "table");
-  rules[next++] = Scales("output.weight_scale", "output", "weight");
-  rules[next++] = Biases("output.weight_bias", "output", "weight");
-  rules[next++] = Scales("per_layer_token_embd.weight_scale", "ngram", "table");
-  rules[next++] = Biases("per_layer_token_embd.weight_bias", "ngram", "table");
-  for (const auto& [pattern, role] : std::array<std::pair<std::string_view, std::string_view>, 3>{
-           {{"blk.{layer}.ffn_gate_exps.weight_scale", "gate_experts"},
-            {"blk.{layer}.ffn_up_exps.weight_scale", "up_experts"},
-            {"blk.{layer}.ffn_down_exps.weight_scale", "down_experts"}}}) {
-    auto rule = Scales(pattern, "moe", role);
-    rule.experts = true;
-    rules[next++] = rule;
-  }
-  for (const auto& [pattern, role] : std::array<std::pair<std::string_view, std::string_view>, 3>{
-           {{"blk.{layer}.ffn_gate_exps.weight_bias", "gate_experts"},
-            {"blk.{layer}.ffn_up_exps.weight_bias", "up_experts"},
-            {"blk.{layer}.ffn_down_exps.weight_bias", "down_experts"}}}) {
-    auto rule = Biases(pattern, "moe", role);
-    rule.experts = true;
-    rules[next++] = rule;
-  }
-  return rules;
-}();
+    TensorEdit{.slot = "embedding", .role = "table", .part = PartRole::kData, .any_part = true},
+    TensorEdit{.slot = "ngram", .role = "table", .part = PartRole::kData, .any_part = true},
+};
+constexpr TensorRule ExpertScales(std::string_view pattern, std::string_view role) {
+  auto rule = Scales(pattern, "moe", role);
+  rule.experts = true;
+  return rule;
+}
+constexpr TensorRule ExpertBiases(std::string_view pattern, std::string_view role) {
+  auto rule = Biases(pattern, "moe", role);
+  rule.experts = true;
+  return rule;
+}
+constexpr std::array kNativeTensorExtras{
+    TensorRule{.pattern = names::kFfnGateUpExpsFused.gguf,
+               .slot = "moe",
+               .role = "gate_up_experts",
+               .part = PartRole::kCodes,
+               .experts = true,
+               .optional = true,
+               .any_part = true},
+    TensorRule{.pattern = "blk.{layer}.ffn_gate_up_exps.weight_scale",
+               .slot = "moe",
+               .role = "gate_up_experts",
+               .part = PartRole::kBlockScales,
+               .experts = true,
+               .optional = true},
+    Scales("token_embd.weight_scale", "embedding", "table"),
+    Biases("token_embd.weight_bias", "embedding", "table"),
+    Scales("output.weight_scale", "output", "weight"),
+    Biases("output.weight_bias", "output", "weight"),
+    Scales("per_layer_token_embd.weight_scale", "ngram", "table"),
+    Biases("per_layer_token_embd.weight_bias", "ngram", "table"),
+    ExpertScales("blk.{layer}.ffn_gate_exps.weight_scale", "gate_experts"),
+    ExpertScales("blk.{layer}.ffn_up_exps.weight_scale", "up_experts"),
+    ExpertScales("blk.{layer}.ffn_down_exps.weight_scale", "down_experts"),
+    ExpertBiases("blk.{layer}.ffn_gate_exps.weight_bias", "gate_experts"),
+    ExpertBiases("blk.{layer}.ffn_up_exps.weight_bias", "up_experts"),
+    ExpertBiases("blk.{layer}.ffn_down_exps.weight_bias", "down_experts"),
+};
+constexpr auto kNativeTensors = Overlay<kTensors, kNativeTensorEdits, kNativeTensorExtras>();
 static_assert(kNativeTensors.size() == kTensors.size() + 10);
-constexpr auto kNativeParams = [] {
-  std::array<ParamRule, kParams.size() + 23> params{};
-  std::size_t i = 0;
-  for (auto rule : kParams) {
-    if (rule.slot == "moe" && rule.param == "projection_scales") continue;
-    if (rule.slot == "moe" && !rule.key.empty() && rule.param == "stacked") {
-      rule.tensor = "blk.{layer}.ffn_gate_up_exps.weight";
-      rule.key = {};
-    }
-    if (rule.param == "eps") {
-      rule.transform = Transform::kFloat32;
-    } else if (rule.slot == "attention" && rule.param == "rope_dims") {
-      rule.numerator_key = "attention.key_length";
-      rule.divisor_key = "rope.partial_rotary_factor";
-      rule.transform = Transform::kProduct;
-    } else if (rule.slot == "attention" && rule.param == "indexer" && rule.key.empty()) {
-      rule.value.text = "fused";
-    } else if (rule.slot == "ngram" && rule.param == "row") {
-      rule.optional = true;
-      params[i++] = rule;
-      params[i++] = ParamRule{
-          .slot = "ngram", .param = "row", .tensor = "per_layer_token_embd.weight", .type = kInt};
-      continue;
-    } else if (rule.slot.empty() && rule.key == "full_attention_interval") {
-      continue;
-    }
-    params[i++] = rule;
-  }
-  params[i++] = Flag("moe", "projection_scales", false);
-  params[i++] = FromTensor("moe", "gate_scale", "blk.{layer}.ffn_gate_exps.weight_scale_2");
-  params[i++] = Flag("moe", "gate_scale", false);
-  params[i++] = FromTensor("moe", "up_scale", "blk.{layer}.ffn_up_exps.weight_scale_2");
-  params[i++] = Flag("moe", "up_scale", false);
-  params[i++] = FromTensor("moe", "down_scale", "blk.{layer}.ffn_down_exps.weight_scale_2");
-  params[i++] = Flag("moe", "down_scale", false);
-  // The checkpoint's convention, unless the importer folded it (D-108 as
-  // amended: the ModelOpt import stores 1 + w and -exp(A) in F32).
-  for (std::string_view slot : {"attn_mix", "ffn_mix", "output_mix", "attention", "ple"}) {
-    params[i] = Flag(slot, "norm_zero_centered", true);
-    params[i++].unless_fold = "norm.plus_one";
-  }
-  params[i] = Flag("linear", "a_log", true);
-  params[i++].unless_fold = "ssm.a_neg_exp";
-  params[i++] = Require("mamba_ssm_dtype", "float32", true);
-  params[i++] = Require("dtype", "bfloat16", true);
-  params[i++] = Require("hidden_act", "silu", true);
-  params[i++] = Require("output_gate_type", "sigmoid", true);
-  params[i++] = Require("rope.scaling.type", "default", true);
-  params[i++] = ParamRule{
-      .key = "is_encoder_decoder", .type = kBool, .value = {.flag = false}, .optional = true};
-  params[i++] =
-      ParamRule{.key = "attention_bias", .type = kBool, .value = {.flag = false}, .optional = true};
-  params[i++] =
-      FromKey("ngram", "declared_width", "ple.embed_dim", kInt, Transform::kNone, {}, true);
-  params[i] = FromKey("ple", "input_width", "ple.embed_dim", kInt, Transform::kNone, {}, true);
-  params[++i] = RequireInt("attention.indexer.head_count_kv", 1, true);
-  params[++i] = ParamRule{.key = "use_bidirectional_attention",
-                          .type = kBool,
-                          .value = {.flag = false},
-                          .optional = true};
-  return params;
-}();
+
+// The native form of the block's parameters (the target's and its
+// drafter's): the experts' stacking a fact of their tensors, every epsilon
+// in float32 (the checkpoint's), the rotary dimensions a fraction of the
+// head, the indexer fused, the projections' scales by their tensor scales.
+constexpr std::array kNativeBlockEdits{
+    ParamEdit{.slot = "moe", .param = "projection_scales", .drop = true},
+    ParamEdit{.slot = "moe",
+              .param = "stacked",
+              .key = kStacked,
+              .set_key = std::string_view{},
+              .tensor = names::kFfnGateUpExpsFused.gguf},
+    ParamEdit{.param = "eps", .transform = Transform::kFloat32},
+    ParamEdit{.slot = "attention",
+              .param = "rope_dims",
+              .numerator_key = "attention.key_length",
+              .divisor_key = "rope.partial_rotary_factor",
+              .transform = Transform::kProduct},
+    ParamEdit{.slot = "attention", .param = "indexer", .key = std::string_view{}, .text = "fused"},
+};
+constexpr auto kNativeParamEdits =
+    Concat(kNativeBlockEdits,
+           std::array{ParamEdit{.slot = "ngram",
+                                .param = "row",
+                                .optional = true,
+                                .then = ParamRule{.slot = "ngram",
+                                                  .param = "row",
+                                                  .tensor = "per_layer_token_embd.weight",
+                                                  .type = kInt}}});
+// The native forms' own rules: the experts' tensor scales by their tensors,
+// the checkpoint's conventions unless the importer folded them (D-108 as
+// amended: the ModelOpt import stores 1 + w and -exp(A) in F32), and its
+// config's requirements.
+constexpr std::array kNativeExpertScales{
+    Flag("moe", "projection_scales", false),
+    FromTensor("moe", "gate_scale", "blk.{layer}.ffn_gate_exps.weight_scale_2"),
+    Flag("moe", "gate_scale", false),
+    FromTensor("moe", "up_scale", "blk.{layer}.ffn_up_exps.weight_scale_2"),
+    Flag("moe", "up_scale", false),
+    FromTensor("moe", "down_scale", "blk.{layer}.ffn_down_exps.weight_scale_2"),
+    Flag("moe", "down_scale", false),
+};
+constexpr std::array kNativeRequirements{
+    Require("mamba_ssm_dtype", "float32", true),
+    Require("dtype", "bfloat16", true),
+    Require("hidden_act", "silu", true),
+    Require("output_gate_type", "sigmoid", true),
+    Require("rope.scaling.type", "default", true),
+    ParamRule{
+        .key = "is_encoder_decoder", .type = kBool, .value = {.flag = false}, .optional = true},
+    ParamRule{.key = "attention_bias", .type = kBool, .value = {.flag = false}, .optional = true},
+};
+constexpr std::array kNativeCausal{
+    RequireInt("attention.indexer.head_count_kv", 1, true),
+    ParamRule{.key = "use_bidirectional_attention",
+              .type = kBool,
+              .value = {.flag = false},
+              .optional = true},
+};
+constexpr auto kNativeParamExtras = Concat(
+    kNativeExpertScales,
+    std::array{ZeroCenteredNorm("attn_mix"), ZeroCenteredNorm("ffn_mix"),
+               ZeroCenteredNorm("output_mix"), ZeroCenteredNorm("attention"),
+               ZeroCenteredNorm("ple"),
+               ParamRule{.slot = "linear",
+                         .param = "a_log",
+                         .type = kBool,
+                         .value = {.flag = true},
+                         .unless_fold = "ssm.a_neg_exp"}},
+    kNativeRequirements,
+    std::array{
+        FromKey("ngram", "declared_width", "ple.embed_dim", kInt, Transform::kNone, {}, true),
+        FromKey("ple", "input_width", "ple.embed_dim", kInt, Transform::kNone, {}, true)},
+    kNativeCausal);
+constexpr auto kNativeParams = Overlay<kParams, kNativeParamEdits, kNativeParamExtras>();
+static_assert(kNativeParams.size() == kParams.size() + 23);
 // The native import's fast forms. Routed experts whose checkpoint
 // quantized their activations too (kActivationScales: W4A4) take the
 // converted form's (kPolicies[0]): its moe_experts runs a block-scaled
@@ -644,37 +673,37 @@ constexpr std::array<std::string_view, 3> kNativeIgnoredTensors = {
     "model.layers.{layer}.mlp.experts.{expert}.up_proj.input_scale",
 };
 constexpr std::array kNativeKeyAliases = {
-    KeyAlias{"linear_value_head_dim", "ssm.value_head_dim"},
+    keys::kLinearValueHeadDim,
     KeyAlias{"indexer_kv_heads", "attention.indexer.head_count_kv"},
-    KeyAlias{"rope_parameters.mrope_interleaved", "rope.mrope_interleaved"},
-    KeyAlias{"use_bidirectional_attention", "use_bidirectional_attention"},
-    KeyAlias{"num_hidden_layers", "block_count"},
-    KeyAlias{"max_position_embeddings", "context_length"},
-    KeyAlias{"hidden_size", "embedding_length"},
+    keys::kRopeParametersMropeInterleaved,
+    keys::kBidirectional,
+    keys::kLayerCount,
+    keys::kContext,
+    keys::kWidth,
     KeyAlias{"hc_count", "hyper_connection.count"},
     KeyAlias{"hc_lowrank", "hyper_connection.low_rank"},
-    KeyAlias{"rms_norm_eps", "attention.layer_norm_rms_epsilon"},
-    KeyAlias{"num_attention_heads", "attention.head_count"},
-    KeyAlias{"num_key_value_heads", "attention.head_count_kv"},
-    KeyAlias{"head_dim", "attention.key_length"},
-    KeyAlias{"rope_parameters.rope_theta", "rope.freq_base"},
-    KeyAlias{"rope_theta", "rope.freq_base"},
-    KeyAlias{"rope_parameters.mrope_section", "rope.dimension_sections"},
+    keys::kRmsEps,
+    keys::kHeads,
+    keys::kKvHeads,
+    keys::kHeadDim,
+    keys::kRopeParametersTheta,
+    keys::kRopeTheta,
+    keys::kRopeParametersMropeSection,
     KeyAlias{"mrope_section", "rope.dimension_sections"},
-    KeyAlias{"rope_parameters.partial_rotary_factor", "rope.partial_rotary_factor"},
-    KeyAlias{"partial_rotary_factor", "rope.partial_rotary_factor"},
+    keys::kRopeParametersPartial,
+    keys::kPartialRotary,
     KeyAlias{"indexer_n_heads", "attention.indexer.head_count"},
     KeyAlias{"indexer_head_dim", "attention.indexer.key_length"},
     KeyAlias{"indexer_budget", "attention.indexer.top_k"},
     KeyAlias{"indexer_compress_ratio", "attention.compress_ratios"},
-    KeyAlias{"num_experts", "expert_count"},
-    KeyAlias{"num_experts_per_tok", "expert_used_count"},
-    KeyAlias{"moe_intermediate_size", "expert_feed_forward_length"},
-    KeyAlias{"shared_expert_intermediate_size", "expert_shared_feed_forward_length"},
-    KeyAlias{"linear_conv_kernel_dim", "ssm.conv_kernel"},
-    KeyAlias{"linear_num_key_heads", "ssm.group_count"},
-    KeyAlias{"linear_num_value_heads", "ssm.time_step_rank"},
-    KeyAlias{"linear_key_head_dim", "ssm.state_size"},
+    keys::kExperts,
+    keys::kExpertsUsed,
+    keys::kExpertWidth,
+    keys::kSharedExpertWidth,
+    keys::kLinearConvKernel,
+    keys::kLinearKeyHeads,
+    keys::kLinearValueHeads,
+    keys::kLinearKeyHeadDim,
     KeyAlias{"ngram_size", "ple.ngram_size"},
     KeyAlias{"heads_per_ngram", "ple.heads_per_ngram"},
     KeyAlias{"ple_conv_kernel_size", "ple.conv_kernel"},
@@ -682,20 +711,19 @@ constexpr std::array kNativeKeyAliases = {
     KeyAlias{"text_config.eos_token_id", "ple.eos_token_id"},
     KeyAlias{"eos_token_id", "ple.eos_token_id", "text_config.eos_token_id"},
     KeyAlias{"ple_layer_ids", "ple.layer_ids"},
-    KeyAlias{"layer_types", "layer_types"},
+    keys::kLayerTypes,
     KeyAlias{"full_attention_interval", "full_attention_interval"},
-    KeyAlias{"mamba_ssm_dtype", "mamba_ssm_dtype"},
+    keys::kMambaDtype,
     KeyAlias{"dtype", "dtype"},
-    KeyAlias{"is_encoder_decoder", "is_encoder_decoder"},
-    KeyAlias{"hidden_act", "hidden_act"},
-    KeyAlias{"attention_bias", "attention_bias"},
-    KeyAlias{"output_gate_type", "output_gate_type"},
-    KeyAlias{"rope_parameters.rope_type", "rope.scaling.type"},
+    keys::kEncoderDecoder,
+    keys::kHiddenAct,
+    keys::kAttentionBias,
+    keys::kOutputGateType,
+    keys::kRopeParametersType,
     KeyAlias{"rope_parameters.type", "rope.scaling.type"},
 };
-constexpr std::array kNativeTensorAliases = {
-    TensorAlias{"lm_head.weight", "output.weight"},
-    TensorAlias{"model.embed_tokens.weight", "token_embd.weight"},
+constexpr auto kNativeTensorAliases = Aliases(
+    names::kOutput, names::kTokenEmbd,
     TensorAlias{"model.hyper_connection_mixer.hc_norm.weight", "output_hc_norm.weight"},
     TensorAlias{"model.hyper_connection_mixer.input_mix_weight_down.weight",
                 "output_hc_down.weight"},
@@ -708,39 +736,11 @@ constexpr std::array kNativeTensorAliases = {
                 "blk.{layer}.hc_attn_down.weight"},
     TensorAlias{"model.layers.{layer}.attn_hyper_connection.input_mix_weight_up.weight",
                 "blk.{layer}.hc_attn_up.weight"},
-    TensorAlias{"model.layers.{layer}.linear_attn.A_log", "blk.{layer}.ssm_a"},
-    TensorAlias{"model.layers.{layer}.linear_attn.conv1d.weight", "blk.{layer}.ssm_conv1d.weight"},
-    TensorAlias{"model.layers.{layer}.linear_attn.dt_bias", "blk.{layer}.ssm_dt.bias"},
-    TensorAlias{"model.layers.{layer}.linear_attn.in_proj_a.weight",
-                "blk.{layer}.ssm_alpha.weight"},
-    TensorAlias{"model.layers.{layer}.linear_attn.in_proj_b.weight", "blk.{layer}.ssm_beta.weight"},
-    TensorAlias{"model.layers.{layer}.linear_attn.in_proj_qkv.weight",
-                "blk.{layer}.attn_qkv.weight"},
-    TensorAlias{"model.layers.{layer}.linear_attn.in_proj_z.weight",
-                "blk.{layer}.attn_gate.weight"},
-    TensorAlias{"model.layers.{layer}.linear_attn.norm.weight", "blk.{layer}.ssm_norm.weight"},
-    TensorAlias{"model.layers.{layer}.linear_attn.out_proj.weight", "blk.{layer}.ssm_out.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.experts.{expert}.down_proj.weight",
-                "blk.{layer}.ffn_down_exps.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.experts.{expert}.gate_proj.weight",
-                "blk.{layer}.ffn_gate_exps.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.experts.{expert}.up_proj.weight",
-                "blk.{layer}.ffn_up_exps.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.switch_mlp.down_proj.weight",
-                "blk.{layer}.ffn_down_exps.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.switch_mlp.gate_proj.weight",
-                "blk.{layer}.ffn_gate_exps.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.switch_mlp.up_proj.weight",
-                "blk.{layer}.ffn_up_exps.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.gate.weight", "blk.{layer}.ffn_gate_inp.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.shared_expert.down_proj.weight",
-                "blk.{layer}.ffn_down_shexp.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.shared_expert.gate_proj.weight",
-                "blk.{layer}.ffn_gate_shexp.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.shared_expert.up_proj.weight",
-                "blk.{layer}.ffn_up_shexp.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.shared_expert_gate.weight",
-                "blk.{layer}.ffn_gate_inp_shexp.weight"},
+    names::kSsmA, names::kSsmConv1d, names::kSsmDt, names::kSsmAlpha, names::kSsmBeta,
+    names::kAttnQkv, names::kAttnGate, names::kSsmNorm, names::kSsmOut, names::kFfnDownExps,
+    names::kFfnGateExps, names::kFfnUpExps, names::kFfnDownExpsSwitch, names::kFfnGateExpsSwitch,
+    names::kFfnUpExpsSwitch, names::kFfnGateInp, names::kFfnDownShexp, names::kFfnGateShexp,
+    names::kFfnUpShexp, names::kFfnGateInpShexp,
     TensorAlias{"model.layers.{layer}.mlp_hyper_connection.block_inject_weight.weight",
                 "blk.{layer}.hc_ffn_inject.weight"},
     TensorAlias{"model.layers.{layer}.mlp_hyper_connection.hc_norm.weight",
@@ -765,17 +765,12 @@ constexpr std::array kNativeTensorAliases = {
                 "blk.{layer}.indexer.k_norm.weight"},
     TensorAlias{"model.layers.{layer}.self_attn.indexer.q_layernorm.weight",
                 "blk.{layer}.indexer.q_norm.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.k_norm.weight", "blk.{layer}.attn_k_norm.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.k_proj.weight", "blk.{layer}.attn_k.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.o_proj.weight", "blk.{layer}.attn_output.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.q_norm.weight", "blk.{layer}.attn_q_norm.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.q_proj.weight", "blk.{layer}.attn_q.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.v_proj.weight", "blk.{layer}.attn_v.weight"},
+    names::kAttnKNorm, names::kAttnK, names::kAttnOutput, names::kAttnQNorm, names::kAttnQ,
+    names::kAttnV,
     TensorAlias{"model.layers.1.self_attn.ple_embed.shard_{shard}.weight",
                 "per_layer_token_embd.weight"},
     TensorAlias{"model.layers.1.self_attn.ple_embed.weight_scale_2",
-                "per_layer_token_embd.weight_scale_2"},
-};
+                "per_layer_token_embd.weight_scale_2"});
 
 // ------------------------------------------------------------ qwen4exp-mtp
 
@@ -806,7 +801,7 @@ constexpr std::array kMtpSlots = {
 
 constexpr std::array kMtpTensors = {
     TensorRule{
-        .pattern = "token_embd.weight", .slot = "embedding", .role = "table", .target = true},
+        .pattern = names::kTokenEmbd.gguf, .slot = "embedding", .role = "table", .target = true},
     Plain("norm_embd.weight", "embedding", "norm_embd"),
     Matrix("fc_embd.weight", "embedding", "fc_embd"),
     Plain("norm_hidden.weight", "embedding", "norm_hidden"),
@@ -819,20 +814,20 @@ constexpr std::array kMtpTensors = {
     Matrix("blk.{layer}.hc_ffn_down.weight", "ffn_mix", "down"),
     Matrix("blk.{layer}.hc_ffn_up.weight", "ffn_mix", "up"),
     Matrix("blk.{layer}.hc_ffn_inject.weight", "ffn_combine", "inject"),
-    Matrix("blk.{layer}.attn_q.weight", "attention", "q"),
-    Matrix("blk.{layer}.attn_k.weight", "attention", "k"),
-    Matrix("blk.{layer}.attn_v.weight", "attention", "v"),
-    Matrix("blk.{layer}.attn_output.weight", "attention", "output"),
-    Plain("blk.{layer}.attn_q_norm.weight", "attention", "q_norm"),
-    Plain("blk.{layer}.attn_k_norm.weight", "attention", "k_norm"),
+    Matrix(names::kAttnQ.gguf, "attention", "q"),
+    Matrix(names::kAttnK.gguf, "attention", "k"),
+    Matrix(names::kAttnV.gguf, "attention", "v"),
+    Matrix(names::kAttnOutput.gguf, "attention", "output"),
+    Plain(names::kAttnQNorm.gguf, "attention", "q_norm"),
+    Plain(names::kAttnKNorm.gguf, "attention", "k_norm"),
     Matrix("blk.{layer}.indexer.qk_proj.weight", "attention", "indexer_qk"),
     Plain("blk.{layer}.indexer.q_norm.weight", "attention", "indexer_q_norm"),
     Plain("blk.{layer}.indexer.k_norm.weight", "attention", "indexer_k_norm"),
-    Matrix("blk.{layer}.ffn_gate_inp.weight", "moe", "router"),
-    Matrix("blk.{layer}.ffn_gate_inp_shexp.weight", "moe", "shared_gate"),
-    Matrix("blk.{layer}.ffn_gate_shexp.weight", "moe", "gate"),
-    Matrix("blk.{layer}.ffn_up_shexp.weight", "moe", "up"),
-    Matrix("blk.{layer}.ffn_down_shexp.weight", "moe", "down"),
+    Matrix(names::kFfnGateInp.gguf, "moe", "router"),
+    Matrix(names::kFfnGateInpShexp.gguf, "moe", "shared_gate"),
+    Matrix(names::kFfnGateShexp.gguf, "moe", "gate"),
+    Matrix(names::kFfnUpShexp.gguf, "moe", "up"),
+    Matrix(names::kFfnDownShexp.gguf, "moe", "down"),
     TensorRule{.pattern = "blk.{layer}.ffn_gate_up_exps.codes",
                .slot = "moe",
                .role = "gate_up_experts",
@@ -861,28 +856,28 @@ constexpr std::array kMtpTensors = {
     Matrix("output_hc_up.weight", "output_mix", "up"),
     Matrix("draft_output.weight", "selected", "weight"),
     Plain("draft_output.ids", "selected", "ids"),
-    TensorRule{.pattern = "output.weight", .slot = "output", .role = "weight", .target = true},
+    TensorRule{.pattern = names::kOutput.gguf, .slot = "output", .role = "weight", .target = true},
 };
 
-constexpr std::array kMtpParams = {
-    LLMP_QWEN38_BLOCK_PARAMS,
-    FromKey("embedding", "eps", kEps, kReal),
-    Name("embedding", "tap", "streams"),
-    // Its own caches, rewritten by its catch-up: truncated.
-    Name("attention", "rollback", "truncate"),
-    Flag("output_mix", "features", true),
-    Flag("selected", "selected", true),
-    // The draft head reads the first rows of its weight (the lowest token
-    // IDs, or a selected head's first): the draft vocabulary.
-    FromKey("selected", "rows", kDraftVocab, kInt, Transform::kNone, {}, true),
-    FromKey("output", "rows", kDraftVocab, kInt, Transform::kNone, {}, true),
-    // Its drafts as GGML's argmax picks them (the fast form's).
-    Flag("selected", "native_argmax", true),
-    Flag("output", "native_argmax", true),
-};
+constexpr auto kMtpParams = Concat(
+    kBlockParams, std::array{
+                      FromKey("embedding", "eps", kEps, kReal),
+                      Name("embedding", "tap", "streams"),
+                      // Its own caches, rewritten by its catch-up: truncated.
+                      Name("attention", "rollback", "truncate"),
+                      Flag("output_mix", "features", true),
+                      Flag("selected", "selected", true),
+                      // The draft head reads the first rows of its weight (the lowest token
+                      // IDs, or a selected head's first): the draft vocabulary.
+                      FromKey("selected", "rows", kDraftVocab, kInt, Transform::kNone, {}, true),
+                      FromKey("output", "rows", kDraftVocab, kInt, Transform::kNone, {}, true),
+                      // Its drafts as GGML's argmax picks them (the fast form's).
+                      Flag("selected", "native_argmax", true),
+                      Flag("output", "native_argmax", true),
+                  });
 
 // The drafter's: its BF16 linears' inputs rounded once past 16 rows, its
-// QSA layer's and MoE's fast forms (its experts in the CUTLASS layout).
+// QSA layer's and MoE's fast forms (its experts in the scale-atom layout).
 constexpr std::array kMtpPolicies = {
     PolicyRule{.text = "max_decode_rows 16\n"
                        "enable owner_row_invariant\n"},
@@ -926,302 +921,179 @@ constexpr Mapping kMtpMapping{
 // vectors), and the optional selected head the importer gathered from the
 // target's head rows. The mapping names no fold of its own: the source
 // records the importer's (Source::folds).
-constexpr auto kMtpNativeTensors = [] {
-  constexpr auto ExpertScales = [](std::string_view pattern, std::string_view slot,
-                                   std::string_view role) {
-    auto r = Scales(pattern, slot, role);
-    r.experts = true;
-    return r;
-  };
-  constexpr auto ExpertBiases = [](std::string_view pattern, std::string_view slot,
-                                   std::string_view role) {
-    auto r = Biases(pattern, slot, role);
-    r.experts = true;
-    return r;
-  };
-  std::array<TensorRule, kMtpTensors.size() + 51> rules{};
-  std::size_t next = 0;
-  for (auto rule : kMtpTensors) {
-    if (rule.pattern == "blk.{layer}.ffn_gate_up_exps.codes") {
-      rule.pattern = "blk.{layer}.ffn_gate_up_exps.weight";
-      rule.optional = true;
-    } else if (rule.pattern == "blk.{layer}.ffn_gate_up_exps.scales") {
-      rule.pattern = "blk.{layer}.ffn_gate_up_exps.weight_scale";
-      rule.optional = true;
-    } else if (rule.pattern == "blk.{layer}.ffn_down_exps.codes") {
-      rule.pattern = "blk.{layer}.ffn_down_exps.weight";
-      rule.optional = true;
-    } else if (rule.pattern == "blk.{layer}.ffn_down_exps.scales") {
-      rule.pattern = "blk.{layer}.ffn_down_exps.weight_scale";
-      rule.optional = true;
-    } else if (rule.pattern.ends_with("_exps.weight_scale_2")) {
-      // ModelOpt's tensor scales; an MLX drafter's affine experts have none.
-      rule.optional = true;
-    }
-    if (rule.experts && rule.pattern.ends_with(".weight")) rule.any_part = true;
-    rules[next++] = rule;
-  }
-  // Linear scale and bias rules
-  rules[next++] = Scales("fc_embd.weight_scale", "embedding", "fc_embd");
-  rules[next++] = Biases("fc_embd.weight_bias", "embedding", "fc_embd");
-  rules[next++] = Scales("fc_hidden.weight_scale", "embedding", "fc_hidden");
-  rules[next++] = Biases("fc_hidden.weight_bias", "embedding", "fc_hidden");
-  rules[next++] = Scales("blk.{layer}.hc_attn_down.weight_scale", "attn_mix", "down");
-  rules[next++] = Biases("blk.{layer}.hc_attn_down.weight_bias", "attn_mix", "down");
-  rules[next++] = Scales("blk.{layer}.hc_attn_up.weight_scale", "attn_mix", "up");
-  rules[next++] = Biases("blk.{layer}.hc_attn_up.weight_bias", "attn_mix", "up");
-  rules[next++] = Scales("blk.{layer}.hc_attn_inject.weight_scale", "attn_combine", "inject");
-  rules[next++] = Biases("blk.{layer}.hc_attn_inject.weight_bias", "attn_combine", "inject");
-  rules[next++] = Scales("blk.{layer}.hc_ffn_down.weight_scale", "ffn_mix", "down");
-  rules[next++] = Biases("blk.{layer}.hc_ffn_down.weight_bias", "ffn_mix", "down");
-  rules[next++] = Scales("blk.{layer}.hc_ffn_up.weight_scale", "ffn_mix", "up");
-  rules[next++] = Biases("blk.{layer}.hc_ffn_up.weight_bias", "ffn_mix", "up");
-  rules[next++] = Scales("blk.{layer}.hc_ffn_inject.weight_scale", "ffn_combine", "inject");
-  rules[next++] = Biases("blk.{layer}.hc_ffn_inject.weight_bias", "ffn_combine", "inject");
-  rules[next++] = Scales("blk.{layer}.attn_q.weight_scale", "attention", "q");
-  rules[next++] = Biases("blk.{layer}.attn_q.weight_bias", "attention", "q");
-  rules[next++] = Scales("blk.{layer}.attn_k.weight_scale", "attention", "k");
-  rules[next++] = Biases("blk.{layer}.attn_k.weight_bias", "attention", "k");
-  rules[next++] = Scales("blk.{layer}.attn_v.weight_scale", "attention", "v");
-  rules[next++] = Biases("blk.{layer}.attn_v.weight_bias", "attention", "v");
-  rules[next++] = Scales("blk.{layer}.attn_output.weight_scale", "attention", "output");
-  rules[next++] = Biases("blk.{layer}.attn_output.weight_bias", "attention", "output");
-  rules[next++] = Scales("blk.{layer}.indexer.qk_proj.weight_scale", "attention", "indexer_qk");
-  rules[next++] = Biases("blk.{layer}.indexer.qk_proj.weight_bias", "attention", "indexer_qk");
-  rules[next++] = Scales("blk.{layer}.ffn_gate_inp.weight_scale", "moe", "router");
-  rules[next++] = Biases("blk.{layer}.ffn_gate_inp.weight_bias", "moe", "router");
-  rules[next++] = Scales("blk.{layer}.ffn_gate_inp_shexp.weight_scale", "moe", "shared_gate");
-  rules[next++] = Biases("blk.{layer}.ffn_gate_inp_shexp.weight_bias", "moe", "shared_gate");
-  rules[next++] = Scales("blk.{layer}.ffn_gate_shexp.weight_scale", "moe", "gate");
-  rules[next++] = Biases("blk.{layer}.ffn_gate_shexp.weight_bias", "moe", "gate");
-  rules[next++] = Scales("blk.{layer}.ffn_up_shexp.weight_scale", "moe", "up");
-  rules[next++] = Biases("blk.{layer}.ffn_up_shexp.weight_bias", "moe", "up");
-  rules[next++] = Scales("blk.{layer}.ffn_down_shexp.weight_scale", "moe", "down");
-  rules[next++] = Biases("blk.{layer}.ffn_down_shexp.weight_bias", "moe", "down");
-  rules[next++] = Scales("output_hc_down.weight_scale", "output_mix", "down");
-  rules[next++] = Biases("output_hc_down.weight_bias", "output_mix", "down");
-  rules[next++] = Scales("output_hc_up.weight_scale", "output_mix", "up");
-  rules[next++] = Biases("output_hc_up.weight_bias", "output_mix", "up");
-  rules[next++] = Scales("draft_output.weight_scale", "selected", "weight");
-  rules[next++] = Biases("draft_output.weight_bias", "selected", "weight");
-  rules[next++] = Scales("output.weight_scale", "output", "weight");
-  rules[next++] = Biases("output.weight_bias", "output", "weight");
-  // Unstacked expert rules
-  rules[next++] = TensorRule{.pattern = "blk.{layer}.ffn_gate_exps.weight",
-                             .slot = "moe",
-                             .role = "gate_experts",
-                             .part = PartRole::kCodes,
-                             .experts = true,
-                             .optional = true,
-                             .any_part = true};
-  rules[next++] = ExpertScales("blk.{layer}.ffn_gate_exps.weight_scale", "moe", "gate_experts");
-  rules[next++] = ExpertBiases("blk.{layer}.ffn_gate_exps.weight_bias", "moe", "gate_experts");
-  rules[next++] = TensorRule{.pattern = "blk.{layer}.ffn_up_exps.weight",
-                             .slot = "moe",
-                             .role = "up_experts",
-                             .part = PartRole::kCodes,
-                             .experts = true,
-                             .optional = true,
-                             .any_part = true};
-  rules[next++] = ExpertScales("blk.{layer}.ffn_up_exps.weight_scale", "moe", "up_experts");
-  rules[next++] = ExpertBiases("blk.{layer}.ffn_up_exps.weight_bias", "moe", "up_experts");
-  rules[next++] = ExpertBiases("blk.{layer}.ffn_down_exps.weight_bias", "moe", "down_experts");
-  return rules;
-}();
-static_assert(kMtpNativeTensors.size() == kMtpTensors.size() + 51);
-// Its norms zero-centered, as the checkpoint holds them, unless the
-// importer stored 1 + w in F32 (norm.plus_one, as the converted drafter's).
-template <std::size_t N>
-constexpr auto ZeroCentered(const std::array<ParamRule, N>& base) {
-  std::array<ParamRule, N + 19> params{};
-  std::size_t i = 0;
-  for (auto rule : base) {
-    if (rule.slot == "moe" && rule.param == "projection_scales") continue;
-    if (rule.slot == "moe" && !rule.key.empty() && rule.param == "stacked") {
-      rule.tensor = "blk.{layer}.ffn_gate_up_exps.weight";
-      rule.key = {};
-    }
-    if (rule.param == "eps") {
-      rule.transform = Transform::kFloat32;
-    } else if (rule.slot == "attention" && rule.param == "rope_dims") {
-      rule.numerator_key = "attention.key_length";
-      rule.divisor_key = "rope.partial_rotary_factor";
-      rule.transform = Transform::kProduct;
-    } else if (rule.slot == "attention" && rule.param == "indexer" && rule.key.empty()) {
-      rule.value.text = "fused";
-    }
-    params[i++] = rule;
-  }
-  params[i++] = Flag("moe", "projection_scales", false);
-  params[i++] = FromTensor("moe", "gate_scale", "blk.{layer}.ffn_gate_exps.weight_scale_2");
-  params[i++] = Flag("moe", "gate_scale", false);
-  params[i++] = FromTensor("moe", "up_scale", "blk.{layer}.ffn_up_exps.weight_scale_2");
-  params[i++] = Flag("moe", "up_scale", false);
-  params[i++] = FromTensor("moe", "down_scale", "blk.{layer}.ffn_down_exps.weight_scale_2");
-  params[i++] = Flag("moe", "down_scale", false);
-  for (std::string_view slot : {"embedding", "attn_mix", "ffn_mix", "output_mix", "attention"}) {
-    params[i] = Flag(slot, "norm_zero_centered", true);
-    params[i++].unless_fold = "norm.plus_one";
-  }
-  params[i++] = Require("mamba_ssm_dtype", "float32", true);
-  params[i++] = Require("dtype", "bfloat16", true);
-  params[i++] = Require("hidden_act", "silu", true);
-  params[i++] = Require("output_gate_type", "sigmoid", true);
-  params[i++] = Require("rope.scaling.type", "default", true);
-  params[i++] = ParamRule{
-      .key = "is_encoder_decoder", .type = kBool, .value = {.flag = false}, .optional = true};
-  params[i++] =
-      ParamRule{.key = "attention_bias", .type = kBool, .value = {.flag = false}, .optional = true};
-  params[i++] = RequireInt("attention.indexer.head_count_kv", 1, true);
-  params[i] = ParamRule{.key = "use_bidirectional_attention",
-                        .type = kBool,
-                        .value = {.flag = false},
-                        .optional = true};
-  return params;
-}
-constexpr auto kMtpNativeParams = ZeroCentered(kMtpParams);
-// Missing kept metadata in published native MTP artifacts is reconstructed
-// from the actual target spec and this artifact's own selected-head tensor.
-constexpr std::array kMtpValues = {
-    ValueRule{.key = "context_length", .origin = ValueOrigin::kContext},
-    ValueRule{.key = "embedding_length", .origin = ValueOrigin::kWidth},
-    ValueRule{.key = "hyper_connection.count", .origin = ValueOrigin::kStreams},
-    ValueRule{.key = "hyper_connection.low_rank",
-              .origin = ValueOrigin::kComponent,
-              .kind = "hc.mix",
-              .param = "rank"},
-    ValueRule{.key = "attention.layer_norm_rms_epsilon",
-              .origin = ValueOrigin::kComponent,
-              .kind = "attention.qsa",
-              .param = "eps"},
-    ValueRule{.key = "attention.head_count",
-              .origin = ValueOrigin::kComponent,
-              .kind = "attention.qsa",
-              .param = "heads"},
-    ValueRule{.key = "attention.head_count_kv",
-              .origin = ValueOrigin::kComponent,
-              .kind = "attention.qsa",
-              .param = "kv_heads"},
-    ValueRule{.key = "attention.key_length",
-              .origin = ValueOrigin::kComponent,
-              .kind = "attention.qsa",
-              .param = "head_dim"},
-    ValueRule{.key = "attention.value_length",
-              .origin = ValueOrigin::kComponent,
-              .kind = "attention.qsa",
-              .param = "head_dim"},
-    ValueRule{.key = "rope.dimension_count",
-              .origin = ValueOrigin::kComponent,
-              .kind = "attention.qsa",
-              .param = "rope_dims"},
-    ValueRule{.key = "rope.freq_base",
-              .origin = ValueOrigin::kComponent,
-              .kind = "attention.qsa",
-              .param = "rope_base"},
-    ValueRule{.key = "rope.dimension_sections",
-              .origin = ValueOrigin::kComponent,
-              .kind = "attention.qsa",
-              .param = "rope_sections"},
-    ValueRule{.key = "attention.indexer.head_count",
-              .origin = ValueOrigin::kComponent,
-              .kind = "attention.qsa",
-              .param = "indexer_heads"},
-    ValueRule{.key = "attention.indexer.key_length",
-              .origin = ValueOrigin::kComponent,
-              .kind = "attention.qsa",
-              .param = "indexer_dim"},
-    ValueRule{.key = "attention.indexer.top_k",
-              .origin = ValueOrigin::kComponent,
-              .kind = "attention.qsa",
-              .param = "budget"},
-    ValueRule{.key = "attention.compress_ratios",
-              .origin = ValueOrigin::kComponent,
-              .kind = "attention.qsa",
-              .param = "ratio",
-              .list = true},
-    ValueRule{.key = "expert_count",
-              .origin = ValueOrigin::kComponent,
-              .kind = "ffn.moe",
-              .param = "experts"},
-    ValueRule{.key = "expert_used_count",
-              .origin = ValueOrigin::kComponent,
-              .kind = "ffn.moe",
-              .param = "used"},
-    ValueRule{.key = "expert_feed_forward_length",
-              .origin = ValueOrigin::kComponent,
-              .kind = "ffn.moe",
-              .param = "expert_hidden"},
-    ValueRule{.key = "expert_shared_feed_forward_length",
-              .origin = ValueOrigin::kComponent,
-              .kind = "ffn.moe",
-              .param = "hidden"},
-    ValueRule{.key = "block_count",
-              .origin = ValueOrigin::kLayerCount,
-              .tensor = "blk.{layer}.attn_q.weight"},
-    ValueRule{.key = kIndexer, .value = {.text = "fused"}, .type = kString},
-    // The drafter's own expert layout: a relaid ModelOpt drafter is stacked
-    // and scaled whatever its target's (GGUF and MLX targets are neither).
-    ValueRule{.key = kStacked,
-              .origin = ValueOrigin::kTensorPresent,
-              .tensor = "blk.{layer}.ffn_gate_up_exps.weight",
-              .type = kBool},
-    ValueRule{.key = kScaled,
-              .origin = ValueOrigin::kTensorPresent,
-              .tensor = "blk.{layer}.ffn_gate_exps.weight_scale_2",
-              .type = kBool},
-    ValueRule{.key = kDraftRows,
-              .origin = ValueOrigin::kTensor,
-              .tensor = "draft_output.weight",
-              .dimension = 1,
-              .optional = true},
-    ValueRule{.key = kDraftVocab,
-              .origin = ValueOrigin::kTensor,
-              .tensor = "draft_output.weight",
-              .dimension = 1,
-              .optional = true,
-              .at_most = kServing.default_draft_vocab},
-    ValueRule{.key = kDraftVocab,
-              .origin = ValueOrigin::kVocabulary,
-              .at_most = kServing.default_draft_vocab},
+constexpr std::array kMtpNativeTensorEdits{
+    TensorEdit{.slot = "moe",
+               .role = "gate_up_experts",
+               .part = PartRole::kCodes,
+               .pattern = names::kFfnGateUpExpsFused.gguf,
+               .optional = true,
+               .any_part = true},
+    TensorEdit{.slot = "moe",
+               .role = "gate_up_experts",
+               .part = PartRole::kBlockScales,
+               .pattern = "blk.{layer}.ffn_gate_up_exps.weight_scale",
+               .optional = true},
+    TensorEdit{.slot = "moe",
+               .role = "down_experts",
+               .part = PartRole::kCodes,
+               .pattern = names::kFfnDownExps.gguf,
+               .optional = true,
+               .any_part = true},
+    TensorEdit{.slot = "moe",
+               .role = "down_experts",
+               .part = PartRole::kBlockScales,
+               .pattern = "blk.{layer}.ffn_down_exps.weight_scale",
+               .optional = true},
+    // ModelOpt's tensor scales; an MLX drafter's affine experts have none.
+    TensorEdit{.slot = "moe", .role = "gate_scale", .optional = true},
+    TensorEdit{.slot = "moe", .role = "up_scale", .optional = true},
+    TensorEdit{.slot = "moe", .role = "down_scale", .optional = true},
 };
+// A native drafter's matrices may come with companions: their MXFP8 block
+// scales and their MLX affine biases, each its matrix's `.weight` respelled.
+// The drafter's: its own matrices (its rules of any part) and its target's
+// head, in table order.
+template <const auto& kRules>
+constexpr auto MatricesOf() {
+  std::array<TensorRule, std::ranges::count_if(kRules, &TensorRule::any_part)> out{};
+  std::ranges::copy_if(kRules, out.begin(), &TensorRule::any_part);
+  return out;
+}
+template <std::size_t N>
+constexpr auto CompanionNames(const std::array<TensorRule, N>& matrices) {
+  std::array<ComposedName, 2 * N> out{};
+  for (std::size_t m = 0; m < N; ++m) {
+    out[2 * m] = Respell(matrices[m].pattern, ".weight", ".weight_scale");
+    out[(2 * m) + 1] = Respell(matrices[m].pattern, ".weight", ".weight_bias");
+  }
+  return out;
+}
+template <std::size_t N>
+constexpr auto Companions(const std::array<TensorRule, N>& matrices,
+                          const std::array<ComposedName, 2 * N>& names) {
+  std::array<TensorRule, 2 * N> out{};
+  for (std::size_t m = 0; m < N; ++m) {
+    out[2 * m] = Scales(names[2 * m].view(), matrices[m].slot, matrices[m].role);
+    out[(2 * m) + 1] = Biases(names[(2 * m) + 1].view(), matrices[m].slot, matrices[m].role);
+  }
+  return out;
+}
+constexpr auto kMtpMatrices =
+    Concat(MatricesOf<kMtpTensors>(), std::array{Plain(names::kOutput.gguf, "output", "weight")});
+constexpr auto kMtpCompanionNames = CompanionNames(kMtpMatrices);
+// Each matrix's companions, then the unstacked experts' arrays and theirs.
+constexpr auto kMtpNativeTensorExtras =
+    Concat(Companions(kMtpMatrices, kMtpCompanionNames),
+           std::array{
+               TensorRule{.pattern = names::kFfnGateExps.gguf,
+                          .slot = "moe",
+                          .role = "gate_experts",
+                          .part = PartRole::kCodes,
+                          .experts = true,
+                          .optional = true,
+                          .any_part = true},
+               ExpertScales("blk.{layer}.ffn_gate_exps.weight_scale", "gate_experts"),
+               ExpertBiases("blk.{layer}.ffn_gate_exps.weight_bias", "gate_experts"),
+               TensorRule{.pattern = names::kFfnUpExps.gguf,
+                          .slot = "moe",
+                          .role = "up_experts",
+                          .part = PartRole::kCodes,
+                          .experts = true,
+                          .optional = true,
+                          .any_part = true},
+               ExpertScales("blk.{layer}.ffn_up_exps.weight_scale", "up_experts"),
+               ExpertBiases("blk.{layer}.ffn_up_exps.weight_bias", "up_experts"),
+               ExpertBiases("blk.{layer}.ffn_down_exps.weight_bias", "down_experts"),
+           });
+constexpr auto kMtpNativeTensors =
+    Overlay<kMtpTensors, kMtpNativeTensorEdits, kMtpNativeTensorExtras>();
+static_assert(kMtpNativeTensors.size() == kMtpTensors.size() + 51);
+// Its parameters: the block's native form (kNativeBlockEdits), its norms
+// zero-centered as the checkpoint holds them unless the importer stored
+// 1 + w in F32 (norm.plus_one, as the converted drafter's), and its config's
+// requirements.
+constexpr auto kMtpNativeParamExtras =
+    Concat(kNativeExpertScales,
+           std::array{ZeroCenteredNorm("embedding"), ZeroCenteredNorm("attn_mix"),
+                      ZeroCenteredNorm("ffn_mix"), ZeroCenteredNorm("output_mix"),
+                      ZeroCenteredNorm("attention")},
+           kNativeRequirements, kNativeCausal);
+constexpr auto kMtpNativeParams = Overlay<kMtpParams, kNativeBlockEdits, kMtpNativeParamExtras>();
+static_assert(kMtpNativeParams.size() == kMtpParams.size() + 19);
+// Missing kept metadata in published native MTP artifacts is reconstructed
+// from the actual target spec and this artifact's own tensors: the block's
+// source keys from the target's components that read them (the forward
+// rules inverted, kBlockParams), then the drafter's own facts.
+constexpr auto kMtpBlockValues = InvertedValues<kBlockParams, kMtpSlots, kQwenRequirements>();
+constexpr auto kMtpValues =
+    Concat(kMtpBlockValues,
+           std::array{ValueRule{.key = "block_count",
+                                .origin = ValueOrigin::kLayerCount,
+                                .tensor = names::kAttnQ.gguf},
+                      ValueRule{.key = kIndexer, .value = {.text = "fused"}, .type = kString},
+                      // The drafter's own expert layout: a relaid ModelOpt drafter is
+                      // stacked and scaled whatever its target's (GGUF and MLX targets are
+                      // neither).
+                      ValueRule{.key = kStacked,
+                                .origin = ValueOrigin::kTensorPresent,
+                                .tensor = names::kFfnGateUpExpsFused.gguf,
+                                .type = kBool},
+                      ValueRule{.key = kScaled,
+                                .origin = ValueOrigin::kTensorPresent,
+                                .tensor = "blk.{layer}.ffn_gate_exps.weight_scale_2",
+                                .type = kBool},
+                      ValueRule{.key = kDraftRows,
+                                .origin = ValueOrigin::kTensor,
+                                .tensor = "draft_output.weight",
+                                .dimension = 1,
+                                .optional = true},
+                      ValueRule{.key = kDraftVocab,
+                                .origin = ValueOrigin::kTensor,
+                                .tensor = "draft_output.weight",
+                                .dimension = 1,
+                                .optional = true,
+                                .at_most = kServing.default_draft_vocab},
+                      ValueRule{.key = kDraftVocab,
+                                .origin = ValueOrigin::kVocabulary,
+                                .at_most = kServing.default_draft_vocab}});
 constexpr std::array<std::string_view, 7> kMtpNativeIgnoredPrefixes = {
     "lm_head.", "language_model.lm_head.", "model.visual.",         "vision_tower.",
     "visual.",  "model.language_model.",   "language_model.model.",
 };
 constexpr std::array kMtpNativeKeyAliases = {
     KeyAlias{"indexer_kv_heads", "attention.indexer.head_count_kv"},
-    KeyAlias{"rope_parameters.mrope_interleaved", "rope.mrope_interleaved"},
-    KeyAlias{"use_bidirectional_attention", "use_bidirectional_attention"},
+    keys::kRopeParametersMropeInterleaved,
+    keys::kBidirectional,
     KeyAlias{"mtp_num_hidden_layers", "block_count"},
-    KeyAlias{"max_position_embeddings", "context_length"},
-    KeyAlias{"hidden_size", "embedding_length"},
+    keys::kContext,
+    keys::kWidth,
     KeyAlias{"hc_count", "hyper_connection.count"},
     KeyAlias{"hc_lowrank", "hyper_connection.low_rank"},
-    KeyAlias{"rms_norm_eps", "attention.layer_norm_rms_epsilon"},
-    KeyAlias{"num_attention_heads", "attention.head_count"},
-    KeyAlias{"num_key_value_heads", "attention.head_count_kv"},
-    KeyAlias{"head_dim", "attention.key_length"},
-    KeyAlias{"rope_parameters.rope_theta", "rope.freq_base"},
-    KeyAlias{"rope_theta", "rope.freq_base"},
-    KeyAlias{"rope_parameters.mrope_section", "rope.dimension_sections"},
+    keys::kRmsEps,
+    keys::kHeads,
+    keys::kKvHeads,
+    keys::kHeadDim,
+    keys::kRopeParametersTheta,
+    keys::kRopeTheta,
+    keys::kRopeParametersMropeSection,
     KeyAlias{"mrope_section", "rope.dimension_sections"},
-    KeyAlias{"rope_parameters.partial_rotary_factor", "rope.partial_rotary_factor"},
-    KeyAlias{"partial_rotary_factor", "rope.partial_rotary_factor"},
+    keys::kRopeParametersPartial,
+    keys::kPartialRotary,
     KeyAlias{"indexer_n_heads", "attention.indexer.head_count"},
     KeyAlias{"indexer_head_dim", "attention.indexer.key_length"},
     KeyAlias{"indexer_budget", "attention.indexer.top_k"},
     KeyAlias{"indexer_compress_ratio", "attention.compress_ratios"},
-    KeyAlias{"num_experts", "expert_count"},
-    KeyAlias{"num_experts_per_tok", "expert_used_count"},
-    KeyAlias{"moe_intermediate_size", "expert_feed_forward_length"},
-    KeyAlias{"shared_expert_intermediate_size", "expert_shared_feed_forward_length"},
-    KeyAlias{"mamba_ssm_dtype", "mamba_ssm_dtype"},
+    keys::kExperts,
+    keys::kExpertsUsed,
+    keys::kExpertWidth,
+    keys::kSharedExpertWidth,
+    keys::kMambaDtype,
     KeyAlias{"dtype", "dtype"},
-    KeyAlias{"is_encoder_decoder", "is_encoder_decoder"},
-    KeyAlias{"hidden_act", "hidden_act"},
-    KeyAlias{"attention_bias", "attention_bias"},
-    KeyAlias{"output_gate_type", "output_gate_type"},
-    KeyAlias{"rope_parameters.rope_type", "rope.scaling.type"},
+    keys::kEncoderDecoder,
+    keys::kHiddenAct,
+    keys::kAttentionBias,
+    keys::kOutputGateType,
+    keys::kRopeParametersType,
     KeyAlias{"rope_parameters.type", "rope.scaling.type"},
 };
 constexpr std::array kQwen38TargetNativeAuxiliary = {
@@ -1415,105 +1287,75 @@ constexpr std::array kNativeSlotSourceOverrides = {
         .slot = "ngram", .layers_alias = "ple.layer_ids", .alias_index_base = 1},
     SourceDialect::SlotSourceOverride{
         .slot = "ple", .layers_alias = "ple.layer_ids", .alias_index_base = 1}};
-constexpr SourceDialect QwenTargetDialect(std::string_view source_arch,
-                                          std::string_view container) {
-  const bool native = container != "gguf";
-  return SourceDialect{
-      .architecture = source_arch,
-      .container = container,
-      .execution_architecture = "qwen4exp",
-      .source_architectures = native ? std::span<const std::string_view>(kNativeSourceArchitectures)
-                                     : std::span<const std::string_view>{},
-      .key_prefix = {},
-      .source_key_prefix = native ? "text_config." : "",
-      .layer_count_key = "block_count",
-      .context_key = native ? "context_length" : "",
-      .layer_types = "lllf",
-      .layer_type_key = native ? "layer_types" : "",
-      .layer_type_interval_key = native ? "full_attention_interval" : "full_attention_interval",
-      .layer_flags_key = native ? "" : "attention.compress_ratios",
-      .layer_flag_type = 'f',
-      .layer_type_codes = native ? std::span<const LayerTypeCode>(kNativeLayerTypeCodes)
-                                 : std::span<const LayerTypeCode>{},
-      .explicit_layer_rules = true,
-      .complete_params = true,
-      .params = native ? std::span<const ParamRule>(kNativeParams)
-                       : std::span<const ParamRule>(kGgufParams),
-      .tensors = native ? std::span<const TensorRule>(kNativeTensors)
-                        : std::span<const TensorRule>(kGgufTensors),
-      .slots = native ? std::span(kNativeSlotSourceOverrides)
-                      : std::span<const SourceDialect::SlotSourceOverride>{},
-      .folds = native ? std::span<const FoldRule>(kNativeFolds) : std::span<const FoldRule>(kFolds),
-      .tensor_aliases = native ? std::span<const TensorAlias>(kNativeTensorAliases)
-                               : std::span<const TensorAlias>{},
-      .key_aliases =
-          native ? std::span<const KeyAlias>(kNativeKeyAliases) : std::span<const KeyAlias>{},
-      .auxiliary = native ? std::span<const AuxiliaryNamespace>(kQwen38TargetNativeAuxiliary)
-                          : std::span<const AuxiliaryNamespace>(kQwenAuxiliary),
-      .requirements = native ? std::span<const ScalarRequirement>(kQwen38NativeRequirements)
-                             : std::span<const ScalarRequirement>(kQwenRequirements),
-      .semantic = native ? std::span<const std::string_view>(kQwen38NativeSemantic)
-                         : std::span<const std::string_view>{},
-      .ignored_tensors = native ? std::span<const std::string_view>(kNativeIgnoredTensors)
-                                : std::span<const std::string_view>{},
-      .ignored_tensor_prefixes = native ? std::span<const std::string_view>(kNativeIgnoredPrefixes)
-                                        : std::span<const std::string_view>{},
-      .policies = native ? std::span<const PolicyRule>(kNativePolicies)
-                         : std::span<const PolicyRule>(kPolicies).last(1),
-      .gates = native ? std::span<const GateRule>(kNativeGates) : std::span<const GateRule>(kGates),
-      .lists = native ? std::span<const ListRequirement>(kQwen38NativeLists)
-                      : std::span<const ListRequirement>(kQwenLists),
-      .extended_components = true,
-      .explicit_source_semantics = true,
-      .row_indices = native ? std::span<const RowIndexRequirement>{}
-                            : std::span<const RowIndexRequirement>(kQwenRows),
-      .semantic_tensors = native ? std::span<const SemanticTensorRule>(kNativeSemanticTensors)
-                                 : std::span<const SemanticTensorRule>{}};
+// The GGUF target: llama.cpp's converted form (its folds asserted).
+constexpr SourceDialect kGgufTargetDialect{.architecture = "qwen4exp",
+                                           .container = "gguf",
+                                           .execution_architecture = "qwen4exp",
+                                           .layer_count_key = "block_count",
+                                           .layer_types = "lllf",
+                                           .layer_type_interval_key = "full_attention_interval",
+                                           .layer_flags_key = "attention.compress_ratios",
+                                           .layer_flag_type = 'f',
+                                           .explicit_layer_rules = true,
+                                           .complete_params = true,
+                                           .params = kGgufParams,
+                                           .tensors = kGgufTensors,
+                                           .folds = kFolds,
+                                           .auxiliary = kQwenAuxiliary,
+                                           .requirements = kQwenRequirements,
+                                           .policies = std::span(kPolicies).last(1),
+                                           .gates = kGates,
+                                           .lists = kQwenLists,
+                                           .extended_components = true,
+                                           .explicit_source_semantics = true,
+                                           .row_indices = kQwenRows};
+// A native target (a ModelOpt or MLX checkpoint under one of its source
+// architectures' names): its config's spellings and layer types, the
+// native forms of the tables, the importer's folds recorded.
+constexpr SourceDialect NativeTargetDialect(std::string_view architecture,
+                                            std::string_view container) {
+  return {.architecture = architecture,
+          .container = container,
+          .execution_architecture = "qwen4exp",
+          .source_architectures = kNativeSourceArchitectures,
+          .source_key_prefix = "text_config.",
+          .layer_count_key = "block_count",
+          .context_key = "context_length",
+          .layer_types = "lllf",
+          .layer_type_key = "layer_types",
+          .layer_type_interval_key = "full_attention_interval",
+          .layer_flag_type = 'f',
+          .layer_type_codes = kNativeLayerTypeCodes,
+          .explicit_layer_rules = true,
+          .complete_params = true,
+          .params = kNativeParams,
+          .tensors = kNativeTensors,
+          .slots = kNativeSlotSourceOverrides,
+          .folds = kNativeFolds,
+          .tensor_aliases = kNativeTensorAliases,
+          .key_aliases = kNativeKeyAliases,
+          .auxiliary = kQwen38TargetNativeAuxiliary,
+          .requirements = kQwen38NativeRequirements,
+          .semantic = kQwen38NativeSemantic,
+          .ignored_tensors = kNativeIgnoredTensors,
+          .ignored_tensor_prefixes = kNativeIgnoredPrefixes,
+          .policies = kNativePolicies,
+          .gates = kNativeGates,
+          .lists = kQwen38NativeLists,
+          .extended_components = true,
+          .explicit_source_semantics = true,
+          .semantic_tensors = kNativeSemanticTensors};
 }
 constexpr std::array<SourceDialect, 7> kTargetDialects = {
-    QwenTargetDialect("qwen4exp", "gguf"),
-    QwenTargetDialect("qwen3_8_flash_next", "safetensors"),
-    QwenTargetDialect("qwen3_8_flash_next", "mlx"),
-    QwenTargetDialect("qwen4_exp", "safetensors"),
-    QwenTargetDialect("qwen4_exp", "mlx"),
-    QwenTargetDialect("qwen4exp", "safetensors"),
-    QwenTargetDialect("qwen4exp", "mlx")};
-constexpr auto kQwenAllTensors = [] {
-  constexpr auto new_roles = std::ranges::count_if(kNativeTensors, [](const auto& native) {
-    return !std::ranges::any_of(kTensors, [&](const auto& base) {
-      return base.slot == native.slot && base.role == native.role;
-    });
-  });
-  std::array<TensorRule, kTensors.size() + new_roles> out{};
-  std::ranges::copy(kTensors, out.begin());
-  std::size_t next = kTensors.size();
-  for (const auto& native : kNativeTensors) {
-    if (std::ranges::any_of(kTensors, [&](const auto& base) {
-          return base.slot == native.slot && base.role == native.role;
-        }))
-      continue;
-    out[next++] = native;
-  }
-  return out;
-}();
-constexpr auto kQwenAllParams = [] {
-  constexpr auto new_roles = std::ranges::count_if(kNativeParams, [](const auto& native) {
-    return !std::ranges::any_of(kParams, [&](const auto& base) {
-      return base.slot == native.slot && base.param == native.param;
-    });
-  });
-  std::array<ParamRule, kParams.size() + new_roles> out{};
-  std::ranges::copy(kParams, out.begin());
-  std::size_t next = kParams.size();
-  for (const auto& native : kNativeParams) {
-    if (std::ranges::any_of(kParams, [&](const auto& base) {
-          return base.slot == native.slot && base.param == native.param;
-        }))
-      continue;
-    out[next++] = native;
-  }
-  return out;
-}();
+    kGgufTargetDialect,
+    NativeTargetDialect("qwen3_8_flash_next", "safetensors"),
+    NativeTargetDialect("qwen3_8_flash_next", "mlx"),
+    NativeTargetDialect("qwen4_exp", "safetensors"),
+    NativeTargetDialect("qwen4_exp", "mlx"),
+    NativeTargetDialect("qwen4exp", "safetensors"),
+    NativeTargetDialect("qwen4exp", "mlx")};
+constexpr auto kQwenAllTensors = WithNewIdentities<kTensors, kNativeTensors>();
+constexpr auto kQwenAllParams = WithNewIdentities<kParams, kNativeParams>();
 constexpr std::array<std::string_view, 3> kQwenContainers{"gguf", "safetensors", "mlx"};
 constexpr std::array<std::string_view, 2> kMtpContainers{"safetensors", "mlx"};
 constexpr Mapping kQwenCanonicalMapping = [] {
@@ -1526,91 +1368,43 @@ constexpr Mapping kQwenCanonicalMapping = [] {
   return mapping;
 }();
 
-constexpr SourceDialect QwenMtpDialect(std::string_view source_arch, std::string_view container) {
-  const bool native = container != "gguf";
-  return SourceDialect{
-      .architecture = source_arch,
-      .container = container,
-      .execution_architecture = "qwen4exp-mtp",
-      .source_architectures = native ? std::span<const std::string_view>(kNativeSourceArchitectures)
-                                     : std::span<const std::string_view>{},
-      .key_prefix = native ? "" : "qwen4exp-mtp",
-      .source_key_prefix = native ? "text_config." : "",
-      .layer_count_key = "block_count",
-      .context_key = {},
-      .layer_types = "f",
-      .explicit_layer_rules = true,
-      .complete_params = true,
-      .params = native ? std::span<const ParamRule>(kMtpNativeParams)
-                       : std::span<const ParamRule>(kMtpParams),
-      .tensors = native ? std::span<const TensorRule>(kMtpNativeTensors)
-                        : std::span<const TensorRule>(kMtpTensors),
-      .folds = native ? std::span<const FoldRule>(kNativeFolds) : std::span<const FoldRule>(kFolds),
-      .tensor_aliases = native ? std::span<const TensorAlias>(kMtpNativeTensorAliases)
-                               : std::span<const TensorAlias>{},
-      .key_aliases =
-          native ? std::span<const KeyAlias>(kMtpNativeKeyAliases) : std::span<const KeyAlias>{},
-      .auxiliary = native ? std::span<const AuxiliaryNamespace>(kQwen38MtpNativeAuxiliary)
-                          : std::span<const AuxiliaryNamespace>(kGgufAuxiliary),
-      .requirements = native ? std::span<const ScalarRequirement>(kQwen38MtpNativeRequirements)
-                             : std::span<const ScalarRequirement>{},
-      .semantic = native ? std::span<const std::string_view>(kQwen38NativeSemantic)
-                         : std::span<const std::string_view>{},
-      .ignored_tensor_prefixes = native
-                                     ? std::span<const std::string_view>(kMtpNativeIgnoredPrefixes)
-                                     : std::span<const std::string_view>{},
-      .policies = std::span(kMtpPolicies),
-      .gates = std::span<const GateRule>{},
-      .lists = native ? std::span<const ListRequirement>(kQwen38MtpNativeLists)
-                      : std::span<const ListRequirement>{},
-      .extended_components = native,
-      .explicit_source_semantics = true,
-      .draft_values =
-          native ? std::span<const ValueRule>(kMtpValues) : std::span<const ValueRule>{}};
+// The native drafter (its only containers): the native forms of its tables
+// and the extraction values its kept metadata may lack.
+constexpr SourceDialect NativeMtpDialect(std::string_view architecture,
+                                         std::string_view container) {
+  return {.architecture = architecture,
+          .container = container,
+          .execution_architecture = "qwen4exp-mtp",
+          .source_architectures = kNativeSourceArchitectures,
+          .source_key_prefix = "text_config.",
+          .layer_count_key = "block_count",
+          .layer_types = "f",
+          .explicit_layer_rules = true,
+          .complete_params = true,
+          .params = kMtpNativeParams,
+          .tensors = kMtpNativeTensors,
+          .folds = kNativeFolds,
+          .tensor_aliases = kMtpNativeTensorAliases,
+          .key_aliases = kMtpNativeKeyAliases,
+          .auxiliary = kQwen38MtpNativeAuxiliary,
+          .requirements = kQwen38MtpNativeRequirements,
+          .semantic = kQwen38NativeSemantic,
+          .ignored_tensor_prefixes = kMtpNativeIgnoredPrefixes,
+          .policies = kMtpPolicies,
+          .lists = kQwen38MtpNativeLists,
+          .extended_components = true,
+          .explicit_source_semantics = true,
+          .draft_values = kMtpValues};
 }
 constexpr std::array<SourceDialect, 6> kMtpDialects = {
-    QwenMtpDialect("qwen3_8_flash_next", "safetensors"),
-    QwenMtpDialect("qwen3_8_flash_next", "mlx"),
-    QwenMtpDialect("qwen4_exp", "safetensors"),
-    QwenMtpDialect("qwen4_exp", "mlx"),
-    QwenMtpDialect("qwen4exp-mtp", "safetensors"),
-    QwenMtpDialect("qwen4exp-mtp", "mlx")};
-constexpr auto kMtpAllTensors = [] {
-  constexpr auto new_roles = std::ranges::count_if(kMtpNativeTensors, [](const auto& native) {
-    return !std::ranges::any_of(kMtpTensors, [&](const auto& base) {
-      return base.slot == native.slot && base.role == native.role;
-    });
-  });
-  std::array<TensorRule, kMtpTensors.size() + new_roles> out{};
-  std::ranges::copy(kMtpTensors, out.begin());
-  std::size_t next = kMtpTensors.size();
-  for (const auto& native : kMtpNativeTensors) {
-    if (std::ranges::any_of(kMtpTensors, [&](const auto& base) {
-          return base.slot == native.slot && base.role == native.role;
-        }))
-      continue;
-    out[next++] = native;
-  }
-  return out;
-}();
-constexpr auto kMtpAllParams = [] {
-  constexpr auto new_roles = std::ranges::count_if(kMtpNativeParams, [](const auto& native) {
-    return !std::ranges::any_of(kMtpParams, [&](const auto& base) {
-      return base.slot == native.slot && base.param == native.param;
-    });
-  });
-  std::array<ParamRule, kMtpParams.size() + new_roles> out{};
-  std::ranges::copy(kMtpParams, out.begin());
-  std::size_t next = kMtpParams.size();
-  for (const auto& native : kMtpNativeParams) {
-    if (std::ranges::any_of(kMtpParams, [&](const auto& base) {
-          return base.slot == native.slot && base.param == native.param;
-        }))
-      continue;
-    out[next++] = native;
-  }
-  return out;
-}();
+    NativeMtpDialect("qwen3_8_flash_next", "safetensors"),
+    NativeMtpDialect("qwen3_8_flash_next", "mlx"),
+    NativeMtpDialect("qwen4_exp", "safetensors"),
+    NativeMtpDialect("qwen4_exp", "mlx"),
+    NativeMtpDialect("qwen4exp-mtp", "safetensors"),
+    NativeMtpDialect("qwen4exp-mtp", "mlx")};
+constexpr auto kMtpAllTensors = WithNewIdentities<kMtpTensors, kMtpNativeTensors>();
+constexpr auto kMtpAllParams = WithNewIdentities<kMtpParams, kMtpNativeParams>();
 constexpr Mapping kMtpCanonicalMapping = [] {
   auto mapping = kMtpMapping;
   mapping.source_architectures = kNativeSourceArchitectures;
@@ -1620,7 +1414,6 @@ constexpr Mapping kMtpCanonicalMapping = [] {
   mapping.dialects = kMtpDialects;
   return mapping;
 }();
-#undef LLMP_QWEN38_BLOCK_PARAMS
 
 }  // namespace
 

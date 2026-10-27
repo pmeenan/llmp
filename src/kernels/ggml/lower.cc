@@ -2173,9 +2173,10 @@ std::expected<void, KernelFailure> Lowering::MakeSelected(NodeId id, const ir::N
   std::vector<ggml_tensor*> dependencies;
   for (std::size_t i = 0; i < n.nsrc; ++i) {
     const auto tensor = n.src[i];
+    ggml_tensor* made = made_.at(tensor.v);
     SelectedOperand operand{
-        .id = tensor, .desc = p_.tensor(tensor), .tensor = made_.at(tensor.v), .parts = {}};
-    if (operand.tensor == nullptr) return Refused("a selected-source input was not made");
+        .id = tensor, .desc = p_.tensor(tensor), .tensor = Ref(made), .parts = {}};
+    if (made == nullptr) return Refused("a selected-source input was not made");
     if (n.key == ir::Primitive(Op::kMatMulId) && i == 2) {
       const auto producer = p_.producer(tensor);
       const auto& route = p_.node(producer);
@@ -2189,7 +2190,7 @@ std::expected<void, KernelFailure> Lowering::MakeSelected(NodeId id, const ir::N
       if (route.key == ir::Primitive(Op::kRoute) && route.out[0] == tensor && pitched()) {
         const auto params = route.Params<ir::RouteParams>();
         const auto root = placed_root_.find(tensor.v);
-        const auto* ids = operand.tensor;
+        const auto* ids = made;
         const auto pitch = std::uint64_t{params.experts} * sizeof(std::int32_t);
         const auto bytes = pitch * operand.desc.ne(1);
         if (p_.root(tensor) != tensor || operand.desc.is_view() || root == placed_root_.end() ||
@@ -2233,11 +2234,11 @@ std::expected<void, KernelFailure> Lowering::MakeSelected(NodeId id, const ir::N
     const auto parts = parts_.find(tensor.v);
     if (parts != parts_.end()) {
       for (const auto& [role, part] : parts->second) {
-        operand.parts.push_back({role, part});
+        operand.parts.push_back({role, Ref(part)});
         dependencies.push_back(part);
       }
     } else {
-      dependencies.push_back(operand.tensor);
+      dependencies.push_back(made);
     }
     inputs.push_back(std::move(operand));
   }
@@ -2259,7 +2260,8 @@ std::expected<void, KernelFailure> Lowering::MakeSelected(NodeId id, const ir::N
   for (std::size_t i = 0; i < n.nout; ++i) {
     ggml_tensor* tensor =
         paired ? ggml_view_2d(c_, marker, ne[0], ne[1], desc.nb[1], i * desc.nb[2]) : marker;
-    outputs.push_back({.id = n.out[i], .desc = p_.tensor(n.out[i]), .tensor = tensor, .parts = {}});
+    outputs.push_back(
+        {.id = n.out[i], .desc = p_.tensor(n.out[i]), .tensor = Ref(tensor), .parts = {}});
   }
   auto call = options_.selected_source->Lower(implementation, n, inputs, outputs);
   if (!call) return std::unexpected(call.error());
@@ -2267,8 +2269,9 @@ std::expected<void, KernelFailure> Lowering::MakeSelected(NodeId id, const ir::N
     return Refused("a selected-source operation returned another source's call");
   Node(marker, id);
   for (const auto& output : outputs) {
-    made_.at(output.id.v) = output.tensor;
-    if (output.tensor != marker) Node(output.tensor, id);
+    ggml_tensor* tensor = TensorOf(output.tensor);
+    made_.at(output.id.v) = tensor;
+    if (tensor != marker) Node(tensor, id);
   }
   if (paired) placed_root_[n.out[0].v] = marker;
   out_.selected.push_back({marker, &implementation, std::move(*call)});
@@ -5217,13 +5220,16 @@ std::expected<void, KernelFailure> Lowering::MakeRouting() {
   for (std::size_t index = 0; index != out_.selected.size(); ++index) {
     const auto route = out_.selected[index].call->route();
     if (!route) continue;
-    auto group = std::ranges::find(groups, route->ids, &Group::ids);
+    // A route's IDs are a descriptor this lowering made (null otherwise,
+    // which the group's checks below refuse).
+    ggml_tensor* route_ids = TensorOf(route->ids);
+    auto group = std::ranges::find(groups, route_ids, &Group::ids);
     if (group == groups.end()) {
       std::size_t count = 0;
       for (const auto& selected : out_.selected)
         if (const auto member = selected.call->route(); member && member->ids == route->ids)
           ++count;
-      groups.push_back({.ids = route->ids, .calls = {}, .cut = out_.plan.steps.size()});
+      groups.push_back({.ids = route_ids, .calls = {}, .cut = out_.plan.steps.size()});
       group = groups.end() - 1;
       group->calls.reserve(count);
     }

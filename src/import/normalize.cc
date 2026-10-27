@@ -323,15 +323,13 @@ std::optional<ResolvedName> TensorName(const spec::Mapping& t, std::string_view 
   }
   return found;
 }
+// The one matcher (source_mapping.h IgnoredTensor), on the name and on its
+// source-prefix-stripped spelling.
 bool IgnoredTensor(const spec::Mapping& table, std::string_view name, std::uint32_t layers) {
-  if (std::ranges::any_of(table.ignored_tensor_prefixes,
-                          [&](auto prefix) { return name.starts_with(prefix); }))
-    return true;
   const auto stripped = spec::StripSourceTensorPrefix(table, name);
-  return std::ranges::any_of(table.ignored_tensors, [&](const auto pattern) {
-    return nd::Match(pattern, name, layers).has_value() ||
-           (stripped != name && nd::Match(pattern, stripped, layers).has_value());
-  });
+  return import::IgnoredTensor(table.ignored_tensors, table.ignored_tensor_prefixes, name,
+                               layers) ||
+         (stripped != name && import::IgnoredTensor(table.ignored_tensors, {}, stripped, layers));
 }
 std::string Expand(ResolvedName n) {
   const auto at = n.pattern.find(spec::kLayerField);
@@ -674,7 +672,11 @@ std::expected<NormalizationCost, Error> SpatialRecipeBound(const Checkpoint& sou
   if (auto valid = ValidateImportMapping(mapping, source.container); !valid)
     return std::unexpected(valid.error());
 
-  const auto recipe = PreflightStageRecipe(*mapping.stage_recipe, {}, UINT64_MAX, source.metadata);
+  // The expansion counted over the actual source (stage_recipe.h): what it
+  // holds and the comparisons it makes. What planning the component costs
+  // over the source's tensors, files and metadata is charged here.
+  const auto recipe = PreflightStageRecipe(*mapping.stage_recipe, {}, UINT64_MAX, source.metadata,
+                                           source.tensors, source.container);
   if (!recipe) return Bad("configured spatial recipe preflight failed", Rule::kConfig);
   Arithmetic arithmetic;
   std::uint64_t metadata = recipe->metadata_bytes;
@@ -746,9 +748,6 @@ std::expected<NormalizationCost, Error> SpatialRecipeBound(const Checkpoint& sou
   const auto omission_searches =
       arithmetic.Add(arithmetic.Mul(source_name_bytes, omission_rules),
                      arithmetic.Mul(ignored_pattern_bytes, source.tensors.size()));
-  const auto binding_identity_searches =
-      arithmetic.Mul(arithmetic.Mul(recipe->tensor_bindings, recipe->tensor_bindings),
-                     recipe->max_tensor_name_bytes);
   const auto shared_raw_dimension_checks =
       arithmetic.Mul(arithmetic.Mul(recipe->raw_dimension_axes, recipe->raw_dimension_axes),
                      sizeof(std::uint64_t));
@@ -765,11 +764,6 @@ std::expected<NormalizationCost, Error> SpatialRecipeBound(const Checkpoint& sou
       recipe->raw_dimension_contracts);
   const auto raw_contract_name_set_work =
       arithmetic.Mul(raw_contract_name_comparisons, recipe->max_tensor_name_bytes);
-  const auto evaluated_weight_name_bytes =
-      arithmetic.Add(recipe->max_weight_role_bytes, recipe->max_tensor_name_bytes);
-  const auto evaluated_weight_lookup_work =
-      arithmetic.Mul(arithmetic.Mul(recipe->tensor_bindings, recipe->tensor_bindings),
-                     evaluated_weight_name_bytes);
   const auto file_alias_checks = arithmetic.Mul(source.files.size(), source.files.size());
   const auto file_alias_bytes =
       arithmetic.Add(arithmetic.Mul(source_path_bytes, source.files.size()),
@@ -799,23 +793,21 @@ std::expected<NormalizationCost, Error> SpatialRecipeBound(const Checkpoint& sou
                                     arithmetic.Mul(recipe->raw_dimension_axes, max_source_rank)));
   // Each raw-axis contract also walks the declared tensor inventory, scans
   // source names for its exact/suffix match, and inserts its name into the
-  // contract set. Expansion then linearly searches the evaluated weights for
-  // every component role, even when no raw-axis contract is present. These
-  // are separate byte-comparison bounds from the earlier tensor/dedup scans.
+  // contract set: byte-comparison bounds beside the expansion's own counted
+  // shared-tensor and evaluated-weight lookups (expansion_work).
   const auto work = arithmetic.Add(
       arithmetic.Add(arithmetic.Add(source_searches, tensor_searches),
-                     arithmetic.Add(omission_searches, binding_identity_searches)),
+                     arithmetic.Add(omission_searches, recipe->expansion_work)),
       arithmetic.Add(
           arithmetic.Add(file_alias_bytes, validation_name_work),
           arithmetic.Add(
               arithmetic.Add(raw_dimension_work, shared_raw_dimension_checks),
               arithmetic.Add(
                   arithmetic.Add(raw_contract_expected_scan, raw_contract_source_scan),
-                  arithmetic.Add(
-                      arithmetic.Add(raw_contract_name_set_work, evaluated_weight_lookup_work),
-                      arithmetic.Add(
-                          numeric_sort_work,
-                          arithmetic.Add(recipe->visited_steps, recipe->tensor_bindings)))))));
+                  arithmetic.Add(raw_contract_name_set_work,
+                                 arithmetic.Add(numeric_sort_work,
+                                                arithmetic.Add(recipe->visited_steps,
+                                                               recipe->tensor_bindings)))))));
   if (!arithmetic.ok) return Bad("configured spatial work bound overflows", Rule::kBounds);
   return NormalizationCost{
       .metadata_bytes = metadata, .work_units = work, .payload_bytes = payload, .layers = 0};
@@ -1063,33 +1055,26 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const spec::M
         return Bad("source scalar disagrees with its related structural parameter");
     }
   }
-  // Profile requirements are checked allocation-free, including required
-  // presence, before allocating mapping/synthesis/catalog validation.
-  for (const auto& rule : m.params) {
-    if (!rule.slot.empty()) continue;
-    if (!rule.when_key.empty()) {  // spec::ParamRule::when_key's gate
-      const auto* gate = value_for(rule.when_key);
-      const auto* text = gate ? std::get_if<std::string>(gate) : nullptr;
-      if (rule.when_value.empty() ? gate != nullptr : !text || *text != rule.when_value) continue;
+  // Profile requirements, including required presence, before allocating
+  // mapping/synthesis/catalog validation: the mapping's own rules through the
+  // one evaluator (spec::CheckRequirement), over the selected source values.
+  {
+    struct SelectedEnv final : spec::Env {
+      const decltype(value_for)& lookup;
+      explicit SelectedEnv(const decltype(value_for)& f) : lookup(f) {}
+      std::expected<spec::Datum, std::string> Value(std::string_view name) const override {
+        const auto* value = lookup(name);
+        return value != nullptr ? DatumOf(*value, name) : spec::Datum();
+      }
+    } env(value_for);
+    for (const auto& rule : m.params) {
+      if (!rule.slot.empty()) continue;
+      const auto state = spec::CheckRequirement(m, rule, env);
+      if (!state || *state == spec::RequirementState::kDiffers)
+        return Bad("source profile requirement disagrees");
+      if (*state == spec::RequirementState::kAbsent)
+        return Bad("required source profile key is absent");
     }
-    const auto* value = value_for(rule.key);
-    if (!value) {
-      if (rule.optional) continue;
-      return Bad("required source profile key is absent");
-    }
-    bool equal = false;
-    if (const auto* i = std::get_if<std::int64_t>(value))
-      equal = (rule.type == spec::ValueType::kInt && *i == rule.value.integer) ||
-              (rule.type == spec::ValueType::kReal && static_cast<double>(*i) == rule.value.real);
-    if (const auto* d = std::get_if<double>(value))
-      equal = rule.type == spec::ValueType::kReal && *d == rule.value.real;
-    if (const auto* flag = std::get_if<bool>(value))
-      equal = rule.type == spec::ValueType::kBool && *flag == rule.value.flag;
-    if (const auto* text = std::get_if<std::string>(value))
-      equal = (rule.type == spec::ValueType::kString && *text == rule.value.text) ||
-              (rule.type == spec::ValueType::kBool && !rule.flag_text.empty() &&
-               *text == rule.flag_text);
-    if (!equal) return Bad("source profile requirement disagrees");
   }
   if (!architecture || layers == 0 || layers > kLayerLimit || width == 0 ||
       width > components::kMaxStreamWidth)

@@ -123,7 +123,7 @@ std::expected<spec::ModelSpec, Error> Family(const Checkpoint& source,
 // ImageComponentRule::recipe): its stored spec is the family profile's
 // ImageTextSpec at a minimal geometry (one prompt row), over its tensors.
 bool TextEncoderRule(const spec::ImageComponentRule& rule) {
-  return rule.recipe == nullptr && !rule.kinds.empty() &&
+  return spec::ImportOf(rule).recipe == nullptr && !rule.kinds.empty() &&
          rule.kinds.front() == spec::kImageTextKind;
 }
 
@@ -139,47 +139,12 @@ std::vector<ComponentGroup> TextEncoderGroups(std::span<const model::ImageTensor
   return out;
 }
 
-// The source keys a stage recipe reads (RecipeValue::source_key), each once.
-void RecipeKeys(const spec::RecipeValue& value, std::set<std::string_view>& keys,
-                std::size_t depth = 0) {
-  if (depth > 64) return;  // recipes are finite static data; a bound all the same
-  if (!value.source_key.empty()) keys.insert(value.source_key);
-  for (const auto* next : {value.left, value.right, value.alternate})
-    if (next != nullptr) RecipeKeys(*next, keys, depth + 1);
-}
-void RecipeKeys(const spec::RecipeSpatialShape& shape, std::set<std::string_view>& keys) {
-  for (const auto* value : {&shape.width, &shape.height, &shape.channels, &shape.images})
-    RecipeKeys(*value, keys);
-}
-void RecipeKeys(std::span<const spec::RecipeStep> steps, std::set<std::string_view>& keys,
-                std::size_t depth = 0) {
-  if (depth > 16) return;
-  for (const auto& step : steps) {
-    if (step.node != nullptr) {
-      for (const auto& param : step.node->params) RecipeKeys(param.value, keys);
-      for (const auto& weight : step.node->weights)
-        for (const auto& dim : weight.source_dims) RecipeKeys(dim, keys);
-      RecipeKeys(step.node->group_index, keys);
-    }
-    if (step.repeat != nullptr) {
-      RecipeKeys(step.repeat->count, keys);
-      RecipeKeys(step.repeat->body, keys, depth + 1);
-    }
-    if (step.branch != nullptr) {
-      RecipeKeys(step.branch->condition, keys);
-      RecipeKeys(step.branch->then_steps, keys, depth + 1);
-      RecipeKeys(step.branch->else_steps, keys, depth + 1);
-    }
-  }
-}
-std::set<std::string_view> RecipeKeys(const spec::StageRecipe& recipe) {
-  std::set<std::string_view> keys;
-  RecipeKeys(recipe.stream_width, keys);
-  RecipeKeys(recipe.primary_input.shape, keys);
-  for (const auto& port : recipe.host_ports) RecipeKeys(port.shape, keys);
-  for (const auto& shape : recipe.expected_outputs) RecipeKeys(shape, keys);
-  RecipeKeys(recipe.steps, keys);
-  return keys;
+// The environment names a stage recipe reads, each once (its config keys
+// among them: stage_recipe.h RecipeValueNames).
+std::expected<std::set<std::string_view>, Error> RecipeKeys(const spec::StageRecipe& recipe) {
+  auto names = RecipeValueNames(recipe);
+  if (!names) return Bad("an image component's stage recipe is invalid");
+  return std::move(*names);
 }
 
 // Every key of a safetensors component's config.json is classified, as an
@@ -222,12 +187,22 @@ std::expected<void, Error> ClassifyComponentConfig(
 
 // A pipeline component's read keys: its role's parameters and requirements,
 // and its recipe's source keys.
-std::set<std::string_view> ReadKeys(const spec::ImageMapping& mapping,
-                                    const spec::ImageComponentRule& rule) {
-  std::set<std::string_view> keys =
-      rule.recipe != nullptr ? RecipeKeys(*rule.recipe) : std::set<std::string_view>{};
-  for (const auto& param : mapping.params)
-    if (param.role == rule.role && !param.key.empty()) keys.insert(param.key);
+std::expected<std::set<std::string_view>, Error> ReadKeys(const spec::ImageMapping& mapping,
+                                                          const spec::ImageComponentRule& rule) {
+  std::set<std::string_view> keys;
+  if (const auto* recipe = spec::ImportOf(rule).recipe) {
+    auto read = RecipeKeys(*recipe);
+    if (!read) return std::unexpected(read.error());
+    keys = std::move(*read);
+  }
+  for (const auto& param : mapping.params) {
+    if (param.role != rule.role) continue;
+    (void)spec::VisitExpr(param.value,
+                          [&](const spec::Expr& e) -> std::expected<void, std::string> {
+                            if (e.kind == spec::ExprKind::kValue) keys.insert(e.name);
+                            return {};
+                          });
+  }
   for (const auto& requirement : mapping.requirements)
     if (requirement.role == rule.role && !requirement.key.empty()) keys.insert(requirement.key);
   return keys;
@@ -317,11 +292,7 @@ std::expected<ComponentPlan, Error> PlanComponent(
   for (std::size_t i = 0; i < comp.tensors.size(); ++i) {
     const std::string_view name = comp.tensors[i].name;
     const bool consumed = read.contains(name);
-    const bool omitted =
-        std::ranges::any_of(
-            ignored, [&](std::string_view rule) { return spec::IgnoredImageTensor(rule, name); }) ||
-        std::ranges::any_of(ignored_prefixes,
-                            [&](std::string_view prefix) { return name.starts_with(prefix); });
+    const bool omitted = IgnoredTensor(ignored, ignored_prefixes, name);
     if (consumed && omitted)
       return std::unexpected(
           Error{.rule = Rule::kContainer,
@@ -426,14 +397,16 @@ std::expected<ComponentPlan, Error> PlanSpatialComponent(const Checkpoint& compo
                Rule::kContainer);
   if (metadata_bytes == 0)
     return Bad("configured spatial component has no metadata budget", Rule::kBounds);
-  if (auto classified = ClassifyComponentConfig(component, RecipeKeys(*mapping.stage_recipe),
-                                                mapping.auxiliary, mapping.null_semantics);
+  auto read = RecipeKeys(*mapping.stage_recipe);
+  if (!read) return std::unexpected(read.error());
+  if (auto classified =
+          ClassifyComponentConfig(component, *read, mapping.auxiliary, mapping.null_semantics);
       !classified)
     return std::unexpected(classified.error());
 
   const spec::ModelSpec family{};
-  auto expanded =
-      ExpandStageRecipe(*mapping.stage_recipe, family, metadata_bytes, component.metadata);
+  auto expanded = ExpandStageRecipe(*mapping.stage_recipe, family, metadata_bytes,
+                                    component.metadata, component.tensors, component.container);
   if (!expanded) return Bad("cannot expand configured spatial component recipe");
   std::vector<model::ImageTensor> tensors;
   std::vector<ComponentGroup> groups;
@@ -471,13 +444,10 @@ std::expected<NormalizationCost, Error> ImagePipelineBound(const Checkpoint& sou
   for (const auto& comp : source.components) {
     const auto rule =
         std::ranges::find(mapping.components, comp.role, &spec::ImageComponentRule::role);
+    const auto parts =
+        rule != mapping.components.end() ? spec::ImportOf(*rule) : spec::ComponentImport{};
     for (const auto& t : comp.tensors) {
-      if (rule != mapping.components.end() &&
-          std::ranges::any_of(rule->ignored_tensors, [&](std::string_view pat) {
-            return spec::IgnoredImageTensor(pat, t.name);
-          })) {
-        continue;
-      }
+      if (IgnoredTensor(parts.ignored_tensors, parts.ignored_tensor_prefixes, t.name)) continue;
       if (__builtin_add_overflow(total_payload, t.extent.bytes, &total_payload) ||
           __builtin_add_overflow(total_tensors, std::uint64_t{1}, &total_tensors)) {
         return Bad("image pipeline payload exceeds 64-bit bounds", Rule::kBounds);
@@ -512,17 +482,22 @@ std::expected<NormalizationCost, Error> ImagePipelineBound(const Checkpoint& sou
           }
           continue;
         }
-        if (rule.recipe == nullptr) {
+        const auto* recipe = spec::ImportOf(rule).recipe;
+        if (recipe == nullptr) {
           return Bad("an image component has no mapping-owned stage recipe");
         }
         const auto* comp = FindComponent(source, rule.role);
         if (comp == nullptr) continue;
-        auto preflight =
-            PreflightStageRecipe(*rule.recipe, *family, limits.metadata_bytes, comp->metadata);
+        auto preflight = PreflightStageRecipe(*recipe, *family, limits.metadata_bytes,
+                                              comp->metadata, comp->tensors, comp->container);
         if (!preflight) {
           return Bad("image stage recipe exceeds the metadata budget", Rule::kBounds);
         }
-        const std::uint64_t recipe_work = preflight->visited_steps + preflight->tensor_bindings;
+        std::uint64_t recipe_work = 0;
+        if (__builtin_add_overflow(preflight->visited_steps, preflight->tensor_bindings,
+                                   &recipe_work) ||
+            __builtin_add_overflow(recipe_work, preflight->expansion_work, &recipe_work))
+          return Bad("image pipeline recipe bound overflows", Rule::kBounds);
         if (__builtin_add_overflow(metadata_bytes, preflight->metadata_bytes, &metadata_bytes) ||
             __builtin_add_overflow(work_units, recipe_work, &work_units)) {
           return Bad("image pipeline recipe bound overflows", Rule::kBounds);
@@ -567,17 +542,19 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
     if (!std::ranges::contains(rule.containers, comp->container))
       return Bad("an image component uses a container its mapping does not allow",
                  Rule::kContainer);
-    if (auto classified =
-            ClassifyComponentConfig(*comp, ReadKeys(mapping, rule), rule.auxiliary, rule.null_keys);
+    const auto parts = spec::ImportOf(rule);
+    auto read = ReadKeys(mapping, rule);
+    if (!read) return std::unexpected(read.error());
+    if (auto classified = ClassifyComponentConfig(*comp, *read, parts.auxiliary, parts.null_keys);
         !classified)
       return std::unexpected(classified.error());
     if (TextEncoderRule(rule)) {
       const auto tensors = model::TextEncoderTensors(profile->text, mapping.names.text);
       auto text_spec = spec::ImageTextSpec(profile->text, 1, 0, tensors);
       if (!text_spec) return Bad("cannot build the text encoder's spec");
-      auto plan =
-          image_pipeline_detail::PlanComponent(*comp, tensors, rule.ignored_tensors,
-                                               text_spec->spec, TextEncoderGroups(tensors), {}, {});
+      auto plan = image_pipeline_detail::PlanComponent(*comp, tensors, parts.ignored_tensors,
+                                                       text_spec->spec, TextEncoderGroups(tensors),
+                                                       parts.ignored_tensor_prefixes, {});
       if (!plan) return std::unexpected(plan.error());
       plan->mapping_architecture = std::string(mapping.architecture);
       plan->mapping_version = mapping.version;
@@ -587,10 +564,11 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
       out.components.push_back(std::move(*plan));
       continue;
     }
-    if (rule.recipe == nullptr) {
+    if (parts.recipe == nullptr) {
       return Bad("an image component has no mapping-owned stage recipe");
     }
-    auto expanded = ExpandStageRecipe(*rule.recipe, *family, limits.metadata_bytes, comp->metadata);
+    auto expanded = ExpandStageRecipe(*parts.recipe, *family, limits.metadata_bytes, comp->metadata,
+                                      comp->tensors, comp->container);
     if (!expanded) return Bad("cannot expand the mapping's component stage recipe");
     std::vector<model::ImageTensor> expected_tensors;
     std::vector<ComponentGroup> groups;
@@ -609,9 +587,9 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
     spec::ModelSpec component_spec = {.pipeline = spec::PipelineKind::kImage,
                                       .stages = {std::move(expanded->stage)}};
     spec::Canonicalize(component_spec);
-    auto plan = image_pipeline_detail::PlanComponent(*comp, expected_tensors, rule.ignored_tensors,
-                                                     component_spec, std::move(groups), {},
-                                                     recipe_inventory);
+    auto plan = image_pipeline_detail::PlanComponent(
+        *comp, expected_tensors, parts.ignored_tensors, component_spec, std::move(groups),
+        parts.ignored_tensor_prefixes, recipe_inventory);
     if (!plan) return std::unexpected(plan.error());
     plan->mapping_architecture = std::string(mapping.architecture);
     plan->mapping_version = mapping.version;

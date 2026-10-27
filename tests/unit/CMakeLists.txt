@@ -105,6 +105,13 @@ add_executable(pressure_trim_test pressure_trim_test.cc)
 target_link_libraries(pressure_trim_test PRIVATE llmp_runtime)
 llmp_gtest(pressure_trim_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# The registered kernel set on the fake one: the CPU-only guardrail that
+# backends are made with no kernel library named.
+add_executable(device_backend_test device_backend_test.cc)
+target_link_libraries(device_backend_test PRIVATE llmp_fake_kernel_set llmp_step_common
+                                                  llmp_fake_device_runtime)
+llmp_gtest(device_backend_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # Physical memory modes (dedicated node pool + shared-machine mode).
 add_executable(memory_modes_test memory_modes_test.cc)
 target_link_libraries(memory_modes_test PRIVATE llmp_engine_core llmp_fake_device_backend llmp_runtime)
@@ -359,7 +366,7 @@ if(LLMP_CUDA)
                                "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   # Qwen single-slot serving screens on the published v1 artifacts.
   add_executable(qwen38_engine_serving_gpu_test qwen38_engine_serving_gpu_test.cc)
-  target_link_libraries(qwen38_engine_serving_gpu_test PRIVATE llmp_runtime_serving
+  target_link_libraries(qwen38_engine_serving_gpu_test PRIVATE llmp_ggml_kernels llmp_runtime_serving
                                                                llmp_test_v1_frozen)
   llmp_gpu_gtest(qwen38_engine_serving_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
@@ -382,7 +389,7 @@ if(LLMP_CUDA)
   llmp_gpu_gtest(dsv4_engine_serving_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   add_executable(image_generation_gpu_test image_generation_gpu_test.cc)
-  target_link_libraries(image_generation_gpu_test PRIVATE llmp_runtime_serving llmp_test_v1_frozen)
+  target_link_libraries(image_generation_gpu_test PRIVATE llmp_ggml_kernels llmp_runtime_serving llmp_test_v1_frozen)
   llmp_gpu_gtest(image_generation_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
                                "LLMP_TEST_DATA=${tokenizer_data}")
@@ -784,7 +791,7 @@ if(LLMP_CUDA)
   add_executable(ggml_ops_test ggml_ops_test.cc)
   target_include_directories(ggml_ops_test SYSTEM PRIVATE
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(ggml_ops_test PRIVATE llmp_ggml_kernels llmp_cuda_device_memory
+  target_link_libraries(ggml_ops_test PRIVATE llmp_kernel_set llmp_ggml_kernels llmp_cuda_device_memory
                                               llmp_launch_recorder llmp_plan_record_sample)
   llmp_gpu_gtest(ggml_ops_test)
 
@@ -818,7 +825,7 @@ if(LLMP_CUDA)
   add_executable(qwen38_ops_test qwen38_ops_test.cc)
   target_include_directories(qwen38_ops_test SYSTEM PRIVATE
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(qwen38_ops_test PRIVATE llmp_ggml_kernels llmp_cuda_device_memory)
+  target_link_libraries(qwen38_ops_test PRIVATE llmp_decode_kernels llmp_ggml_kernels llmp_cuda_device_memory)
   llmp_gpu_gtest(qwen38_ops_test)
 
   # A speculative verify's row-invariant products (D-092), the drafter's
@@ -861,7 +868,7 @@ if(LLMP_CUDA)
   # decode and an F64 product, row invariance, refusals and the
   # registry's declarations; on the GB10 and the discrete GPUs (D-082).
   add_executable(grouped_prepared_gpu_test grouped_prepared_gpu_test.cc)
-  target_link_libraries(grouped_prepared_gpu_test PRIVATE llmp_decode_kernels llmp_engine
+  target_link_libraries(grouped_prepared_gpu_test PRIVATE llmp_ggml_kernels llmp_decode_kernels llmp_engine
                                                         llmp_test_artifact_writer)
   llmp_gpu_gtest(grouped_prepared_gpu_test
                 DISCRETE PreparedGroupedGpu.TokenRowsUseOnlySelectedExpertsAndReplayChangedRouting
@@ -920,7 +927,7 @@ if(LLMP_CUDA)
   add_executable(qwen38_fast_test qwen38_fast_test.cc)
   target_include_directories(qwen38_fast_test SYSTEM PRIVATE
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(qwen38_fast_test PRIVATE llmp_ggml_kernels llmp_cuda_device_memory
+  target_link_libraries(qwen38_fast_test PRIVATE llmp_kernel_set llmp_ggml_kernels llmp_cuda_device_memory
                                                llmp_device_runtime llmp_engine_core llmp_platform)
   llmp_gpu_gtest(qwen38_fast_test)
 
@@ -1041,11 +1048,12 @@ if(LLMP_CUDA)
   llmp_gtest(decode_selected_grouped_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
   add_executable(decode_selected_products_test decode_selected_products_test.cc)
-  target_link_libraries(decode_selected_products_test PRIVATE llmp_decode_selected llmp_fake_providers)
+  target_link_libraries(decode_selected_products_test PRIVATE llmp_ggml_kernels llmp_decode_selected llmp_fake_providers)
   llmp_cublas_runpath(decode_selected_products_test)
   llmp_gtest(decode_selected_products_test TEST_PREFIX unit. PROPERTIES LABELS unit)
   add_executable(routed_component_gpu_test routed_component_gpu_test.cc)
-  target_link_libraries(routed_component_gpu_test PRIVATE llmp_decode_selected llmp_engine
+  target_link_libraries(routed_component_gpu_test PRIVATE llmp_ggml_kernels llmp_decode_selected llmp_engine
+                                                         llmp_runner_kernels
                                                          llmp_test_artifact_writer)
   llmp_gpu_gtest(routed_component_gpu_test
                 DISCRETE RoutedComponentGpu.RealSharedStepDiscoversOnlySelectedExpertsAndReplaysChangedRoutes
@@ -1053,7 +1061,7 @@ if(LLMP_CUDA)
                          RoutedComponentGpu.OwnedBackendSealsAdapterIdentityAndRejectsLaterSubstitution)
 
   add_executable(decode_selected_rows_test decode_selected_rows_test.cc)
-  target_link_libraries(decode_selected_rows_test PRIVATE llmp_decode_selected llmp_engine
+  target_link_libraries(decode_selected_rows_test PRIVATE llmp_ggml_kernels llmp_decode_selected llmp_engine
                                                          llmp_test_artifact_writer)
   llmp_gpu_gtest(decode_selected_rows_test
                 DISCRETE DecodeSelectedRows.CompletePartsKeepOriginalLogicalShapeAndBoundedPhysicalSlots
@@ -1064,7 +1072,7 @@ if(LLMP_CUDA)
                          DecodeSelectedRowsGpu.IncompleteOrInconsistentTablePartsRefuseBeforePlanningOrReads)
 
   add_executable(exl3_selected_test exl3_selected_test.cc)
-  target_link_libraries(exl3_selected_test PRIVATE llmp_exl3_selected llmp_model llmp_spec llmp_engine
+  target_link_libraries(exl3_selected_test PRIVATE llmp_ggml_kernels llmp_exl3_selected llmp_model llmp_spec llmp_engine
                                                  llmp_cuda_device_memory)
   # CUDA-linked descriptor controls: discover names from source without loading cuBLAS.
   llmp_gpu_gtest(exl3_selected_test
@@ -1207,7 +1215,7 @@ endif()
 # Typed spatial component fragments use the common planner and CPU reference;
 # no token phase or separate execution backend is introduced.
 add_executable(components_spatial_test components_spatial_test.cc)
-target_link_libraries(components_spatial_test PRIVATE llmp_engine_core llmp_components
+target_link_libraries(components_spatial_test PRIVATE llmp_import llmp_engine_core llmp_components
                      llmp_reference_kernels llmp_fake_device_backend llmp_test_expected)
 llmp_gtest(components_spatial_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
@@ -1217,7 +1225,7 @@ target_link_libraries(affine_scalar_test PRIVATE llmp_engine_core llmp_component
 llmp_gtest(affine_scalar_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 add_executable(image_stage_test image_stage_test.cc)
-target_link_libraries(image_stage_test PRIVATE llmp_runtime llmp_components
+target_link_libraries(image_stage_test PRIVATE llmp_import llmp_runtime llmp_components
                      llmp_reference_kernels llmp_test_expected)
 llmp_gtest(image_stage_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
@@ -1284,7 +1292,7 @@ llmp_gtest(planner_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 # Layout sinking (ir/layout.h) on the image pipeline's actual graphs at
 # small widths: exact against the reference executor, with fewer copies.
 add_executable(ir_layout_test ir_layout_test.cc)
-target_link_libraries(ir_layout_test PRIVATE llmp_components llmp_spec llmp_model
+target_link_libraries(ir_layout_test PRIVATE llmp_import llmp_components llmp_spec llmp_model
                                              llmp_reference_kernels llmp_ir llmp_test_expected)
 llmp_gtest(ir_layout_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
@@ -1317,7 +1325,7 @@ llmp_gtest(ggml_owner_products_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 # The GGML lowering (kernels/ggml/lower.h) of the Gemma 2 and Gemma 3 steps
 # at every setup shape (every profile builds the lowering).
 add_executable(ggml_spatial_test ggml_spatial_test.cc)
-target_link_libraries(ggml_spatial_test PRIVATE llmp_ggml_tensors llmp_engine_core llmp_components
+target_link_libraries(ggml_spatial_test PRIVATE llmp_import llmp_ggml_tensors llmp_engine_core llmp_components
                                                llmp_spec llmp_model)
 llmp_gtest(ggml_spatial_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
@@ -1357,7 +1365,7 @@ if(LLMP_CUDA)
                               COMPILE_OPTIONS "-use_fast_math;-extended-lambda")
   target_include_directories(ggml_lower_dsv4_gpu_test SYSTEM PRIVATE
       "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(ggml_lower_dsv4_gpu_test PRIVATE llmp_ggml_kernels llmp_planner
+  target_link_libraries(ggml_lower_dsv4_gpu_test PRIVATE llmp_kernel_set llmp_ggml_kernels llmp_planner
                                                         llmp_components llmp_cuda_device_memory llmp_engine_core
                                                         llmp_device_runtime llmp_paging_kernels llmp_platform)
   llmp_gpu_gtest(ggml_lower_dsv4_gpu_test DISCRETE ALL)
@@ -1379,29 +1387,29 @@ llmp_gtest(components_state_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
 # The Gemma 2 and Gemma 3 components end to end on the installed artifacts,
 # by the reference executor, against the served model (the server over the
 # shared engine).
-if(LLMP_CUDA)
-  add_executable(expert_slab_test expert_slab_test.cc)
-  target_link_libraries(expert_slab_test PRIVATE llmp_engine llmp_test_artifact_writer)
-  llmp_cublas_runpath(expert_slab_test)
-  llmp_gtest(expert_slab_test TEST_PREFIX unit. PROPERTIES LABELS unit
-               ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
-endif()
+# The expert slabs (engine core), in every profile.
+add_executable(expert_slab_test expert_slab_test.cc)
+target_link_libraries(expert_slab_test PRIVATE llmp_engine_core llmp_fake_device_backend
+                                               llmp_test_artifact_writer)
+llmp_gtest(expert_slab_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 if(LLMP_CUDA)
   add_executable(masked_attention_gpu_test masked_attention_gpu_test.cc)
-  target_link_libraries(masked_attention_gpu_test PRIVATE llmp_engine llmp_components llmp_spec)
+  target_link_libraries(masked_attention_gpu_test PRIVATE llmp_ggml_kernels llmp_engine llmp_runner_kernels
+                                                          llmp_components llmp_spec)
   llmp_gpu_gtest(masked_attention_gpu_test MODELS)
   add_executable(image_spatial_gpu_test image_spatial_gpu_test.cc)
-  target_link_libraries(image_spatial_gpu_test PRIVATE llmp_engine llmp_components llmp_spec
-                                                    llmp_test_v1_frozen)
+  target_link_libraries(image_spatial_gpu_test PRIVATE llmp_ggml_kernels llmp_import llmp_engine llmp_runner_kernels
+                                                    llmp_components llmp_spec llmp_test_v1_frozen)
   llmp_gpu_gtest(image_spatial_gpu_test MODELS)
 add_executable(image_timestep_gpu_test image_timestep_gpu_test.cc)
-target_link_libraries(image_timestep_gpu_test PRIVATE llmp_engine llmp_components llmp_spec
-                                                    llmp_test_v1_frozen)
+target_link_libraries(image_timestep_gpu_test PRIVATE llmp_ggml_kernels llmp_import llmp_engine llmp_runner_kernels
+                                                    llmp_components llmp_spec llmp_test_v1_frozen)
 llmp_gpu_gtest(image_timestep_gpu_test MODELS)
 
 add_executable(image_whole_vae_gpu_test image_whole_vae_gpu_test.cc)
-target_link_libraries(image_whole_vae_gpu_test PRIVATE llmp_engine llmp_components llmp_spec
-                                                    llmp_test_v1_frozen)
+target_link_libraries(image_whole_vae_gpu_test PRIVATE llmp_ggml_kernels llmp_import llmp_engine llmp_runner_kernels
+                                                    llmp_components llmp_spec llmp_test_v1_frozen)
 llmp_gpu_gtest(image_whole_vae_gpu_test MODELS)
 
 # BoundGraph::Run's run-time fusions on synthetic flow/decoder graphs
@@ -1409,7 +1417,7 @@ llmp_gpu_gtest(image_whole_vae_gpu_test MODELS)
 add_executable(image_fusion_gpu_test image_fusion_gpu_test.cc)
 target_include_directories(image_fusion_gpu_test SYSTEM PRIVATE
     "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-target_link_libraries(image_fusion_gpu_test PRIVATE llmp_engine llmp_components llmp_spec
+target_link_libraries(image_fusion_gpu_test PRIVATE llmp_import llmp_engine llmp_components llmp_spec
                                                     llmp_reference_kernels llmp_ggml_kernels
                                                     llmp_cuda_device_memory)
 llmp_gpu_gtest(image_fusion_gpu_test)
@@ -1447,8 +1455,8 @@ if(LLMP_CUDA)
   # from one runner to the next.
   # Real Qwen2 FP16 fixture on the shared runner against the frozen bridge.
   add_executable(component_runner_qwen2_exl3_gpu_test component_runner_qwen2_exl3_gpu_test.cc)
-  target_link_libraries(component_runner_qwen2_exl3_gpu_test PRIVATE llmp_corpus_score llmp_engine llmp_exl3_selected
-                                                                     llmp_runtime
+  target_link_libraries(component_runner_qwen2_exl3_gpu_test PRIVATE llmp_ggml_kernels llmp_corpus_score llmp_engine llmp_exl3_selected
+                                                                     llmp_runner_kernels llmp_runtime
                                                                      llmp_components llmp_spec
                                                                      llmp_artifact llmp_test_v1_frozen)
   llmp_gpu_gtest(component_runner_qwen2_exl3_gpu_test MODELS
@@ -1463,7 +1471,7 @@ if(LLMP_CUDA)
 
   add_executable(component_runner_qwen2_gpu_test component_runner_qwen2_gpu_test.cc)
   target_link_libraries(component_runner_qwen2_gpu_test PRIVATE llmp_corpus_score llmp_engine llmp_ggml_kernels
-                                                                llmp_components llmp_spec
+                                                                llmp_runner_kernels llmp_components llmp_spec
                                                                 llmp_artifact llmp_test_v1_frozen)
   llmp_gpu_gtest(component_runner_qwen2_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
@@ -1480,7 +1488,7 @@ if(LLMP_CUDA)
   # passes, under each serving recipe the mapping's policy gives, and a
   # speculative verify's waves.
   add_executable(component_runner_gemma4_gpu_test component_runner_gemma4_gpu_test.cc)
-  target_link_libraries(component_runner_gemma4_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
+  target_link_libraries(component_runner_gemma4_gpu_test PRIVATE llmp_engine llmp_runner_kernels
                                                                  llmp_runtime llmp_components
                                                                  llmp_spec llmp_artifact
                                                                  llmp_test_v1_frozen)
@@ -1488,7 +1496,7 @@ if(LLMP_CUDA)
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   # Fixed natural-corpus scoring through the owned shared target source.
   add_executable(qwen38_joined_score_gpu_test qwen38_joined_score_gpu_test.cc)
-  target_link_libraries(qwen38_joined_score_gpu_test PRIVATE llmp_corpus_score
+  target_link_libraries(qwen38_joined_score_gpu_test PRIVATE llmp_ggml_kernels llmp_corpus_score
     llmp_engine_core llmp_runtime_serving llmp_components llmp_spec llmp_artifact
     llmp_test_v1_frozen)
   # Captured-corpus diagnostic: invoke only with authenticated IDs and a paid
@@ -1500,7 +1508,7 @@ if(LLMP_CUDA)
 
   # Owned joined target/MTP state and changed-input capture qualification.
   add_executable(qwen38_joined_mtp_gpu_test qwen38_joined_mtp_gpu_test.cc)
-  target_link_libraries(qwen38_joined_mtp_gpu_test PRIVATE llmp_corpus_score
+  target_link_libraries(qwen38_joined_mtp_gpu_test PRIVATE llmp_ggml_kernels llmp_corpus_score
     llmp_engine_core llmp_runtime_serving llmp_components llmp_spec llmp_artifact
     llmp_test_v1_frozen)
   llmp_gpu_gtest(qwen38_joined_mtp_gpu_test MODELS
@@ -1509,7 +1517,7 @@ if(LLMP_CUDA)
   # The same on the published v1 Qwen3.8 imports (the native ModelOpt one, a
   # GGUF quantization's) in the fast form, one at a time.
   add_executable(component_runner_qwen38_gpu_test component_runner_qwen38_gpu_test.cc)
-  target_link_libraries(component_runner_qwen38_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
+  target_link_libraries(component_runner_qwen38_gpu_test PRIVATE llmp_engine llmp_runner_kernels
                                                                  llmp_components llmp_spec
                                                                  llmp_artifact llmp_runtime
                                                                  llmp_test_v1_frozen)

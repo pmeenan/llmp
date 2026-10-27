@@ -16,7 +16,8 @@
 //     layer type, or a constant (llama.cpp's built-in defaults); several
 //     rules for one parameter are tried in order. A rule without a slot is a
 //     requirement on the source (a rotation scaling kind the components
-//     implement);
+//     implement). Each rule is table data that lowers into the mappings' one
+//     value language (expr.h) and is evaluated by its one evaluator;
 //   - its layer types, one letter a layer repeating from layer 0 (Gemma 2's
 //     local and global layers, "lg"), and optionally the source key that
 //     lists them as a flag a layer (Gemma 4's sliding-window pattern),
@@ -68,6 +69,7 @@
 
 #include "format/encoding.h"
 #include "format/tensor_format.h"
+#include "spec/expr.h"
 #include "spec/spec.h"
 
 namespace llmp::spec {
@@ -802,6 +804,26 @@ struct SourceValue {
   ParamValue value{};
   bool operator==(const SourceValue&) const = default;
 };
+
+// An environment of a source's values (expr.h), by key, the first match.
+class SourceValuesEnv final : public Env {
+ public:
+  explicit SourceValuesEnv(std::span<const SourceValue> values) : values_(values) {}
+  std::expected<Datum, std::string> Value(std::string_view name) const override;
+
+ private:
+  std::span<const SourceValue> values_;
+};
+
+// A requirement (a ParamRule without a slot) over a source's values, as
+// the importer checks it before synthesis and Synthesize again: it does not
+// apply (its gate does not hold, or it is optional and the key absent), it
+// holds, the key is absent, or its value is not the one the mapping's
+// components implement.
+enum class RequirementState : std::uint8_t { kNotApplied, kHolds, kAbsent, kDiffers };
+std::expected<RequirementState, std::string> CheckRequirement(const Mapping& mapping,
+                                                              const ParamRule& rule,
+                                                              const Env& env);
 
 // Whether `key` can name a source value (and a mapping's tensor name):
 // 1 to kMaxText bytes of printable ASCII without space, quotes, backslash

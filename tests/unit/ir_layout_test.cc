@@ -24,13 +24,13 @@
 #include "expected_error.h"
 #include "format/tensor_format.h"
 #include "image_family.h"
+#include "image_recipes.h"
 #include "ir/builder.h"
 #include "ir/graph.h"
 #include "ir/layout.h"
 #include "ir/op.h"
 #include "kernels/reference/exec.h"
 #include "model/image_pipeline.h"
-#include "spec/image_spatial.h"
 
 namespace {
 
@@ -226,7 +226,9 @@ TEST(IrLayoutTest, FlowBlockSinksExactlyWithFewerCopies) {
   p.mlp = 512;
   p.context = p.width;
   const auto source = mo::DenoiserTensors(p, ::llmp::test_support::QwenImageNames().denoiser);
-  auto mapped = sp::ImageFlowSpec(p, kText, kGrid * kGrid, source);
+  auto full = ::llmp::test_support::QwenImageProfile();
+  full.denoiser = p;
+  auto mapped = ::llmp::test_support::QwenImageFlowGraph(full, kText, kGrid * kGrid);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   const auto tensors = Bound(source, fm::Encoding::kBF16);
   const std::array<std::span<const co::BoundTensor>, 1> tables{tensors};
@@ -296,7 +298,9 @@ TEST(IrLayoutTest, DecoderSinksExactly) {
   profile.res_blocks = 1;
   constexpr std::uint32_t kLatent = 2;
   const auto source = mo::VaeDecoderTensors(profile, ::llmp::test_support::QwenImageNames().vae);
-  auto mapped = sp::ImageDecodeSpec(profile, kLatent, source);
+  auto full = ::llmp::test_support::QwenImageProfile();
+  full.vae = profile;
+  auto mapped = ::llmp::test_support::QwenImageVaeGraph(full, kLatent, kLatent);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   const auto tensors = Bound(source, fm::Encoding::kF32);
   const std::array<std::span<const co::BoundTensor>, 1> tables{tensors};

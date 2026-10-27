@@ -47,6 +47,7 @@
 #include "families/qwen.h"
 #include "ggml.h"
 #include "ir/builder.h"
+#include "kernels/compose/kernel_set.h"
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/executor.h"
@@ -2541,6 +2542,7 @@ struct Environment {
         CublasHandle::Create(0, *execution, stream, {.base = cublas_base, .size = cublas_bytes});
     ASSERT_TRUE(handle) << (handle ? "" : handle.error().detail);
     cublas = std::move(*handle);
+    static_cast<void>(llmp::kernels::RegisterBuildKernels());
     auto made_backend =
         kg::GgmlBackend::Create(0, *execution, stream, declared ? nullptr : cublas.get(),
                                 {.lower = {.index_scratch_limit = 1U << 20}, .lanes = lanes});
@@ -3124,6 +3126,7 @@ TEST_F(SelectedHcStepProgramTest, LaneScratchUsesTheReservedTailWithoutDuplicati
   EXPECT_EQ(context.scratch_size(0).value(), kPool - e.backend->lane_pool_reserve());
   for (std::uint32_t lane = 1; lane <= lanes.count; ++lane)
     EXPECT_EQ(context.scratch_size(lane).value(), lanes.scratch_bytes_per_lane);
+  static_cast<void>(llmp::kernels::RegisterBuildKernels());
   auto independent =
       kg::GgmlBackend::Create(0, *e.execution, e.stream, e.cublas.get(), {.lanes = lanes});
   ASSERT_TRUE(independent);
@@ -3139,6 +3142,7 @@ TEST_F(SelectedHcStepProgramTest, LaneScratchUsesTheReservedTailWithoutDuplicati
 TEST_F(SelectedHcStepProgramTest, LaneConfigurationRefusesPartialFundingAndBindingMutation) {
   auto& e = *environment;
   ASSERT_NO_FATAL_FAILURE(e.Open());
+  static_cast<void>(llmp::kernels::RegisterBuildKernels());
   auto create = [&](kn::LaneConfiguration lanes) {
     return kg::GgmlBackend::Create(0, *e.execution, e.stream, e.cublas.get(), {.lanes = lanes});
   };

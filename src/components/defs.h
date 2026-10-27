@@ -40,7 +40,6 @@ const ComponentDef& ResidualScaled();
 const ComponentDef& ConditionRows();
 const ComponentDef& ConcatSpatial();
 const ComponentDef& Conv2d();
-const ComponentDef& ConvCausalFirstFrame();
 const ComponentDef& ProjectionSpatial();
 const ComponentDef& UpsampleNearest();
 const ComponentDef& ResidualSpatial();

@@ -27,15 +27,17 @@
 #include "components/step.h"
 #include "families/dsv4.h"
 #include "families/gemma.h"
+#include "spec/expr.h"
 #include "spec/mapping.h"
+#include "spec/mappings/dense.h"
 #include "spec/mappings/dsv4.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
 #include "spec/mappings/ming_transformer.h"
-#include "spec/mappings/ming_vae.h"
-#include "spec/mappings/qwen2.h"
 #include "spec/mappings/qwen38.h"
+#include "spec/mappings/qwen_image_vae.h"
+#include "spec/mappings/rules.h"
 #include "spec/stage_recipe.h"
 #include "spec_fixtures.h"
 
@@ -483,7 +485,6 @@ TEST(MappingTest, Gemma4AndQwen38UseOneCanonicalMappingWithMoveStableDialects) {
   check_canonical(gemma4, gemma4.containers);
   check_canonical(qwen, qwen.containers);
   check_canonical(mtp, mtp.containers);
-  EXPECT_EQ(&mappings::Gemma4SafetensorsMapping(), &gemma4);
   EXPECT_EQ(&mappings::Qwen38GgufMapping(), &qwen);
   EXPECT_EQ(&mappings::Qwen38NativeMapping(), &qwen);
   EXPECT_EQ(&mappings::Qwen38MtpNativeMapping(), &mtp);
@@ -594,6 +595,145 @@ TEST(MappingTest, ExplicitFlagsSupplyTheScheduleWhenIntervalIsAbsent) {
   EXPECT_TRUE(Synthesize(mapping, source, values));
   values.back().value = std::int64_t{4};
   EXPECT_FALSE(Synthesize(mapping, source, values));
+}
+
+// A container's form of a canonical table is an overlay by rule identity
+// (spec/mappings/rules.h): edits by slot, role and part (slot, parameter
+// and key), in order, then the container's own rules.
+constexpr std::array kOverlayBase{
+    TensorRule{.pattern = "a.weight", .slot = "s", .role = "a"},
+    TensorRule{.pattern = "b.codes", .slot = "s", .role = "b", .part = format::PartRole::kCodes},
+    TensorRule{
+        .pattern = "b.scales", .slot = "s", .role = "b", .part = format::PartRole::kBlockScales},
+};
+constexpr std::array kOverlayEdits{
+    mappings::TensorEdit{
+        .slot = "s", .role = "b", .part = format::PartRole::kBlockScales, .drop = true},
+    mappings::TensorEdit{.slot = "s",
+                         .role = "b",
+                         .part = format::PartRole::kCodes,
+                         .pattern = "b.weight",
+                         .optional = true,
+                         .any_part = true},
+};
+constexpr std::array kOverlayExtra{TensorRule{.pattern = "c.weight", .slot = "s", .role = "c"}};
+constexpr auto kOverlaid = mappings::Overlay<kOverlayBase, kOverlayEdits, kOverlayExtra>();
+constexpr std::array kParamBase{
+    mappings::FromKey("x", "eps", "e", ValueType::kReal),
+    mappings::FromKey("y", "eps", "e", ValueType::kReal),
+    mappings::FromKey("y", "rows", "r", ValueType::kInt),
+    mappings::Int("y", "rows", 4),
+    mappings::Flag("y", "gone", true),
+};
+constexpr std::array kParamEdits{
+    mappings::ParamEdit{.param = "eps", .transform = Transform::kFloat32},
+    mappings::ParamEdit{.slot = "y",
+                        .param = "rows",
+                        .key = "r",
+                        .optional = true,
+                        .then = mappings::Int("y", "rows", 8)},
+    mappings::ParamEdit{.slot = "y", .param = "gone", .drop = true},
+};
+constexpr auto kParamOverlaid =
+    mappings::Overlay<kParamBase, kParamEdits, mappings::kNoParamRules>();
+// A drafter's values inverted from forward rules: plain keys of its slots
+// and the stage's, each once, a key required equal to one after it.
+constexpr std::array kInvertSlots{
+    SlotRule{.slot = "attention", .site = Site::kLayer, .kind = "attention.dense"}};
+constexpr std::array kInvertParams{
+    mappings::FromKey(kStageSlot, "context", "context_length", ValueType::kInt),
+    mappings::FromKey("attention", "heads", "head_count", ValueType::kInt),
+    mappings::FromKey("attention", "scale", "key_length", ValueType::kReal, Transform::kRsqrt),
+    mappings::FromKey("attention", "head_dim", "key_length", ValueType::kInt),
+    mappings::FromKey("attention", "kv_heads", "head_count", ValueType::kInt),
+    mappings::PerLayer("attention", "ratio", "ratios", ValueType::kInt),
+    mappings::FromKey("attention", "mode", "llmp.fact", ValueType::kString),
+    mappings::FromKey("other", "width", "other_width", ValueType::kInt),
+};
+constexpr std::array kInvertRequirements{
+    ScalarRequirement{.key = "value_length", .equals_key = "key_length"}};
+constexpr auto kInverted =
+    mappings::InvertedValues<kInvertParams, kInvertSlots, kInvertRequirements>();
+
+TEST(MappingTest, ContainerTablesAreOverlaysByRuleIdentity) {
+  ASSERT_EQ(kOverlaid.size(), 3U);
+  EXPECT_EQ(kOverlaid[0].pattern, "a.weight");
+  EXPECT_EQ(kOverlaid[1].pattern, "b.weight");
+  EXPECT_EQ(kOverlaid[1].part, format::PartRole::kCodes);
+  EXPECT_TRUE(kOverlaid[1].optional);
+  EXPECT_TRUE(kOverlaid[1].any_part);
+  EXPECT_EQ(kOverlaid[2].pattern, "c.weight");
+  ASSERT_EQ(kParamOverlaid.size(), 5U);
+  EXPECT_EQ(kParamOverlaid[0].transform, Transform::kFloat32);  // every slot's eps
+  EXPECT_EQ(kParamOverlaid[1].transform, Transform::kFloat32);
+  EXPECT_TRUE(kParamOverlaid[2].optional);  // the keyed rows rule, then its insert
+  EXPECT_EQ(kParamOverlaid[3].value.integer, 8);
+  EXPECT_EQ(kParamOverlaid[4].value.integer, 4);  // the unkeyed rule is untouched
+  EXPECT_TRUE(
+      std::ranges::none_of(kParamOverlaid, [](const ParamRule& r) { return r.param == "gone"; }));
+
+  ASSERT_EQ(kInverted.size(), 5U);
+  EXPECT_EQ(kInverted[0].key, "context_length");
+  EXPECT_EQ(kInverted[0].origin, ValueOrigin::kContext);
+  EXPECT_EQ(kInverted[1].key, "head_count");
+  EXPECT_EQ(kInverted[1].origin, ValueOrigin::kComponent);
+  EXPECT_EQ(kInverted[1].kind, "attention.dense");
+  EXPECT_EQ(kInverted[1].param, "heads");
+  // A transformed rule is not its key's value; the plain rule after it is.
+  EXPECT_EQ(kInverted[2].key, "key_length");
+  EXPECT_EQ(kInverted[2].param, "head_dim");
+  EXPECT_EQ(kInverted[3].key, "value_length");
+  EXPECT_EQ(kInverted[3].param, "head_dim");
+  EXPECT_EQ(kInverted[4].key, "ratios");
+  EXPECT_TRUE(kInverted[4].list);
+}
+
+// Qwen3.8's MTP drafter extracts what its kept metadata may lack from its
+// target's spec: the block's keys from the components that read them (its
+// forward rules inverted), its own facts from its tensors.
+TEST(MappingTest, Qwen38DrafterValuesInvertTheBlockRules) {
+  const Mapping& mtp = mappings::Qwen38MtpMapping();
+  ASSERT_FALSE(mtp.dialects.empty());
+  const auto values = mtp.dialects.front().draft_values;
+  std::vector<std::string_view> keys;
+  for (const ValueRule& rule : values) {
+    keys.push_back(rule.key);
+    if (rule.origin != ValueOrigin::kComponent) continue;
+    // Each from a component kind the drafter itself has.
+    EXPECT_TRUE(std::ranges::any_of(mtp.slots, [&](const SlotRule& slot) {
+      return slot.kind == rule.kind;
+    })) << rule.key;
+  }
+  std::ranges::sort(keys);
+  std::vector<std::string_view> expected{"attention.compress_ratios",
+                                         "attention.head_count",
+                                         "attention.head_count_kv",
+                                         "attention.indexer.head_count",
+                                         "attention.indexer.key_length",
+                                         "attention.indexer.top_k",
+                                         "attention.key_length",
+                                         "attention.layer_norm_rms_epsilon",
+                                         "attention.value_length",
+                                         "block_count",
+                                         "context_length",
+                                         "draft_head_rows",
+                                         "draft_vocab",
+                                         "draft_vocab",
+                                         "embedding_length",
+                                         "expert_count",
+                                         "expert_feed_forward_length",
+                                         "expert_shared_feed_forward_length",
+                                         "expert_used_count",
+                                         "hyper_connection.count",
+                                         "hyper_connection.low_rank",
+                                         "llmp.qwen4exp.expert_scales",
+                                         "llmp.qwen4exp.experts_stacked",
+                                         "llmp.qwen4exp.indexer",
+                                         "rope.dimension_count",
+                                         "rope.dimension_sections",
+                                         "rope.freq_base"};
+  std::ranges::sort(expected);
+  EXPECT_EQ(keys, expected);
 }
 
 TEST(MappingTest, InvalidMappingsAreRefused) {
@@ -1249,7 +1389,7 @@ TEST(MappingTest, GenericDenseDecoderSynthesizesLlamaAndMistralWithRopeFreqsAndY
       {.key = "llama.rope.dimension_count", .value = std::int64_t{64}},
       {.key = "llama.rope.freq_base", .value = 500000.0},
   };
-  const auto llama_spec = Synthesize(mappings::LlamaGgufMapping(), llama_source, llama_values);
+  const auto llama_spec = Synthesize(mappings::LlamaMapping(), llama_source, llama_values);
   ASSERT_TRUE(llama_spec.has_value()) << llama_spec.error();
   const ComponentRef& llama_attn = llama_spec->stages[0].layers[0].components[0];
   EXPECT_EQ(P(llama_attn, "rotation").value, ParamValue(std::string("normal")));
@@ -1280,8 +1420,7 @@ TEST(MappingTest, GenericDenseDecoderSynthesizesLlamaAndMistralWithRopeFreqsAndY
       {.key = "mistral.rope.scaling.yarn_beta_fast", .value = 32.0},
       {.key = "mistral.rope.scaling.yarn_beta_slow", .value = 1.0},
   };
-  const auto mistral_spec =
-      Synthesize(mappings::MistralSafetensorsMapping(), mistral_source, mistral_values);
+  const auto mistral_spec = Synthesize(mappings::MistralMapping(), mistral_source, mistral_values);
   ASSERT_TRUE(mistral_spec.has_value()) << mistral_spec.error();
   const ComponentRef& mistral_attn = mistral_spec->stages[0].layers[0].components[0];
   EXPECT_EQ(P(mistral_attn, "rotation").value, ParamValue(std::string("neox")));
@@ -1333,9 +1472,7 @@ TEST(MappingTest, DenseDecoderRopeScalingTypesMapOrRefuse) {
           "blk.0.attn_output.weight", "blk.0.ffn_norm.weight", "blk.0.ffn_gate.weight",
           "blk.0.ffn_up.weight", "blk.0.ffn_down.weight"})
       source.tensors.push_back({.name = name});
-    const Mapping& mapping = std::string_view(container) == "gguf"
-                                 ? mappings::LlamaGgufMapping()
-                                 : mappings::LlamaSafetensorsMapping();
+    const Mapping& mapping = mappings::LlamaMapping();
     for (const Case& c : cases) {
       SCOPED_TRACE(std::format("{} type '{}' factor {} context {}", container, c.type,
                                c.factor.value_or(0.0), c.context));
@@ -1533,9 +1670,139 @@ TEST(MappingTest, ContainerLookupSelectsRegisteredSpatialRecipeAliasesAndRefuses
   EXPECT_FALSE(ValidateMapping(malformed));
 }
 
+// The mappings' one value language (expr.h): absent values fall through
+// kFirst and are refused by a strict read, arithmetic is checked, lists and
+// tensors read by index, an environment's names are one namespace.
+TEST(ValueLanguageTest, AbsenceArithmeticListsAndTensorsHaveOneMeaning) {
+  using ex::At;
+  using ex::AtBack;
+  using ex::E;
+  using ex::First;
+  using ex::I;
+  using ex::Present;
+  using ex::V;
+  const std::vector<SourceValue> values{{"a", std::int64_t{6}},
+                                        {"list", std::vector<std::int64_t>{1, 2, 3}},
+                                        {"real", -0.0},
+                                        {"flag", true}};
+  const SourceValuesEnv env(values);
+  static constexpr auto a = V("a");
+  static constexpr auto missing = V("missing");
+  static constexpr auto two = I(2);
+  static constexpr auto first = First(missing, a);
+  EXPECT_EQ(**Evaluate(first, env), ParamValue(std::int64_t{6}));
+  EXPECT_FALSE(Evaluate(missing, env));                      // strict: refused
+  EXPECT_FALSE(*Evaluate(missing, env, {.strict = false}));  // lenient: absent
+  static constexpr auto present = Present(missing);
+  EXPECT_EQ(**Evaluate(present, env), ParamValue(false));
+  static constexpr auto quotient = E(ExprKind::kDivideExact, a, two);
+  EXPECT_EQ(**Evaluate(quotient, env), ParamValue(std::int64_t{3}));
+  static constexpr auto four = I(4);
+  static constexpr auto inexact = E(ExprKind::kDivideExact, a, four);
+  EXPECT_FALSE(Evaluate(inexact, env));
+  static constexpr auto big = I(std::numeric_limits<std::int64_t>::max());
+  static constexpr auto overflow = E(ExprKind::kAdd, big, a);
+  EXPECT_FALSE(Evaluate(overflow, env));
+  static constexpr auto list = V("list");
+  static constexpr auto second = At(list, 1);
+  static constexpr auto last = AtBack(list, 0);
+  static constexpr auto past = At(list, 3);
+  EXPECT_EQ(**Evaluate(second, env), ParamValue(std::int64_t{2}));
+  EXPECT_EQ(**Evaluate(last, env), ParamValue(std::int64_t{3}));
+  EXPECT_FALSE(Evaluate(past, env));
+  // A ParamRule's real (kFinite) has no negative zero; a transform refuses
+  // what is not finite.
+  static constexpr auto real = V("real");
+  static constexpr auto finite = ex::U(ExprKind::kFinite, real);
+  const auto zero = Evaluate(finite, env);
+  ASSERT_TRUE(zero && *zero);
+  EXPECT_FALSE(std::signbit(std::get<double>(**zero)));
+  static constexpr auto reciprocal = ex::U(ExprKind::kReciprocal, real);
+  EXPECT_FALSE(Evaluate(reciprocal, env));
+  // Structure: an operand missing, or a cycle, is refused.
+  Expr cycle{.kind = ExprKind::kAdd, .right = &two};
+  cycle.left = &cycle;
+  EXPECT_FALSE(CheckExpr(cycle));
+  static constexpr Expr incomplete{.kind = ExprKind::kAdd, .left = &two};
+  EXPECT_FALSE(CheckExpr(incomplete));
+  EXPECT_TRUE(CheckExpr(first));
+  EXPECT_TRUE(ReadsEnvironment(first));
+  EXPECT_TRUE(ReadsEnvironment(quotient));
+  static constexpr auto constant = E(ExprKind::kMultiply, two, four);
+  EXPECT_FALSE(ReadsEnvironment(constant));
+}
+
+// A requirement lowered into the value language (CheckRequirement, which
+// the importer's profile check and Synthesize share) keeps the ParamRule
+// meaning it had: typed reads, a gate on another key's text or absence, a
+// flag's string alias, a ratio read where its key is absent, and a
+// transformed value compared with the untransformed literal.
+TEST(ValueLanguageTest, LoweredRequirementsKeepTheirRuleMeaning) {
+  using enum RequirementState;
+  const Mapping m{};
+  const auto state =
+      [&](const ParamRule& rule,
+          std::vector<SourceValue> values) -> std::expected<RequirementState, std::string> {
+    const SourceValuesEnv env(values);
+    return CheckRequirement(m, rule, env);
+  };
+  const auto integer = mappings::RequireInt("a", 6, false);
+  EXPECT_EQ(state(integer, {{"a", std::int64_t{6}}}), kHolds);
+  EXPECT_EQ(state(integer, {{"a", std::int64_t{7}}}), kDiffers);
+  EXPECT_EQ(state(integer, {}), kAbsent);
+  EXPECT_EQ(state(mappings::RequireInt("a", 6, true), {}), kNotApplied);
+  EXPECT_FALSE(state(integer, {{"a", 6.0}}));  // a real is not an integer
+  EXPECT_EQ(state(mappings::RequireReal("r", 2.0, false), {{"r", std::int64_t{2}}}), kHolds);
+  const auto text = mappings::Require("act", "silu", false);
+  EXPECT_EQ(state(text, {{"act", std::string("silu")}}), kHolds);
+  EXPECT_EQ(state(text, {{"act", std::string("gelu")}}), kDiffers);
+  EXPECT_FALSE(state(text, {{"act", std::int64_t{3}}}));
+  // A flag, or its string alias.
+  const ParamRule causal{
+      .key = "causal", .type = ValueType::kBool, .value = {.flag = false}, .flag_text = "vision"};
+  EXPECT_EQ(state(causal, {{"causal", std::string("vision")}}), kHolds);
+  EXPECT_EQ(state(causal, {{"causal", false}}), kHolds);
+  EXPECT_EQ(state(causal, {{"causal", true}}), kDiffers);
+  EXPECT_FALSE(state(causal, {{"causal", std::string("other")}}));
+  // Gated on another key's text, or on its absence.
+  const ParamRule gated{.key = "f",
+                        .type = ValueType::kInt,
+                        .value = {.integer = 2},
+                        .when_key = "t",
+                        .when_value = "yarn"};
+  EXPECT_EQ(state(gated, {{"t", std::string("yarn")}, {"f", std::int64_t{2}}}), kHolds);
+  EXPECT_EQ(state(gated, {{"t", std::string("yarn")}, {"f", std::int64_t{3}}}), kDiffers);
+  EXPECT_EQ(state(gated, {{"t", std::string("none")}, {"f", std::int64_t{3}}}), kNotApplied);
+  EXPECT_EQ(state(gated, {{"t", std::int64_t{5}}}), kNotApplied);
+  EXPECT_EQ(state(gated, {{"f", std::int64_t{3}}}), kNotApplied);
+  auto unless_present = gated;
+  unless_present.when_value = {};
+  EXPECT_EQ(state(unless_present, {{"t", std::string("yarn")}}), kNotApplied);
+  EXPECT_EQ(state(unless_present, {{"f", std::int64_t{2}}}), kHolds);
+  // A ratio where the key is absent; the key itself first.
+  const ParamRule ratio{.key = "hd",
+                        .numerator_key = "w",
+                        .divisor_key = "h",
+                        .type = ValueType::kInt,
+                        .value = {.integer = 4}};
+  EXPECT_EQ(state(ratio, {{"w", std::int64_t{8}}, {"h", std::int64_t{2}}}), kHolds);
+  EXPECT_EQ(state(ratio, {{"hd", std::int64_t{5}}, {"w", std::int64_t{8}}, {"h", std::int64_t{2}}}),
+            kDiffers);
+  EXPECT_FALSE(state(ratio, {{"w", std::int64_t{9}}, {"h", std::int64_t{2}}}));
+  EXPECT_EQ(state(ratio, {{"w", std::int64_t{8}}}), kAbsent);
+  // The source's value transformed, the literal not.
+  const ParamRule reciprocal{.key = "r",
+                             .type = ValueType::kReal,
+                             .transform = Transform::kReciprocal,
+                             .value = {.real = 0.5}};
+  EXPECT_EQ(state(reciprocal, {{"r", 2.0}}), kHolds);
+  EXPECT_EQ(state(reciprocal, {{"r", 0.5}}), kDiffers);
+  EXPECT_FALSE(state(reciprocal, {{"r", 0.0}}));
+}
+
 TEST(MappingTest, MingSpatialRecipesUseExactSourceClassesAndRoles) {
   const auto& transformer = mappings::MingTransformerMapping();
-  const auto& vae = mappings::MingVaeMapping();
+  const auto& vae = mappings::QwenImageVaeMapping();
   ASSERT_TRUE(ValidateMapping(transformer));
   ASSERT_TRUE(ValidateMapping(vae));
   EXPECT_EQ(FindMapping("DiffusionTransformer", "safetensors"), &transformer);
@@ -1543,6 +1810,7 @@ TEST(MappingTest, MingSpatialRecipesUseExactSourceClassesAndRoles) {
   EXPECT_EQ(transformer.architecture, "diffusion_transformer");
   EXPECT_EQ(transformer.stage_recipe->role, StageRole::kDenoiser);
   EXPECT_EQ(FindMapping("AutoencoderKLQwenImage", "safetensors"), &vae);
+  EXPECT_EQ(FindMapping("AutoencoderKLQwenImage21", "safetensors"), &vae);
   EXPECT_EQ(vae.architecture, "qwen_image_vae");
   EXPECT_EQ(vae.stage_recipe->role, StageRole::kVae);
 }

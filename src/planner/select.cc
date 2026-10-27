@@ -791,8 +791,11 @@ std::vector<std::size_t> SelectionView::CandidatesForNode(
   const auto cursor_start = next_after == nullptr ? std::optional<std::size_t>{} : *next_after;
   if (next_after != nullptr) next_after->reset();
   // Direct composites need the same immutable source authority as the
-  // primitive matcher. Refuse native selection early so ordinary expansion
-  // remains available for otherwise valid grouped products.
+  // primitive matcher: a grouped product's weight is a whole stored table,
+  // reshaped into its groups. Refuse native selection early so ordinary
+  // expansion remains available for otherwise valid grouped products. The
+  // storage an implementation reads (its layouts and encodings) is its
+  // capability's to accept, never the selector's.
   const bool grouped = key == ir::Fused(FusedKind::kGroupedMatMul);
   if (grouped) {
     if (Disabled(policy_, "grouped_vecq") || node.nsrc != 2 || !node.src[0].valid()) return {};
@@ -804,8 +807,7 @@ std::vector<std::size_t> SelectionView::CandidatesForNode(
     if (!ref || ref->expert_array ||
         graph.node(graph.producer(reshape.src[0])).key != ir::Primitive(Op::kWeight) ||
         weight.is_view() || weight.format.shape.rank != 2 || weight.format.stacked != 1 ||
-        weight.format.layout != format::Layout::kGgmlBlocks || physical.view_offset != 0 ||
-        physical.ne(0) != weight.ne(0) || physical.ne(2) == 0 ||
+        physical.view_offset != 0 || physical.ne(0) != weight.ne(0) || physical.ne(2) == 0 ||
         weight.ne(1) / physical.ne(2) != physical.ne(1) || weight.ne(1) % physical.ne(2) != 0 ||
         !ir::IsContiguous(physical))
       return {};

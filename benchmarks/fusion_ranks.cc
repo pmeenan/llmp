@@ -43,6 +43,7 @@
 #include "ir/builder.h"
 #include "ir/decompose.h"
 #include "kernels/common/device_backend.h"
+#include "kernels/compose/kernel_set.h"
 #include "planner/select.h"
 #include "providers/cuda/cuda_device_execution.h"
 
@@ -129,7 +130,8 @@ class Screen {
     execution_ = Must(llmp::providers::cuda::OpenDeviceExecution(0));
     stream_ = Must(execution_->CreateStream());
     native_ = Must(execution_->Submission(stream_));
-    backend_ = Must(kn::DeviceBackend::Create(0, *execution_, stream_));
+    static_cast<void>(llmp::kernels::RegisterBuildKernels());
+    backend_ = Must(kn::CreateDeviceBackend(0, *execution_, stream_));
     const auto charge = [this](std::uint64_t bytes) {
       if (bytes > kMetadata - metadata_used_) return false;
       metadata_used_ += bytes;

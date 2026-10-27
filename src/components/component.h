@@ -403,6 +403,22 @@ struct RefIO {
   }
 };
 
+// A stored weight as load-time admission reads it from an artifact
+// (runtime/component_admission.h CheckStoredTables): its role, its stored
+// format, its bytes and their offset in their shard file, and a bounded
+// reader streaming them in order (each call a window of them at its offset
+// from their start: whole entries of an encoding whose size divides 4,096
+// when the offset is a multiple of that size).
+using StoredBytes =
+    std::function<std::expected<void, std::string>(std::uint64_t, std::span<const std::byte>)>;
+struct StoredWeight {
+  std::uint16_t role = 0;
+  const format::TensorFormat* format = nullptr;
+  std::uint64_t bytes = 0;
+  std::uint64_t file_offset = 0;
+  std::function<std::expected<void, std::string>(const StoredBytes&)> read;
+};
+
 // --------------------------------------------------------------- definition
 
 // A mask a component reads (ComponentDef::masks): over the cells of its
@@ -523,6 +539,12 @@ struct ComponentDef {
                                                     const StepOptions& options) = nullptr;
   // The rows of each segment an injection writes: its last min(rows, this).
   std::uint32_t (*inject_rows)(const Instance& instance) = nullptr;
+  // Checks a stored weight whose values the instance's arithmetic indexes by
+  // (a token-hash table's expert ids), once, when a stored artifact is
+  // admitted and before any step reads it: its stored form, bytes and every
+  // value. Null: none (its shapes and formats are checked as every role's).
+  std::expected<void, std::string> (*check_stored)(const Instance& instance,
+                                                   const StoredWeight& weight) = nullptr;
 };
 
 // The compiled catalog, in kind order, and a lookup.

@@ -62,12 +62,8 @@ TEST_P(NativeExpertSlabTest, NativeMixedBlocksHaveExactAlignedNonoverlappingExpe
   EXPECT_EQ(slab.stride % 256, 0U);
   EXPECT_EQ(slab.stride % 144, 0U);
   EXPECT_EQ(slab.stride % (GetParam() ? 34U : 24U), 0U);
-  // Existing scalar slab rule supplied with the actual source encodings,
-  // without changing the v1 artifact's absent legacy representations.
-  std::array<std::pair<std::uint32_t, std::string_view>, 2> named{};
   for (std::uint32_t i = 0; i < 2; ++i) {
     const auto& a = artifact->expert_arrays()[i];
-    named[i] = {i, a.name.contains("gate_up") ? "Q4_K" : GetParam() ? "Q8_0" : "Q5_1"};
     EXPECT_EQ(slabs->pitch[i], slab.stride);
     for (std::uint32_t e = 0; e < slab.count; ++e) {
       const auto group = a.first_group + e;
@@ -76,16 +72,22 @@ TEST_P(NativeExpertSlabTest, NativeMixedBlocksHaveExactAlignedNonoverlappingExpe
       EXPECT_LE(artifact->groups()[group].stored.value(), slab.stride);
     }
   }
-  const auto old = en::ExpertSlab(*artifact, named, 4, 256, 0);
-  ASSERT_TRUE(old);
+  // The group's stored bytes rounded up once, to the alignment and every
+  // array's block bytes together.
   const std::uint64_t quantum = GetParam() ? 39168U : 2304U;  // lcm(256,144,34 or 24)
-  EXPECT_EQ(slab.stride, (old->stride + quantum - 1) / quantum * quantum);
+  const auto stored = artifact->groups()[slab.first_group].stored.value();
+  EXPECT_EQ(slab.stride, (stored + quantum - 1) / quantum * quantum);
 }
-TEST_P(NativeExpertSlabTest, RefusesZeroAndOverflowingAlignment) {
+TEST_P(NativeExpertSlabTest, RefusesAnAlignmentThatIsNotAPositiveMultipleOf16) {
   auto artifact = Open();
   ASSERT_TRUE(artifact);
   EXPECT_FALSE(en::ExpertSlabsOf(*artifact, 0));
+  EXPECT_FALSE(en::ExpertSlabsOf(*artifact, 8));
+  EXPECT_FALSE(en::ExpertSlabsOf(*artifact, 24));
+  EXPECT_TRUE(en::ExpertSlabsOf(*artifact, 16));
   EXPECT_FALSE(en::ExpertSlabsOf(*artifact, std::numeric_limits<std::uint64_t>::max()));
+  // A multiple of 16 whose rounding overflows.
+  EXPECT_FALSE(en::ExpertSlabsOf(*artifact, std::uint64_t{1} << 63U));
 }
 INSTANTIATE_TEST_SUITE_P(Gemma26Blocks, NativeExpertSlabTest, testing::Bool());
 

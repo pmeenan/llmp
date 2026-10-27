@@ -18,13 +18,11 @@
 #include "kernels/decode/implementations.h"
 #include "kernels/decode/products.h"
 #include "kernels/decode/selected_weight.h"
-#include "kernels/ggml/validate_util.h"
 #include "providers/device_runtime.h"
 
 namespace llmp::kernels::decode {
 namespace {
-namespace kg = ggml;
-using Failure = kg::KernelFailure;
+using Failure = kernels::KernelFailure;
 bool CheckGroupedFormat(const execution::Implementation& implementation,
                         const format::TensorFormat& f) {
   const auto bound = decode::Bind(implementation);
@@ -34,24 +32,24 @@ bool CheckGroupedFormat(const execution::Implementation& implementation,
 std::unexpected<Failure> Reject(std::string detail) {
   return std::unexpected(Failure{.detail = std::move(detail)});
 }
-std::uint64_t Address(const ggml_tensor* t) { return reinterpret_cast<std::uintptr_t>(t->data); }
+// The current address of a reference proven current (Parts).
+void* DataOf(const TensorRef& t) { return t.facts().data; }
 struct Geometry {
   format::TensorFormat format;
   ir::WeightRef weight;
-  std::array<kg::SelectedPart, format::PartList::kMax> parts{};
+  std::array<SelectedPart, format::PartList::kMax> parts{};
   std::array<std::array<std::int64_t, 4>, format::PartList::kMax> ne{};
   std::array<std::array<std::uint64_t, 4>, format::PartList::kMax> nb{};
   std::size_t count = 0;
   bool native = false;
-  ggml_tensor* ids = nullptr;
+  TensorRef ids{};
   std::array<std::uint64_t, 4> ids_nb{};
-  ggml_tensor* x = nullptr;
-  ggml_tensor* y = nullptr;
+  TensorRef x{};
+  TensorRef y{};
   std::uint64_t used = 0, tokens = 0, lanes = 0, ids_bytes = 0, x_bytes = 0, y_bytes = 0;
 };
-std::expected<Geometry, Failure> Shape(const ir::Node& n,
-                                       std::span<const kg::SelectedOperand> inputs,
-                                       std::span<const kg::SelectedOperand> outputs) {
+std::expected<Geometry, Failure> Shape(const ir::Node& n, std::span<const SelectedOperand> inputs,
+                                       std::span<const SelectedOperand> outputs) {
   if (n.key != ir::Primitive(ir::Op::kMatMulId) || n.nsrc != 3 || n.nout != 1 ||
       inputs.size() != 3 || outputs.size() != 1)
     return Reject("grouped selection needs one primitive MatMulId");
@@ -100,8 +98,9 @@ std::expected<Geometry, Failure> Shape(const ir::Node& n,
              .tokens = ids.desc.ne(1),
              .lanes = x.desc.ne(1)};
   if (!g.ids) return Reject("missing grouped IDs descriptor");
+  const auto ids_facts = g.ids.facts();
   for (std::size_t d = 0; d != g.ids_nb.size(); ++d) {
-    if (g.ids->nb[d] != ids.desc.nb[d]) return Reject("grouped IDs lowering changed its pitch");
+    if (ids_facts.nb[d] != ids.desc.nb[d]) return Reject("grouped IDs lowering changed its pitch");
     g.ids_nb[d] = ids.desc.nb[d];
   }
   if (__builtin_mul_overflow(g.tokens - 1, g.ids_nb[1], &g.ids_bytes) ||
@@ -121,10 +120,9 @@ std::expected<Geometry, Failure> Shape(const ir::Node& n,
     std::ranges::copy(w.parts, g.parts.begin());
   for (std::size_t p = 0; p != g.count; ++p) {
     if (!g.parts[p].tensor) return Reject("missing grouped part descriptor");
-    for (std::size_t d = 0; d != 4; ++d) {
-      g.ne[p][d] = g.parts[p].tensor->ne[d];
-      g.nb[p][d] = g.parts[p].tensor->nb[d];
-    }
+    const auto facts = g.parts[p].tensor.facts();
+    g.ne[p] = facts.ne;
+    g.nb[p] = facts.nb;
   }
   return g;
 }
@@ -133,59 +131,59 @@ std::expected<std::array<PitchedExpertPart, format::PartList::kMax>, Failure> Pa
   std::array<PitchedExpertPart, format::PartList::kMax> out{};
   for (std::size_t i = 0; i != g.count; ++i) {
     const auto& p = g.parts[i];
+    if (!p.tensor) {
+      return Reject(g.native ? "grouped native weight geometry differs"
+                             : "grouped part binding changed");
+    }
+    const auto t = p.tensor.facts();
     if (g.native) {
-      if (!detail::NativeType(p.tensor, g.format) || !kg::detail::Current(p.tensor) ||
-          !kg::detail::Extent(p.tensor) ||
-          p.tensor->ne[0] != static_cast<std::int64_t>(g.format.shape.ne[0]) ||
-          p.tensor->ne[1] != static_cast<std::int64_t>(g.format.shape.ne[1]) ||
-          p.tensor->ne[2] != static_cast<std::int64_t>(g.format.shape.ne[2]) ||
-          p.tensor->ne[3] != 1 || p.tensor->nb[0] != ggml_type_size(p.tensor->type) ||
-          p.tensor->nb[1] != ggml_row_size(p.tensor->type, p.tensor->ne[0]))
+      if (!detail::NativeType(t.type, g.format) || !t.current || !t.extent ||
+          t.ne[0] != static_cast<std::int64_t>(g.format.shape.ne[0]) ||
+          t.ne[1] != static_cast<std::int64_t>(g.format.shape.ne[1]) ||
+          t.ne[2] != static_cast<std::int64_t>(g.format.shape.ne[2]) || t.ne[3] != 1 ||
+          t.nb[0] != t.element_bytes || t.nb[1] != t.row_bytes)
         return Reject("grouped native weight geometry differs");
-      for (std::size_t d = 0; d < 4; ++d)
-        if (p.tensor->ne[d] != g.ne[i][d] || p.tensor->nb[d] != g.nb[i][d])
-          return Reject("grouped native descriptor changed after lowering");
-      out[i] = {p.role, Address(p.tensor), ggml_nbytes(p.tensor), p.tensor->nb[2]};
+      if (t.ne != g.ne[i] || t.nb != g.nb[i])
+        return Reject("grouped native descriptor changed after lowering");
+      out[i] = {p.role, AddressOf(t), t.bytes, t.nb[2]};
       continue;
     }
-    if (!p.tensor || !kg::detail::Current(p.tensor) || !kg::detail::Extent(p.tensor) ||
-        p.tensor->type != GGML_TYPE_I8 || p.tensor->ne[0] <= 0 ||
-        p.tensor->ne[1] != static_cast<std::int64_t>(g.format.shape.ne[2]) ||
-        p.tensor->ne[2] != 1 || p.tensor->ne[3] != 1 || p.tensor->nb[0] != 1 ||
-        p.tensor->nb[1] < static_cast<std::uint64_t>(p.tensor->ne[0]))
+    if (!t.current || !t.extent || t.type != StorageType::kI8 || t.ne[0] <= 0 ||
+        t.ne[1] != static_cast<std::int64_t>(g.format.shape.ne[2]) || t.ne[2] != 1 ||
+        t.ne[3] != 1 || t.nb[0] != 1 || t.nb[1] < static_cast<std::uint64_t>(t.ne[0]))
       return Reject("grouped part binding changed");
-    for (std::size_t d = 0; d != 4; ++d)
-      if (p.tensor->ne[d] != g.ne[i][d] || p.tensor->nb[d] != g.nb[i][d])
-        return Reject("grouped source descriptor changed after lowering");
-    out[i] = {p.role, Address(p.tensor), ggml_nbytes(p.tensor), p.tensor->nb[1]};
+    if (t.ne != g.ne[i] || t.nb != g.nb[i])
+      return Reject("grouped source descriptor changed after lowering");
+    out[i] = {p.role, AddressOf(t), t.bytes, t.nb[1]};
   }
-  for (const auto* t : {g.ids, g.x, g.y})
-    if (!t || !kg::detail::Current(t) || !kg::detail::Extent(t) ||
-        (t != g.ids && !ggml_is_contiguous(t)) || !Address(t) || Address(t) % 4 ||
-        ggml_nbytes(t) > UINT64_MAX - Address(t))
+  if (!g.ids || !g.x || !g.y) return Reject("grouped activation binding is not current and packed");
+  const auto ids = g.ids.facts(), x = g.x.facts(), y = g.y.facts();
+  for (const auto* t : {&ids, &x, &y})
+    if (!t->current || !t->extent || (t != &ids && !t->contiguous) || !AddressOf(*t) ||
+        AddressOf(*t) % 4 || t->bytes > UINT64_MAX - AddressOf(*t))
       return Reject("grouped activation binding is not current and packed");
   for (std::size_t d = 0; d != g.ids_nb.size(); ++d)
-    if (g.ids->nb[d] != g.ids_nb[d]) return Reject("grouped IDs pitch changed after lowering");
-  if (g.ids_bytes > ggml_nbytes(g.ids) || g.ids_bytes > UINT64_MAX - Address(g.ids))
+    if (ids.nb[d] != g.ids_nb[d]) return Reject("grouped IDs pitch changed after lowering");
+  if (g.ids_bytes > ids.bytes || g.ids_bytes > UINT64_MAX - AddressOf(ids))
     return Reject("grouped IDs source extent changed");
-  if (g.ids->type != GGML_TYPE_I32 || g.ids->ne[0] != static_cast<std::int64_t>(g.used) ||
-      g.ids->ne[1] != static_cast<std::int64_t>(g.tokens) || g.ids->ne[2] != 1 ||
-      g.ids->ne[3] != 1 || g.x->type != GGML_TYPE_F32 || g.y->type != GGML_TYPE_F32 ||
-      g.x->ne[0] != static_cast<std::int64_t>(g.format.shape.ne[0]) ||
-      g.x->ne[1] != static_cast<std::int64_t>(g.lanes) ||
-      g.x->ne[2] != static_cast<std::int64_t>(g.tokens) || g.x->ne[3] != 1 ||
-      g.y->ne[0] != static_cast<std::int64_t>(g.format.shape.ne[1]) ||
-      g.y->ne[1] != static_cast<std::int64_t>(g.used) ||
-      g.y->ne[2] != static_cast<std::int64_t>(g.tokens) || g.y->ne[3] != 1 ||
-      ggml_nbytes(g.x) != g.x_bytes || ggml_nbytes(g.y) != g.y_bytes)
+  if (ids.type != StorageType::kI32 || ids.ne[0] != static_cast<std::int64_t>(g.used) ||
+      ids.ne[1] != static_cast<std::int64_t>(g.tokens) || ids.ne[2] != 1 || ids.ne[3] != 1 ||
+      x.type != StorageType::kF32 || y.type != StorageType::kF32 ||
+      x.ne[0] != static_cast<std::int64_t>(g.format.shape.ne[0]) ||
+      x.ne[1] != static_cast<std::int64_t>(g.lanes) ||
+      x.ne[2] != static_cast<std::int64_t>(g.tokens) || x.ne[3] != 1 ||
+      y.ne[0] != static_cast<std::int64_t>(g.format.shape.ne[1]) ||
+      y.ne[1] != static_cast<std::int64_t>(g.used) ||
+      y.ne[2] != static_cast<std::int64_t>(g.tokens) || y.ne[3] != 1 || x.bytes != g.x_bytes ||
+      y.bytes != g.y_bytes)
     return Reject("grouped activation extent changed");
   // No output alias with inputs or any consumed expert interval. Parts may be
   // interleaved views; their mutual validation is BindGroupedInto's exact sweep.
   const auto overlaps = [](std::uint64_t a, std::uint64_t n, std::uint64_t b, std::uint64_t m) {
     return a < b + m && b < a + n;
   };
-  for (const auto* t : {g.ids, g.x})
-    if (overlaps(Address(g.y), ggml_nbytes(g.y), Address(t), ggml_nbytes(t)))
+  for (const auto* t : {&ids, &x})
+    if (overlaps(AddressOf(y), y.bytes, AddressOf(*t), t->bytes))
       return Reject("grouped output overlaps an input");
   auto one = g.format;
   one.shape.rank = 2;
@@ -201,30 +199,30 @@ std::expected<std::array<PitchedExpertPart, format::PartList::kMax>, Failure> Pa
         return Reject("grouped part pitch overflow");
       const auto address = out[i].address + e * out[i].matrix_pitch;
       if (part->readable > UINT64_MAX - address ||
-          overlaps(Address(g.y), ggml_nbytes(g.y), address, part->readable))
+          overlaps(AddressOf(y), y.bytes, address, part->readable))
         return Reject("grouped output overlaps source bytes");
     }
   }
   return out;
 }
 struct RoutePlace {
-  kg::SelectedRouteBuffers buffers;
+  SelectedRouteBuffers buffers;
   bool assigned = false;
 };
-class Runtime final : public kg::SelectedLaunch {
+class Runtime final : public SelectedLaunch {
  public:
-  Runtime(const kg::SelectedSource* owner, providers::NativeStream stream)
-      : kg::SelectedLaunch(owner, stream) {}
+  Runtime(const SelectedSource* owner, providers::NativeStream stream)
+      : SelectedLaunch(owner, stream) {}
   bool faulted() const override { return failed; }
   // Whole graphs are deliberately unavailable. The routed program owns and
   // records separate admitted segments instead. Their bound calls queue
   // only the fixed grouped launch over the admitted route buffers.
-  bool capturable(const kg::SelectedCall& call) const override {
+  bool capturable(const SelectedCall& call) const override {
     return !failed && call.owner() == owner() && call.route().has_value();
   }
   bool failed = false;
 };
-class BoundCall final : public kg::BoundSelectedCall {
+class BoundCall final : public BoundSelectedCall {
  public:
   BoundCall(Runtime& r, Geometry g, std::shared_ptr<const RoutePlace> place)
       : runtime_(r), geometry_(std::move(g)), place_(std::move(place)) {}
@@ -247,17 +245,17 @@ class BoundCall final : public kg::BoundSelectedCall {
          .pair_rows = reinterpret_cast<const std::int32_t*>(g.lanes == 1 ? b.tokens : b.slots),
          .pair_out = reinterpret_cast<const std::int32_t*>(b.slots),
          .pairs = g.tokens * g.used,
-         .x = static_cast<const float*>(g.x->data),
+         .x = static_cast<const float*>(DataOf(g.x)),
          .x_rows = g.tokens * g.lanes,
          .x_stride = g.format.shape.ne[0],
-         .y = static_cast<float*>(g.y->data),
+         .y = static_cast<float*>(DataOf(g.y)),
          .y_rows = g.tokens * g.used,
          .y_stride = g.format.shape.ne[1],
          .rows_hint = g.tokens},
         stream.handle);
     if (!result) {
       runtime_.failed = true;
-      return std::unexpected(Failure{.error = kg::KernelError::kUnknown, .detail = result.error()});
+      return std::unexpected(Failure{.error = KernelError::kUnknown, .detail = result.error()});
     }
     return {};
   }
@@ -267,10 +265,10 @@ class BoundCall final : public kg::BoundSelectedCall {
   Geometry geometry_;
   std::shared_ptr<const RoutePlace> place_;
 };
-class Call final : public kg::SelectedCall {
+class Call final : public SelectedCall {
  public:
-  Call(const kg::SelectedSource* owner, Geometry geometry, base::Sha256Digest identity)
-      : kg::SelectedCall(owner),
+  Call(const SelectedSource* owner, Geometry geometry, base::Sha256Digest identity)
+      : SelectedCall(owner),
         geometry_(std::move(geometry)),
         identity_(identity),
         place_(std::make_shared<RoutePlace>()) {}
@@ -279,13 +277,13 @@ class Call final : public kg::SelectedCall {
   std::uint64_t launches() const override {
     return 2;
   }  // product plus shared route preparation bound
-  std::optional<kg::SelectedRoute> route() const override {
-    return kg::SelectedRoute{geometry_.ids, geometry_.weight, geometry_.format};
+  std::optional<SelectedRoute> route() const override {
+    return SelectedRoute{geometry_.ids, geometry_.weight, geometry_.format};
   }
   std::uint64_t route_descriptor_bytes() const override {
     return geometry_.format.shape.ne[2] * sizeof(Operand);
   }
-  std::expected<void, Failure> RouteBuffers(kg::SelectedRouteBuffers buffers) override {
+  std::expected<void, Failure> RouteBuffers(SelectedRouteBuffers buffers) override {
     if (place_->assigned || buffers.offsets % 256 || buffers.tokens % 256 || buffers.slots % 256 ||
         buffers.descriptors % 256 || !buffers.offsets || !buffers.tokens || !buffers.slots ||
         !buffers.descriptors)
@@ -306,9 +304,9 @@ class Call final : public kg::SelectedCall {
     if (!result) return Reject("grouped source part geometry is inconsistent");
     return {};
   }
-  std::expected<std::unique_ptr<kg::BoundSelectedCall>, Failure> Bind(
-      const execution::Implementation& implementation, kg::SelectedLaunch& launch,
-      kg::SelectedWorkspace) const override {
+  std::expected<std::unique_ptr<BoundSelectedCall>, Failure> Bind(
+      const execution::Implementation& implementation, SelectedLaunch& launch,
+      SelectedWorkspace) const override {
     const auto native = decode::Bind(implementation);
     if (launch.owner() != owner() || execution::IdentityOf(implementation) != identity_ ||
         !native || native->tmpl != Template::kGrouped ||
@@ -323,7 +321,7 @@ class Call final : public kg::SelectedCall {
   base::Sha256Digest identity_;
   std::shared_ptr<RoutePlace> place_;
 };
-class Source final : public kg::SelectedSource {
+class Source final : public SelectedSource {
  public:
   explicit Source(std::vector<execution::Implementation> implementations)
       : implementations_(std::move(implementations)) {
@@ -348,10 +346,10 @@ class Source final : public kg::SelectedSource {
   }
   std::uint64_t persistent_bytes() const override { return 0; }
   std::optional<base::Sha256Digest> ExecutionIdentity() const override { return identity_; }
-  std::expected<std::unique_ptr<kg::SelectedCall>, Failure> Lower(
+  std::expected<std::unique_ptr<SelectedCall>, Failure> Lower(
       const execution::Implementation& implementation, const ir::Node& node,
-      std::span<const kg::SelectedOperand> inputs,
-      std::span<const kg::SelectedOperand> outputs) const override {
+      std::span<const SelectedOperand> inputs,
+      std::span<const SelectedOperand> outputs) const override {
     const auto at =
         std::ranges::find(implementations_, implementation.name, &execution::Implementation::name);
     if (at == implementations_.end() ||
@@ -364,9 +362,9 @@ class Source final : public kg::SelectedSource {
     return std::make_unique<Call>(this, std::move(*geometry),
                                   execution::IdentityOf(implementation));
   }
-  std::expected<std::unique_ptr<kg::SelectedLaunch>, Failure> Launch(
+  std::expected<std::unique_ptr<SelectedLaunch>, Failure> Launch(
       int device, providers::DeviceExecution& execution, providers::StreamId stream,
-      kg::SelectedWorkspace persistent) const override {
+      SelectedWorkspace persistent) const override {
     const auto facts = providers::QueryDeviceFacts(device);
     const auto native = execution.Submission(stream);
     if (!facts || !CompiledFor(facts->architecture / 10) || !native || persistent.bytes)
@@ -397,15 +395,15 @@ ResidentScratch ScratchOf(const Geometry& g) {
   s.bytes = s.out + Align256(pairs * sizeof(std::int32_t));
   return s;
 }
-class ResidentRuntime final : public kg::SelectedLaunch {
+class ResidentRuntime final : public SelectedLaunch {
  public:
-  ResidentRuntime(const kg::SelectedSource* owner, providers::NativeStream stream)
-      : kg::SelectedLaunch(owner, stream) {}
+  ResidentRuntime(const SelectedSource* owner, providers::NativeStream stream)
+      : SelectedLaunch(owner, stream) {}
   bool faulted() const override { return failed; }
   bool capturable() const override { return !failed; }
   bool failed = false;
 };
-class ResidentBoundCall final : public kg::BoundSelectedCall {
+class ResidentBoundCall final : public BoundSelectedCall {
  public:
   ResidentBoundCall(ResidentRuntime& r, Geometry g, ResidentRoute route)
       : runtime_(r), geometry_(std::move(g)), route_(route) {}
@@ -416,7 +414,7 @@ class ResidentBoundCall final : public kg::BoundSelectedCall {
     if (auto parts = Parts(g); !parts) return std::unexpected(parts.error());
     const auto fail = [&](std::string detail) -> std::expected<void, Failure> {
       runtime_.failed = true;
-      return std::unexpected(Failure{.error = kg::KernelError::kUnknown, .detail = detail});
+      return std::unexpected(Failure{.error = KernelError::kUnknown, .detail = detail});
     };
     if (auto prepared = PrepareResidentRoute(route_, stream.handle); !prepared)
       return fail(prepared.error());
@@ -432,10 +430,10 @@ class ResidentBoundCall final : public kg::BoundSelectedCall {
                                     .pair_rows = route_.pair_rows,
                                     .pair_out = route_.pair_out,
                                     .pairs = g.tokens * g.used,
-                                    .x = static_cast<const float*>(g.x->data),
+                                    .x = static_cast<const float*>(DataOf(g.x)),
                                     .x_rows = g.tokens * g.lanes,
                                     .x_stride = g.format.shape.ne[0],
-                                    .y = static_cast<float*>(g.y->data),
+                                    .y = static_cast<float*>(DataOf(g.y)),
                                     .y_rows = g.tokens * g.used,
                                     .y_stride = g.format.shape.ne[1],
                                     .rows_hint = g.tokens},
@@ -449,19 +447,19 @@ class ResidentBoundCall final : public kg::BoundSelectedCall {
   Geometry geometry_;
   ResidentRoute route_;
 };
-class ResidentCall final : public kg::SelectedCall {
+class ResidentCall final : public SelectedCall {
  public:
-  ResidentCall(const kg::SelectedSource* owner, Geometry geometry, base::Sha256Digest identity)
-      : kg::SelectedCall(owner), geometry_(std::move(geometry)), identity_(identity) {}
+  ResidentCall(const SelectedSource* owner, Geometry geometry, base::Sha256Digest identity)
+      : SelectedCall(owner), geometry_(std::move(geometry)), identity_(identity) {}
   std::uint64_t scratch_bytes() const override { return ScratchOf(geometry_).bytes; }
   // The bound call, and one expert table while binding.
   std::uint64_t host_bytes() const override {
     return 8192 + (geometry_.format.shape.ne[2] * sizeof(Operand));
   }
   std::uint64_t launches() const override { return 2; }
-  std::expected<std::unique_ptr<kg::BoundSelectedCall>, Failure> Bind(
-      const execution::Implementation& implementation, kg::SelectedLaunch& launch,
-      kg::SelectedWorkspace workspace) const override {
+  std::expected<std::unique_ptr<BoundSelectedCall>, Failure> Bind(
+      const execution::Implementation& implementation, SelectedLaunch& launch,
+      SelectedWorkspace workspace) const override {
     const auto native = decode::Bind(implementation);
     const auto& g = geometry_;
     const auto scratch = ScratchOf(g);
@@ -511,7 +509,7 @@ class ResidentCall final : public kg::SelectedCall {
         .tensor_scale_pitch = *tensor_scale,
         .biases_pitch = *biases,
         .experts = static_cast<std::uint32_t>(experts),
-        .ids = static_cast<const std::int32_t*>(g.ids->data),
+        .ids = static_cast<const std::int32_t*>(DataOf(g.ids)),
         .ids_stride = g.ids_nb[1] / sizeof(std::int32_t),
         .used = static_cast<std::uint32_t>(g.used),
         .tokens = static_cast<std::uint32_t>(g.tokens),
@@ -521,7 +519,7 @@ class ResidentCall final : public kg::SelectedCall {
         .offsets = reinterpret_cast<std::int32_t*>(workspace.base + scratch.offsets),
         .pair_rows = reinterpret_cast<std::int32_t*>(workspace.base + scratch.rows),
         .pair_out = reinterpret_cast<std::int32_t*>(workspace.base + scratch.out),
-        .y = static_cast<float*>(g.y->data),
+        .y = static_cast<float*>(DataOf(g.y)),
         .y_stride = g.format.shape.ne[1],
         .y_outputs = static_cast<std::uint32_t>(g.format.shape.ne[1])};
     if (g.lanes != 1 && g.lanes != g.used)
@@ -533,7 +531,7 @@ class ResidentCall final : public kg::SelectedCall {
   Geometry geometry_;
   base::Sha256Digest identity_;
 };
-class ResidentSource final : public kg::SelectedSource {
+class ResidentSource final : public SelectedSource {
  public:
   explicit ResidentSource(std::vector<execution::Implementation> implementations)
       : implementations_(std::move(implementations)) {
@@ -558,10 +556,10 @@ class ResidentSource final : public kg::SelectedSource {
   }
   std::uint64_t persistent_bytes() const override { return 0; }
   std::optional<base::Sha256Digest> ExecutionIdentity() const override { return identity_; }
-  std::expected<std::unique_ptr<kg::SelectedCall>, Failure> Lower(
+  std::expected<std::unique_ptr<SelectedCall>, Failure> Lower(
       const execution::Implementation& implementation, const ir::Node& node,
-      std::span<const kg::SelectedOperand> inputs,
-      std::span<const kg::SelectedOperand> outputs) const override {
+      std::span<const SelectedOperand> inputs,
+      std::span<const SelectedOperand> outputs) const override {
     const auto at =
         std::ranges::find(implementations_, implementation.name, &execution::Implementation::name);
     if (at == implementations_.end() ||
@@ -574,9 +572,9 @@ class ResidentSource final : public kg::SelectedSource {
     return std::make_unique<ResidentCall>(this, std::move(*geometry),
                                           execution::IdentityOf(implementation));
   }
-  std::expected<std::unique_ptr<kg::SelectedLaunch>, Failure> Launch(
+  std::expected<std::unique_ptr<SelectedLaunch>, Failure> Launch(
       int device, providers::DeviceExecution& execution, providers::StreamId stream,
-      kg::SelectedWorkspace persistent) const override {
+      SelectedWorkspace persistent) const override {
     const auto facts = providers::QueryDeviceFacts(device);
     const auto native = execution.Submission(stream);
     if (!facts || !CompiledFor(facts->architecture / 10) || !native || persistent.bytes)
@@ -600,13 +598,13 @@ std::vector<execution::Implementation> GroupedImplementations(
   return matched;
 }
 }  // namespace
-std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> GroupedSelectedSource(
+std::expected<std::shared_ptr<const kernels::SelectedSource>, std::string> GroupedSelectedSource(
     std::optional<format::Encoding> encoding) {
   auto matched = GroupedImplementations(encoding);
   if (matched.empty()) return std::unexpected("native split grouped implementation missing");
   return std::make_shared<Source>(std::move(matched));
 }
-std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string>
+std::expected<std::shared_ptr<const kernels::SelectedSource>, std::string>
 ResidentGroupedSelectedSource(std::optional<format::Encoding> encoding) {
   auto matched = GroupedImplementations(encoding);
   if (matched.empty()) return std::unexpected("native split grouped implementation missing");

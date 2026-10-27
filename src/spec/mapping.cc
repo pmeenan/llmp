@@ -22,16 +22,18 @@
 #include <variant>
 #include <vector>
 
+#include "base/check.h"
 #include "format/encoding.h"
 #include "format/tensor_format.h"
+#include "spec/mappings/dense.h"
 #include "spec/mappings/dsv4.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
 #include "spec/mappings/ming_transformer.h"
-#include "spec/mappings/ming_vae.h"
-#include "spec/mappings/qwen2.h"
+#include "spec/mappings/qwen35.h"
 #include "spec/mappings/qwen38.h"
+#include "spec/mappings/qwen_image_vae.h"
 #include "spec/mappings/rules.h"
 #include "spec/names.h"
 #include "spec/spec.h"
@@ -168,270 +170,264 @@ const ParamValue* FindValue(const Mapping& m, const Values& values, std::string_
   return nullptr;
 }
 
-// Whether the rule's when_key gate holds (ParamRule::when_key).
-bool GateHolds(const Mapping& m, const ParamRule& r, const Values& values) {
-  if (r.when_key.empty()) return true;
-  const ParamValue* found = FindValue(m, values, r.when_key);
-  if (r.when_value.empty()) return found == nullptr;
-  const auto* text = found != nullptr ? std::get_if<std::string>(found) : nullptr;
-  return text != nullptr && *text == r.when_value;
-}
-
-std::expected<double, std::string> Transformed(double x, Transform t, std::string_view where) {
-  double y = x;
-  switch (t) {
-    case Transform::kNone:
-      break;
-    case Transform::kReciprocal:
-      y = 1.0 / x;
-      break;
-    case Transform::kSqrt:
-      y = x >= 0.0 ? std::sqrt(x) : std::nan("");
-      break;
-    case Transform::kRsqrt:
-      y = x > 0.0 ? 1.0 / std::sqrt(x) : std::nan("");
-      break;
-    case Transform::kFloat32:
-      y = static_cast<double>(static_cast<float>(x));
-      break;
-    case Transform::kProduct:
-      break;
-  }
-  if (!std::isfinite(y)) {
-    return Refuse(where, "a value outside its transform's domain");
-  }
-  return y == 0.0 ? 0.0 : y;
-}
-
 // Where a per-layer rule reads: the layer and the stage's layer count.
 struct LayerAt {
   std::uint32_t layer = 0;
   std::uint32_t layers = 0;
 };
 
-// The rule's value: its constant, or its key's converted (a per-layer
-// key's entry for the layer); nothing when the key is absent.
-std::expected<std::optional<ParamValue>, std::string> Evaluate(
-    const Mapping& m, const ParamRule& r, const Values& values, std::string_view where,
-    LayerAt layer = {}, const std::map<std::string_view, const SourceTensor*>* tensors = nullptr) {
-  if (!r.tensor.empty()) {
-    if (tensors != nullptr) {
-      if (const auto it = tensors->find(Expand(r.tensor, layer.layer)); it != tensors->end()) {
-        if (r.type == ValueType::kInt) {
-          if (it->second->format.shape.rank == 0) {
-            return Refuse(where, std::format("tensor '{}' has rank 0", r.tensor));
-          }
-          return ParamValue(static_cast<std::int64_t>(it->second->format.shape.ne[0]));
-        }
-        return ParamValue(true);
-      }
-    }
-    return std::optional<ParamValue>();
-  }
-  const auto eval_ratio = [&]() -> std::expected<std::optional<ParamValue>, std::string> {
-    const ParamValue* num_found = FindValue(m, values, r.numerator_key);
-    const ParamValue* den_found = FindValue(m, values, r.divisor_key);
-    if (num_found == nullptr || den_found == nullptr) {
-      return std::optional<ParamValue>();
-    }
-    const bool is_product = r.transform == Transform::kProduct;
-    const std::string at = std::format("{} (from {} {} {})", where, r.numerator_key,
-                                       is_product ? "*" : "/", r.divisor_key);
-    const auto* num_i = std::get_if<std::int64_t>(num_found);
-    const auto* den_i = std::get_if<std::int64_t>(den_found);
-    const auto* num_d = std::get_if<double>(num_found);
-    const auto* den_d = std::get_if<double>(den_found);
-    if (num_i == nullptr && num_d == nullptr) {
-      return Refuse(at, "numerator is not a number");
-    }
-    if (den_i == nullptr && den_d == nullptr) {
-      return Refuse(at, "divisor is not a number");
-    }
-    if (r.type == ValueType::kInt) {
-      if (num_i != nullptr && den_i != nullptr) {
-        if (is_product) {
-          std::int64_t prod = 0;
-          if (__builtin_mul_overflow(*num_i, *den_i, &prod)) {
-            return Refuse(at, "product overflows");
-          }
-          return ParamValue(prod);
-        }
-        if (*den_i == 0) return Refuse(at, "division by zero");
-        if (*num_i == std::numeric_limits<std::int64_t>::min() && *den_i == -1) {
-          return Refuse(at, "ratio overflows");
-        }
-        if (*num_i % *den_i != 0) return Refuse(at, "ratio is not an integer");
-        return ParamValue(*num_i / *den_i);
-      }
-      const double num_val = num_i != nullptr ? static_cast<double>(*num_i) : *num_d;
-      const double den_val = den_i != nullptr ? static_cast<double>(*den_i) : *den_d;
-      if (!is_product && den_val == 0.0) return Refuse(at, "division by zero");
-      const double q = is_product ? (num_val * den_val) : (num_val / den_val);
-      if (!std::isfinite(q) || std::floor(q) != q ||
-          q < static_cast<double>(std::numeric_limits<std::int64_t>::min()) ||
-          q >= 9223372036854775808.0) {
-        return Refuse(at, is_product ? "product is not an integer" : "ratio is not an integer");
-      }
-      return ParamValue(static_cast<std::int64_t>(q));
-    }
-    if (r.type == ValueType::kReal) {
-      const double num_val = num_i != nullptr ? static_cast<double>(*num_i) : *num_d;
-      const double den_val = den_i != nullptr ? static_cast<double>(*den_i) : *den_d;
-      if (!is_product && den_val == 0.0) return Refuse(at, "division by zero");
-      const double raw = is_product ? (num_val * den_val) : (num_val / den_val);
-      auto y = Transformed(raw, is_product ? Transform::kNone : r.transform, at);
-      if (!y) return std::unexpected(y.error());
-      return ParamValue(*y);
-    }
-    return Refuse(at, "ratio of an unsupported type");
-  };
+// The environment a mapping's rules read (expr.h): the source's values by
+// key or its canonical spelling, the layer a parameter is read for ("layer",
+// "layers"), the source's tensors and the folds it carries.
+class RuleEnv final : public Env {
+ public:
+  RuleEnv(const Mapping& m, const Values& values, LayerAt layer = {},
+          std::span<const std::string> folds = {},
+          const std::map<std::string_view, const SourceTensor*>* tensors = nullptr)
+      : m_(m), values_(values), layer_(layer), folds_(folds), tensors_(tensors) {}
 
-  if (r.key.empty()) {
-    if (!r.numerator_key.empty() && !r.divisor_key.empty()) {
-      return eval_ratio();
+  std::expected<Datum, std::string> Value(std::string_view name) const override {
+    const ParamValue* found = FindValue(m_, values_, name);
+    return found != nullptr ? View(*found) : Datum();
+  }
+  std::optional<std::uint64_t> Index(std::string_view name) const override {
+    if (name == "layer") return layer_.layer;
+    if (name == "layers") return layer_.layers;
+    return std::nullopt;
+  }
+  std::expected<std::optional<TensorDims>, std::string> Tensor(
+      std::string_view name) const override {
+    if (tensors_ == nullptr) return std::optional<TensorDims>();
+    const auto it = tensors_->find(name);
+    if (it == tensors_->end()) return std::optional<TensorDims>();
+    const auto& shape = it->second->format.shape;
+    TensorDims dims{.rank = static_cast<std::uint8_t>(shape.rank)};
+    for (std::size_t d = 0; d < shape.rank && d < dims.dims.size(); ++d)
+      dims.dims[d] = shape.ne[shape.rank - 1 - d];
+    return std::optional(dims);
+  }
+  bool Fold(std::string_view name) const override { return std::ranges::contains(folds_, name); }
+
+ private:
+  const Mapping& m_;
+  const Values& values_;
+  LayerAt layer_;
+  std::span<const std::string> folds_;
+  const std::map<std::string_view, const SourceTensor*>* tensors_;
+};
+
+// A ParamRule lowered into the value language (LowerParamRule): its gate
+// (when_key/when_value, unless_fold; none: it applies) and its value. The
+// nodes live in the object, which therefore never moves.
+class LoweredRule {
+ public:
+  LoweredRule(const Mapping& m, const ParamRule& r, bool constant = false) {
+    Lower(m, r, constant);
+  }
+  LoweredRule(const LoweredRule&) = delete;
+  LoweredRule& operator=(const LoweredRule&) = delete;
+
+  const Expr* gate() const { return gate_; }
+  const Expr& value() const { return *value_; }
+
+ private:
+  const Expr* Add(Expr e) {
+    // The largest lowering (a gate on a key and a fold, a key's transformed
+    // per-layer real, a ratio's transformed real after it) holds 17 nodes.
+    base::Check(used_ < nodes_.size(), "a lowered parameter rule exceeds its node capacity");
+    nodes_[used_] = std::move(e);
+    return &nodes_[used_++];
+  }
+  const Expr* Unary(ExprKind kind, const Expr* operand) {
+    return Add({.kind = kind, .left = operand});
+  }
+  const Expr* Binary(ExprKind kind, const Expr* a, const Expr* b) {
+    return Add({.kind = kind, .left = a, .right = b});
+  }
+  // A real's transform, then the real a parameter holds.
+  const Expr* Real(const Expr* x, Transform t) {
+    switch (t) {
+      case Transform::kReciprocal:
+        x = Unary(ExprKind::kReciprocal, x);
+        break;
+      case Transform::kSqrt:
+        x = Unary(ExprKind::kSqrt, x);
+        break;
+      case Transform::kRsqrt:
+        x = Unary(ExprKind::kRsqrt, x);
+        break;
+      case Transform::kFloat32:
+        x = Unary(ExprKind::kFloat32, x);
+        break;
+      case Transform::kNone:
+      case Transform::kProduct:
+        break;
     }
+    return Unary(ExprKind::kFinite, x);
+  }
+
+  void Lower(const Mapping& m, const ParamRule& r, bool constant) {
+    // The gate.
+    const Expr* gate = nullptr;
+    if (!r.when_key.empty()) {
+      const Expr* key = Add({.kind = ExprKind::kValue, .name = r.when_key});
+      gate = r.when_value.empty() ? Unary(ExprKind::kNot, Unary(ExprKind::kPresent, key))
+                                  : Binary(ExprKind::kEqual, key,
+                                           Add({.kind = ExprKind::kText, .name = r.when_value}));
+    }
+    if (!r.unless_fold.empty()) {
+      const Expr* fold =
+          Unary(ExprKind::kNot, Add({.kind = ExprKind::kFold, .name = r.unless_fold}));
+      gate = gate != nullptr ? Binary(ExprKind::kAnd, gate, fold) : fold;
+    }
+    gate_ = gate;
+
+    // A tensor's presence (a flag) or its innermost extent (an integer).
+    if (!r.tensor.empty()) {
+      value_ = r.type == ValueType::kInt
+                   ? Add({.kind = ExprKind::kTensorDim, .name = r.tensor, .fixed_index = -1})
+                   : Add({.kind = ExprKind::kSelect,
+                          .left = Add({.kind = ExprKind::kTensorPresent, .name = r.tensor}),
+                          .right = Add({.literal = true}),
+                          .alternate = Add({.kind = ExprKind::kAbsent})});
+      return;
+    }
+    const bool keyed = !constant && !r.key.empty();
+    const bool ratio = !constant && !r.numerator_key.empty() && !r.divisor_key.empty();
+    // The constant.
+    if (!keyed && !ratio) {
+      switch (r.type) {
+        case ValueType::kInt:
+          value_ = Add({.literal = r.value.integer});
+          return;
+        case ValueType::kReal:
+          value_ = Real(Add({.literal = r.value.real}), constant ? Transform::kNone : r.transform);
+          return;
+        case ValueType::kBool:
+          value_ = Add({.literal = r.value.flag});
+          return;
+        case ValueType::kString:
+          // A layer slot's constant may name its layer (kLayerField).
+          value_ = Add({.kind = ExprKind::kTemplate, .literal = std::string(r.value.text)});
+          return;
+        case ValueType::kInts:
+          value_ = Add({.kind = ExprKind::kAbsent});  // refused by ValidateMapping
+          return;
+      }
+    }
+    // The ratio (or product) of two keys, read where the key is absent.
+    const Expr* from_ratio = nullptr;
+    if (ratio) {
+      const Expr* num = Add({.kind = ExprKind::kValue, .name = r.numerator_key});
+      const Expr* den = Add({.kind = ExprKind::kValue, .name = r.divisor_key});
+      const bool product = r.transform == Transform::kProduct;
+      from_ratio =
+          r.type == ValueType::kInt
+              ? Binary(product ? ExprKind::kProduct : ExprKind::kQuotient, num, den)
+              : Real(Binary(product ? ExprKind::kRealMultiply : ExprKind::kRealDivide, num, den),
+                     product ? Transform::kNone : r.transform);
+    }
+    if (!keyed) {
+      value_ = from_ratio;
+      return;
+    }
+    // The key's value, a per-layer key's entry for the layer, typed.
+    const Expr* x = Add({.kind = ExprKind::kValue, .name = r.key});
+    if (r.per_layer) x = Unary(ExprKind::kPerLayer, x);
     switch (r.type) {
       case ValueType::kInt:
-        return ParamValue(r.value.integer);
-      case ValueType::kReal: {
-        auto y = Transformed(r.value.real, r.transform, where);
-        if (!y) {
-          return std::unexpected(y.error());
-        }
-        return ParamValue(*y);
-      }
+        x = Unary(ExprKind::kAsInt, x);
+        break;
+      case ValueType::kReal:
+        x = Real(Unary(ExprKind::kAsReal, x), r.transform);
+        break;
       case ValueType::kBool:
-        return ParamValue(r.value.flag);
+        if (!r.flag_text.empty()) {
+          x = Add({.kind = ExprKind::kFlagText,
+                   .literal = r.value.flag,
+                   .name = r.flag_text,
+                   .left = x});
+        } else if (!r.value.text.empty()) {
+          // The strings another rule (or the source's default) decides.
+          accepted_ = {"none", "default"};
+          for (const ParamRule& other : m.params) {
+            if (other.type == ValueType::kBool && !other.value.text.empty() &&
+                MatchesCanonicalKey(m, other.key, r.key))
+              accepted_.push_back(other.value.text);
+            if (!other.when_value.empty() && MatchesCanonicalKey(m, other.when_key, r.key))
+              accepted_.push_back(other.when_value);
+          }
+          x = Add({.kind = ExprKind::kMatchText,
+                   .literal = r.value.flag,
+                   .name = r.value.text,
+                   .left = x,
+                   .names = accepted_});
+        } else {
+          x = Unary(ExprKind::kAsBool, x);
+        }
+        break;
       case ValueType::kString:
-        // A layer slot's constant may name its layer (kLayerField).
-        return ParamValue(Expand(r.value.text, layer.layer));
+        x = Unary(ExprKind::kAsName, x);
+        break;
       case ValueType::kInts:
-        return Refuse(where, "a list without its key");
+        x = Unary(ExprKind::kAsInts, x);
+        if (r.param == "rope_sections")
+          x = Add(
+              {.kind = ExprKind::kPadTo, .literal = std::int64_t{0}, .fixed_index = 3, .left = x});
+        break;
     }
+    value_ = from_ratio != nullptr ? Binary(ExprKind::kFirst, x, from_ratio) : x;
   }
-  const ParamValue* found = FindValue(m, values, r.key);
-  if (found == nullptr) {
-    if (!r.numerator_key.empty() && !r.divisor_key.empty()) {
-      return eval_ratio();
-    }
-    return std::optional<ParamValue>();
-  }
-  const std::string at = std::format("{} (from {})", where, r.key);
-  // A per-layer key's entry for the layer (a list of one value a layer),
-  // or its one value for every layer.
-  ParamValue entry = *found;
-  if (r.per_layer) {
-    const auto pick = [&](const auto& list) -> std::expected<void, std::string> {
-      if (list.size() != layer.layers || layer.layer >= list.size()) {
-        return Refuse(at,
-                      std::format("a list of {} values for {} layers", list.size(), layer.layers));
-      }
-      entry = list[layer.layer];
-      return {};
-    };
-    if (const auto* is = std::get_if<std::vector<std::int64_t>>(found)) {
-      if (auto ok = pick(*is); !ok) {
-        return std::unexpected(ok.error());
-      }
-    } else if (const auto* ds = std::get_if<std::vector<double>>(found)) {
-      if (auto ok = pick(*ds); !ok) {
-        return std::unexpected(ok.error());
-      }
-    }
-  }
-  const ParamValue& v = entry;
-  switch (r.type) {
-    case ValueType::kInt:
-      if (const auto* i = std::get_if<std::int64_t>(&v)) {
-        return ParamValue(*i);
-      }
-      return Refuse(at, "not an integer");
-    case ValueType::kReal: {
-      double x = 0.0;
-      if (const auto* i = std::get_if<std::int64_t>(&v)) {
-        x = static_cast<double>(*i);
-      } else if (const auto* d = std::get_if<double>(&v)) {
-        x = *d;
-      } else {
-        return Refuse(at, "not a number");
-      }
-      auto y = Transformed(x, r.transform, at);
-      if (!y) {
-        return std::unexpected(y.error());
-      }
-      return ParamValue(*y);
-    }
-    case ValueType::kBool:
-      if (!r.flag_text.empty()) {
-        if (const auto* text = std::get_if<std::string>(&v)) {
-          if (*text == r.flag_text) return ParamValue(r.value.flag);
-          return Refuse(at, "not the value the mapping's components implement");
-        }
-      }
-      if (!r.value.text.empty()) {
-        const auto* s = std::get_if<std::string>(&v);
-        if (s == nullptr) {
-          return Refuse(at, "not a string");
-        }
-        if (*s == r.value.text) {
-          return ParamValue(r.value.flag);
-        }
-        if (*s == "none" || *s == "default" ||
-            std::ranges::any_of(m.params, [&](const ParamRule& other) {
-              return (other.type == ValueType::kBool && !other.value.text.empty() &&
-                      MatchesCanonicalKey(m, other.key, r.key) && *s == other.value.text) ||
-                     (!other.when_value.empty() && MatchesCanonicalKey(m, other.when_key, r.key) &&
-                      *s == other.when_value);
-            })) {
-          return std::optional<ParamValue>();
-        }
-        return Refuse(at,
-                      std::format("'{}' is not a value the mapping's components implement", *s));
-      }
-      if (const auto* b = std::get_if<bool>(&v)) {
-        return ParamValue(*b);
-      }
-      return Refuse(at, "not a flag");
-    case ValueType::kString:
-      if (const auto* s = std::get_if<std::string>(&v); s != nullptr && IsName(*s)) {
-        return ParamValue(*s);
-      }
-      return Refuse(at, "not a name");
-    case ValueType::kInts:
-      if (const auto* is = std::get_if<std::vector<std::int64_t>>(&v)) {
-        if (r.param == "rope_sections" && is->size() == 3) {
-          std::vector<std::int64_t> padded = *is;
-          padded.push_back(0);
-          return ParamValue(std::move(padded));
-        }
-        return ParamValue(*is);
-      }
-      return Refuse(at, "not a list of integers");
-  }
-  return Refuse(at, "an unknown value type");
+
+  std::array<Expr, 20> nodes_{};
+  std::size_t used_ = 0;
+  std::vector<std::string_view> accepted_;
+  const Expr* gate_ = nullptr;
+  const Expr* value_ = nullptr;
+};
+
+// Where a rule's error is: its parameter, and the key it reads.
+std::string RuleWhere(std::string_view where, const ParamRule& r) {
+  if (!r.key.empty()) return std::format("{} (from {})", where, r.key);
+  if (!r.numerator_key.empty())
+    return std::format("{} (from {} {} {})", where, r.numerator_key,
+                       r.transform == Transform::kProduct ? "*" : "/", r.divisor_key);
+  return std::string(where);
+}
+
+bool Applies(const LoweredRule& rule, const Env& env) {
+  if (rule.gate() == nullptr) return true;
+  const auto holds = EvaluateFlag(*rule.gate(), env, {.strict = false});
+  return holds && *holds;
 }
 
 // The parameter's value at a layer type (0: not a layer slot), by its
 // rules in order; nothing when no rule applies, or none resolves and one
-// is optional. A rule unless a fold the source carries does not apply.
+// is optional. A rule whose gate does not hold (its when_key's value, a
+// fold the source carries) does not apply.
 std::expected<std::optional<ParamValue>, std::string> Resolve(
     const Mapping& m, std::string_view slot, std::string_view param, char type,
     const Values& values, LayerAt layer = {}, std::span<const std::string> folds = {},
     const std::map<std::string_view, const SourceTensor*>* tensors = nullptr) {
   const std::string where = std::format("{}.{}", slot, param);
+  const RuleEnv env(m, values, layer, folds, tensors);
   bool applied = false;
   bool optional = false;
   for (const ParamRule& r : m.params) {
-    if (r.slot != slot || r.param != param || (type != 0 && !Applies(r.layer_types, type)) ||
-        (!r.unless_fold.empty() && std::ranges::contains(folds, r.unless_fold)) ||
-        !GateHolds(m, r, values)) {
+    if (r.slot != slot || r.param != param || (type != 0 && !Applies(r.layer_types, type))) {
       continue;
     }
+    if (r.key.empty() && r.numerator_key.empty() && r.tensor.empty() &&
+        r.type == ValueType::kInts) {
+      return Refuse(where, "a list without its key");
+    }
+    const LoweredRule lowered(m, r);
+    if (!Applies(lowered, env)) continue;
     applied = true;
     optional = optional || r.optional;
-    auto v = Evaluate(m, r, values, where, layer, tensors);
+    auto v = Evaluate(lowered.value(), env, {.strict = false});
     if (!v) {
-      return std::unexpected(v.error());
+      return Refuse(RuleWhere(where, r), v.error());
     }
     if (*v) {
       return v;
@@ -444,30 +440,32 @@ std::expected<std::optional<ParamValue>, std::string> Resolve(
   return std::optional<ParamValue>();
 }
 
+}  // namespace
+
+std::expected<RequirementState, std::string> CheckRequirement(const Mapping& m, const ParamRule& r,
+                                                              const Env& env) {
+  if (!r.slot.empty()) return std::unexpected("not a requirement");
+  const LoweredRule lowered(m, r);
+  if (!Applies(lowered, env)) return RequirementState::kNotApplied;
+  auto v = Evaluate(lowered.value(), env, {.strict = false});
+  if (!v) return Refuse(RuleWhere(std::format("requirement {}", r.key), r), v.error());
+  if (!*v) return r.optional ? RequirementState::kNotApplied : RequirementState::kAbsent;
+  const LoweredRule constant(m, r, true);
+  auto want = Evaluate(constant.value(), env, {.strict = false});
+  return want && *want && **v == **want ? RequirementState::kHolds : RequirementState::kDiffers;
+}
+
+namespace {
+
 std::expected<void, std::string> CheckRequirements(const Mapping& m, const Values& values) {
+  const RuleEnv env(m, values);
   for (const ParamRule& r : m.params) {
-    if (!r.slot.empty() || !GateHolds(m, r, values)) {
-      continue;
-    }
-    auto v = Evaluate(m, r, values, std::format("requirement {}", r.key));
-    if (!v) {
-      return std::unexpected(v.error());
-    }
-    if (!*v) {
-      if (r.optional) {
-        continue;
-      }
-      return Refuse(r.key, "absent from the source");
-    }
-    ParamRule constant = r;
-    constant.key = {};
-    constant.numerator_key = {};
-    constant.divisor_key = {};
-    constant.transform = Transform::kNone;
-    auto want = Evaluate(m, constant, values, r.key);
-    if (!want || **v != **want) {
+    if (!r.slot.empty()) continue;
+    auto state = CheckRequirement(m, r, env);
+    if (!state) return std::unexpected(state.error());
+    if (*state == RequirementState::kAbsent) return Refuse(r.key, "absent from the source");
+    if (*state == RequirementState::kDiffers)
       return Refuse(r.key, "not the value the mapping's components implement");
-    }
   }
   return {};
 }
@@ -1190,6 +1188,11 @@ std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source&
 
 bool IsSourceKey(std::string_view key) { return IsText(key); }
 
+std::expected<Datum, std::string> SourceValuesEnv::Value(std::string_view name) const {
+  const auto found = std::ranges::find(values_, name, &SourceValue::key);
+  return found == values_.end() ? Datum() : View(found->value);
+}
+
 namespace {
 template <typename Rule>
 std::expected<std::span<const Rule>, std::string> ContextRules(
@@ -1380,13 +1383,14 @@ std::optional<std::size_t> ProvenanceIndex(std::span<const AuxiliaryNamespace> k
 }
 
 std::span<const Mapping* const> Mappings() {
-  static const std::array all = {&mappings::Gemma2Mapping(),  &mappings::Gemma3Mapping(),
-                                 &mappings::Gemma4Mapping(),  &mappings::Gemma4AssistantMapping(),
-                                 &mappings::Qwen38Mapping(),  &mappings::Qwen38MtpMapping(),
-                                 &mappings::Dsv4Mapping(),    &mappings::DsparkMapping(),
-                                 &mappings::Qwen2Mapping(),   &mappings::Qwen35Mapping(),
-                                 &mappings::LlamaMapping(),   &mappings::MistralMapping(),
-                                 &mappings::MingVaeMapping(), &mappings::MingTransformerMapping()};
+  static const std::array all = {
+      &mappings::Gemma2Mapping(),       &mappings::Gemma3Mapping(),
+      &mappings::Gemma4Mapping(),       &mappings::Gemma4AssistantMapping(),
+      &mappings::Qwen38Mapping(),       &mappings::Qwen38MtpMapping(),
+      &mappings::Dsv4Mapping(),         &mappings::DsparkMapping(),
+      &mappings::Qwen2Mapping(),        &mappings::Qwen35Mapping(),
+      &mappings::LlamaMapping(),        &mappings::MistralMapping(),
+      &mappings::QwenImageVaeMapping(), &mappings::MingTransformerMapping()};
   return all;
 }
 

@@ -1195,7 +1195,7 @@ checks passed, with the coverage accounting described there.
 
 ## Llama 3.2 1B Instruct
 
-- **Architecture:** `llama` (`spec/mappings/qwen2.*`, shared pre-norm dense
+- **Architecture:** `llama` (`spec/mappings/dense.*`, shared pre-norm dense
   decoder mapping for `qwen2`, `llama` and `mistral`. Served and verified here
   only from GGUF (this model) and, for `qwen2`, GGUF `FP16` and EXL3; the
   safetensors and EXL3 forms of `llama`, and every `mistral` source, are
@@ -1262,7 +1262,7 @@ in the table below describe the historical implementations.
 
 | | Qwen2.5-0.5B-Instruct FP16 | Qwen2.5-0.5B-Instruct EXL3 4.0 / 4.5 bpw |
 | --- | --- | --- |
-| Architecture | `qwen2` (`spec/mappings/qwen2.*`), GGML FP16 | `qwen2` with EXL3 linears (same mapping) |
+| Architecture | `qwen2` (`spec/mappings/dense.*`), GGML FP16 | `qwen2` with EXL3 linears (same mapping) |
 | Checkpoint | `Qwen/Qwen2.5-0.5B-Instruct-GGUF@9217f5db` `qwen2.5-0.5b-instruct-fp16.gguf` ([pins](experiments/first-slice/pins.json)) | `blockblockblock/Qwen2.5-0.5B-Instruct-exl3-4.0bpw@7009334d` and `-4.5bpw@030d3a41` ([pins](experiments/exl3-reference/pins.json)) |
 | Artifact | v0 `b93cdc32…`; v1 `864ec30c…` | v0 `6e96e499…` / `00d77caf…` ([artifact-layout](experiments/artifact-layout/README.md)); v1 `4b995657…` / `a27ae586…` |
 | v0 against v1 | bit-identical ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)) | bit-identical (same) |

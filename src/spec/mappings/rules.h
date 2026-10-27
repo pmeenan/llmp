@@ -13,20 +13,183 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
+#include "format/encoding.h"
 #include "spec/mapping.h"
+#include "spec/mappings/names.h"
 #include "spec/spec.h"
 
 namespace llmp::spec::mappings {
 inline constexpr std::uint32_t kLayerLimit = 1024;
 inline constexpr std::array<std::string_view, 1> kGgufContainers{"gguf"};
-inline constexpr std::array<std::string_view, 1> kSafetensorsContainers{"safetensors"};
-inline constexpr std::array<std::string_view, 1> kExl3Containers{"exl3"};
-inline constexpr std::array<std::string_view, 2> kNativeContainers{"safetensors", "mlx"};
+// The generic decoder policy (the dense decoders' and Qwen3.5's): batched
+// decode up to 16 rows with the shared runner's default lookahead and graph
+// capture, paired MMQ dense products, and solo prompt chunks.
+inline constexpr std::array kDensePolicies = {
+    PolicyRule{.text = "max_decode_rows 16\nvector_rows 16\nproduct dense_pair\n",
+               .prompts_alone = true},
+};
+
+// The arrays `parts`, one after another.
+template <class T, std::size_t... N>
+constexpr std::array<T, (N + ...)> Concat(const std::array<T, N>&... parts) {
+  std::array<T, (N + ...)> out{};
+  std::size_t next = 0;
+  ((std::ranges::copy(parts, out.begin() + next), next += N), ...);
+  return out;
+}
+
+// ---------------------------------------------------------------- overlays
+//
+// A container's form of a canonical rule table: one canonical table plus the
+// container's overlay, as data (the dense dialects' tensor parts and
+// parameter overrides are resolved the same way, spec/mapping.h
+// SourceDialect): canonical rules matched by their identity (a tensor rule's
+// slot, role and part; a parameter rule's slot, parameter and key), dropped
+// or edited field by field, then the container's own rules appended. Every
+// edit applies to at least one rule, or the table does not compile.
+
+// A tensor rule's edit: of the rules of `slot` and `role` (and `part` when
+// engaged), dropped, or with the fields given replaced.
+struct TensorEdit {
+  std::string_view slot{}, role{};
+  std::optional<format::PartRole> part{};
+  bool drop = false;
+  std::string_view pattern{};  // nonempty: the container's spelling
+  std::optional<format::PartRole> set_part{};
+  std::optional<bool> optional{}, any_part{};
+};
+constexpr bool EditApplies(const TensorEdit& edit, const TensorRule& rule) {
+  return edit.slot == rule.slot && edit.role == rule.role &&
+         (!edit.part || *edit.part == rule.part);
+}
+constexpr TensorRule Edited(TensorRule rule, const TensorEdit& edit) {
+  if (!edit.pattern.empty()) rule.pattern = edit.pattern;
+  if (edit.set_part) rule.part = *edit.set_part;
+  if (edit.optional) rule.optional = *edit.optional;
+  if (edit.any_part) rule.any_part = *edit.any_part;
+  return rule;
+}
+
+// A parameter rule's edit: of the rules of `slot` (empty: every slot's) and
+// `param` (and of `key` when engaged: empty, a constant's), dropped, or with
+// the fields given replaced, and `then` inserted after it.
+struct ParamEdit {
+  std::string_view slot{}, param{};
+  std::optional<std::string_view> key{};
+  bool drop = false;
+  std::optional<std::string_view> set_key{}, numerator_key{}, divisor_key{}, tensor{}, text{};
+  std::optional<Transform> transform{};
+  std::optional<bool> optional{};
+  std::optional<ParamRule> then{};
+};
+constexpr bool EditApplies(const ParamEdit& edit, const ParamRule& rule) {
+  return !edit.param.empty() && (edit.slot.empty() || edit.slot == rule.slot) &&
+         edit.param == rule.param && (!edit.key || *edit.key == rule.key);
+}
+constexpr ParamRule Edited(ParamRule rule, const ParamEdit& edit) {
+  if (edit.set_key) rule.key = *edit.set_key;
+  if (edit.numerator_key) rule.numerator_key = *edit.numerator_key;
+  if (edit.divisor_key) rule.divisor_key = *edit.divisor_key;
+  if (edit.tensor) rule.tensor = *edit.tensor;
+  if (edit.text) rule.value.text = *edit.text;
+  if (edit.transform) rule.transform = *edit.transform;
+  if (edit.optional) rule.optional = *edit.optional;
+  return rule;
+}
+
+inline constexpr std::array<TensorRule, 0> kNoTensorRules{};
+inline constexpr std::array<ParamRule, 0> kNoParamRules{};
+
+namespace overlay_detail {
+template <class Rule, std::size_t N, std::size_t E, class Edit>
+constexpr bool EveryEditApplies(const std::array<Rule, N>& base, const std::array<Edit, E>& edits) {
+  return std::ranges::all_of(edits, [&](const Edit& edit) {
+    return std::ranges::any_of(base, [&](const Rule& rule) { return EditApplies(edit, rule); });
+  });
+}
+template <class Rule, std::size_t N, std::size_t E, class Edit>
+constexpr std::size_t OverlaidSize(const std::array<Rule, N>& base,
+                                   const std::array<Edit, E>& edits) {
+  std::size_t size = 0;
+  for (const Rule& rule : base) {
+    bool dropped = false;
+    std::size_t inserted = 0;
+    for (const Edit& edit : edits) {
+      if (!EditApplies(edit, rule)) continue;
+      dropped = dropped || edit.drop;
+      if constexpr (requires { edit.then; }) inserted += edit.then ? 1 : 0;
+    }
+    if (!dropped) size += 1 + inserted;
+  }
+  return size;
+}
+}  // namespace overlay_detail
+
+// `kBase` (a std::array of TensorRule or ParamRule) with `kEdits` (of
+// TensorEdit or ParamEdit) applied in order, then `kExtra`'s rules.
+template <const auto& kBase, const auto& kEdits, const auto& kExtra>
+constexpr auto Overlay() {
+  static_assert(overlay_detail::EveryEditApplies(kBase, kEdits),
+                "an overlay edit matches no canonical rule");
+  using Rule = std::ranges::range_value_t<decltype(kBase)>;
+  std::array<Rule, overlay_detail::OverlaidSize(kBase, kEdits) + kExtra.size()> out{};
+  std::size_t next = 0;
+  for (const Rule& base : kBase) {
+    bool dropped = false;
+    Rule rule = base;
+    for (const auto& edit : kEdits) {
+      if (!EditApplies(edit, base)) continue;
+      dropped = dropped || edit.drop;
+      rule = Edited(rule, edit);
+    }
+    if (dropped) continue;
+    out[next++] = rule;
+    if constexpr (std::is_same_v<Rule, ParamRule>)
+      for (const auto& edit : kEdits)
+        if (EditApplies(edit, base) && edit.then) out[next++] = *edit.then;
+  }
+  for (const Rule& rule : kExtra) out[next++] = rule;
+  return out;
+}
+
+// The canonical table of a mapping whose dialects bind roles (set
+// parameters) its base table lacks: `kBase`, then each rule of `kAdded`
+// whose slot and role (slot and parameter) `kBase` has none of.
+namespace overlay_detail {
+constexpr bool SameIdentity(const TensorRule& a, const TensorRule& b) {
+  return a.slot == b.slot && a.role == b.role;
+}
+constexpr bool SameIdentity(const ParamRule& a, const ParamRule& b) {
+  return a.slot == b.slot && a.param == b.param;
+}
+template <class Rule, std::size_t N, std::size_t M>
+constexpr std::size_t NewIdentities(const std::array<Rule, N>& base,
+                                    const std::array<Rule, M>& added) {
+  return static_cast<std::size_t>(std::ranges::count_if(added, [&](const Rule& rule) {
+    return std::ranges::none_of(base, [&](const Rule& b) { return SameIdentity(b, rule); });
+  }));
+}
+}  // namespace overlay_detail
+template <const auto& kBase, const auto& kAdded>
+constexpr auto WithNewIdentities() {
+  using Rule = std::ranges::range_value_t<decltype(kBase)>;
+  std::array<Rule, kBase.size() + overlay_detail::NewIdentities(kBase, kAdded)> out{};
+  std::ranges::copy(kBase, out.begin());
+  std::size_t next = kBase.size();
+  for (const Rule& rule : kAdded)
+    if (std::ranges::none_of(kBase,
+                             [&](const Rule& b) { return overlay_detail::SameIdentity(b, rule); }))
+      out[next++] = rule;
+  return out;
+}
 
 inline constexpr std::array kGgufAuxiliary{
     AuxiliaryNamespace{"general.", "container provenance"},
@@ -46,7 +209,7 @@ inline constexpr std::array kSafetensorsAuxiliary{
     AuxiliaryNamespace{"dtype", "checkpoint nominal dtype"},
     AuxiliaryNamespace{"use_cache", "transformers generation cache default"},
     AuxiliaryNamespace{"vocab_size", "vocabulary size stated by embedding table",
-                       "model.embed_tokens.weight", 1},
+                       names::kTokenEmbd.hf, 1},
     AuxiliaryNamespace{"layer_types", "transformer block layer types"},
     AuxiliaryNamespace{"text_config.layer_types", "text transformer block layer types"},
     AuxiliaryNamespace{"mlp_bias", "MLP projection biases: a bias tensor no rule reads is refused"},
@@ -102,126 +265,14 @@ inline constexpr std::array kGemma2HfRequirements{
     ScalarRequirement{
         .key = "sliding_window_size", .equals_key = "sliding_window", .optional = true}};
 
-inline constexpr std::array kLlamaAuxiliary{
-    kGgufAuxiliary[0], kGgufAuxiliary[1], kGgufAuxiliary[2],
-    AuxiliaryNamespace{"llama.vocab_size", "the vocabulary the token table states",
-                       "token_embd.weight", 1}};
-inline constexpr std::array kMistralAuxiliary{
-    kGgufAuxiliary[0], kGgufAuxiliary[1], kGgufAuxiliary[2],
-    AuxiliaryNamespace{"mistral.vocab_size", "the vocabulary the token table states",
-                       "token_embd.weight", 1}};
-
-inline constexpr std::array kGemmaHfTensors{
-    TensorAlias{"model.embed_tokens.weight", "token_embd.weight"},
-    TensorAlias{"model.layers.{layer}.input_layernorm.weight", "blk.{layer}.attn_norm.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.q_proj.weight", "blk.{layer}.attn_q.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.k_proj.weight", "blk.{layer}.attn_k.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.v_proj.weight", "blk.{layer}.attn_v.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.o_proj.weight", "blk.{layer}.attn_output.weight"},
-    TensorAlias{"model.layers.{layer}.post_attention_layernorm.weight",
-                "blk.{layer}.post_attention_norm.weight"},
-    TensorAlias{"model.layers.{layer}.pre_feedforward_layernorm.weight",
-                "blk.{layer}.ffn_norm.weight"},
-    TensorAlias{"model.layers.{layer}.post_feedforward_layernorm.weight",
-                "blk.{layer}.post_ffw_norm.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.gate_proj.weight", "blk.{layer}.ffn_gate.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.up_proj.weight", "blk.{layer}.ffn_up.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.down_proj.weight", "blk.{layer}.ffn_down.weight"},
-    TensorAlias{"model.norm.weight", "output_norm.weight"},
-    TensorAlias{"lm_head.weight", "output.weight"},
-};
-
-inline constexpr auto kGemma3HfTensors = [] {
-  std::array<TensorAlias, kGemmaHfTensors.size() + 2> aliases{};
-  std::ranges::copy(kGemmaHfTensors, aliases.begin());
-  aliases[kGemmaHfTensors.size()] = {"model.layers.{layer}.self_attn.q_norm.weight",
-                                     "blk.{layer}.attn_q_norm.weight"};
-  aliases[kGemmaHfTensors.size() + 1] = {"model.layers.{layer}.self_attn.k_norm.weight",
-                                         "blk.{layer}.attn_k_norm.weight"};
-  return aliases;
-}();
-
-inline constexpr std::array kDenseHfTensors{
-    TensorAlias{"model.embed_tokens.weight", "token_embd.weight"},
-    TensorAlias{"model.layers.{layer}.input_layernorm.weight", "blk.{layer}.attn_norm.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.q_proj.weight", "blk.{layer}.attn_q.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.k_proj.weight", "blk.{layer}.attn_k.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.v_proj.weight", "blk.{layer}.attn_v.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.q_proj.bias", "blk.{layer}.attn_q.bias"},
-    TensorAlias{"model.layers.{layer}.self_attn.k_proj.bias", "blk.{layer}.attn_k.bias"},
-    TensorAlias{"model.layers.{layer}.self_attn.v_proj.bias", "blk.{layer}.attn_v.bias"},
-    TensorAlias{"model.layers.{layer}.self_attn.o_proj.weight", "blk.{layer}.attn_output.weight"},
-    TensorAlias{"model.layers.{layer}.post_attention_layernorm.weight",
-                "blk.{layer}.ffn_norm.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.gate_proj.weight", "blk.{layer}.ffn_gate.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.up_proj.weight", "blk.{layer}.ffn_up.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.down_proj.weight", "blk.{layer}.ffn_down.weight"},
-    TensorAlias{"model.norm.weight", "output_norm.weight"},
-    TensorAlias{"lm_head.weight", "output.weight"},
-};
-
-inline constexpr std::array kExl3Tensors{
-    TensorAlias{"model.layers.{layer}.self_attn.q_proj.mul1",
-                "model.layers.{layer}.self_attn.q_proj.mcg"},
-    TensorAlias{"model.layers.{layer}.self_attn.k_proj.mul1",
-                "model.layers.{layer}.self_attn.k_proj.mcg"},
-    TensorAlias{"model.layers.{layer}.self_attn.v_proj.mul1",
-                "model.layers.{layer}.self_attn.v_proj.mcg"},
-    TensorAlias{"model.layers.{layer}.self_attn.o_proj.mul1",
-                "model.layers.{layer}.self_attn.o_proj.mcg"},
-    TensorAlias{"model.layers.{layer}.mlp.gate_proj.mul1",
-                "model.layers.{layer}.mlp.gate_proj.mcg"},
-    TensorAlias{"model.layers.{layer}.mlp.up_proj.mul1", "model.layers.{layer}.mlp.up_proj.mcg"},
-    TensorAlias{"model.layers.{layer}.mlp.down_proj.mul1",
-                "model.layers.{layer}.mlp.down_proj.mcg"},
-    TensorAlias{"lm_head.mul1", "lm_head.mcg"},
-};
-
-inline constexpr std::array kQwen2SafetensorsKeys{
-    KeyAlias{"head_dim", "attention.key_length"},
-    KeyAlias{"hidden_act", "hidden_act"},
-    KeyAlias{"hidden_size", "embedding_length"},
-    KeyAlias{"intermediate_size", "feed_forward_length"},
-    KeyAlias{"max_position_embeddings", "context_length"},
-    KeyAlias{"num_attention_heads", "attention.head_count"},
-    KeyAlias{"num_hidden_layers", "block_count"},
-    KeyAlias{"num_key_value_heads", "attention.head_count_kv"},
-    KeyAlias{"rms_norm_eps", "attention.layer_norm_rms_epsilon"},
-    KeyAlias{"rope_theta", "rope.freq_base"},
-    KeyAlias{"rope_parameters.rope_theta", "rope.freq_base"},
-    KeyAlias{"use_sliding_window", "use_sliding_window"},
-};
-
-inline constexpr std::array kHfDenseKeys{
-    KeyAlias{"head_dim", "attention.key_length"},
-    KeyAlias{"hidden_act", "hidden_act"},
-    KeyAlias{"hidden_size", "embedding_length"},
-    KeyAlias{"intermediate_size", "feed_forward_length"},
-    KeyAlias{"max_position_embeddings", "context_length"},
-    KeyAlias{"num_attention_heads", "attention.head_count"},
-    KeyAlias{"num_hidden_layers", "block_count"},
-    KeyAlias{"num_key_value_heads", "attention.head_count_kv"},
-    KeyAlias{"rms_norm_eps", "attention.layer_norm_rms_epsilon"},
-    KeyAlias{"rope_theta", "rope.freq_base"},
-    KeyAlias{"sliding_window", "attention.sliding_window"},
-    KeyAlias{"attention_bias", "attention_bias"},
-    KeyAlias{"rope_scaling.rope_type", "rope.scaling.type"},
-    KeyAlias{"rope_scaling.type", "rope.scaling.type"},
-    KeyAlias{"rope_scaling.factor", "rope.scaling.factor"},
-    KeyAlias{"rope_scaling.original_max_position_embeddings",
-             "rope.scaling.original_context_length"},
-    KeyAlias{"rope_scaling.beta_fast", "rope.scaling.yarn_beta_fast"},
-    KeyAlias{"rope_scaling.beta_slow", "rope.scaling.yarn_beta_slow"},
-    KeyAlias{"rope_scaling.low_freq_factor", "rope.scaling.low_freq_factor"},
-    KeyAlias{"rope_scaling.high_freq_factor", "rope.scaling.high_freq_factor"},
-    KeyAlias{"rope_parameters.rope_theta", "rope.freq_base"},
-    KeyAlias{"rope_parameters.rope_type", "rope.scaling.type"},
-    KeyAlias{"rope_parameters.factor", "rope.scaling.factor"},
-    KeyAlias{"rope_parameters.original_max_position_embeddings",
-             "rope.scaling.original_context_length"},
-    KeyAlias{"rope_parameters.low_freq_factor", "rope.scaling.low_freq_factor"},
-    KeyAlias{"rope_parameters.high_freq_factor", "rope.scaling.high_freq_factor"},
-};
+// Gemma's transformers tensor names (a sandwich-norm block's), and Gemma 3's
+// with its QK norms.
+inline constexpr auto kGemmaHfTensors =
+    Aliases(names::kTokenEmbd, names::kAttnNorm, names::kAttnQ, names::kAttnK, names::kAttnV,
+            names::kAttnOutput, names::kAttnPostNorm, names::kFfnPreNorm, names::kFfnPostNorm,
+            names::kFfnGate, names::kFfnUp, names::kFfnDown, names::kOutputNorm, names::kOutput);
+inline constexpr auto kGemma3HfTensors =
+    Concat(kGemmaHfTensors, Aliases(names::kAttnQNorm, names::kAttnKNorm));
 
 inline constexpr std::array kGemmaSafetensorsKeys{
     KeyAlias{"rope_parameters.rope_theta", "rope_theta"},
@@ -229,28 +280,9 @@ inline constexpr std::array kGemmaSafetensorsKeys{
 };
 
 inline constexpr std::array kHfHeadPresence{
-    TensorPresenceRequirement{.flag = "tie_word_embeddings", .tensor = "output.weight"}};
-inline constexpr std::array kExl3HeadPresence{
-    TensorPresenceRequirement{.flag = "tie_word_embeddings", .tensor = "lm_head.trellis"}};
+    TensorPresenceRequirement{.flag = "tie_word_embeddings", .tensor = names::kOutput.gguf}};
 inline constexpr std::array<std::string_view, 2> kHfIgnored{
     "model.rotary_emb.inv_freq", "model.layers.{layer}.self_attn.rotary_emb.inv_freq"};
-inline constexpr std::array<std::string_view, 11> kDenseSafetensorsIgnored{
-    "model.rotary_emb.inv_freq",
-    "model.layers.{layer}.self_attn.rotary_emb.inv_freq",
-    "model.layers.{layer}.mlp.down_proj.input_scale",
-    "model.layers.{layer}.mlp.gate_proj.input_scale",
-    "model.layers.{layer}.mlp.up_proj.input_scale",
-    "model.layers.{layer}.self_attn.q_proj.input_scale",
-    "model.layers.{layer}.self_attn.k_proj.input_scale",
-    "model.layers.{layer}.self_attn.v_proj.input_scale",
-    "model.layers.{layer}.self_attn.o_proj.input_scale",
-    "model.layers.{layer}.self_attn.k_proj.k_scale",
-    "model.layers.{layer}.self_attn.v_proj.v_scale",
-};
-inline constexpr std::array<std::string_view, 2> kHfNullSemantics{"rope_scaling",
-                                                                  "rope_parameters"};
-inline constexpr std::array<std::string_view, 3> kDenseHfNulls{"rope_scaling", "rope_parameters",
-                                                               "sliding_window"};
 inline constexpr std::array<std::string_view, 5> kGemmaHfNulls{
     "rope_scaling", "rope_parameters", "final_logit_softcapping", "attn_logit_softcapping",
     "use_bidirectional_attention"};
@@ -473,7 +505,9 @@ inline constexpr std::array kGemmaHfParams{
               .value = {.flag = false},
               .optional = true},
 };
-inline constexpr std::array kGemmaHfParts{
+// A dense decoder's matrices, which a transformers checkpoint may keep
+// whole or as codes beside their scales: bound with whatever part they hold.
+inline constexpr std::array kHfMatrixParts{
     TensorPartOverride{"embedding", "table"},  TensorPartOverride{"attention", "q"},
     TensorPartOverride{"attention", "k"},      TensorPartOverride{"attention", "v"},
     TensorPartOverride{"attention", "output"}, TensorPartOverride{"ffn", "gate"},
@@ -484,6 +518,71 @@ inline constexpr std::array kGemmaGgufFolds{FoldRule{.fold = "norm.plus_one", .c
 inline constexpr std::array kGemmaHfFolds{
     FoldRule{.fold = "norm.plus_one", .container = "safetensors", .imported = true}};
 inline constexpr std::array<std::string_view, 2> kGemmaContainers{"gguf", "safetensors"};
+
+// ------------------------------------------------------- drafter values
+//
+// A drafter's extraction rules (spec/mapping.h ValueRule, read where its own
+// source lacks a key) inverted from the forward rules it shares with its
+// target: each source key a rule of `kParams` reads as the parameter itself
+// (one key, no transform, no gate) for a slot of `kSlots` (kComponent: its
+// target's last component of the slot's kind, that parameter) or for the
+// stage or stream (kContext, kWidth, kStreams), from the key's first such
+// rule; and after it, each key a requirement of `kRequirements` requires
+// equal to that key (the same origin). Binding facts (llmp. keys) are the
+// drafter's own rules, never a target's.
+namespace overlay_detail {
+template <std::size_t S>
+constexpr std::optional<ValueRule> Inverted(const ParamRule& rule,
+                                            const std::array<SlotRule, S>& slots) {
+  if (rule.key.empty() || rule.key.starts_with("llmp.") || !rule.numerator_key.empty() ||
+      !rule.divisor_key.empty() || !rule.tensor.empty() || rule.transform != Transform::kNone ||
+      !rule.when_key.empty() || !rule.unless_fold.empty())
+    return std::nullopt;
+  if (rule.slot == kStageSlot && rule.param == "context")
+    return ValueRule{.key = rule.key, .origin = ValueOrigin::kContext};
+  if (rule.slot == kStreamSlot && rule.param == "width")
+    return ValueRule{.key = rule.key, .origin = ValueOrigin::kWidth};
+  if (rule.slot == kStreamSlot && rule.param == "streams")
+    return ValueRule{.key = rule.key, .origin = ValueOrigin::kStreams};
+  for (const SlotRule& slot : slots)
+    if (slot.slot == rule.slot)
+      return ValueRule{.key = rule.key,
+                       .origin = ValueOrigin::kComponent,
+                       .kind = slot.kind,
+                       .param = rule.param,
+                       .list = rule.per_layer};
+  return std::nullopt;
+}
+template <std::size_t P, std::size_t S, std::size_t R>
+constexpr std::pair<std::array<ValueRule, P + R>, std::size_t> InvertAll(
+    const std::array<ParamRule, P>& params, const std::array<SlotRule, S>& slots,
+    const std::array<ScalarRequirement, R>& requirements) {
+  std::array<ValueRule, P + R> out{};
+  std::size_t n = 0;
+  const auto seen = [&](std::string_view key) {
+    return std::ranges::any_of(out.begin(), out.begin() + n,
+                               [&](const ValueRule& v) { return v.key == key; });
+  };
+  for (const ParamRule& rule : params) {
+    const auto value = Inverted(rule, slots);
+    if (!value || seen(value->key)) continue;
+    out[n++] = *value;
+    for (const ScalarRequirement& r : requirements)
+      if (r.equals_key == value->key && !seen(r.key)) {
+        out[n] = *value;
+        out[n++].key = r.key;
+      }
+  }
+  return {out, n};
+}
+}  // namespace overlay_detail
+template <const auto& kParams, const auto& kSlots, const auto& kRequirements>
+constexpr auto InvertedValues() {
+  constexpr auto kAll = overlay_detail::InvertAll(kParams, kSlots, kRequirements);
+  std::array<ValueRule, kAll.second> out{};
+  std::ranges::copy(kAll.first.begin(), kAll.first.begin() + kAll.second, out.begin());
+  return out;
+}
 
 // A profile's value under a source key: integers as integers, floats as the
 // reals they are.
@@ -504,9 +603,6 @@ inline SourceValue Value(std::string_view key, std::vector<std::int64_t> v) {
 inline SourceValue FlagValue(std::string_view key, bool v) {
   return {.key = std::string(key), .value = ParamValue(v)};
 }
-
-const Mapping& Gemma4SafetensorsMapping();
-const Mapping& Qwen35Mapping();
 
 }  // namespace llmp::spec::mappings
 

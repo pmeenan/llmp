@@ -14,14 +14,33 @@ check fails when:
   getrandom, accept4, SOCK_CLOEXEC and the other Linux-only spellings in
   LINUX_WORDS, raw system calls, a path under /proc or /sys, or an include
   of the io_uring ring or its provider;
-- CUDA appears outside src/providers/cuda/ and src/kernels/ (CUDA_HOMES):
+- CUDA appears outside src/providers/cuda/, the kernel sources, their
+  shared device code (src/kernels/device/) and the composition root
+  (src/kernels/compose/) (CUDA_HOMES; never in src/kernels/common/):
   a CUDA, cuBLAS, cuFile, NVML, NCCL, CUB, Thrust or CUTLASS header, a CUDA
   runtime or driver API name or type (cuda..., cu...(, CU..., CU_..., CUDA_...,
   cublas...), a kernel qualifier or launch, a .cu or .cuh file, or an include
   of providers/cuda/;
-- kernel library names appear outside KERNEL_HOMES. In the neutral ir/ and
-  execution/ layers this includes embedded identifiers, device names and
-  diagnostic strings, with no vendor or kernel exceptions.
+- kernel library names (ggml, exl3, cublas, cutlass, in any case, alone or
+  embedded in an identifier, and in string literals) appear outside
+  KERNEL_HOMES: the kernel sources themselves, the composition root that
+  registers them (src/kernels/compose/) and the format, import, artifact
+  and tokenizer layers, whose vocabulary names containers and layouts. The
+  vendor-free kernel interface (src/kernels/common/), the planner,
+  components, specs and model layers may use the format layer's names for
+  layouts, encodings and containers (FORMAT_WORDS, FORMAT_STRINGS, an
+  explicit list); the engine, runtime and scheduler, and the neutral ir/
+  and execution/ layers, may name only the containers in their data
+  (FORMAT_STRINGS) and nothing in code. In ir/ and execution/ vendor names
+  and device spellings are refused as well;
+- a kernel source (src/kernels/<source>/) includes another's headers, or
+  src/kernels/common/ includes any kernel source's: sources meet only
+  through the common interface and the composition root.
+
+Includes are compared as paths under src/ (a relative "../" or "./" path is
+resolved against the including file, and a leading "src/" dropped); an
+include through a macro is resolved through the file's own #define, and one
+the check cannot resolve is a problem outside the kernel sources.
 
 POSIX calls (open, poll, sockets, mmap) are not Linux-specific and are not
 checked: macOS has them, and a Windows port gives the platform module its
@@ -36,6 +55,7 @@ are not checked.
 from __future__ import annotations
 
 import pathlib
+import posixpath
 import re
 
 SOURCE_SUFFIXES = (".cc", ".cpp", ".cxx", ".c", ".h", ".hh", ".hpp", ".hxx", ".inl", ".ipp", ".inc", ".cu", ".cuh")
@@ -44,19 +64,26 @@ SCOPE = "src/"
 LINUX = "linux"
 CUDA = "cuda"
 KERNEL = "kernel"
+SOURCE = "source"
 LINUX_HOMES = ("src/platform/", "src/providers/uring_storage.")
-CUDA_HOMES = ("src/providers/cuda/", "src/kernels/")
-KERNEL_HOMES = (
-    "src/kernels/",
+# CUDA (below): its provider, the kernel sources, the device code they share
+# (src/kernels/device/) and the composition root; never the common interface.
+# The kernel sources: each a directory of src/kernels/ whose headers no other
+# source includes.
+KERNEL_SOURCES = ("ggml", "exl3", "decode", "paging", "reference")
+KERNEL_SOURCE_HOMES = tuple(f"src/kernels/{source}/" for source in KERNEL_SOURCES)
+CUDA_HOMES = ("src/providers/cuda/",) + KERNEL_SOURCE_HOMES + ("src/kernels/device/",
+                                                              "src/kernels/compose/")
+KERNEL_HOMES = KERNEL_SOURCE_HOMES + (
+    "src/kernels/compose/",
     "src/artifact/",
     "src/format/",
     "src/import/",
-    "src/spec/",
     "src/tokenizer/",
-    "src/components/",
-    "src/model/",
-    "src/planner/",
 )
+# Code that names no kernel library at all, not even through the format
+# layer's layout names: it reaches kernels only through the common interface.
+STRICT_HOMES = ("src/engine/", "src/runtime/", "src/scheduler/", "src/ir/", "src/execution/")
 
 # path -> {rule: why}. Kept empty when nothing needs one.
 EXCEPTIONS: dict[str, dict[str, str]] = {}
@@ -93,11 +120,21 @@ KERNEL_HEADERS = re.compile(r"^(ggml|kernels/(ggml|exl3|cutlass)/|llmp_exl3)")
 # identifier, device spelling or diagnostic either. Provenance comments remain
 # outside the check; format names are interpreted by the format layer.
 NEUTRAL_HOMES = ("src/ir/", "src/execution/")
-NEUTRAL_KERNEL_WORDS = re.compile(r"\b\w*(ggml|exl3|cublas|cutlass)\w*\b", re.IGNORECASE)
+KERNEL_WORDS = re.compile(r"\b\w*(ggml|exl3|cublas|cutlass)\w*\b", re.IGNORECASE)
 NEUTRAL_VENDOR_WORDS = re.compile(r"\b\w*(cuda|nvidia|gb10(?!\d)|sm_?\d+[a-z]?)\w*\b", re.IGNORECASE)
-KERNEL_WORDS = re.compile(r"\b(ggml\w*|exl3\w*|cublas\w*|cutlass\w*)\b", re.IGNORECASE)
+# The format layer's names that carry a kernel library's (format/layout.h,
+# format/encoding.h): layouts and encodings that GGML's and ExLlamaV3's
+# formats define. Code outside STRICT_HOMES may name them.
+FORMAT_WORDS = frozenset({"kGgmlBlocks", "kGgmlNvfp4Blocks", "kNvfp4GgmlBlocks", "kExl3Trellis",
+                          "kExl3Tiles", "kGgmlRowPadding"})
+# Format vocabulary in data, anywhere: the EXL3 checkpoint container and
+# encoding name, the format layer's layout names, and GGUF's tokenizer keys.
+FORMAT_STRINGS = re.compile(r"^(exl3|ggml_blocks|ggml_nvfp4_blocks|exl3_tiles|exl3_trellis)$", re.IGNORECASE)
+GGUF_KEY = re.compile(r"\btokenizer\.ggml\.\w+")
 
-INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*([<"])([^>"]+)[>"]', re.MULTILINE)
+INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*(?:([<"])([^>"]+)[>"]|([A-Za-z_]\w*))', re.MULTILINE)
+DEFINE = re.compile(r'^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)[ \t]+[<"]([^>"]+)[>"]', re.MULTILINE)
+MACRO = "<macro>"
 # Where split's plain code may end: a comment, a literal or a number.
 NEXT_SPECIAL = re.compile(r"[/\"']|(?<!\w)\d")
 RAW_PREFIXES = ("R", "u8R", "uR", "UR", "LR")
@@ -190,8 +227,39 @@ def split(text: str) -> tuple[str, str, str]:
 
 
 def includes(plain: str) -> list[tuple[int, str]]:
-    """(offset, name) of each #include in `plain` (comments blanked, strings kept)."""
-    return [(m.start(), m.group(2)) for m in INCLUDE.finditer(plain)]
+    """(offset, name) of each #include in `plain` (comments blanked, strings kept).
+
+    An include through a macro is the path the file #defines it as, or MACRO
+    followed by the macro's name when the file does not.
+    """
+    defined = {m.group(1): m.group(2) for m in DEFINE.finditer(plain)}
+    found = []
+    for m in INCLUDE.finditer(plain):
+        if m.group(3) is not None:
+            found.append((m.start(), defined.get(m.group(3), MACRO + m.group(3))))
+        else:
+            found.append((m.start(), m.group(2)))
+    return found
+
+
+def normalized(name: str, header: str) -> str:
+    """An include as a path under src/: a relative one resolved against the including file `name`."""
+    if header.startswith(MACRO):
+        return header
+    if header.startswith(("./", "../")):
+        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), header))
+        return resolved[len(SCOPE):] if resolved.startswith(SCOPE) else resolved
+    header = posixpath.normpath(header)
+    return header[len(SCOPE):] if header.startswith(SCOPE) else header
+
+
+def kernel_source(path: str) -> str | None:
+    """The kernel source a path under src/ (or a src/-relative include) belongs to, if any."""
+    path = path[len(SCOPE):] if path.startswith(SCOPE) else path
+    parts = path.split("/")
+    if len(parts) >= 3 and parts[0] == "kernels" and parts[1] in KERNEL_SOURCES:
+        return parts[1]
+    return None
 
 
 def _line(text: str, offset: int) -> int:
@@ -206,26 +274,42 @@ def findings(name: str, text: str) -> list[tuple[str, str]]:
     def add(rule: str, offset: int, what: str) -> None:
         found.append((rule, f"{name}:{_line(text, offset)}: {what}"))
 
-    for offset, header in includes(plain):
+    source = kernel_source(name)
+    common = name.startswith("src/kernels/common/")
+    for offset, raw in includes(plain):
+        header = normalized(name, raw)
+        if header.startswith(MACRO):
+            if source is None:
+                add(KERNEL, offset, f"includes {header[len(MACRO):]}, a macro the check cannot resolve")
+            continue
         if LINUX_HEADERS.search(header) or header in LINUX_INCLUDES:
             add(LINUX, offset, f"includes {header}, which is Linux-specific")
         if CUDA_HEADERS.search(header) or header.startswith(CUDA_INCLUDES):
             add(CUDA, offset, f"includes {header}, which is CUDA's")
         if KERNEL_HEADERS.search(header):
             add(KERNEL, offset, f"includes {header}, which names a kernel library")
+        included = kernel_source(header)
+        if included is not None and (common or (source is not None and included != source)):
+            found.append((SOURCE, f"{name}:{_line(text, offset)}: includes {header}, another kernel source's"))
     for m in LINUX_WORDS.finditer(code):
         add(LINUX, m.start(), f"uses {m.group(0)}, which is Linux-specific")
     for m in LINUX_PATHS.finditer(strings):
         add(LINUX, m.start(), f"names /{m.group(2)}/, which is Linux's")
     for m in CUDA_WORDS.finditer(code):
         add(CUDA, m.start(), f"uses {m.group(0).rstrip('( ')}, which is CUDA's")
-    neutral = name.startswith(NEUTRAL_HOMES)
-    kernel_words = NEUTRAL_KERNEL_WORDS if neutral else KERNEL_WORDS
-    for m in kernel_words.finditer(code):
-        add(KERNEL, m.start(), f"uses {m.group(0)}, which names a kernel library")
-    if neutral:
-        for m in NEUTRAL_KERNEL_WORDS.finditer(strings):
-            add(KERNEL, m.start(), f"names {m.group(0)}, which names a kernel library")
+    strict = name.startswith(STRICT_HOMES)
+    for m in KERNEL_WORDS.finditer(code):
+        if strict or m.group(0) not in FORMAT_WORDS:
+            add(KERNEL, m.start(), f"uses {m.group(0)}, which names a kernel library")
+    # Include paths and the macros that name them are checked as includes.
+    skipped = [range(k.start(), k.end()) for k in GGUF_KEY.finditer(strings)]
+    skipped += [range(k.start(), k.end()) for k in INCLUDE.finditer(plain)]
+    skipped += [range(k.start(), k.end()) for k in DEFINE.finditer(plain)]
+    for m in KERNEL_WORDS.finditer(strings):
+        if FORMAT_STRINGS.match(m.group(0)) or any(m.start() in span for span in skipped):
+            continue
+        add(KERNEL, m.start(), f"names {m.group(0)}, which names a kernel library")
+    if name.startswith(NEUTRAL_HOMES):
         for view in (code, strings):
             for m in NEUTRAL_VENDOR_WORDS.finditer(view):
                 add(CUDA, m.start(), f"names {m.group(0)}, which is vendor-specific")
@@ -237,6 +321,8 @@ def findings(name: str, text: str) -> list[tuple[str, str]]:
 def home(rule: str, name: str) -> bool:
     if rule == KERNEL:
         return name.startswith(KERNEL_HOMES)
+    if rule == SOURCE:
+        return False
     return name.startswith(LINUX_HOMES if rule == LINUX else CUDA_HOMES)
 
 

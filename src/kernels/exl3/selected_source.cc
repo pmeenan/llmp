@@ -21,43 +21,40 @@
 #include "base/sha256.h"
 #include "format/tensor_format.h"
 #include "ir/graph.h"
-#include "kernels/decode/selected_source.h"
+#include "kernels/common/composite_source.h"
 #include "kernels/exl3/implementations.h"
 #include "kernels/exl3/input_conversion.h"
 #include "kernels/exl3/launch.h"
 #include "kernels/exl3/recon_gemm.h"
 #include "kernels/exl3/reconstruction_tuning.h"
-#include "kernels/ggml/selected_operation.h"
 #include "llmp_exl3_kernels.h"
 #include "providers/device_runtime.h"
 
 namespace llmp::kernels::exl3 {
 namespace {
-namespace kg = ggml;
-using kg::SelectedOperand;
-using kg::SelectedWorkspace;
-using Failure = kg::KernelFailure;
+using kernels::SelectedOperand;
+using kernels::SelectedWorkspace;
+using Failure = kernels::KernelFailure;
 
 std::unexpected<Failure> Reject(std::string message) {
   return std::unexpected(Failure{.detail = std::move(message)});
 }
 Failure Convert(const KernelFailure& failure) {
-  return {.error = failure.error == KernelError::kUnknown ? kg::KernelError::kUnknown
-                                                          : kg::KernelError::kRejected,
+  return {.error = failure.error == KernelError::kUnknown ? kernels::KernelError::kUnknown
+                                                          : kernels::KernelError::kRejected,
           .detail = failure.detail};
 }
-std::uint64_t Address(const ggml_tensor* tensor) {
-  return static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(tensor->data));
-}
+// A descriptor's current address (0 for an empty reference).
+std::uint64_t Address(const TensorRef& tensor) { return tensor ? AddressOf(tensor.facts()) : 0; }
 std::uint64_t Align(std::uint64_t bytes) { return (bytes + 255U) / 256U * 256U; }
 constexpr std::uint64_t kPersistent = (kLockBytes + 255U) / 256U * 256U;
 
-class Runtime final : public kg::SelectedLaunch {
+class Runtime final : public SelectedLaunch {
  public:
-  Runtime(const kg::SelectedSource* owner, providers::NativeStream native, int device,
+  Runtime(const kernels::SelectedSource* owner, providers::NativeStream native, int device,
           providers::DeviceExecution& execution, providers::StreamId stream, std::uint64_t locks,
           int sms)
-      : kg::SelectedLaunch(owner, native),
+      : SelectedLaunch(owner, native),
         device_(device),
         execution_(execution),
         stream_(stream),
@@ -91,7 +88,7 @@ class Runtime final : public kg::SelectedLaunch {
 
 enum class Kind : std::uint8_t { kGemm, kGemv, kMulti, kReconstruct, kFused, kBias };
 
-class Bound final : public kg::BoundSelectedCall {
+class Bound final : public BoundSelectedCall {
  public:
   Bound(Runtime& runtime, Kernel kernel, Kind kind)
       : runtime_(runtime), kernel_(kernel), kind_(kind) {}
@@ -144,11 +141,11 @@ class Bound final : public kg::BoundSelectedCall {
   Kind kind_;
 };
 
-class Call final : public kg::SelectedCall {
+class Call final : public SelectedCall {
  public:
-  Call(const kg::SelectedSource* owner, Kind kind, const execution::Implementation* native,
+  Call(const kernels::SelectedSource* owner, Kind kind, const execution::Implementation* native,
        base::Sha256Digest identity)
-      : kg::SelectedCall(owner), kind(kind), native(native), identity(identity) {}
+      : SelectedCall(owner), kind(kind), native(native), identity(identity) {}
   std::uint64_t scratch_bytes() const override {
     if (kind == Kind::kBias) return 0;
     const auto input = Align(static_cast<std::uint64_t>(rows) * static_cast<unsigned>(k) * 2U);
@@ -179,8 +176,8 @@ class Call final : public kg::SelectedCall {
                                       kReconstructSliceColumns) +
            (kind == Kind::kFused ? 0U : 2U);
   }
-  std::expected<std::unique_ptr<kg::BoundSelectedCall>, Failure> Bind(
-      const execution::Implementation& implementation, kg::SelectedLaunch& launch,
+  std::expected<std::unique_ptr<BoundSelectedCall>, Failure> Bind(
+      const execution::Implementation& implementation, SelectedLaunch& launch,
       SelectedWorkspace scratch) const override {
     if (launch.owner() != owner()) return Reject("foreign selected-source launch");
     auto& runtime = static_cast<Runtime&>(launch);
@@ -195,12 +192,15 @@ class Call final : public kg::SelectedCall {
     auto bound = std::make_unique<Bound>(runtime, *kernel, kind);
     std::uint64_t product_input = Address(x);
     if (convert_input) {
-      if (x->type != GGML_TYPE_F32 || x->ne[0] != k || x->ne[1] != rows || x->ne[2] != 1 ||
-          x->ne[3] != 1 || !ggml_is_contiguous(x))
+      const auto xf = x ? x.facts() : TensorFacts{};
+      if (!x || xf.type != StorageType::kF32 || xf.ne[0] != k || xf.ne[1] != rows ||
+          xf.ne[2] != 1 || xf.ne[3] != 1 || !xf.contiguous)
         return Reject("EXL3 original F32 input descriptor changed before Bind");
-      const auto disjoint = [&](const ggml_tensor* tensor) {
-        if (!tensor || !tensor->data) return false;
-        const auto base = Address(tensor), bytes = ggml_nbytes(tensor);
+      const auto disjoint = [&](const TensorRef& tensor) {
+        if (!tensor) return false;
+        const auto facts = tensor.facts();
+        if (!facts.data) return false;
+        const auto base = AddressOf(facts), bytes = facts.bytes;
         if (base + bytes < base) return false;
         return base >= scratch.base ? base - scratch.base >= scratch.bytes
                                     : scratch.base - base >= bytes;
@@ -324,22 +324,22 @@ class Call final : public kg::SelectedCall {
   bool convert_input = false;
   const execution::Implementation* native;
   base::Sha256Digest identity;
-  std::array<ggml_tensor*, 4> second_parts{};
-  ggml_tensor* second_y = nullptr;
+  std::array<TensorRef, 4> second_parts{};
+  TensorRef second_y{};
   MultiGemmPlan multi_plan{};
   GemvPlan gemv{};
   int rows = 0, k = 0, n = 0, bits = 0;
   Output output = Output::kF16;
-  std::array<ggml_tensor*, 4> parts{};
-  ggml_tensor* x = nullptr;
-  ggml_tensor* y = nullptr;
-  ggml_tensor* bias = nullptr;
+  std::array<TensorRef, 4> parts{};
+  TensorRef x{};
+  TensorRef y{};
+  TensorRef bias{};
   GemmPlan plan{};
   std::vector<LtAlgorithm> algorithms;
 };
 
 bool Dense(const SelectedOperand& operand, format::Encoding encoding) {
-  return operand.tensor != nullptr && operand.parts.empty() &&
+  return static_cast<bool>(operand.tensor) && operand.parts.empty() &&
          operand.desc.format.encoding == encoding &&
          operand.desc.format.layout == format::Layout::kDense && ir::IsContiguous(operand.desc) &&
          operand.desc.ne(2) == 1 && operand.desc.ne(3) == 1;
@@ -414,25 +414,25 @@ std::string_view ProfileName(FrozenCache cache) {
 bool Optimized(FrozenCache cache) {
   return cache == FrozenCache::k40O || cache == FrozenCache::k45O;
 }
-std::expected<std::array<ggml_tensor*, 4>, Failure> PhysicalParts(const SelectedOperand& operand) {
+std::expected<std::array<TensorRef, 4>, Failure> PhysicalParts(const SelectedOperand& operand) {
   const auto extents = format::PartsOf(operand.desc.format);
   if (!extents || extents->size() != 4 || operand.parts.size() != 4)
     return Reject("EXL3 requires all four physical parts");
   constexpr std::array roles{format::PartRole::kCodes, format::PartRole::kInputSigns,
                              format::PartRole::kOutputSigns, format::PartRole::kCodebookMarker};
-  std::array<ggml_tensor*, 4> result{};
+  std::array<TensorRef, 4> result{};
   for (std::size_t i = 0; i < roles.size(); ++i) {
-    const auto found = std::ranges::find(operand.parts, roles[i], &kg::SelectedPart::role);
+    const auto found = std::ranges::find(operand.parts, roles[i], &SelectedPart::role);
     const auto extent = extents->Find(roles[i]);
-    if (found == operand.parts.end() || found->tensor == nullptr || !extent ||
-        std::ranges::count(operand.parts, roles[i], &kg::SelectedPart::role) != 1 ||
-        ggml_nbytes(found->tensor) != extent->readable)
+    if (found == operand.parts.end() || !found->tensor || !extent ||
+        std::ranges::count(operand.parts, roles[i], &SelectedPart::role) != 1 ||
+        found->tensor.facts().bytes != extent->readable)
       return Reject("EXL3 has a missing, duplicate or incorrectly sized part");
     result[i] = found->tensor;
   }
   return result;
 }
-class Source final : public kg::SelectedSource {
+class Source final : public kernels::SelectedSource {
  public:
   Source(FrozenCache cache, std::optional<GemvCapacity> capacity,
          std::optional<PackedCapacity> defaults, bool generic = false)
@@ -533,7 +533,7 @@ class Source final : public kg::SelectedSource {
     }
     // A source F32 product retains its original operand and performs the
     // native EXL3 input rounding in its own accounted scratch. The explicit
-    // exl3_products rewrite can share that conversion across products; these
+    // trellis_products rewrite can share that conversion across products; these
     // companions remain meaningful complete own alternatives without it.
     const auto native_count = declarations_.size();
     canonical_.reserve(native_count * 2);
@@ -627,7 +627,7 @@ class Source final : public kg::SelectedSource {
   }
   std::uint64_t persistent_bytes() const override { return kPersistent; }
   std::optional<base::Sha256Digest> ExecutionIdentity() const override { return identity_; }
-  std::expected<std::unique_ptr<kg::SelectedCall>, Failure> Lower(
+  std::expected<std::unique_ptr<SelectedCall>, Failure> Lower(
       const execution::Implementation& implementation, const ir::Node& node,
       std::span<const SelectedOperand> inputs,
       std::span<const SelectedOperand> outputs) const override {
@@ -730,7 +730,7 @@ class Source final : public kg::SelectedSource {
     }
     return call;
   }
-  std::expected<std::unique_ptr<kg::SelectedLaunch>, Failure> Launch(
+  std::expected<std::unique_ptr<SelectedLaunch>, Failure> Launch(
       int device, providers::DeviceExecution& execution, providers::StreamId stream,
       SelectedWorkspace persistent) const override {
     if (persistent.bytes != kPersistent || persistent.base == 0 || persistent.base % 256 != 0 ||
@@ -756,7 +756,7 @@ class Source final : public kg::SelectedSource {
   }
 
  private:
-  std::expected<std::unique_ptr<kg::SelectedCall>, Failure> Pair(
+  std::expected<std::unique_ptr<SelectedCall>, Failure> Pair(
       const ir::Node& node, std::span<const SelectedOperand> inputs,
       std::span<const SelectedOperand> outputs, std::unique_ptr<Call> call) const {
     if (node.key != ir::Fused(ir::FusedKind::kPreparedProducts) || node.nsrc != 3 ||
@@ -850,7 +850,7 @@ std::expected<GemvCapacity, std::string> QueryGemvCapacity(int device) {
   }
   return result;
 }
-std::expected<std::shared_ptr<const kg::SelectedSource>, std::string> SelectedSource(
+std::expected<std::shared_ptr<const kernels::SelectedSource>, std::string> SelectedSource(
     FrozenCache cache, std::optional<GemvCapacity> capacity, std::optional<PackedCapacity> defaults,
     bool generic) {
   if (ProfileName(cache).empty() || (!generic && (Optimized(cache) != capacity.has_value())))
@@ -881,16 +881,16 @@ std::expected<std::shared_ptr<const kg::SelectedSource>, std::string> SelectedSo
   }
   return std::make_shared<Source>(cache, capacity, defaults, generic);
 }
-std::expected<std::shared_ptr<const kg::SelectedSource>, std::string> DeviceSelectedSource(
+std::expected<std::shared_ptr<const kernels::SelectedSource>, std::string> DeviceSelectedSource(
     int device) {
   const auto facts = providers::QueryDeviceFacts(device);
   if (!facts) return std::unexpected(facts.error().text());
-  if (!CompiledForDevice(facts->architecture / 10)) return decode::CompositeSelectedSource({});
+  if (!CompiledForDevice(facts->architecture / 10)) return kernels::CompositeSelectedSource({});
   auto gemv = QueryGemvCapacity(device);
   if (!gemv) return std::unexpected(gemv.error());
   auto packed = QueryPackedCapacity(device);
   if (!packed) return std::unexpected(packed.error());
-  std::vector<std::shared_ptr<const kg::SelectedSource>> sources;
+  std::vector<std::shared_ptr<const kernels::SelectedSource>> sources;
   for (const auto cache :
        {FrozenCache::k40G, FrozenCache::k45G, FrozenCache::k40O, FrozenCache::k45O}) {
     // G profiles retain their measured GEMM-only routing; occupancy facts
@@ -898,7 +898,7 @@ std::expected<std::shared_ptr<const kg::SelectedSource>, std::string> DeviceSele
     sources.push_back(std::make_shared<Source>(cache, *gemv, std::nullopt));
   }
   sources.push_back(std::make_shared<Source>(FrozenCache::k45O, *gemv, *packed, true));
-  return decode::CompositeSelectedSource(std::move(sources));
+  return kernels::CompositeSelectedSource(std::move(sources));
 }
 
 }  // namespace llmp::kernels::exl3

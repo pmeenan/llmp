@@ -19,6 +19,8 @@
 #include "expected_error.h"
 #include "families/qwen.h"
 #include "ir/graph.h"
+#include "kernels/common/composite_source.h"
+#include "kernels/compose/kernel_set.h"
 #include "kernels/decode/selected_source.h"
 #include "kernels/exl3/reconstruction_tuning.h"
 #include "kernels/exl3/selected_source.h"
@@ -31,7 +33,7 @@
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_runtime.h"
 #include "spec/mapping.h"
-#include "spec/mappings/qwen2.h"
+#include "spec/mappings/dense.h"
 
 namespace {
 namespace ex = llmp::kernels::exl3;
@@ -108,7 +110,7 @@ Product Make(ggml_context* context, int rows, int k, int n, Encoding output, int
   for (const auto& extent : extents->parts()) {
     auto* tensor =
         ggml_new_tensor_1d(context, GGML_TYPE_I8, static_cast<std::int64_t>(extent.readable));
-    weight.parts.push_back({extent.role, tensor});
+    weight.parts.push_back({extent.role, kg::Ref(tensor)});
   }
   weight.tensor = weight.parts[0].tensor;
   const auto dense = [&](int width, Encoding encoding) {
@@ -116,8 +118,8 @@ Product Make(ggml_context* context, int rows, int k, int n, Encoding output, int
     operand.desc.format = ir::Dense(
         encoding, ir::ShapeOf({static_cast<unsigned>(width), static_cast<unsigned>(rows)}));
     operand.desc.nb = ir::NaturalStrides(operand.desc.format);
-    operand.tensor = ggml_new_tensor_2d(
-        context, encoding == Encoding::kF16 ? GGML_TYPE_F16 : GGML_TYPE_F32, width, rows);
+    operand.tensor = kg::Ref(ggml_new_tensor_2d(
+        context, encoding == Encoding::kF16 ? GGML_TYPE_F16 : GGML_TYPE_F32, width, rows));
     return operand;
   };
   result.inputs[1] = dense(k, Encoding::kF16);
@@ -330,7 +332,7 @@ TEST(Exl3SelectedTest, RefusesMissingDuplicateShortPartsAndWrongNumericalPath) {
   p.inputs[0].parts[3] = p.inputs[0].parts[0];
   EXPECT_FALSE((*source)->Lower(*impl, p.node, p.inputs, p.output));
   p = Make(arena->context(), 145, 896, 896, Encoding::kF16);
-  p.inputs[0].parts[0].tensor = ggml_new_tensor_1d(arena->context(), GGML_TYPE_I8, 16);
+  p.inputs[0].parts[0].tensor = kg::Ref(ggml_new_tensor_1d(arena->context(), GGML_TYPE_I8, 16));
   EXPECT_FALSE((*source)->Lower(*impl, p.node, p.inputs, p.output));
   for (const int rows : {144, 1024}) {
     p = Make(arena->context(), rows, 896, 896, Encoding::kF16);
@@ -354,7 +356,7 @@ TEST(Exl3SelectedTest, AutomaticPairedProductsNeedQualificationAcrossTheComplete
   ASSERT_TRUE(pinned);
   ASSERT_TRUE(decoders);
   ASSERT_TRUE(device);
-  const auto complete = de::CompositeSelectedSource({*pinned, *decoders, *device});
+  const auto complete = llmp::kernels::CompositeSelectedSource({*pinned, *decoders, *device});
   auto implementations = kg::Implementations();
   for (auto& implementation : complete->Implementations())
     implementations.push_back(std::move(implementation));
@@ -364,6 +366,7 @@ TEST(Exl3SelectedTest, AutomaticPairedProductsNeedQualificationAcrossTheComplete
   ASSERT_TRUE(device_execution);
   const auto stream = (*device_execution)->CreateStream();
   ASSERT_TRUE(stream);
+  static_cast<void>(llmp::kernels::RegisterBuildKernels());
   auto default_backend = kg::GgmlBackend::Create(0, **device_execution, *stream, nullptr);
   ASSERT_TRUE(default_backend);
   const auto ordinary_backend = (*default_backend)->Backend();
@@ -527,7 +530,7 @@ TEST(Exl3SelectedTest, SharedGraphKeepsEveryWeightPartAndExactSelectedOperation)
   auto registry = llmp::execution::Registry::Create(std::move(declarations));
   ASSERT_TRUE(registry.has_value()) << registry.error().detail;
   const auto source = Source(true);
-  const auto& mapping = sp::mappings::Qwen2Exl3Mapping();
+  const auto& mapping = sp::mappings::Qwen2Mapping();
   const auto values = fam::Qwen2Values(fam::Qwen25Instruct05BExl3());
   ASSERT_TRUE(values.has_value());
   const auto spec = sp::Synthesize(mapping, source, *values);
@@ -679,7 +682,7 @@ TEST(Exl3SelectedTest, F32InputCompanionsRetainNativePartsAndAccountForConversio
   EXPECT_FALSE((*source)->Lower(*companion, product.node, product.inputs, product.output));
   product.inputs[1].desc.format.encoding = Encoding::kF32;
   product.inputs[1].desc.nb = ir::NaturalStrides(product.inputs[1].desc.format);
-  product.inputs[1].tensor = ggml_new_tensor_2d(arena.context(), GGML_TYPE_F32, 896, 1);
+  product.inputs[1].tensor = kg::Ref(ggml_new_tensor_2d(arena.context(), GGML_TYPE_F32, 896, 1));
   EXPECT_FALSE((*source)->Lower(*native, product.node, product.inputs, product.output));
   auto call = (*source)->Lower(*companion, product.node, product.inputs, product.output);
   ASSERT_TRUE(call) << llmp::test_support::Failed(call)->detail;
@@ -721,7 +724,7 @@ TEST(Exl3SelectedTest, F32InputBindRejectsInsufficientAndAliasedActualScratch) {
   auto product = Make(arena.context(), 1, 896, 896, Encoding::kF32);
   product.inputs[1].desc.format.encoding = Encoding::kF32;
   product.inputs[1].desc.nb = ir::NaturalStrides(product.inputs[1].desc.format);
-  product.inputs[1].tensor = ggml_new_tensor_2d(arena.context(), GGML_TYPE_F32, 896, 1);
+  product.inputs[1].tensor = kg::Ref(ggml_new_tensor_2d(arena.context(), GGML_TYPE_F32, 896, 1));
   auto call = (*source)->Lower(*implementation, product.node, product.inputs, product.output);
   ASSERT_TRUE(call) << llmp::test_support::Failed(call)->detail;
   auto free = [](void* pointer) { EXPECT_EQ(cudaFree(pointer), cudaSuccess); };
@@ -734,10 +737,12 @@ TEST(Exl3SelectedTest, F32InputBindRejectsInsufficientAndAliasedActualScratch) {
   };
   const auto needed = (*call)->scratch_bytes();
   const auto input = allocate(std::max<std::uint64_t>(needed, 896 * sizeof(float)));
-  product.inputs[1].tensor->data = reinterpret_cast<void*>(input);
-  product.output.tensor->data = reinterpret_cast<void*>(allocate(896 * sizeof(float)));
+  kg::TensorOf(product.inputs[1].tensor)->data = reinterpret_cast<void*>(input);
+  kg::TensorOf(product.output.tensor)->data =
+      reinterpret_cast<void*>(allocate(896 * sizeof(float)));
   for (auto& part : product.inputs[0].parts)
-    part.tensor->data = reinterpret_cast<void*>(allocate(ggml_nbytes(part.tensor)));
+    kg::TensorOf(part.tensor)->data =
+        reinterpret_cast<void*>(allocate(ggml_nbytes(kg::TensorOf(part.tensor))));
   const auto scratch = allocate(needed);
   auto execution = llmp::providers::cuda::OpenDeviceExecution(0).value();
   const auto stream = execution->CreateStream().value();
@@ -749,9 +754,9 @@ TEST(Exl3SelectedTest, F32InputBindRejectsInsufficientAndAliasedActualScratch) {
   ASSERT_TRUE(bound) << llmp::test_support::Failed(bound)->detail;
   EXPECT_FALSE((*call)->Bind(*implementation, **launch, {.base = scratch, .bytes = needed - 1}));
   EXPECT_FALSE((*call)->Bind(*implementation, **launch, {.base = input, .bytes = needed}));
-  product.inputs[1].tensor->nb[0] += 4;
+  kg::TensorOf(product.inputs[1].tensor)->nb[0] += 4;
   EXPECT_FALSE((*call)->Bind(*implementation, **launch, {.base = scratch, .bytes = needed}));
-  product.inputs[1].tensor->nb[0] -= 4;
+  kg::TensorOf(product.inputs[1].tensor)->nb[0] -= 4;
   // Bind performs no operand work; retire the source's borrowed submission
   // and live context before releasing its actual buffers and provider stream.
   const auto native = execution->Submission(stream).value();
@@ -778,8 +783,8 @@ TEST(Exl3SelectedTest, BiasCandidatesRequireTheSamePackedGeometryAsLowering) {
     kg::SelectedOperand value;
     value.desc.format = ir::Dense(Encoding::kF16, ir::ShapeOf({64, rows}));
     value.desc.nb = ir::NaturalStrides(value.desc.format);
-    value.tensor =
-        ggml_new_tensor_2d(arena.context(), GGML_TYPE_F16, 64, static_cast<std::int64_t>(rows));
+    value.tensor = kg::Ref(
+        ggml_new_tensor_2d(arena.context(), GGML_TYPE_F16, 64, static_cast<std::int64_t>(rows)));
     return value;
   };
   std::array inputs{dense(7), dense(1)};
@@ -832,7 +837,7 @@ TEST(Exl3SelectedTest, UncapturedComponentSelectionIsExplicitAndKeyed) {
   auto registry = llmp::execution::Registry::Create(std::move(declarations));
   ASSERT_TRUE(registry.has_value());
   const auto source = Source(true);
-  const auto& mapping = sp::mappings::Qwen2Exl3Mapping();
+  const auto& mapping = sp::mappings::Qwen2Mapping();
   const auto values = fam::Qwen2Values(fam::Qwen25Instruct05BExl3());
   ASSERT_TRUE(values.has_value());
   const auto spec = sp::Synthesize(mapping, source, *values);

@@ -16,7 +16,7 @@
 #include "../docs/experiments/gemma-attention-c4/replay_inputs.h"
 #include "engine/paged_node.h"
 #include "engine/paged_weights.h"
-#include "engine/runner_resources.h"
+#include "engine/runner_memory.h"
 #include "engine/support.h"
 #include "gemma_attention_owner_metadata.h"
 #include "kernels/ggml/fattn_owner.h"
@@ -38,7 +38,7 @@ class Replay final : public en::PagedModel {
     graph_.reset();
     arena_.reset();
     std::vector<std::string> problems;
-    resources_.Release(problems);
+    resources_.ReleaseMappings(problems);
     inputs_ = {};
     if (host_charged_) {
       node_.UnchargeHost(ar::kHostAllowance);
@@ -337,7 +337,7 @@ class Replay final : public en::PagedModel {
 
  private:
   en::PagedNode& node_;
-  en::RunnerResources resources_;
+  en::RunnerMemory resources_;
   std::unique_ptr<kg::LaunchContext> launch_;
   en::Mapped storage_;
   ar::Inputs inputs_;

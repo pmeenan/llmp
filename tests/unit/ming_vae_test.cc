@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "spec/mappings/ming_vae.h"
-
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -23,6 +21,7 @@
 #include "import/normalize.h"
 #include "import/source_mapping.h"
 #include "import/stage_recipe.h"
+#include "spec/mappings/qwen_image_vae.h"
 
 namespace llmp::import {
 namespace {
@@ -35,6 +34,26 @@ std::vector<MetaEntry> PinnedConfig() {
           {.key = "input_channels", .value = std::int64_t{4}},
           {.key = "scaling_factor", .value = 8.0064},
           {.key = "shift_factor", .value = 0.0}};
+}
+
+// Ming's causal 3-D kernels, as its checkpoint's header states its first
+// convolution's: what selects the mapping's 3-D dialect.
+std::vector<Tensor> PinnedKernels(const std::vector<MetaEntry>& config) {
+  const auto value = [&](std::string_view key) -> std::int64_t {
+    const auto found = std::ranges::find(config, key, &MetaEntry::key);
+    return found == config.end() ? 0 : std::get<std::int64_t>(found->value);
+  };
+  const auto mult = std::ranges::find(config, "dim_mult", &MetaEntry::key);
+  const auto& list = std::get<std::vector<std::int64_t>>(mult->value);
+  const auto mid = static_cast<std::uint64_t>(value("base_dim") * list.back());
+  return {Tensor{.name = "decoder.conv_in.weight",
+                 .dims = {mid, static_cast<std::uint64_t>(value("z_dim")), 3, 3, 3}}};
+}
+
+std::expected<spec::RecipeExpansion, std::string> Expand(const std::vector<MetaEntry>& config) {
+  const auto kernels = PinnedKernels(config);
+  return ExpandStageRecipe(*spec::mappings::QwenImageVaeMapping().stage_recipe, {}, 32U << 20U,
+                           config, kernels, "safetensors");
 }
 
 const spec::Param* Param(const spec::ComponentRef& component, std::string_view name) {
@@ -77,34 +96,49 @@ std::expected<components::SpatialShape, std::string> InferFinalShape(
   return values.back().shape;
 }
 
+// One mapping for the source class, whichever variant: Ming's VAE and
+// Qwen-Image-2.1's (a second configuration of the same architecture).
 TEST(MingVae, RegistryAndPinnedConfigUseDecoderInputChannels) {
-  const auto& direct = spec::mappings::MingVaeMapping();
+  const auto& direct = spec::mappings::QwenImageVaeMapping();
   const auto* registered = FindImportMapping("safetensors", "AutoencoderKLQwenImage", "vae");
   ASSERT_NE(registered, nullptr);
   EXPECT_EQ(registered, &direct);
+  EXPECT_EQ(FindImportMapping("safetensors", "AutoencoderKLQwenImage21", "vae"), &direct);
   EXPECT_TRUE(spec::ValidateMapping(direct));
   const auto config = PinnedConfig();
   EXPECT_EQ(std::ranges::find(config, "out_channels", &MetaEntry::key), config.end());
-  auto expanded = ExpandStageRecipe(*registered->stage_recipe, {}, 32U << 20U, config);
+  auto expanded = Expand(config);
   ASSERT_TRUE(expanded) << expanded.error();
   const auto& components = expanded->stage.layers[0].components;
+  // Its causal 3-D kernels' first frame is conv.spatial's temporal view.
+  EXPECT_EQ(std::ranges::count(components, "conv.causal_first_frame", &spec::ComponentRef::kind),
+            0);
   const auto output =
-      std::ranges::find_if(components.rbegin(), components.rend(),
-                           [](const auto& ref) { return ref.kind == "conv.causal_first_frame"; });
+      std::ranges::find_if(components.rbegin(), components.rend(), [](const auto& ref) {
+        return ref.kind == "conv.spatial" && ref.Find("temporal_kernel") != nullptr;
+      });
   ASSERT_NE(output, components.rend());
   const auto* channels = Param(*output, "out_channels");
   ASSERT_NE(channels, nullptr);
   ASSERT_TRUE(std::holds_alternative<std::int64_t>(channels->value));
   EXPECT_EQ(std::get<std::int64_t>(channels->value), 4);
+  // The halving decoder's output is clamped, its norms round to BF16, its
+  // latent affine is the config's scalar one.
+  EXPECT_EQ(components.back().kind, "activation.elementwise");
+  EXPECT_EQ(std::ranges::count(components, "affine.scalar", &spec::ComponentRef::kind), 1);
+  EXPECT_EQ(std::ranges::count(components, "affine.channel", &spec::ComponentRef::kind), 0);
+  for (const auto& component : components)
+    if (component.kind == "norm.channel") EXPECT_NE(component.Find("round_bf16"), nullptr);
+  // Without its kernels' rank (no tensor inventory) the dialect is unknown.
+  EXPECT_FALSE(ExpandStageRecipe(*registered->stage_recipe, {}, 32U << 20U, config));
 }
 
 TEST(MingVae, HalvesCompletePreviousChannelCount) {
-  const auto& mapping = spec::mappings::MingVaeMapping();
   auto config = PinnedConfig();
   const auto mult = std::ranges::find(config, "dim_mult", &MetaEntry::key);
   ASSERT_NE(mult, config.end());
   mult->value = std::vector<std::int64_t>{1, 2, 3, 3};
-  auto expanded = ExpandStageRecipe(*mapping.stage_recipe, {}, 32U << 20U, config);
+  auto expanded = Expand(config);
   ASSERT_TRUE(expanded) << expanded.error();
   const auto weight =
       std::ranges::find(expanded->tensors, "decoder.up_blocks.1.resnets.0.conv1.weight",
@@ -114,7 +148,6 @@ TEST(MingVae, HalvesCompletePreviousChannelCount) {
 }
 
 TEST(MingVae, FloorsOddCompleteChannelTotals) {
-  const auto& mapping = spec::mappings::MingVaeMapping();
   auto config = PinnedConfig();
   const auto base = std::ranges::find(config, "base_dim", &MetaEntry::key);
   ASSERT_NE(base, config.end());
@@ -122,7 +155,7 @@ TEST(MingVae, FloorsOddCompleteChannelTotals) {
   const auto mult = std::ranges::find(config, "dim_mult", &MetaEntry::key);
   ASSERT_NE(mult, config.end());
   mult->value = std::vector<std::int64_t>{1, 2, 3, 3};
-  const auto expanded = ExpandStageRecipe(*mapping.stage_recipe, {}, 32U << 20U, config);
+  const auto expanded = Expand(config);
   ASSERT_TRUE(expanded) << expanded.error();
   std::vector<std::int64_t> output_channels;
   for (const auto& component : expanded->stage.layers[0].components) {
@@ -140,13 +173,14 @@ TEST(MingVae, FloorsOddCompleteChannelTotals) {
 }
 
 TEST(MingVae, ThreeLevelRecipeInfersFourByFourOutput) {
-  const auto& mapping = spec::mappings::MingVaeMapping();
-  ASSERT_TRUE(mapping.stage_recipe->expected_outputs.empty());
+  // Ming's config states no spatial factor: its decoded geometry is
+  // inferred, not checked against one.
   auto config = PinnedConfig();
+  EXPECT_EQ(std::ranges::find(config, "scale_factor_spatial", &MetaEntry::key), config.end());
   const auto mult = std::ranges::find(config, "dim_mult", &MetaEntry::key);
   ASSERT_NE(mult, config.end());
   mult->value = std::vector<std::int64_t>{1, 2, 4};
-  auto expanded = ExpandStageRecipe(*mapping.stage_recipe, {}, 32U << 20U, config);
+  auto expanded = Expand(config);
   ASSERT_TRUE(expanded) << expanded.error();
   EXPECT_EQ(std::ranges::count(expanded->stage.layers[0].components, "upsample.nearest",
                                &spec::ComponentRef::kind),
@@ -204,7 +238,7 @@ std::unique_ptr<SyntheticContracts> MakeSyntheticContracts(std::size_t count, bo
                  .stream_width = kOne,
                  .primary_input = {.shape = kShape},
                  .steps = out->steps};
-  out->mapping = spec::mappings::MingVaeMapping();
+  out->mapping = spec::mappings::QwenImageVaeMapping();
   out->mapping.stage_recipe = &out->recipe;
 
   const std::array<std::uint64_t, 2> dims{1, 1};
@@ -243,8 +277,10 @@ TEST(MingVae, RawContractScansAndEvaluatedWeightLookupsArePaid) {
   const auto expected_scan = kBindings * kBindings * kNameBytes;
   const auto source_scans = 2U * kBindings * kBindings * kNameBytes;
   const auto set_scan = tree_comparisons * kNameBytes;
-  const auto evaluated_lookups = kBindings * kBindings * (std::uint64_t{6} + kNameBytes);
-  EXPECT_GE(cost->work_units, expected_scan + source_scans + set_scan + evaluated_lookups);
+  // The expansion's own counted comparisons: each binding's shared-tensor
+  // identity scan of those before it.
+  const auto identity_scans = kBindings * (kBindings - 1) / 2 * (kNameBytes + 1);
+  EXPECT_GE(cost->work_units, expected_scan + source_scans + set_scan + identity_scans);
 
   const auto one_short = normalization_detail::Build(
       Checkpoint(synthetic->source), synthetic->mapping,
@@ -264,7 +300,7 @@ TEST(MingVae, RawContractScansAndEvaluatedWeightLookupsArePaid) {
   ASSERT_TRUE(no_contract_cost) << no_contract_cost.error().reason;
   constexpr std::uint64_t kSmallBindings = 16;
   const auto empty_contract_lookup_floor =
-      kSmallBindings * kSmallBindings * (std::uint64_t{6} + kNameBytes);
+      kSmallBindings * (kSmallBindings - 1) / 2 * (kNameBytes + 1);
   EXPECT_GE(no_contract_cost->work_units, empty_contract_lookup_floor);
 }
 

@@ -100,7 +100,11 @@ class Check(unittest.TestCase):
         cuda = ('#include <cuda_runtime.h>\n#include "providers/cuda/cuda_facts.h"\n'
                 "cudaStream_t s; CUevent_st* e; int r = cuMemcpyAsync (0, 0, 0, s);\n"
                 "__global__ void K() {}\nvoid L() { K<<<1, 1>>>(); cudaStreamSynchronize(s); }\n")
-        self.assertEqual(self.check({"src/providers/cuda/a.cc": cuda, "src/kernels/x/a.cu": cuda}), [])
+        self.assertEqual(self.check({"src/providers/cuda/a.cc": cuda, "src/kernels/ggml/a.cu": cuda,
+                                     "src/kernels/device/a.cuh": cuda}), [])
+        # The common kernel interface is vendor-free.
+        self.assertEqual(self.check({"src/kernels/common/a.cc": "cudaStream_t s;\n"}),
+                         ["src/kernels/common/a.cc:1: uses cudaStream_t, which is CUDA's"])
         problems = self.check({"src/engine/a.cc": cuda, "src/engine/b.cu": "int x;\n"})
         self.assertEqual(problems, [
             "src/engine/a.cc:1: includes cuda_runtime.h, which is CUDA's",
@@ -128,7 +132,8 @@ class Check(unittest.TestCase):
             '  return 0;\n'
             '}\n'
         )
-        self.assertEqual(self.check({"src/kernels/a.cc": sample}), [])
+        self.assertEqual(self.check({"src/kernels/ggml/a.cc": sample.replace(
+            '#include "kernels/exl3/packed_tuning.h"\n#include "kernels/cutlass/gemm.h"\n', "")}), [])
         problems_engine = self.check({"src/engine/a.cc": sample})
         self.assertEqual(problems_engine, [
             "src/engine/a.cc:1: includes kernels/ggml/cublas.h, which names a kernel library",
@@ -150,6 +155,64 @@ class Check(unittest.TestCase):
             "src/runtime/a.cc:7: uses cublas_bytes, which names a kernel library",
             "src/runtime/a.cc:8: uses Exl3Source, which names a kernel library",
             "src/runtime/a.cc:9: uses cutlass_gemm, which names a kernel library",
+        ])
+
+    def test_embedded_names_strings_and_include_spellings_are_found(self):
+        sample = (
+            '#include "../kernels/ggml/launch.h"\n'
+            '#include "src/kernels/exl3/linear.h"\n'
+            '#define LLMP_HEADER "kernels/ggml/tensors.h"\n'
+            '#include LLMP_HEADER\n'
+            '#include LLMP_UNKNOWN\n'
+            'bool UsesCublas(int);\n'
+            'auto layout = format::Layout::kGgmlBlocks;\n'
+            'auto implementation = "ggml.mul_mat";\n'
+            'auto container = "exl3"; auto key = "tokenizer.ggml.tokens";\n'
+        )
+        for directory in ("engine", "runtime", "scheduler"):
+            with self.subTest(directory=directory):
+                name = f"src/{directory}/a.cc"
+                self.assertEqual(self.check({name: sample}), [
+                    f"{name}:1: includes kernels/ggml/launch.h, which names a kernel library",
+                    f"{name}:2: includes kernels/exl3/linear.h, which names a kernel library",
+                    f"{name}:4: includes kernels/ggml/tensors.h, which names a kernel library",
+                    f"{name}:5: includes LLMP_UNKNOWN, a macro the check cannot resolve",
+                    f"{name}:6: uses UsesCublas, which names a kernel library",
+                    f"{name}:7: uses kGgmlBlocks, which names a kernel library",
+                    f"{name}:8: names ggml, which names a kernel library",
+                ])
+        # The planner, components, specs, model and the common kernel
+        # interface may name the format layer's layouts, nothing else.
+        for directory in ("planner", "components", "spec", "model"):
+            with self.subTest(directory=directory):
+                name = f"src/{directory}/a.cc"
+                self.assertEqual(self.check({name: sample}), [
+                    f"{name}:1: includes kernels/ggml/launch.h, which names a kernel library",
+                    f"{name}:2: includes kernels/exl3/linear.h, which names a kernel library",
+                    f"{name}:4: includes kernels/ggml/tensors.h, which names a kernel library",
+                    f"{name}:5: includes LLMP_UNKNOWN, a macro the check cannot resolve",
+                    f"{name}:6: uses UsesCublas, which names a kernel library",
+                    f"{name}:8: names ggml, which names a kernel library",
+                ])
+
+    def test_kernel_sources_meet_only_through_the_common_interface(self):
+        self.assertEqual(self.check({
+            "src/kernels/decode/a.cc": ('#include "kernels/common/selected_operation.h"\n'
+                                        '#include "kernels/decode/products.h"\n'
+                                        '#include "../ggml/tensors.h"\n'
+                                        '#include "kernels/exl3/linear.h"\n'),
+            "src/kernels/compose/a.cc": ('#include "kernels/ggml/step_program.h"\n'
+                                         '#include "kernels/decode/selected_source.h"\n'
+                                         '#include "kernels/exl3/selected_source.h"\n'),
+            "src/kernels/common/a.cc": ('#include "kernels/common/tensor_ref.h"\n'
+                                        '#include "../paging/paging.h"\n'
+                                        'auto layout = format::Layout::kGgmlBlocks;\n'
+                                        'bool UsesCublas(int);\n'),
+        }), [
+            "src/kernels/common/a.cc:2: includes kernels/paging/paging.h, another kernel source's",
+            "src/kernels/common/a.cc:4: uses UsesCublas, which names a kernel library",
+            "src/kernels/decode/a.cc:3: includes kernels/ggml/tensors.h, another kernel source's",
+            "src/kernels/decode/a.cc:4: includes kernels/exl3/linear.h, another kernel source's",
         ])
 
     def test_ir_and_execution_reject_vendor_code_and_diagnostics(self):

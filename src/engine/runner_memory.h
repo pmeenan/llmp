@@ -5,8 +5,9 @@
 // (docs/engine.md), whatever its kernels: device memory of its own (a
 // verify's snapshot, working memory) mapped at setup with access and pinned
 // in the catalog, and pinned host staging, cataloged. The engine core's
-// part of a runner's resources; RunnerResources (runner_resources.h, CUDA
-// builds) adds cuBLAS and the GGML launch context over it.
+// part of a runner's resources; the runner also maps its device backend's
+// kernel memory here (RunnerConfig::kernel_memory; device_backend.h, CUDA
+// builds).
 //
 // Lifetimes are completion-aware (AGENTS.md rule 6): ReleaseMappings runs
 // only after the node's teardown fenced the model's stream and stopped the

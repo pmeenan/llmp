@@ -3407,11 +3407,11 @@ std::optional<Match> GroupedVecQMatch(const MatchContext& c, NodeId anchor) {
   return match;
 }
 
-// exl3_products: an EXL3 trellis product's F16 input conversion, its F16
+// trellis_products: an EXL3 trellis product's F16 input conversion, its F16
 // bias addition (with F16 KV-cache views when only an F16 store reads them,
 // or widened back to F32 otherwise), or a step output's F16 product widened
 // back to F32.
-std::optional<Match> Exl3ProductsMatch(const MatchContext& c, NodeId anchor) {
+std::optional<Match> TrellisProductsMatch(const MatchContext& c, NodeId anchor) {
   const ir::Node& p = c.node(anchor);
   if (p.key != Prim(Op::kMatMul) || c.taken(anchor)) {
     return std::nullopt;
@@ -3422,13 +3422,13 @@ std::optional<Match> Exl3ProductsMatch(const MatchContext& c, NodeId anchor) {
       !ir::IsContiguous(xd)) {
     return std::nullopt;
   }
-  const auto exl3_mm = [&](const ir::Node& q) {
+  const auto trellis_product = [&](const ir::Node& q) {
     return q.key == Prim(Op::kMatMul) && q.src[1] == x && Weight(c, q.src[0]) &&
            c.tensor(q.src[0]).format.encoding == Encoding::kExl3Trellis &&
            c.tensor(q.src[0]).format.layout == format::Layout::kExl3Tiles &&
            c.tensor(q.out[0]).format.encoding == Encoding::kF32;
   };
-  if (!exl3_mm(p)) {
+  if (!trellis_product(p)) {
     return std::nullopt;
   }
   ir::TensorDesc x_f16 = xd;
@@ -3456,7 +3456,7 @@ std::optional<Match> Exl3ProductsMatch(const MatchContext& c, NodeId anchor) {
     }
     if (!Unwritten(c, anchor, r, x)) continue;
     const ir::Node& q = c.node(r);
-    if (!exl3_mm(q)) continue;
+    if (!trellis_product(q)) continue;
     const ir::TensorDesc& wd = c.tensor(q.src[0]);
     const ir::TensorDesc& out_f32 = c.tensor(q.out[0]);
     ir::TensorDesc out_f16 = out_f32;

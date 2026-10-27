@@ -8,16 +8,11 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <vector>
 
 #include "format/encoding.h"
 #include "kernels/common/selected_operation.h"
 
 namespace llmp::kernels::decode {
-
-// A composite SelectedSource that multiplexes across child sources.
-std::shared_ptr<const kernels::SelectedSource> CompositeSelectedSource(
-    std::vector<std::shared_ptr<const kernels::SelectedSource>> sources);
 
 // Unified decode SelectedSource providing grouped, rows, and products decoders
 // for every compiled decoder and both mixed GLU pairs.

@@ -25,13 +25,14 @@
 #include "engine/component_source.h"
 #include "engine/model_runner.h"
 #include "engine/paged_weights.h"
+#include "kernels/compose/kernel_set.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/step_program.h"
 #include "planner/pattern.h"
 #include "platform/host_probe.h"
 #include "providers/device_probe.h"
 #include "spec/mapping.h"
-#include "spec/mappings/qwen2.h"
+#include "spec/mappings/dense.h"
 #include "spec/stored.h"
 
 namespace llmp::benchmarks {
@@ -282,6 +283,7 @@ Status Fp16Runner::Setup() {
     if (!found) return Error("FP16 step refers to an absent prepared resource");
     s.resources.emplace(weight.ref, *found);
   }
+  static_cast<void>(llmp::kernels::RegisterBuildKernels());
   auto backend = kg::GgmlBackend::Create(0, s.node.execution(), s.node.stream(s.stream), nullptr);
   if (!backend) return Error(backend.error());
   s.backend = std::move(*backend);

@@ -20,6 +20,7 @@
 #include "engine/graph_plan.h"
 #include "expected_error.h"
 #include "image_family.h"
+#include "image_recipes.h"
 #include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/conv2d_tiled.h"
@@ -293,14 +294,16 @@ TEST(GgmlSpatialTest, RaggedTypedPortsLowerWithoutTokenMetadataInBothBindingMode
   }
 }
 
+// Serial spans of the actual decoder (the VAE recipe's stage): its first
+// two convolutions and each upsampler with its convolution, as stages of
+// their own; a span reading a value outside it (a residual's skip) is not.
 TEST(GgmlSpatialTest, ActualVaeSourceSpansPreserveWeightsAndRefuseBranches) {
-  const auto& profile = ::llmp::test_support::QwenImageProfile().vae;
-  const auto steps = mo::VaeDecoderPlan(profile, 64, 64);
-  const auto tensors = mo::VaeDecoderTensors(profile, ::llmp::test_support::QwenImageNames().vae);
-  ASSERT_GT(steps.size(), 2U);
-  auto prefix = sp::VaeSpatialSpec(std::span(steps).first(2), tensors);
+  auto decoder =
+      ::llmp::test_support::QwenImageDecoderGraph(::llmp::test_support::QwenImageProfile(), 64, 64);
+  ASSERT_TRUE(decoder) << Failed(decoder).value_or("");
+  auto prefix = ::llmp::test_support::SelectStage(*decoder, {.values = {1, 2}});
   ASSERT_TRUE(prefix) << Failed(prefix).value_or("");
-  const auto& components = prefix->stages[0].layers[0].components;
+  const auto& components = prefix->spec.stages[0].layers[0].components;
   ASSERT_EQ(components.size(), 2U);
   for (std::size_t i = 0; i < 2; ++i) {
     const auto kernel =
@@ -308,19 +311,19 @@ TEST(GgmlSpatialTest, ActualVaeSourceSpansPreserveWeightsAndRefuseBranches) {
     ASSERT_NE(kernel, components[i].weights.end());
     EXPECT_EQ(kernel->tensor, i == 0 ? "post_quant_conv.weight" : "decoder.conv_in.weight");
   }
-  EXPECT_FALSE(sp::VaeSpatialSpec(std::span(steps).first(3), tensors));
-  auto broken = std::vector(steps.begin(), steps.begin() + 2);
-  broken[1].in = mo::kVaeQ;
-  EXPECT_FALSE(sp::VaeSpatialSpec(broken, tensors));
-  auto wrong = tensors;
-  wrong[static_cast<std::size_t>(steps[0].weight)].dtype = "BF16";
-  EXPECT_FALSE(sp::VaeSpatialSpec(std::span(steps).first(2), wrong));
+  const auto add = ::llmp::test_support::FindComponent(*decoder, "residual.spatial");
+  ASSERT_TRUE(add);
+  EXPECT_FALSE(::llmp::test_support::SelectStage(
+      *decoder, {.values = {*add}, .input = static_cast<std::uint16_t>(*add - 1)}));
   std::size_t spans = 0;
-  for (std::size_t i = 0; i + 1 < steps.size(); ++i) {
-    if (steps[i].kind != mo::VaeStep::Kind::kUpsample) continue;
-    auto span = sp::VaeSpatialSpec(std::span(steps).subspan(i, 2), tensors);
+  for (auto nearest = ::llmp::test_support::FindComponent(*decoder, "upsample.nearest"); nearest;
+       nearest = ::llmp::test_support::FindComponent(*decoder, "upsample.nearest", {}, *nearest)) {
+    auto span = ::llmp::test_support::SelectStage(
+        *decoder, {.values = {*nearest, static_cast<std::uint16_t>(*nearest + 1)},
+                   .input = static_cast<std::uint16_t>(*nearest - 1)});
     ASSERT_TRUE(span) << Failed(span).value_or("");
-    EXPECT_EQ(span->stages[0].layers[0].components[0].kind, "upsample.nearest");
+    EXPECT_EQ(span->spec.stages[0].layers[0].components[0].kind, "upsample.nearest");
+    EXPECT_EQ(span->spec.stages[0].layers[0].components[1].kind, "conv.spatial");
     ++spans;
   }
   EXPECT_EQ(spans, 4U);
@@ -333,7 +336,8 @@ TEST(GgmlSpatialTest, CompleteActualDecoderGeometryPlansAndLowersWithoutTokenMet
     const auto source = mo::VaeDecoderTensors(profile, ::llmp::test_support::QwenImageNames().vae);
     ASSERT_EQ(steps.size(), 113U);
     ASSERT_EQ(source.size(), 128U);
-    auto mapped = sp::VaeDecoderSpec(steps, source);
+    auto mapped = ::llmp::test_support::QwenImageDecoderGraph(
+        ::llmp::test_support::QwenImageProfile(), latent, latent);
     ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
     ASSERT_EQ(mapped->links.size(), 109U);  // saved Copy aliases need no primitive/component
     std::vector<co::BoundTensor> tensors;
@@ -434,16 +438,14 @@ TEST(GgmlSpatialTest, CompleteActualDecoderGeometryPlansAndLowersWithoutTokenMet
       EXPECT_EQ(primitive_norms, 0U);
       EXPECT_EQ(convolutions, 40U);
     }
-    auto malformed = steps;
-    malformed[2].in = mo::kVaeQ;  // uninitialized source at the first residual norm
-    EXPECT_FALSE(sp::VaeDecoderSpec(malformed, source));
   }
 }
 
 TEST(GgmlSpatialTest, FullSourceConditionedBlockUsesSharedProductsMaskAndThreeNormalRotations) {
   const auto& profile = ::llmp::test_support::QwenImageProfile().denoiser;
   const auto source = mo::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
-  auto mapped = sp::ImageTransformerBlockSpec(profile, 0, 2, source);
+  auto mapped =
+      ::llmp::test_support::QwenImageBlockGraph(::llmp::test_support::QwenImageProfile(), 2);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   std::vector<co::BoundTensor> tensors;
   for (const auto& component : mapped->spec.stages[0].layers[0].components)
@@ -572,7 +574,8 @@ TEST(GgmlSpatialTest, FullSourceConditionedBlockUsesSharedProductsMaskAndThreeNo
 TEST(GgmlSpatialTest, LayoutSunkBlockPlansAndLowersWithFewerCopies) {
   const auto& profile = ::llmp::test_support::QwenImageProfile().denoiser;
   const auto source = mo::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
-  auto mapped = sp::ImageTransformerBlockSpec(profile, 0, 2, source);
+  auto mapped =
+      ::llmp::test_support::QwenImageBlockGraph(::llmp::test_support::QwenImageProfile(), 2);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   std::vector<co::BoundTensor> tensors;
   for (const auto& component : mapped->spec.stages[0].layers[0].components)
@@ -654,7 +657,9 @@ TEST(GgmlSpatialTest, LayoutSunkFlowPlansAndLowers) {
   profile.context = profile.width;
   constexpr std::uint32_t kText = 8, kGrid = 16, kRows = kText + kGrid * kGrid;
   const auto source = mo::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
-  auto mapped = sp::ImageFlowSpec(profile, kText, kGrid * kGrid, source);
+  auto full = ::llmp::test_support::QwenImageProfile();
+  full.denoiser = profile;
+  auto mapped = ::llmp::test_support::QwenImageFlowGraph(full, kText, kGrid * kGrid);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   std::vector<co::BoundTensor> tensors;
   for (const auto& tensor : source) {
@@ -723,7 +728,7 @@ TEST(GgmlSpatialTest, LayoutSunkFlowPlansAndLowers) {
   ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
 }
 
-// The image's planning policy (spec/image_spatial.h ::llmp::test_support::QwenImagePolicy()) over
+// The image's planning policy (::llmp::test_support::QwenImagePolicy()) over
 // two flow blocks of the source's head geometry: every block's attention,
 // MLP, modulations (two a block and the output's) and residuals fused by
 // the plan, each residual joined with the modulation of its sum (the last
@@ -737,7 +742,9 @@ TEST(GgmlSpatialTest, PlannedFlowFusesEveryBlock) {
   profile.context = profile.width;
   constexpr std::uint32_t kText = 25, kGrid = 8, kRows = kText + kGrid * kGrid;
   const auto source = mo::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
-  auto mapped = sp::ImageFlowSpec(profile, kText, kGrid * kGrid, source);
+  auto full = ::llmp::test_support::QwenImageProfile();
+  full.denoiser = profile;
+  auto mapped = ::llmp::test_support::QwenImageFlowGraph(full, kText, kGrid * kGrid);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   std::vector<co::BoundTensor> tensors;
   for (const auto& tensor : source) {
@@ -855,7 +862,8 @@ TEST(GgmlSpatialTest, PlannedFlowFusesEveryBlock) {
 TEST(GgmlSpatialTest, Whole32BlockFlowPreservesPhysicalPlansAndFinalEulerPorts) {
   const auto& profile = ::llmp::test_support::QwenImageProfile().denoiser;
   const auto source = mo::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
-  auto mapped = sp::ImageFlowSpec(profile, 2, 4, source);
+  auto mapped =
+      ::llmp::test_support::QwenImageFlowGraph(::llmp::test_support::QwenImageProfile(), 2, 4);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   std::vector<co::BoundTensor> tensors;
   for (const auto& component : mapped->spec.stages[0].layers[0].components)
@@ -1074,8 +1082,8 @@ TEST(GgmlSpatialTest, Actual1024FlowAndDecoderHaveMeasuredTypedStageEnvelopes) {
         decoder ? mo::VaeDecoderTensors(profile.vae, ::llmp::test_support::QwenImageNames().vae)
                 : mo::DenoiserTensors(profile.denoiser,
                                       ::llmp::test_support::QwenImageNames().denoiser);
-    auto mapping = decoder ? sp::ImageDecodeSpec(profile.vae, 64, source)
-                           : sp::ImageFlowSpec(profile.denoiser, 25, 4096, source);
+    auto mapping = decoder ? ::llmp::test_support::QwenImageVaeGraph(profile, 64, 64)
+                           : ::llmp::test_support::QwenImageFlowGraph(profile, 25, 4096);
     ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
     std::vector<co::BoundTensor> tensors;
     for (const auto& tensor : source) {

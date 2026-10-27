@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <expected>
 #include <map>
 #include <ranges>
 #include <string>
@@ -40,6 +41,20 @@ std::vector<MetaEntry> PinnedSource() {
           {.key = "rope_theta", .value = 256.0},
           {.key = "qk_norm", .value = true},
           {.key = "axes_dims", .value = std::vector<std::int64_t>{32, 48, 48}}};
+}
+
+// The timestep embedder's linears, whose headers give its widths (the
+// source library fixes them in code): [hidden, frequencies] and [time width,
+// hidden].
+std::vector<Tensor> PinnedTimeEmbedder() {
+  return {Tensor{.name = "t_embedder.mlp.0.weight", .dims = {1024, 256}},
+          Tensor{.name = "t_embedder.mlp.2.weight", .dims = {256, 1024}}};
+}
+
+std::expected<spec::RecipeExpansion, std::string> Expand(const std::vector<MetaEntry>& source) {
+  const auto tensors = PinnedTimeEmbedder();
+  return ExpandStageRecipe(*spec::mappings::MingTransformerMapping().stage_recipe, {}, 16U << 20U,
+                           source, tensors, "safetensors");
 }
 
 const spec::Param* Parameter(const spec::ComponentRef& component, std::string_view name) {
@@ -141,7 +156,7 @@ TEST(MingTransformer, ExpandsPinnedLearnedCoreToCompleteTopologyAndInventory) {
   const auto& mapping = spec::mappings::MingTransformerMapping();
   ASSERT_TRUE(spec::ValidateMapping(mapping));
   auto source = PinnedSource();
-  auto expanded = ExpandStageRecipe(*mapping.stage_recipe, {}, 16U << 20U, source);
+  auto expanded = Expand(source);
   ASSERT_TRUE(expanded) << expanded.error();
   ASSERT_EQ(expanded->stage.layers.size(), 1U);
   const auto& stage = expanded->stage;
@@ -348,7 +363,7 @@ TEST(MingTransformer, ExpandsPinnedLearnedCoreToCompleteTopologyAndInventory) {
       qk->value = false;
     else
       qk->value = 1.0;
-    auto rejected = ExpandStageRecipe(*mapping.stage_recipe, {}, 16U << 20U, bad_source);
+    auto rejected = Expand(bad_source);
     EXPECT_FALSE(rejected) << invalid;
   }
 
@@ -356,12 +371,11 @@ TEST(MingTransformer, ExpandsPinnedLearnedCoreToCompleteTopologyAndInventory) {
   const auto heads = std::ranges::find(bad, "n_heads", &MetaEntry::key);
   ASSERT_NE(heads, bad.end());
   heads->value = std::int64_t{32};
-  auto rejected = ExpandStageRecipe(*mapping.stage_recipe, {}, 16U << 20U, bad);
+  auto rejected = Expand(bad);
   EXPECT_FALSE(rejected);
 }
 
 TEST(MingTransformer, FloorsHeadAndMlpDimensionsForOddModelWidth) {
-  const auto& mapping = spec::mappings::MingTransformerMapping();
   auto source = PinnedSource();
   const auto dim = std::ranges::find(source, "dim", &MetaEntry::key);
   ASSERT_NE(dim, source.end());
@@ -369,7 +383,7 @@ TEST(MingTransformer, FloorsHeadAndMlpDimensionsForOddModelWidth) {
   const auto heads = std::ranges::find(source, "n_heads", &MetaEntry::key);
   ASSERT_NE(heads, source.end());
   heads->value = std::int64_t{2};
-  const auto expanded = ExpandStageRecipe(*mapping.stage_recipe, {}, 16U << 20U, source);
+  const auto expanded = Expand(source);
   ASSERT_TRUE(expanded) << expanded.error();
   const auto& components = expanded->stage.layers[0].components;
   const auto attention =

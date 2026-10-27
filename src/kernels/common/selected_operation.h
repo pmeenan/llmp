@@ -18,9 +18,8 @@
 #include "execution/registry.h"
 #include "format/tensor_format.h"
 #include "ir/graph.h"
+#include "kernels/common/tensor_ref.h"
 #include "providers/device_execution.h"
-
-struct ggml_tensor;
 
 namespace llmp::kernels {
 
@@ -37,12 +36,12 @@ struct KernelFailure {
 
 struct SelectedPart {
   format::PartRole role = format::PartRole::kData;
-  ggml_tensor* tensor = nullptr;
+  TensorRef tensor{};
 };
 struct SelectedOperand {
   ir::TensorId id{};
   ir::TensorDesc desc{};
-  ggml_tensor* tensor = nullptr;
+  TensorRef tensor{};
   std::vector<SelectedPart> parts;
   // Typed evidence from direct, unmodified shared-step leaves. Row adapters
   // use both facts to tie device IDs to the runner's checked host slot map.
@@ -90,7 +89,7 @@ class BoundSelectedCall {
   virtual std::expected<void, KernelFailure> Run(providers::NativeStream stream) const = 0;
 };
 struct SelectedRoute {
-  ggml_tensor* ids = nullptr;
+  TensorRef ids{};
   ir::WeightRef weight;
   format::TensorFormat format;
 };
@@ -103,8 +102,8 @@ class SelectedCall {
   virtual ~SelectedCall() = default;
   const SelectedSource* owner() const { return owner_; }
   virtual std::uint64_t scratch_bytes() const = 0;
-  // Includes this descriptor and its eventual bound call, excluding GGML
-  // descriptors which the shared arena already counts.
+  // Includes this descriptor and its eventual bound call, excluding the step
+  // backend's tensor descriptors, which its own arena already counts.
   virtual std::uint64_t host_bytes() const = 0;
   virtual std::uint64_t launches() const = 0;
   // Runtime opt-in for this exact call's launch, in addition to its static
@@ -127,8 +126,9 @@ class SelectedCall {
   const SelectedSource* owner_;
 };
 
-// Optional kernel source lent to a GGML step backend. There is no dynamic
-// plugin ABI; implementations and the source are linked into this build.
+// Optional kernel source lent to a step backend, which lowers the graph and
+// owns the tensor descriptors (TensorRef). There is no dynamic plugin ABI;
+// implementations and the source are linked into this build.
 // Lower must reject an unsupported selected operation, never substitute one.
 class SelectedSource {
  public:
@@ -141,7 +141,8 @@ class SelectedSource {
   // to the registry's implementation/build identities. Default is unqualified.
   virtual std::optional<base::Sha256Digest> ExecutionIdentity() const { return {}; }
   // Persistent bytes (e.g. cooperative lock slots), separate from the pool
-  // scratch shared serially with GGML. Both bounds are 256-byte aligned.
+  // scratch shared serially with the step backend. Both bounds are 256-byte
+  // aligned.
   virtual std::uint64_t persistent_bytes() const = 0;
   virtual std::expected<std::unique_ptr<SelectedCall>, KernelFailure> Lower(
       const execution::Implementation&, const ir::Node&, std::span<const SelectedOperand>,
@@ -154,14 +155,6 @@ class SelectedSource {
   virtual std::expected<std::unique_ptr<SelectedLaunch>, KernelFailure> Launch(
       int device, providers::DeviceExecution&, providers::StreamId,
       SelectedWorkspace persistent) const = 0;
-};
-
-// A selected call's marker is an ordinary dense output with all physical
-// inputs attached. It is never submitted to a third-party graph dispatcher.
-struct SelectedNode {
-  ggml_tensor* tensor = nullptr;
-  const execution::Implementation* implementation = nullptr;
-  std::unique_ptr<SelectedCall> call;
 };
 
 }  // namespace llmp::kernels

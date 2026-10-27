@@ -38,6 +38,7 @@
 #include <string_view>
 
 #include "model/image_pipeline.h"
+#include "spec/expr.h"
 #include "spec/mapping.h"
 #include "spec/spec.h"
 #include "spec/stage_recipe.h"
@@ -67,11 +68,18 @@ struct ImageComponentRule {
   // separate encoder recipe is migrated.
   const StageRecipe* recipe = nullptr;
   // The checkpoint's tensors the stage does not run (a text encoder's vision
-  // tower and output head, a VAE's encoder), left out of the import: a name
-  // ending in '.' covers every tensor under it, another one whole name; a
-  // "{layer}" (once) stands for a block index. Any other tensor its kinds
-  // do not read is refused.
+  // tower and output head, a VAE's encoder), left out of the import: each
+  // ignored tensor one whole name, a "{layer}" (once) standing for a block
+  // index, and each ignored prefix every tensor under it (the importer's one
+  // matcher, spec::IgnoredTensor). Any other tensor its kinds do not read is
+  // refused.
   std::span<const std::string_view> ignored_tensors{};
+  std::span<const std::string_view> ignored_tensor_prefixes{};
+  // A component whose stage a configured component mapping (mapping.h, with
+  // a stage recipe) makes: the mapping's recipe, ignored tensors and config
+  // classification are the component's, as a standalone import of it reads
+  // them. Null: the rule's own fields.
+  const Mapping& (*mapping)() = nullptr;
   // The keys of its config.json (a safetensors component's) the mapping
   // reads neither as a parameter nor a requirement of its role, each with
   // the reason it does not change the stage's math (a whole key, or a
@@ -83,20 +91,19 @@ struct ImageComponentRule {
   std::span<const std::string_view> null_keys{};
 };
 
-// How a family parameter is read: from a component's config (by role) or
-// a kept pipeline file (by its name in the pipeline, "scheduler/..."),
-// under `key`, as the parameter's type (an integer key read as a real, a
-// list of flags as integers 0 and 1, `reverse` read back to front), or
-// with no key, the constant `value` (a real's `value.real`, an integer's
-// `value.integer`; a list's constants are not supported).
+// How a family parameter is read: an expression of the mappings' value
+// language (expr.h) over the values of a component's config (by role) or a
+// kept pipeline file (by its name in the pipeline, "scheduler/..."), read as
+// the parameter's type (an integer read as a real, a list of flags as
+// integers 0 and 1); one that reads no values is a constant, of neither (the
+// value a source library defines in code; a list's constants are not
+// supported).
 struct ImageParamRule {
   std::string_view kind{};
   std::string_view param{};
   std::string_view role{};
   std::string_view file{};
-  std::string_view key{};
-  Literal value{};
-  bool reverse = false;
+  Expr value{};
 };
 
 // What the source must say besides: `key` (of a role's config or a kept
@@ -147,10 +154,20 @@ struct ImageMapping {
   std::span<const ImageHostInput> host_inputs{};
 };
 
+// What importing a component reads: its stage recipe (null: the text
+// encoder's, ImageTextSpec), the tensors it leaves out and its config's
+// classification: its configured mapping's, else its rule's own.
+struct ComponentImport {
+  const StageRecipe* recipe = nullptr;
+  std::span<const std::string_view> ignored_tensors{};
+  std::span<const std::string_view> ignored_tensor_prefixes{};
+  std::span<const AuxiliaryNamespace> auxiliary{};
+  std::span<const std::string_view> null_keys{};
+};
+ComponentImport ImportOf(const ImageComponentRule& rule);
+
 std::span<const ImageMapping* const> ImageMappings();
 const ImageMapping* FindImageMapping(std::string_view architecture);
-// Whether `name` is one of a component's ignored_tensors (`rule`).
-bool IgnoredImageTensor(std::string_view rule, std::string_view name);
 // Its own rules: components unique and sorted, every schema parameter of
 // its components' kinds read by exactly one rule naming one of them, keys
 // source keys, names present, one policy.

@@ -20,16 +20,15 @@
 #include "engine/execution_contract.h"
 #include "engine/graph_plan.h"
 #include "engine/plan_cache.h"
-#include "engine/runner_resources.h"
 #include "engine/step_runs.h"
 #include "engine/support.h"
 #include "expected_error.h"
 #include "ir/builder.h"
 #include "ir/decompose.h"
 #include "kernels/ggml/attention_f32.h"
-#include "kernels/ggml/step_program.h"
 #include "platform/host_probe.h"
 #include "providers/device_runtime.h"
+#include "runner_kernels.h"
 
 namespace {
 namespace en = llmp::engine;
@@ -66,9 +65,8 @@ struct Arm {
 };
 struct Lifetime final : en::PagedModel {
   en::PagedNode node{{.compute_streams = 1, .slots = 1}};
-  en::RunnerResources resources{node, 0, 0};
+  llmp::test_support::RunnerKernels kernels{node, 0, 0};
   std::shared_ptr<en::ExecutionMetadataAllowance> paid;
-  std::unique_ptr<kg::GgmlBackend> backend;
   std::unique_ptr<kn::StepLaunch> launch;
   std::array<Arm, 2> arms;
   std::array<std::vector<float>, 4> inputs;
@@ -89,10 +87,8 @@ struct Lifetime final : en::PagedModel {
     }
     step_runs.SetLaunch(nullptr);
     launch.reset();
-    if (backend) backend->LaunchReleased();
-    backend.reset();
     std::vector<std::string> errors;
-    resources.Release(errors);
+    kernels.Release(errors);
     return en::support::Joined(errors);
   }
   en::Status Retire() {
@@ -209,45 +205,33 @@ en::Status SetupFixture(Lifetime& life, bool small) {
       return Error("fixed graph inventory");
     life.arms[i].graph.emplace(std::move(*graph));
   }
-  auto backend = kg::GgmlBackend::Create(0, life.node.execution(), life.node.stream(0), nullptr);
-  if (!backend) return Error(backend.error());
-  life.backend = std::move(*backend);
-  if (auto r = life.resources.OpenSelectedWorkspace("selected kernel state",
-                                                    life.backend->persistent_bytes());
-      !r)
-    return r;
-  auto facts = llmp::providers::QueryDeviceFacts(0);
-  if (!facts) return Error("actual device facts");
-  const auto workspace = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
-  if (workspace.value() > 64 * kMiB) return Error("handle workspace");
+  if (auto r = life.kernels.Create(); !r) return r;
+  if (life.kernels->library_workspace_bytes() > 64 * kMiB) return Error("handle workspace");
   const std::array<llmp::execution::TunedShape, 1> tuning{
       {{.implementation = kg::kAttentionF32,
         .rows = life.rows,
         .k = 128,
         .n = 128,
         .output_encoding = fm::Encoding::kF32}}};
-  if (auto r = life.backend->FundConstruction(
+  if (auto r = life.kernels->FundConstruction(
           [paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
           [paid = life.paid](std::uint64_t n) { paid->Release(n); });
       !r)
     return r;
-  if (auto r = life.backend->Declare(
-          tuning, workspace.value(), [p = life.paid](auto n) { return p->Charge(n); },
+  if (auto r = life.kernels->Declare(
+          tuning, [p = life.paid](auto n) { return p->Charge(n); },
           [p = life.paid](auto n) { p->Release(n); });
       !r)
     return Error(r.error());
-  if (auto r = life.resources.OpenLibrary("masked attention handle"); !r) return r;
-  if (auto r = life.backend->LendLibrary(&life.resources.library()); !r) return Error(r.error());
-  const auto owned = life.backend->Backend();
+  if (auto r = life.kernels.Bind("masked attention"); !r) return r;
+  const auto owned = life.kernels->Backend();
   if (!owned.owner || !owned.owner->Ready()) return Error("backend ownership");
   const auto& table = owned.owner->backend();
   for (bool measuring : {true, false}) {
     if (!measuring) {
       if (auto r = life.node.MapWorkspace(kActivation + 2 * kGuard, kPool + 2 * kGuard); !r)
         return r;
-      auto launch = life.backend->Launch({life.node.pool().base + kGuard, Bytes(0)},
-                                         {.base = life.resources.selected_workspace().base,
-                                          .bytes = life.resources.selected_workspace().bytes});
+      auto launch = life.kernels->Launch({life.node.pool().base + kGuard, Bytes(0)});
       if (!launch) return Error(launch.error());
       life.launch = std::move(*launch);
     }
@@ -276,11 +260,8 @@ en::Status SetupFixture(Lifetime& life, bool small) {
     }
   }
   life.launch.reset();
-  life.backend->LaunchReleased();
-  if (auto r = life.backend->LendLibrary(&life.resources.library()); !r) return Error(r.error());
-  auto launch = life.backend->Launch({life.node.pool().base + kGuard, Bytes(kPool)},
-                                     {.base = life.resources.selected_workspace().base,
-                                      .bytes = life.resources.selected_workspace().bytes});
+  if (auto r = life.kernels.Rebind(); !r) return r;
+  auto launch = life.kernels->Launch({life.node.pool().base + kGuard, Bytes(kPool)});
   if (!launch) return Error(launch.error());
   life.launch = std::move(*launch);
   for (std::size_t i = 0; i < 2; ++i) {
@@ -291,13 +272,13 @@ en::Status SetupFixture(Lifetime& life, bool small) {
   }
   ::testing::Test::RecordProperty(
       small ? "small_underpayment_refusals" : "representative_underpayment_refusals", "1");
-  auto pinned = life.resources.Pinned(kPinned);
+  auto pinned = life.kernels.Pinned(kPinned);
   if (!pinned) return Error(pinned.error());
   life.host = static_cast<std::byte*>(*pinned);
   life.step_runs.SetStaging(life.host, 12 * kMiB);
   life.step_runs.SetLaunch(life.launch.get());
   if (auto r = life.node.Start(Bytes(kDomain)); !r) return r;
-  auto extents = life.resources.extents();
+  auto extents = life.kernels.extents();
   for (const auto& more : {life.node.activations().extents, life.node.pool().extents})
     extents.insert(extents.end(), more.begin(), more.end());
   auto closure = life.node.catalog().ClosureOfExtents(extents);

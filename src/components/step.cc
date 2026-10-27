@@ -71,12 +71,12 @@ std::string Where(const spec::Stage& stage, Site site, std::uint32_t layer) {
 }
 
 // A state tensor of `cells` cells as its contract stores them: dense
-// values, or a block encoding's whole blocks in GGML's layout (the cell's
-// bytes model::CellBytes gave the contract).
+// values, or a block encoding's whole block structs (the cell's bytes
+// model::CellBytes gave the contract).
 format::TensorFormat CellFormat(const model::StateTensorContract& c, std::uint64_t cells) {
   const format::EncodingInfo& info = format::Info(c.encoding);
-  if (info.ggml.has_value() && info.quantized) {
-    const std::uint64_t values = c.cell_bytes / info.ggml->block_bytes * info.ggml->block_elements;
+  if (const auto block = format::BlockStructOf(c.encoding); block && info.quantized) {
+    const std::uint64_t values = c.cell_bytes / block->bytes * block->elements;
     return {.encoding = c.encoding,
             .layout = format::Layout::kGgmlBlocks,
             .shape = ir::ShapeOf({values, cells})};

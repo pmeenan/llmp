@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The image's planned fusions (spec/image_spatial.h ::llmp::test_support::QwenImagePolicy();
+// The image's planned fusions (::llmp::test_support::QwenImagePolicy();
 // docs/experiments/m36-runtime-fusion/README.md) on small synthetic
 // Qwen-Image-shaped graphs built by the production spatial components with
 // the production layout sinking and lowered through the production GGML
@@ -44,7 +44,9 @@
 #include "expected_error.h"
 #include "ggml.h"
 #include "image_family.h"
+#include "image_recipes.h"
 #include "ir/builder.h"
+#include "kernels/compose/kernel_set.h"
 #include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/cublas.h"
@@ -60,7 +62,6 @@
 #include "platform/host_probe.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_runtime.h"
-#include "spec/image_spatial.h"
 
 namespace {
 namespace co = llmp::components;
@@ -256,6 +257,7 @@ class ImageFusionGpu : public ::testing::Test {
         0, *execution, stream, {.base = Allocate(workspace.value()), .size = workspace});
     ASSERT_TRUE(handle) << Failed(handle, &kg::KernelFailure::detail).value_or("");
     cublas = std::move(*handle);
+    static_cast<void>(llmp::kernels::RegisterBuildKernels());
     auto made = kg::GgmlBackend::Create(0, *execution, stream, nullptr);
     ASSERT_TRUE(made) << Failed(made).value_or("");
     backend = std::move(*made);
@@ -587,7 +589,9 @@ class ImageFusionGpu : public ::testing::Test {
     const auto source =
         mo::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
     const auto image_rows = shape.grid * shape.grid;
-    auto mapped = sp::ImageFlowSpec(profile, shape.text, image_rows, source);
+    auto full = ::llmp::test_support::QwenImageProfile();
+    full.denoiser = profile;
+    auto mapped = ::llmp::test_support::QwenImageFlowGraph(full, shape.text, image_rows);
     EXPECT_TRUE(mapped) << Failed(mapped).value_or("");
     if (!mapped) return nullptr;
     const auto tensors = Bound(source, fm::Encoding::kBF16);
@@ -744,7 +748,9 @@ class ImageFusionGpu : public ::testing::Test {
     const auto profile = SmallVae();
     const std::uint32_t grid = kDecoderGrid;
     const auto source = mo::VaeDecoderTensors(profile, ::llmp::test_support::QwenImageNames().vae);
-    auto mapped = sp::ImageDecodeSpec(profile, grid, source);
+    auto full = ::llmp::test_support::QwenImageProfile();
+    full.vae = profile;
+    auto mapped = ::llmp::test_support::QwenImageVaeGraph(full, grid, grid);
     EXPECT_TRUE(mapped) << Failed(mapped).value_or("");
     if (!mapped) return;
     const auto tensors = Bound(source, fm::Encoding::kF32);

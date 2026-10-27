@@ -1,20 +1,16 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// A GGML runner's slab of a layer's routed experts (paged_weights.h
-// SlabSpec), from the GGML types of its expert arrays. CUDA builds only
-// (llmp_engine): it reads GGML's type table, which the engine core does not
-// name.
+// A model's slabs of routed experts (paged_weights.h SlabSpec), from the
+// native tensor formats of its artifact's expert arrays. In the engine core
+// (llmp_engine_core), every profile.
 
 #ifndef LLMP_ENGINE_EXPERT_SLAB_H_
 #define LLMP_ENGINE_EXPERT_SLAB_H_
 
 #include <cstdint>
 #include <expected>
-#include <span>
 #include <string>
-#include <string_view>
-#include <utility>
 #include <vector>
 
 #include "artifact/artifact.h"
@@ -22,20 +18,11 @@
 
 namespace llmp::engine {
 
-// The slab of a layer whose expert arrays (each an index into the
-// artifact's expert arrays and its GGML type's name) share their groups:
-// its first group, and a stride of the stored bytes rounded up to 16 and to
-// every array's element size. Refused if the arrays' groups differ.
-std::expected<SlabSpec, std::string> ExpertSlab(
-    const artifact::Artifact& artifact,
-    std::span<const std::pair<std::uint32_t, std::string_view>> arrays, std::uint32_t count,
-    std::uint64_t alignment, std::uint32_t layer);
-
-// Every layer's routed experts as one slab (native TensorFormat block geometry
-// for v1, a split encoding's parts at 16-byte expert bases, the unchanged
-// legacy GGML element/block tables for v0; the artifact's
-// expert arrays of that layer, ExpertArray::layer), its pitch rounded up to
-// `alignment` and to every array's GGML block bytes, so each expert's base
+// Every layer's routed experts as one slab (the artifact's expert arrays of
+// that layer, ExpertArray::layer, by their native formats: a single-part
+// block or dense encoding's block bytes, or a split encoding's parts at
+// 16-byte expert bases), its pitch rounded up to `alignment` (a positive
+// multiple of 16) and to every array's block bytes, so each expert's base
 // keeps both (Gemma 4's runner's rule: a shard change then falls on an
 // alignable page boundary); the expert groups placed by their slabs alone
 // (GroupPlace::kNone), every other group on the device. Refused if an

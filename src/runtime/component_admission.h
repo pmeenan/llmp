@@ -17,6 +17,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "artifact/artifact.h"
@@ -169,15 +170,14 @@ std::expected<void, std::string> CheckComponentArtifactAdmission(
 // ExpertLayout); layers without one are not checked.
 std::expected<void, std::string> CheckScaleAtomSlots(const artifact::Artifact& artifact);
 
-// Native hash-routing tables retain I32 source values. Validate each table
-// `model` binds (each side.hash input's, by its own `experts` and `used`
-// rows a token) through a bounded direct-read window of `artifact` before
-// any routed work: an I32 [used, tokens] table of consistent bytes whose
-// every entry names an expert in [0, experts). No whole-table copy or
-// uncharged payload allocation is introduced for stored targets.
-std::expected<void, std::string> CheckStoredHashTables(const artifact::Artifact& artifact,
-                                                       const spec::ModelSpec& model);
-
+// The stored tables `model` binds whose values a component's arithmetic
+// indexes by, each checked by its component (ComponentDef::check_stored:
+// side.hash's token-hash table, an I32 [used, tokens] table of consistent
+// bytes whose every entry names one of its experts) through bounded
+// direct-read windows of `artifact`, before any routed work. No whole-table
+// copy or uncharged payload allocation is introduced for stored targets.
+std::expected<void, std::string> CheckStoredTables(const artifact::Artifact& artifact,
+                                                   const spec::ModelSpec& model);
 // A target's admission, once: its prerequisites, then its StoredSpec and
 // SourceOf checked (CheckComponentAdmission).
 std::expected<ComponentAdmission, std::string> ReadComponentAdmission(
@@ -222,7 +222,7 @@ std::expected<ImageAdmission, std::string> ReadImageAdmission(
 // site reads. Exact verified source/spec identity is checked once here.
 std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::string>
 AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
-                 std::span<const artifact::Source> origins, const Approval* approval,
+                 std::span<const artifact::Source> origins,
                  const base::Sha256Digest& admitted_semantic, const spec::Envelope& envelope,
                  std::uint16_t active_stage, const planner::DeviceFacts& device,
                  std::shared_ptr<const kernels::ConstructionFunder> funder);
@@ -230,19 +230,17 @@ AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
 // existing construction payer. Mutable token fields cannot replace either.
 std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::string>
 AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
-                 std::span<const artifact::Source> origins, const Approval* approval,
+                 std::span<const artifact::Source> origins,
                  const base::Sha256Digest& admitted_semantic, const spec::Envelope& envelope,
                  std::uint16_t active_stage, const kernels::StepBackend& backend);
 // Join the generated stage's declared component semantics with accepted
 // component/device evidence, binding actual graph roles and query dimensions.
 // Historical checkpoint approval membership supplies no numerical grants.
 std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::string>
-AdmittedImageNumerics(const spec::ModelSpec& family, const ImageApproval* approval,
-                      const artifact::Composition& composition, const ir::Graph& graph,
-                      const spec::ModelSpec& stage_spec, std::uint16_t stage,
-                      const planner::DeviceFacts& device,
+AdmittedImageNumerics(const spec::ModelSpec& family, const artifact::Composition& composition,
+                      const ir::Graph& graph, const spec::ModelSpec& stage_spec,
+                      std::uint16_t stage, const planner::DeviceFacts& device,
                       std::shared_ptr<const kernels::ConstructionFunder> funder);
-
 // The approval's planning policy rule for an envelope (its mapping's first
 // rule whose gate, by the approval's gates, and envelope hold; null: none).
 std::expected<const spec::PolicyRule*, std::string> ApprovedRule(const Approval& approval,

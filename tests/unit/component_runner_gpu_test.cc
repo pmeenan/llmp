@@ -52,6 +52,7 @@
 #include "engine/paged_node.h"
 #include "engine/paged_weights.h"
 #include "engine/support.h"
+#include "kernels/compose/kernel_set.h"
 #include "kernels/ggml/step_program.h"
 #include "planner/step_shape.h"
 #include "platform/host_probe.h"
@@ -235,6 +236,7 @@ Component Lowered(const fs::path& root, const llmp::spec::ModelSpec& spec,
   std::vector<en::PagedModel*> entered;
   const auto started = [&]() -> en::Status {
     if (auto x = node.Open(); !x) return x;
+    static_cast<void>(llmp::kernels::RegisterBuildKernels());
     auto made = kg::GgmlBackend::Create(0, node.execution(), node.stream(0), nullptr, {});
     if (!made) return std::unexpected(made.error());
     backend = std::move(*made);

@@ -50,12 +50,12 @@ struct Inputs {
                      .stacked = 2,
                      .shape = ir::ShapeOf({32, 64, 4})};
     w.expert_weight = kWeight;
-    w.parts = {{Role::kCodes, ggml_new_tensor_2d(c, GGML_TYPE_I8, 1024, 4)},
-               {Role::kBlockScales, ggml_new_tensor_2d(c, GGML_TYPE_I8, 128, 4)},
-               {Role::kTensorScale, ggml_new_tensor_2d(c, GGML_TYPE_I8, 8, 4)}};
+    w.parts = {{Role::kCodes, kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I8, 1024, 4))},
+               {Role::kBlockScales, kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I8, 128, 4))},
+               {Role::kTensorScale, kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I8, 8, 4))}};
     const std::array<std::uint64_t, 3> at{0, 1024, 1280};
     for (std::size_t i = 0; i != w.parts.size(); ++i) {
-      auto* t = w.parts[i].tensor;
+      auto* t = kg::TensorOf(w.parts[i].tensor);
       t->nb[1] = 4096;
       t->nb[2] = t->nb[3] = 3 * 4096 + static_cast<std::uint64_t>(t->ne[0]);
       kg::TensorArena::Bind(t, 0x100000ULL + at[i]);
@@ -63,16 +63,16 @@ struct Inputs {
     w.tensor = w.parts[0].tensor;
     input[1].desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({32, routed ? 2U : 1U, 3}));
     input[1].desc.nb = ir::NaturalStrides(input[1].desc.format);
-    input[1].tensor = ggml_new_tensor_3d(c, GGML_TYPE_F32, 32, routed ? 2 : 1, 3);
-    kg::TensorArena::Bind(input[1].tensor, 0x200000);
+    input[1].tensor = kg::Ref(ggml_new_tensor_3d(c, GGML_TYPE_F32, 32, routed ? 2 : 1, 3));
+    kg::TensorArena::Bind(kg::TensorOf(input[1].tensor), 0x200000);
     input[2].desc.format = ir::Dense(fmt::Encoding::kI32, ir::ShapeOf({2, 3}));
     input[2].desc.nb = ir::NaturalStrides(input[2].desc.format);
-    input[2].tensor = ggml_new_tensor_2d(c, GGML_TYPE_I32, 2, 3);
-    kg::TensorArena::Bind(input[2].tensor, 0x210000);
+    input[2].tensor = kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I32, 2, 3));
+    kg::TensorArena::Bind(kg::TensorOf(input[2].tensor), 0x210000);
     output[0].desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({64, 2, 3}));
     output[0].desc.nb = ir::NaturalStrides(output[0].desc.format);
-    output[0].tensor = ggml_new_tensor_3d(c, GGML_TYPE_F32, 64, 2, 3);
-    kg::TensorArena::Bind(output[0].tensor, 0x220000);
+    output[0].tensor = kg::Ref(ggml_new_tensor_3d(c, GGML_TYPE_F32, 64, 2, 3));
+    kg::TensorArena::Bind(kg::TensorOf(output[0].tensor), 0x220000);
     node.key = ir::Primitive(ir::Op::kMatMulId);
     node.nsrc = 3;
     node.nout = 1;
@@ -129,8 +129,8 @@ TEST(DecodeSelectedGrouped, PitchedRouterIdsRetainExactSourceGeometry) {
     if (bad == 2) ids.desc.nb[1] = 4;
     if (bad == 3) ids.desc.nb[1] = 17;
     if (bad == 4) ids.desc.nb[1] = (std::uint64_t{INT32_MAX} + 1) * 4;
-    for (std::size_t i = 0; i != 4; ++i) ids.tensor->nb[i] = ids.desc.nb[i];
-    if (bad == 5) ids.tensor->nb[1] = 24;
+    for (std::size_t i = 0; i != 4; ++i) kg::TensorOf(ids.tensor)->nb[i] = ids.desc.nb[i];
+    if (bad == 5) kg::TensorOf(ids.tensor)->nb[1] = 24;
     auto call = (*source)->Lower(impl, d.node, d.input, d.output);
     if (bad != 0) {
       EXPECT_FALSE(call);
@@ -144,7 +144,7 @@ TEST(DecodeSelectedGrouped, PitchedRouterIdsRetainExactSourceGeometry) {
     const auto before = std::as_bytes(std::span(descriptors));
     std::array<std::byte, sizeof(descriptors)> saved{};
     std::ranges::copy(before, saved.begin());
-    ids.tensor->nb[1] = 24;
+    kg::TensorOf(ids.tensor)->nb[1] = 24;
     EXPECT_FALSE((*call)->StageDescriptors(std::as_writable_bytes(std::span(descriptors))));
     EXPECT_TRUE(std::ranges::equal(std::as_bytes(std::span(descriptors)), saved));
   }
@@ -183,22 +183,22 @@ TEST(DecodeSelectedGrouped, ChangedBindingsRefuseBeforeAnyDescriptorWrite) {
     Inputs d;
     auto call = (*source)->Lower(impl, d.node, d.input, d.output);
     ASSERT_TRUE(call);
-    auto* codes = d.input[0].parts[0].tensor;
-    auto* scales = d.input[0].parts[1].tensor;
-    auto* tensor = d.input[0].parts[2].tensor;
+    auto* codes = kg::TensorOf(d.input[0].parts[0].tensor);
+    auto* scales = kg::TensorOf(d.input[0].parts[1].tensor);
+    auto* tensor = kg::TensorOf(d.input[0].parts[2].tensor);
     if (bad == 0) kg::TensorArena::Bind(codes, 0x100001);
     if (bad == 1) kg::TensorArena::Bind(tensor, 0x100501);
     if (bad == 2) scales->nb[1] = 8192;
     if (bad == 3) kg::TensorArena::Bind(scales, 0x100200);
     if (bad == 4) codes->ne[1] = 3;
-    if (bad == 5) kg::TensorArena::Bind(d.output[0].tensor, 0x200000);
-    if (bad == 6) kg::TensorArena::Bind(d.input[2].tensor, 0x210001);
+    if (bad == 5) kg::TensorArena::Bind(kg::TensorOf(d.output[0].tensor), 0x200000);
+    if (bad == 6) kg::TensorArena::Bind(kg::TensorOf(d.input[2].tensor), 0x210001);
     if (bad == 7) {
-      d.input[1].tensor->ne[0] = 16;
-      d.input[1].tensor->ne[1] = 2;
+      kg::TensorOf(d.input[1].tensor)->ne[0] = 16;
+      kg::TensorOf(d.input[1].tensor)->ne[1] = 2;
     }
     if (bad == 8) tensor->nb[1] = UINT64_MAX;
-    if (bad == 9) kg::TensorArena::Bind(d.output[0].tensor, 0x102000);
+    if (bad == 9) kg::TensorArena::Bind(kg::TensorOf(d.output[0].tensor), 0x102000);
     alignas(256) std::array<std::byte, 4 * sizeof(de::Operand)> out;
     out.fill(std::byte{0x5a});
     const auto saved = out;
@@ -247,12 +247,12 @@ TEST(DecodeSelectedGrouped, AffineGroupedExpertsLowerAndStageDescriptors) {
   // K=32, bits=4: codes = 16 bytes/row, N=64 -> 1024 bytes per expert
   // group=32, BF16: scales = 2 bytes/row, N=64 -> 128 bytes per expert
   // biases: 128 bytes per expert
-  w.parts = {{Role::kCodes, ggml_new_tensor_2d(c, GGML_TYPE_I8, 1024, 4)},
-             {Role::kBlockScales, ggml_new_tensor_2d(c, GGML_TYPE_I8, 128, 4)},
-             {Role::kBiases, ggml_new_tensor_2d(c, GGML_TYPE_I8, 128, 4)}};
+  w.parts = {{Role::kCodes, kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I8, 1024, 4))},
+             {Role::kBlockScales, kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I8, 128, 4))},
+             {Role::kBiases, kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I8, 128, 4))}};
   const std::array<std::uint64_t, 3> at{0, 1024, 1152};
   for (std::size_t i = 0; i != w.parts.size(); ++i) {
-    auto* t = w.parts[i].tensor;
+    auto* t = kg::TensorOf(w.parts[i].tensor);
     t->nb[1] = 4096;
     t->nb[2] = t->nb[3] = 3 * 4096 + static_cast<std::uint64_t>(t->ne[0]);
     kg::TensorArena::Bind(t, 0x100000ULL + at[i]);
@@ -260,16 +260,16 @@ TEST(DecodeSelectedGrouped, AffineGroupedExpertsLowerAndStageDescriptors) {
   w.tensor = w.parts[0].tensor;
   input[1].desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({32, 1, 3}));
   input[1].desc.nb = ir::NaturalStrides(input[1].desc.format);
-  input[1].tensor = ggml_new_tensor_3d(c, GGML_TYPE_F32, 32, 1, 3);
-  kg::TensorArena::Bind(input[1].tensor, 0x200000);
+  input[1].tensor = kg::Ref(ggml_new_tensor_3d(c, GGML_TYPE_F32, 32, 1, 3));
+  kg::TensorArena::Bind(kg::TensorOf(input[1].tensor), 0x200000);
   input[2].desc.format = ir::Dense(fmt::Encoding::kI32, ir::ShapeOf({2, 3}));
   input[2].desc.nb = ir::NaturalStrides(input[2].desc.format);
-  input[2].tensor = ggml_new_tensor_2d(c, GGML_TYPE_I32, 2, 3);
-  kg::TensorArena::Bind(input[2].tensor, 0x210000);
+  input[2].tensor = kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I32, 2, 3));
+  kg::TensorArena::Bind(kg::TensorOf(input[2].tensor), 0x210000);
   output[0].desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({64, 2, 3}));
   output[0].desc.nb = ir::NaturalStrides(output[0].desc.format);
-  output[0].tensor = ggml_new_tensor_3d(c, GGML_TYPE_F32, 64, 2, 3);
-  kg::TensorArena::Bind(output[0].tensor, 0x220000);
+  output[0].tensor = kg::Ref(ggml_new_tensor_3d(c, GGML_TYPE_F32, 64, 2, 3));
+  kg::TensorArena::Bind(kg::TensorOf(output[0].tensor), 0x220000);
   node.key = ir::Primitive(ir::Op::kMatMulId);
   node.nsrc = 3;
   node.nout = 1;
@@ -437,7 +437,7 @@ TEST(DecodeSelectedGrouped, AffineSplitExpertPartBindsLeavesInLowerStep) {
       } else if (mode == 0) {
         ASSERT_TRUE(lowered) << lowered.error().detail;
         ASSERT_EQ(lowered->selected.size(), 1U);
-        const auto* ids = lowered->selected.front().call->route()->ids;
+        const auto* ids = kg::TensorOf(lowered->selected.front().call->route()->ids);
         EXPECT_EQ(ids->nb[1], 4U * sizeof(std::int32_t));
         ASSERT_NE(ids->view_src, nullptr);
         EXPECT_EQ(ggml_nbytes(ids->view_src), 4U * 3U * sizeof(std::int32_t));
@@ -498,22 +498,22 @@ TEST(DecodeSelectedGrouped, EveryDecoderRetainsPitchedCompletePhysicalParts) {
       t->nb[2] = t->nb[3] = t->nb[1] * 3 + e.readable;
       kg::TensorArena::Bind(t, base);
       base += 0x100000;
-      weight.parts.push_back({e.role, t});
+      weight.parts.push_back({e.role, kg::Ref(t)});
     }
     weight.tensor = weight.parts[0].tensor;
     inputs[1].desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({256, 1, 3}));
     inputs[1].desc.nb = ir::NaturalStrides(inputs[1].desc.format);
-    inputs[1].tensor = ggml_new_tensor_3d(c, GGML_TYPE_F32, 256, 1, 3);
-    kg::TensorArena::Bind(inputs[1].tensor, 0x1000000);
+    inputs[1].tensor = kg::Ref(ggml_new_tensor_3d(c, GGML_TYPE_F32, 256, 1, 3));
+    kg::TensorArena::Bind(kg::TensorOf(inputs[1].tensor), 0x1000000);
     inputs[2].desc.format = ir::Dense(fmt::Encoding::kI32, ir::ShapeOf({2, 3}));
     inputs[2].desc.nb = {4, 16, 48, 48};
-    inputs[2].tensor = ggml_new_tensor_2d(c, GGML_TYPE_I32, 2, 3);
-    std::ranges::copy(inputs[2].desc.nb, inputs[2].tensor->nb);
-    kg::TensorArena::Bind(inputs[2].tensor, 0x1100000);
+    inputs[2].tensor = kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I32, 2, 3));
+    std::ranges::copy(inputs[2].desc.nb, kg::TensorOf(inputs[2].tensor)->nb);
+    kg::TensorArena::Bind(kg::TensorOf(inputs[2].tensor), 0x1100000);
     outputs[0].desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({130, 2, 3}));
     outputs[0].desc.nb = ir::NaturalStrides(outputs[0].desc.format);
-    outputs[0].tensor = ggml_new_tensor_3d(c, GGML_TYPE_F32, 130, 2, 3);
-    kg::TensorArena::Bind(outputs[0].tensor, 0x1200000);
+    outputs[0].tensor = kg::Ref(ggml_new_tensor_3d(c, GGML_TYPE_F32, 130, 2, 3));
+    kg::TensorArena::Bind(kg::TensorOf(outputs[0].tensor), 0x1200000);
     ir::Node node;
     node.key = ir::Primitive(ir::Op::kMatMulId);
     node.nsrc = 3;
@@ -543,7 +543,7 @@ TEST(DecodeSelectedGrouped, EveryDecoderRetainsPitchedCompletePhysicalParts) {
     EXPECT_FALSE((*resident)->Lower(*at, node, inputs, outputs));
     weight.desc.format.shape.ne[3] = 1;
     // Complete-read coverage is authoritative even when the pitch is larger.
-    weight.parts[0].tensor->ne[0] -= 1;
+    kg::TensorOf(weight.parts[0].tensor)->ne[0] -= 1;
     EXPECT_FALSE((*call)->StageDescriptors(std::as_writable_bytes(std::span(descriptors))));
   }
 }

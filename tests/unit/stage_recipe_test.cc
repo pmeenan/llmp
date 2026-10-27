@@ -9,6 +9,7 @@
 #include <array>
 #include <bit>
 #include <cstdint>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -83,12 +84,10 @@ TEST(StageRecipe, ExpandsFiniteRepeatAndCarriesHostPortOnlyToFirstIteration) {
 }
 
 TEST(StageRecipe, ExpandsTypedStandaloneSourceScalarAndListValues) {
-  static constexpr spec::RecipeValue dim{.kind = spec::RecipeValueKind::kSourceValue,
-                                         .source_key = "in_channels"};
-  static constexpr spec::RecipeValue output_dim{
-      .kind = spec::RecipeValueKind::kSourceListElement, .source_key = "widths", .fixed_index = 1};
-  static constexpr spec::RecipeValue width{
-      .kind = spec::RecipeValueKind::kSourceListElement, .source_key = "widths", .fixed_index = 0};
+  static constexpr spec::RecipeValue dim = spec::ex::V("in_channels");
+  static constexpr spec::RecipeValue widths = spec::ex::V("widths");
+  static constexpr spec::RecipeValue output_dim = spec::ex::At(widths, 1);
+  static constexpr spec::RecipeValue width = spec::ex::At(widths, 0);
   static constexpr std::array projection_params{
       spec::RecipeParam{.name = "in_channels", .value = dim},
       spec::RecipeParam{.name = "out_channels", .value = output_dim}};
@@ -224,8 +223,7 @@ TEST(StageRecipe, RawDimensionsUseRepeatIndexAndRejectInvalidAxes) {
   static constexpr spec::RecipeValue zero{.literal = std::int64_t{0}};
   static constexpr spec::RecipeValue one{.literal = std::int64_t{1}};
   static constexpr spec::RecipeValue count{.literal = std::int64_t{2}};
-  static constexpr spec::RecipeValue index{.kind = spec::RecipeValueKind::kIndex,
-                                           .index_name = "i"};
+  static constexpr spec::RecipeValue index = spec::ex::Idx("i");
   static constexpr spec::RecipeValue first_axis{
       .kind = spec::RecipeValueKind::kAdd, .left = &index, .right = &one};
   static constexpr std::array indexed_dims{first_axis, one};
@@ -518,7 +516,9 @@ TEST(StageRecipe, StandaloneMappingUsesTheNormalizationPlan) {
   EXPECT_EQ(plan->groups().size(), 1U);
 }
 
-TEST(StageRecipe, CausalFirstFrameChecksRawRankFiveChannelFactorization) {
+// A causal 3-D kernel's first frame (conv.spatial's temporal_kernel): the raw
+// rank-five header must factor into the folded role shape as the recipe says.
+TEST(StageRecipe, TemporalKernelChecksRawRankFiveChannelFactorization) {
   static constexpr spec::RecipeValue one{.literal = std::int64_t{1}};
   static constexpr spec::RecipeValue in_channels{.literal = std::int64_t{16}};
   static constexpr spec::RecipeValue out_channels{.literal = std::int64_t{4}};
@@ -528,16 +528,15 @@ TEST(StageRecipe, CausalFirstFrameChecksRawRankFiveChannelFactorization) {
   static constexpr std::array params{
       spec::RecipeParam{.name = "in_channels", .value = in_channels},
       spec::RecipeParam{.name = "out_channels", .value = out_channels},
-      spec::RecipeParam{.name = "kernel_width", .value = kernel},
-      spec::RecipeParam{.name = "kernel_height", .value = kernel},
-      spec::RecipeParam{.name = "kernel_depth", .value = kernel},
+      spec::RecipeParam{.name = "kernel", .value = kernel},
+      spec::RecipeParam{.name = "temporal_kernel", .value = kernel},
       spec::RecipeParam{.name = "padding", .value = one}};
   static constexpr std::array weights{
       spec::RecipeWeight{
           .role = "kernel", .tensor = "decoder.conv.weight", .source_dims = kernel_dims},
       spec::RecipeWeight{.role = "bias", .tensor = "decoder.conv.bias", .source_dims = bias_dims}};
   static constexpr spec::RecipeNode conv{.name = "conv",
-                                         .component_kind = "conv.causal_first_frame",
+                                         .component_kind = "conv.spatial",
                                          .params = params,
                                          .weights = weights,
                                          .input = {.kind = spec::RecipeRefKind::kStageInput}};
@@ -989,6 +988,89 @@ TEST(StageRecipeTest, RejectsInvalidRequestScalarNameAndChargesScalarBindings) {
     ASSERT_FALSE(rejected) << scalar;
     EXPECT_NE(rejected.error().find("request scalar"), std::string::npos) << rejected.error();
   }
+}
+
+// A parameter or a raw-dimension contract only some sources have (its
+// condition), a value from the family where one is given else the source's
+// (kFirst), an expected output geometry the source does not state (not
+// checked), and the names a recipe reads, collected by the same walk.
+TEST(StageRecipe, ConditionsAndOneEnvironmentServeEverySource) {
+  static constexpr spec::RecipeValue family_width = spec::ex::V("fixture.kind.width");
+  static constexpr spec::RecipeValue source_width = spec::ex::V("width");
+  static constexpr spec::RecipeValue width = spec::ex::First(family_width, source_width);
+  static constexpr spec::RecipeValue flag_key = spec::ex::V("extra");
+  static constexpr spec::RecipeValue no = spec::ex::B(false);
+  static constexpr spec::RecipeValue extra = spec::ex::First(flag_key, no);
+  static constexpr spec::RecipeValue rank = spec::ex::TensorRank("proj.weight");
+  static constexpr spec::RecipeValue three = spec::ex::I(3);
+  static constexpr spec::RecipeValue ranked = spec::ex::E(spec::ExprKind::kEqual, rank, three);
+  static constexpr spec::RecipeValue one = spec::ex::I(1);
+  static constexpr spec::RecipeValue unstated = spec::ex::V("factor");
+  static constexpr std::array params{
+      spec::RecipeParam{.name = "in_channels", .value = width},
+      spec::RecipeParam{.name = "out_channels", .value = width},
+      spec::RecipeParam{.name = "silu", .value = spec::ex::B(true), .when = &extra}};
+  static constexpr std::array dims{width, width, one};
+  static constexpr std::array weights{spec::RecipeWeight{
+      .role = "weight", .tensor = "proj.weight", .source_dims = dims, .source_dims_when = &ranked}};
+  static constexpr spec::RecipeNode node{.name = "proj",
+                                         .component_kind = "projection.spatial",
+                                         .params = params,
+                                         .weights = weights,
+                                         .input = {.kind = spec::RecipeRefKind::kStageInput}};
+  static constexpr std::array steps{
+      spec::RecipeStep{.kind = spec::RecipeStep::Kind::kNode, .node = &node}};
+  static constexpr spec::RecipeSpatialShape shape{
+      .width = one, .height = one, .channels = width, .images = one};
+  static constexpr spec::RecipeSpatialShape output{
+      .width = unstated, .height = one, .channels = width, .images = one};
+  static constexpr std::array outputs{output};
+  static constexpr spec::StageRecipe recipe{.name = "fixture",
+                                            .role = spec::StageRole::kDenoiser,
+                                            .stream_width = width,
+                                            .primary_input = {.shape = shape},
+                                            .steps = steps,
+                                            .expected_outputs = outputs};
+  const std::array config{MetaEntry{.key = "width", .value = std::int64_t{4}}};
+  const std::array two_d{Tensor{.name = "proj.weight", .dims = {4, 4}}};
+  auto plain = ExpandStageRecipe(recipe, {}, 1U << 20U, config, two_d);
+  ASSERT_TRUE(plain) << plain.error();
+  const auto& component = plain->stage.layers[0].components[0];
+  EXPECT_EQ(component.Find("silu"), nullptr);
+  EXPECT_EQ(component.Find("in_channels")->value, (spec::ParamValue{std::int64_t{4}}));
+  EXPECT_TRUE(plain->tensors[0].source_dims.empty());
+
+  const std::array flagged{MetaEntry{.key = "extra", .value = true},
+                           MetaEntry{.key = "width", .value = std::int64_t{4}}};
+  const std::array three_d{Tensor{.name = "proj.weight", .dims = {4, 4, 1}}};
+  auto extended = ExpandStageRecipe(recipe, {}, 1U << 20U, flagged, three_d);
+  ASSERT_TRUE(extended) << extended.error();
+  EXPECT_NE(extended->stage.layers[0].components[0].Find("silu"), nullptr);
+  EXPECT_EQ(extended->tensors[0].source_dims, (std::vector<std::uint64_t>{4, 4, 1}));
+  // A family's value is the one read, the source's key then unread.
+  spec::ModelSpec family{.pipeline = spec::PipelineKind::kImage};
+  family.stages.push_back({.layers = {{.components = {{.kind = "fixture.kind",
+                                                       .params = {{"width", std::int64_t{8}}}}}}}});
+  auto from_family = ExpandStageRecipe(recipe, family, 1U << 20U, config, two_d);
+  ASSERT_TRUE(from_family) << from_family.error();
+  EXPECT_EQ(from_family->stage.stream.width, 8U);
+  // Without the kernel's header its condition cannot be read.
+  EXPECT_FALSE(ExpandStageRecipe(recipe, {}, 1U << 20U, config));
+  // A stated geometry is checked.
+  const std::array stated{MetaEntry{.key = "factor", .value = std::int64_t{2}},
+                          MetaEntry{.key = "width", .value = std::int64_t{4}}};
+  EXPECT_FALSE(ExpandStageRecipe(recipe, {}, 1U << 20U, stated, two_d));
+
+  const auto names = RecipeValueNames(recipe);
+  ASSERT_TRUE(names) << names.error();
+  EXPECT_EQ(*names, (std::set<std::string_view>{"extra", "factor", "fixture.kind.width", "width"}));
+  // Counting is the expansion's own accounting: exactly what it charges.
+  const auto counted = PreflightStageRecipe(recipe, {}, 1U << 20U, flagged, three_d);
+  ASSERT_TRUE(counted) << counted.error();
+  EXPECT_EQ(counted->tensor_bindings, 1U);
+  EXPECT_EQ(counted->raw_dimension_axes, 3U);
+  EXPECT_TRUE(ExpandStageRecipe(recipe, {}, counted->metadata_bytes, flagged, three_d));
+  EXPECT_FALSE(ExpandStageRecipe(recipe, {}, counted->metadata_bytes - 1, flagged, three_d));
 }
 
 }  // namespace

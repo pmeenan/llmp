@@ -47,15 +47,15 @@
 #include "engine/paged_node.h"
 #include "engine/paged_weights.h"
 #include "engine/plan_cache.h"
-#include "engine/runner_resources.h"
 #include "engine/support.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/step_program.h"
 #include "planner/pattern.h"
 #include "platform/host_probe.h"
+#include "runner_kernels.h"
 #include "runtime/memory_guard.h"
 #include "spec/mapping.h"
-#include "spec/mappings/qwen2.h"
+#include "spec/mappings/dense.h"
 #include "spec/stored.h"
 #include "v1_frozen.h"
 
@@ -159,19 +159,16 @@ std::string Hash(const std::string& bytes) {
 // Released after the runner, once the node has fenced its work.
 class KernelSource final : public en::PagedModel {
  public:
-  explicit KernelSource(en::PagedNode& node)
-      : resources(std::make_unique<en::RunnerResources>(node, 0, 0)) {}
+  explicit KernelSource(en::PagedNode& node) : kernels(node, 0, 0) {}
   std::uint32_t stream() const override { return 0; }
   const llmp::catalog::Closure& fence_closure() const override { return nothing_; }
   std::vector<llmp::catalog::ExtentId> managed_extents() const override { return {}; }
   en::Status Release() override {
-    backend.reset();
     std::vector<std::string> problems;
-    resources->Release(problems);
+    kernels.Release(problems);
     return en::support::Joined(problems);
   }
-  std::unique_ptr<en::RunnerResources> resources;
-  std::unique_ptr<kg::GgmlBackend> backend;
+  llmp::test_support::RunnerKernels kernels;
 
  private:
   llmp::catalog::Closure nothing_;
@@ -735,17 +732,13 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
   auto& entered = life->entered;
   const auto ran = [&]() -> en::Status {
     entered.push_back(kernel.get());
-    if (auto x = kernel->resources->OpenLibrary("FP16 shared cuBLAS workspace"); !x) return x;
-    auto backend =
-        kg::GgmlBackend::Create(0, node.execution(), node.stream(0), &kernel->resources->library(),
-                                {.lower = {.index_scratch_limit = 32 * kMiB}});
-    if (!backend) return std::unexpected(backend.error());
-    kernel->backend = std::move(*backend);
+    if (auto x = kernel->kernels.Create({.lower = {.index_scratch_limit = 32 * kMiB}}); !x)
+      return x;
     // A bounded subledger of the already cataloged whole-host envelope's
     // native category; no second native catalog payment. Retained plans have
     // their separate kMetadataOwners category before ConstructionPaid.
     auto native_used = std::make_shared<std::uint64_t>(0);
-    if (auto funded = kernel->backend->FundConstruction(
+    if (auto funded = kernel->kernels->FundConstruction(
             [native_used](std::uint64_t n) {
               constexpr auto limit = llmp::test_support::compiler_inventory::NativeBytes(
                                          65536, llmp::ir::Graph::kMaxTensors) +
@@ -760,14 +753,10 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
             });
         !funded)
       return std::unexpected(funded.error());
-    if (auto x = kernel->resources->OpenSelectedWorkspace("selected kernel state",
-                                                          kernel->backend->persistent_bytes());
-        !x)
-      return x;
     auto weights = std::make_unique<en::PagedWeights>();
     if (auto x = weights->Open(root); !x) return x;
     en::PagedWeights* paged = weights.get();
-    auto checked_backend = kernel->backend->Backend();
+    auto checked_backend = kernel->kernels->Backend();
     const auto lower = checked_backend.lower;
     checked_backend.lower = [lower](const kn::LowerInput& input)
         -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
@@ -853,11 +842,10 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
     config.launch =
         [held = life.get()](
             std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
-      return held->kernel->backend->Launch(
-          {.base = held->node.pool().base, .size = llmp::base::Bytes(held->node.pool().bytes)},
-          {.base = held->kernel->resources->selected_workspace().base,
-           .bytes = held->kernel->resources->selected_workspace().bytes});
+      return held->kernel->kernels->Launch(
+          {.base = held->node.pool().base, .size = llmp::base::Bytes(held->node.pool().bytes)});
     };
+    llmp::test_support::RunnerKernelConfig(config, kernel->kernels.backend(), "FP16 shared");
     config.weight_address = [held = life.get(), paged](const llmp::ir::WeightRef& ref,
                                                        llmp::format::PartRole) -> std::uint64_t {
       const auto found = held->resource.find(ref);

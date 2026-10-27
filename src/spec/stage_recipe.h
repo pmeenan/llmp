@@ -12,58 +12,19 @@
 #include <variant>
 #include <vector>
 
+#include "spec/expr.h"
 #include "spec/spec.h"
 
 namespace llmp::spec {
 
 // Import-time, mapping-owned instructions for expanding one stage into the
 // ordinary stored graph. Recipes are static data, never serialized or run by
-// serving. This deliberately has no general expression language: expressions
-// are typed references to family values, bounded indices, and checked integer
-// arithmetic.
-enum class RecipeValueKind : std::uint8_t {
-  kLiteral,
-  kFamilyValue,
-  kFamilyF32Value,
-  kSourceValue,
-  kSourceListElement,
-  kSourceListElementReverse,
-  kSourceListSize,
-  kIndex,
-  kListElement,
-  kListElementReverse,
-  kListSize,
-  kAdd,
-  kSubtract,
-  kMultiply,
-  kDivideExact,
-  kDivideFloor,
-  kRealDivide,
-  kSqrt,
-  kEqual,
-  kNotEqual,
-  kLess,
-  kAnd,
-  kOr,
-  kNot,
-  kSelect,
-};
-
-struct RecipeValue {
-  RecipeValueKind kind = RecipeValueKind::kLiteral;
-  ParamValue literal = std::int64_t{};
-  std::string_view family_kind{};
-  std::string_view family_param{};
-  // Exact source metadata key for the standalone configured-component path.
-  // It resolves through the typed SourceValue environment and is never
-  // serialized into the artifact.
-  std::string_view source_key{};
-  std::string_view index_name{};
-  std::int64_t fixed_index = 0;  // used by list access when index_name is empty
-  const RecipeValue* left = nullptr;
-  const RecipeValue* right = nullptr;
-  const RecipeValue* alternate = nullptr;
-};
+// serving. A recipe's values are expressions of the mappings' one value
+// language (spec/expr.h): typed references to the environment's values (the
+// source's config keys and, in a pipeline, its family's parameters), bounded
+// indices, and checked arithmetic.
+using RecipeValue = Expr;
+using RecipeValueKind = ExprKind;
 
 // Import-only, mapping-owned geometry contracts for spatial graph ports.
 // These expressions are evaluated before Stage publication and never stored.
@@ -81,6 +42,8 @@ struct RecipeParam {
   // A checked request integer binding. Non-empty source emits a
   // StageScalarBinding for the expanded component using the value as default.
   std::string_view request_scalar{};
+  // A parameter only some sources' stages have: emitted where this flag holds.
+  const RecipeValue* when = nullptr;
 };
 
 struct RecipeWeight {
@@ -90,8 +53,10 @@ struct RecipeWeight {
   bool experts = false;
   std::string_view stage{};  // empty means this recipe's stage
   // Optional exact dimensions in source-container order. This import-only
-  // assertion preserves raw header semantics alongside the folded role shape.
+  // assertion preserves raw header semantics alongside the folded role shape;
+  // with `source_dims_when`, only where that flag holds.
   std::span<const RecipeValue> source_dims{};
+  const RecipeValue* source_dims_when = nullptr;
 };
 
 enum class RecipeGroupKind : std::uint8_t { kWhole, kTable, kLayer };

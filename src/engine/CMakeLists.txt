@@ -24,9 +24,11 @@
 #   and names no kernel library. It links no device backend: a program
 #   links the CUDA one (llmp_engine does) or the fake device runtime and
 #   the host paging kernels (llmp_fake_device_backend), never both.
-# - llmp_engine, CUDA builds only: the runners' cuBLAS and launch context
-#   (runner_resources.h) and the expert slab's device side (expert_slab.h)
-#   over the core. It is not given CUDA's headers (docs/portability.md).
+#   The expert slabs (expert_slab.h) are the core's too.
+# - llmp_engine, CUDA builds only: the runners' device backend and the
+#   kernel memory it binds (device_backend.h), made through the build's
+#   kernel set, which it registers (kernels/compose). It is not given
+#   CUDA's headers and names no kernel library (docs/portability.md).
 #   llmp-runtime links it, and so do the paged harnesses and their tests.
 add_library(llmp_engine_core STATIC paged_node.cc paged_node_regions.cc paged_node_accounting.cc paged_node_requests.cc
                                       paged_weights.cc live_state.cc checkpoint_file.cc
@@ -35,7 +37,8 @@ add_library(llmp_engine_core STATIC paged_node.cc paged_node_regions.cc paged_no
                                       step_transaction.cc step_inputs.cc
                                       wave_composer.cc prefill.cc decoding.cc component_source.cc graph_plan.cc
                                       prompt_wave.cc batch_inventory.cc batch_resources.cc execution_contract.cc
-                                      supplemental_run.cc model_runner_routed.cc staged_execution.cc)
+                                      supplemental_run.cc model_runner_routed.cc staged_execution.cc
+                                      expert_slab.cc)
 target_include_directories(llmp_engine_core PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_engine_core PUBLIC llmp_scheduler llmp_memory llmp_storage
                                               llmp_device_memory llmp_artifact llmp_model
@@ -46,14 +49,14 @@ target_link_libraries(llmp_engine_core PUBLIC llmp_scheduler llmp_memory llmp_st
 # The fake device backend for programs that run the engine core on the
 # host (its tests, in every profile).
 add_library(llmp_fake_device_backend INTERFACE)
-target_link_libraries(llmp_fake_device_backend INTERFACE llmp_fake_device_runtime
+target_link_libraries(llmp_fake_device_backend INTERFACE llmp_fake_device_runtime llmp_fake_kernel_set
                                                          llmp_host_paging_kernels)
 
 if(LLMP_CUDA)
-  add_library(llmp_engine STATIC runner_resources.cc expert_slab.cc)
+  add_library(llmp_engine STATIC device_backend.cc)
   target_include_directories(llmp_engine PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_link_libraries(llmp_engine PUBLIC llmp_engine_core llmp_scheduler llmp_memory llmp_storage
-                                             llmp_device_runtime llmp_ggml_kernels
+                                             llmp_device_runtime llmp_kernel_set
                                              llmp_paging_kernels
                                              llmp_artifact llmp_model llmp_tokenizer
                                              llmp_chat

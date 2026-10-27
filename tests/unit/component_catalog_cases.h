@@ -443,41 +443,40 @@ inline std::vector<CatalogSpatialRecipe> CatalogSpatialRecipes() {
       }},
   });
 
-  // 33. conv.spatial v1
-  recipes.push_back({
-      .kind = "conv.causal_first_frame",
-      .version = 1,
-      .cases = {CatalogSpatialCase{
-          .label = "bf16-folded-view-preserves-source-bytes",
-          .ref =
-              MakeRef("conv.causal_first_frame", 1,
-                      {P("in_channels", I(2)), P("kernel_depth", I(3)), P("kernel_height", I(3)),
-                       P("kernel_width", I(2)), P("out_channels", I(3)), P("padding", I(1))},
-                      {{.role = "kernel", .tensor = "kernel"}, {.role = "bias", .tensor = "bias"}}),
-          .owner = SpatialOwner{0, {3, 2, 2, 1}},
-          .inputs = {},
-          .links = {},
-          .tensors = {BoundTensor{"kernel", ir::Dense(Encoding::kBF16, ir::ShapeOf({2, 3, 3, 6}))},
-                      BoundTensor{"bias", ir::Dense(Encoding::kBF16, ir::ShapeOf({3}))}},
-      }},
-  });
-
+  // 33. conv.spatial v1: a causal 3-D kernel's first frame (its
+  // temporal_kernel's last tap, a folded view of the source bytes), and 2-D.
   recipes.push_back({
       .kind = "conv.spatial",
       .version = 1,
       .cases = {CatalogSpatialCase{
-          .label = "f32",
-          .ref =
-              MakeRef("conv.spatial", 1,
-                      {P("in_channels", I(2)), P("kernel", I(3)), P("out_channels", I(3)),
-                       P("padding", I(1))},
-                      {{.role = "kernel", .tensor = "kernel"}, {.role = "bias", .tensor = "bias"}}),
-          .owner = SpatialOwner{0, {2, 2, 2, 1}},
-          .inputs = {},
-          .links = {},
-          .tensors = {BoundTensor{"kernel", ir::Dense(Encoding::kF32, ir::ShapeOf({3, 3, 2, 3}))},
-                      BoundTensor{"bias", ir::Dense(Encoding::kF32, ir::ShapeOf({3}))}},
-      }},
+                    .label = "bf16-temporal-folded-view-preserves-source-bytes",
+                    .ref =
+                        MakeRef("conv.spatial", 1,
+                                {P("in_channels", I(2)), P("kernel", I(2)), P("out_channels", I(3)),
+                                 P("padding", I(1)), P("temporal_kernel", I(3))},
+                                {{.role = "kernel", .tensor = "kernel"},
+                                 {.role = "bias", .tensor = "bias"}}),
+                    .owner = SpatialOwner{0, {3, 2, 2, 1}},
+                    .inputs = {},
+                    .links = {},
+                    .tensors = {BoundTensor{"kernel",
+                                            ir::Dense(Encoding::kBF16, ir::ShapeOf({2, 2, 3, 6}))},
+                                BoundTensor{"bias", ir::Dense(Encoding::kBF16, ir::ShapeOf({3}))}},
+                },
+                CatalogSpatialCase{
+                    .label = "f32",
+                    .ref = MakeRef("conv.spatial", 1,
+                                   {P("in_channels", I(2)), P("kernel", I(3)),
+                                    P("out_channels", I(3)), P("padding", I(1))},
+                                   {{.role = "kernel", .tensor = "kernel"},
+                                    {.role = "bias", .tensor = "bias"}}),
+                    .owner = SpatialOwner{0, {2, 2, 2, 1}},
+                    .inputs = {},
+                    .links = {},
+                    .tensors = {BoundTensor{"kernel",
+                                            ir::Dense(Encoding::kF32, ir::ShapeOf({3, 3, 2, 3}))},
+                                BoundTensor{"bias", ir::Dense(Encoding::kF32, ir::ShapeOf({3}))}},
+                }},
   });
 
   // projection.spatial keeps the matrix in its source encoding and widens

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
-#ifndef LLMP_KERNELS_DECODE_FLOAT_FORMATS_CUH_
-#define LLMP_KERNELS_DECODE_FLOAT_FORMATS_CUH_
+#ifndef LLMP_KERNELS_DEVICE_FLOAT_FORMATS_CUH_
+#define LLMP_KERNELS_DEVICE_FLOAT_FORMATS_CUH_
 #include <cuda_fp8.h>
 
 #include <cstdint>

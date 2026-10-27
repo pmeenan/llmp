@@ -35,11 +35,11 @@
 #include "base/sha256.h"
 #include "image_family.h"
 #include "image_published.h"
+#include "image_recipes.h"
 #include "import/stage_recipe.h"
 #include "ir/graph.h"
 #include "runtime/approvals.h"
 #include "runtime/component_admission.h"
-#include "spec/image_spatial.h"
 #include "spec/mappings/qwen_image.h"
 #include "spec/spec.h"
 #include "spec/stored.h"
@@ -210,15 +210,52 @@ TEST(ImageFamily, EveryMappingIsValidAndFoundByItsArchitecture) {
   EXPECT_EQ(sp::FindImageMapping("FluxPipeline"), nullptr);
 }
 
-TEST(ImageFamily, QwenFlowRecipeMatchesTheFrozenSpatialEmitter) {
+// A stage's digest and its tensor inventory's (each tensor's name, its
+// role-derived shape, its group, layer and part).
+std::pair<std::string, std::string> StageDigests(const llmp::spec::RecipeExpansion& expanded) {
+  std::string inventory;
+  for (const auto& t : expanded.tensors) {
+    inventory += t.name;
+    for (const auto d : t.shape) inventory += std::format(",{}", d);
+    inventory +=
+        std::format(";{}:{}:{}|", static_cast<int>(t.group), t.layer, static_cast<int>(t.part));
+  }
+  sp::ModelSpec stored{.pipeline = sp::PipelineKind::kImage, .stages = {expanded.stage}};
+  sp::Canonicalize(stored);
+  return {llmp::base::ToHex(stored.Digest()),
+          llmp::base::ToHex(llmp::base::Sha256().Update(inventory).Finish())};
+}
+
+// The components' recipes over the frozen family (the published
+// composition's) are the published components' stored specs, byte for byte:
+// the digests their approvals pin. A recipe change that would change what a
+// re-import stores fails here, before any model file is read.
+TEST(ImageFamily, RecipesExpandToTheApprovedComponentSpecs) {
+  const auto& family = llmp::test_support::QwenImage();
+  const auto& approvals = llmp::runtime::ImageApprovals();
+  ASSERT_EQ(approvals.size(), 1U);
+  for (const std::size_t i : {1U, 2U}) {
+    const auto& rule = family.mapping->components[i];
+    SCOPED_TRACE(rule.role);
+    auto expanded = llmp::test_support::QwenImageStage(family.spec, family.profile, rule.role);
+    ASSERT_TRUE(expanded) << expanded.error();
+    EXPECT_EQ(StageDigests(*expanded).first, approvals[0].components[i].spec);
+  }
+}
+
+// A small family's stages, frozen before the mappings' value languages were
+// unified (2026-10-26): the flow transformer and the VAE decoder, their
+// tensor inventories too.
+TEST(ImageFamily, ToyRecipesKeepTheirFrozenExpansions) {
   Toy toy;
   auto family = toy.Synthesize();
   ASSERT_TRUE(family) << family.error();
+  EXPECT_EQ(llmp::base::ToHex(family->Digest()),
+            "1dc3de6cdd598c87f599d13c4ef3b3712402a551ef4016d42d836e249c619753");
   const auto& mapping = sp::mappings::QwenImage21Mapping();
   const auto flow =
       std::ranges::find(mapping.components, "transformer", &sp::ImageComponentRule::role);
   ASSERT_NE(flow, mapping.components.end());
-  ASSERT_NE(flow->recipe, nullptr);
   EXPECT_TRUE(std::ranges::contains(flow->containers, "gguf"));
   const auto text =
       std::ranges::find(mapping.components, "text_encoder", &sp::ImageComponentRule::role);
@@ -226,146 +263,28 @@ TEST(ImageFamily, QwenFlowRecipeMatchesTheFrozenSpatialEmitter) {
   EXPECT_FALSE(std::ranges::contains(text->containers, "gguf"));
   auto profile = sp::ImageProfileOf(*family, mapping);
   ASSERT_TRUE(profile) << profile.error();
-  auto tensors = md::DenoiserTensors(profile->denoiser, mapping.names.denoiser);
-  auto oracle = sp::ImageFlowSpec(profile->denoiser, 1, 1, tensors);
-  ASSERT_TRUE(oracle) << oracle.error();
-  const auto output_slice = static_cast<std::uint16_t>(15 + 6 * profile->denoiser.blocks);
-  oracle->spec.stages[0].scalar_bindings = {
-      {8, "input_rows", "latent_rows"},           {8, "rows", "latent_rows"},
-      {11, "prefix_rows", "text_rows"},           {12, "prefix_rows", "text_rows"},
-      {13, "prefix_rows", "text_rows"},           {14, "prefix_rows", "text_rows"},
-      {output_slice, "input_rows", "joint_rows"}, {output_slice, "rows", "latent_rows"},
-      {output_slice, "start", "text_rows"}};
-  auto expanded =
-      llmp::import::ExpandStageRecipe(*flow->recipe, *family, std::uint64_t{512} << 20U);
-  ASSERT_TRUE(expanded) << expanded.error();
-  sp::ModelSpec actual{.pipeline = sp::PipelineKind::kImage,
-                       .stages = {std::move(expanded->stage)}};
-  sp::Canonicalize(actual);
-  ASSERT_EQ(actual.stages[0].layers[0].components.size(),
-            oracle->spec.stages[0].layers[0].components.size());
-  const auto describe = [](const sp::ComponentRef& c) {
-    std::string out = c.kind;
-    for (const auto& p : c.params)
-      out += std::format(" {}={}", p.name,
-                         std::visit(
-                             [](const auto& v) -> std::string {
-                               using T = std::decay_t<decltype(v)>;
-                               if constexpr (std::is_same_v<T, std::string>)
-                                 return v;
-                               else if constexpr (std::is_same_v<T, bool>)
-                                 return v ? "true" : "false";
-                               else if constexpr (std::is_arithmetic_v<T>)
-                                 return std::format("{}", v);
-                               else
-                                 return "list";
-                             },
-                             p.value));
-    return out;
-  };
-  for (std::size_t i = 0; i < actual.stages[0].layers[0].components.size(); ++i) {
-    SCOPED_TRACE(i);
-    EXPECT_EQ(actual.stages[0].layers[0].components[i],
-              oracle->spec.stages[0].layers[0].components[i])
-        << "actual " << describe(actual.stages[0].layers[0].components[i]) << "; expected "
-        << describe(oracle->spec.stages[0].layers[0].components[i]);
-  }
-  ASSERT_EQ(actual.stages[0].links.size(), oracle->spec.stages[0].links.size());
-  for (std::size_t i = 0; i < actual.stages[0].links.size(); ++i) {
-    SCOPED_TRACE(i);
-    const auto& a = actual.stages[0].links[i];
-    const auto& e = oracle->spec.stages[0].links[i];
-    EXPECT_EQ(a.input, e.input);
-    EXPECT_EQ(a.auxiliary, e.auxiliary);
-    EXPECT_EQ(a.input_port, e.input_port);
-    EXPECT_EQ(a.auxiliary_port, e.auxiliary_port);
-    EXPECT_EQ(a.carry, e.carry);
-    EXPECT_EQ(a.carry_port, e.carry_port);
-  }
-  EXPECT_EQ(actual.stages[0].exports, oracle->spec.stages[0].exports);
-  EXPECT_EQ(actual.stages[0].scalar_bindings, oracle->spec.stages[0].scalar_bindings);
-  ASSERT_EQ(expanded->tensors.size(), tensors.size());
-  auto actual_tensors = expanded->tensors;
-  auto expected_tensors = tensors;
-  std::ranges::sort(actual_tensors, {}, &sp::RecipeExpansion::Tensor::name);
-  std::ranges::sort(expected_tensors, {}, &md::ImageTensor::name);
-  for (std::size_t i = 0; i < expected_tensors.size(); ++i) {
-    EXPECT_EQ(actual_tensors[i].name, expected_tensors[i].name);
-    EXPECT_EQ(actual_tensors[i].shape, expected_tensors[i].shape);
-  }
-}
-
-TEST(ImageFamily, QwenVaeRecipeMatchesTheFrozenSpatialEmitter) {
-  Toy toy;
-  auto family = toy.Synthesize();
-  ASSERT_TRUE(family) << family.error();
-  const auto& mapping = sp::mappings::QwenImage21Mapping();
-  const auto vae = std::ranges::find(mapping.components, "vae", &sp::ImageComponentRule::role);
-  ASSERT_NE(vae, mapping.components.end());
-  ASSERT_NE(vae->recipe, nullptr);
-  auto profile = sp::ImageProfileOf(*family, mapping);
-  ASSERT_TRUE(profile) << profile.error();
-  const auto tensors = md::VaeDecoderTensors(profile->vae, mapping.names.vae);
-  auto oracle = sp::ImageDecodeSpec(profile->vae, 1, 1, tensors);
-  ASSERT_TRUE(oracle) << oracle.error();
-  oracle->spec.stages[0].scalar_bindings = {{1, "height", "latent_height"},
-                                            {1, "width", "latent_width"}};
-  auto expanded = llmp::import::ExpandStageRecipe(*vae->recipe, *family, std::uint64_t{512} << 20U);
-  ASSERT_TRUE(expanded) << expanded.error();
-  sp::ModelSpec actual{.pipeline = sp::PipelineKind::kImage,
-                       .stages = {std::move(expanded->stage)}};
-  sp::Canonicalize(actual);
-  ASSERT_EQ(actual.stages[0].layers[0].components.size(),
-            oracle->spec.stages[0].layers[0].components.size());
-  const auto describe = [](const sp::ComponentRef& c) {
-    std::string out = c.kind;
-    for (const auto& p : c.params)
-      out += std::format(" {}={}", p.name,
-                         std::visit(
-                             [](const auto& v) -> std::string {
-                               using T = std::decay_t<decltype(v)>;
-                               if constexpr (std::is_same_v<T, std::string>)
-                                 return v;
-                               else if constexpr (std::is_same_v<T, bool>)
-                                 return v ? "true" : "false";
-                               else if constexpr (std::is_arithmetic_v<T>)
-                                 return std::format("{}", v);
-                               else
-                                 return "list";
-                             },
-                             p.value));
-    return out;
-  };
-  for (std::size_t i = 0; i < actual.stages[0].layers[0].components.size(); ++i) {
-    SCOPED_TRACE(i);
-    EXPECT_EQ(actual.stages[0].layers[0].components[i],
-              oracle->spec.stages[0].layers[0].components[i])
-        << "actual " << describe(actual.stages[0].layers[0].components[i]) << "; expected "
-        << describe(oracle->spec.stages[0].layers[0].components[i]);
-  }
-  ASSERT_EQ(actual.stages[0].links.size(), oracle->spec.stages[0].links.size());
-  for (std::size_t i = 0; i < actual.stages[0].links.size(); ++i) {
-    SCOPED_TRACE(i);
-    const auto& a = actual.stages[0].links[i];
-    const auto& e = oracle->spec.stages[0].links[i];
-    EXPECT_EQ(a.input, e.input);
-    EXPECT_EQ(a.auxiliary, e.auxiliary);
-    EXPECT_EQ(a.input_port, e.input_port);
-    EXPECT_EQ(a.auxiliary_port, e.auxiliary_port);
-    EXPECT_EQ(a.carry, e.carry);
-    EXPECT_EQ(a.carry_port, e.carry_port);
-  }
-  EXPECT_EQ(actual.stages[0].exports, oracle->spec.stages[0].exports);
-  EXPECT_EQ(actual.stages[0].scalar_bindings, oracle->spec.stages[0].scalar_bindings);
-  ASSERT_EQ(expanded->tensors.size(), tensors.size());
-  auto actual_tensors = expanded->tensors;
-  auto expected_tensors = tensors;
-  std::ranges::sort(actual_tensors, {}, &sp::RecipeExpansion::Tensor::name);
-  std::ranges::sort(expected_tensors, {}, &md::ImageTensor::name);
-  for (std::size_t i = 0; i < expected_tensors.size(); ++i) {
-    EXPECT_EQ(actual_tensors[i].name, expected_tensors[i].name);
-    EXPECT_EQ(actual_tensors[i].shape, expected_tensors[i].shape);
-  }
+  auto flow_stage = llmp::test_support::QwenImageStage(*family, *profile, "transformer");
+  ASSERT_TRUE(flow_stage) << flow_stage.error();
+  EXPECT_EQ(
+      StageDigests(*flow_stage),
+      std::pair(std::string("d2613a01e1d87d98890da4961043e95b8925943a09cfc5133f0e22dd74c6b46b"),
+                std::string("5559396b2b82190e70b58db45c49afac43128c8f6f9117bad38253e60c3e1b00")));
+  auto vae_stage = llmp::test_support::QwenImageStage(*family, *profile, "vae");
+  ASSERT_TRUE(vae_stage) << vae_stage.error();
+  EXPECT_EQ(
+      StageDigests(*vae_stage),
+      std::pair(std::string("861590f6c183f8c4e0c7926bf14b0f00a3b3c96768c7f9830e14e459d28fb79c"),
+                std::string("0d9aabb6d3ec5e6d98a3267a48a677956380783f7f9e04f8c723c7d97a5096e5")));
+  // The same stages from a family made of the profile alone (the tests'
+  // graph source, image_recipes.h).
+  auto from_profile = llmp::test_support::QwenImageStage(
+      llmp::test_support::QwenImageFamilyOf(*profile), *profile, "vae");
+  ASSERT_TRUE(from_profile) << from_profile.error();
+  EXPECT_EQ(StageDigests(*from_profile), StageDigests(*vae_stage));
+  from_profile = llmp::test_support::QwenImageStage(llmp::test_support::QwenImageFamilyOf(*profile),
+                                                    *profile, "transformer");
+  ASSERT_TRUE(from_profile) << from_profile.error();
+  EXPECT_EQ(StageDigests(*from_profile), StageDigests(*flow_stage));
 }
 
 TEST(ImageFamily, AMappingRefusesWhatItCannotSay) {

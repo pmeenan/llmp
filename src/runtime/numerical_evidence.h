@@ -28,6 +28,10 @@ struct ComponentNumericalEvidence {
   std::uint32_t owners = 0;
   bool stream_rows = false;
   std::string_view row_parameter{};
+  // Its grants' reported status: an accepted incumbent recipe retained
+  // (ACCEPTED_INCUMBENT_RECIPE), or, by default, a measured same-quality
+  // change (MEASURED_SAME_QUALITY). The pre-U4 approval-attached domains
+  // defaulted to incumbent (docs/experiments/m35-component-numerics).
   bool incumbent_recipe = false;
   NumericalPipeline pipeline = NumericalPipeline::kLlm;
   // The D128 attention implementation's real head-size requirement, not a

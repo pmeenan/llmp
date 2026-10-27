@@ -26,6 +26,7 @@
 #include "engine/model_runner.h"
 #include "expected_error.h"
 #include "ir/builder.h"
+#include "kernels/compose/kernel_set.h"
 #include "kernels/decode/operand.h"
 #include "kernels/decode/products.h"
 #include "kernels/decode/selected_rows.h"
@@ -84,19 +85,21 @@ struct Descriptors {
     auto& w = inputs[0];
     w.desc.format = Format(scale);
     w.paged_weight = kWeight;
-    w.parts = {{Role::kCodes, ggml_new_tensor_2d(ctx, GGML_TYPE_I8, kWidth / 2, kRows)},
-               {Role::kBlockScales, ggml_new_tensor_2d(ctx, GGML_TYPE_I8, kWidth / 16, kRows)}};
-    if (scale) w.parts.push_back({Role::kTensorScale, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1)});
+    w.parts = {
+        {Role::kCodes, kg::Ref(ggml_new_tensor_2d(ctx, GGML_TYPE_I8, kWidth / 2, kRows))},
+        {Role::kBlockScales, kg::Ref(ggml_new_tensor_2d(ctx, GGML_TYPE_I8, kWidth / 16, kRows))}};
+    if (scale)
+      w.parts.push_back({Role::kTensorScale, kg::Ref(ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1))});
     w.tensor = w.parts.front().tensor;
     auto& ids = inputs[1];
     ids.desc.format = ir::Dense(fmt::Encoding::kI32, ir::ShapeOf({kRows}));
     ids.desc.nb = ir::NaturalStrides(ids.desc.format);
-    ids.tensor = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, kRows);
+    ids.tensor = kg::Ref(ggml_new_tensor_1d(ctx, GGML_TYPE_I32, kRows));
     ids.side_rows_component = kWeight.component;
     auto& out = outputs[0];
     out.desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({kWidth, kRows}));
     out.desc.nb = ir::NaturalStrides(out.desc.format);
-    out.tensor = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kWidth, kRows);
+    out.tensor = kg::Ref(ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kWidth, kRows));
     node.key = ir::Primitive(ir::Op::kGetRows);
     node.nsrc = 2;
     node.nout = 1;
@@ -119,7 +122,7 @@ TEST(DecodeSelectedRows, CompletePartsKeepOriginalLogicalShapeAndBoundedPhysical
     EXPECT_EQ((*call)->scratch_bytes(), 0U);
     EXPECT_LE((*call)->host_bytes(), 2048U);
     EXPECT_EQ(d.inputs[0].desc.format.shape.ne[1], kTableRows);
-    EXPECT_EQ(d.inputs[0].parts[0].tensor->ne[1], kRows);
+    EXPECT_EQ(kg::TensorOf(d.inputs[0].parts[0].tensor)->ne[1], kRows);
   }
 }
 TEST(DecodeSelectedRows, MissingDuplicateGeometryAndUncheckedIdsRefuse) {
@@ -141,7 +144,7 @@ TEST(DecodeSelectedRows, MissingDuplicateGeometryAndUncheckedIdsRefuse) {
         d.inputs[0].parts[1].role = Role::kCodes;
         break;
       case 2:
-        d.inputs[0].parts[1].tensor->ne[1] = kRows + 1;
+        kg::TensorOf(d.inputs[0].parts[1].tensor)->ne[1] = kRows + 1;
         break;
       case 3:
         d.inputs[0].paged_weight.reset();
@@ -159,7 +162,7 @@ TEST(DecodeSelectedRows, MissingDuplicateGeometryAndUncheckedIdsRefuse) {
         d.outputs[0].desc.format.encoding = fmt::Encoding::kF16;
         break;
       case 8:
-        d.inputs[0].parts[0].tensor->nb[1] += 8;
+        kg::TensorOf(d.inputs[0].parts[0].tensor)->nb[1] += 8;
         break;
     }
     EXPECT_FALSE((*source)->Lower(nvfp4_impl, d.node, d.inputs, d.outputs));
@@ -208,26 +211,26 @@ TEST(DecodeSelectedRows, AffineSplitRowsLowerSuccessfully) {
                    .layout = fmt::Layout::kSplit,
                    .shape = ir::ShapeOf({kWidth, kTableRows})};
   w.paged_weight = kWeight;
-  w.parts = {{Role::kCodes, ggml_new_tensor_2d(ctx, GGML_TYPE_I8, kWidth / 2, kRows)},
-             {Role::kBlockScales, ggml_new_tensor_2d(ctx, GGML_TYPE_I8, 2, kRows)},
-             {Role::kBiases, ggml_new_tensor_2d(ctx, GGML_TYPE_I8, 2, kRows)}};
+  w.parts = {{Role::kCodes, kg::Ref(ggml_new_tensor_2d(ctx, GGML_TYPE_I8, kWidth / 2, kRows))},
+             {Role::kBlockScales, kg::Ref(ggml_new_tensor_2d(ctx, GGML_TYPE_I8, 2, kRows))},
+             {Role::kBiases, kg::Ref(ggml_new_tensor_2d(ctx, GGML_TYPE_I8, 2, kRows))}};
   for (std::size_t i = 0; i < w.parts.size(); ++i) {
-    kg::TensorArena::Bind(w.parts[i].tensor, 0x100000ULL + i * 0x1000ULL);
+    kg::TensorArena::Bind(kg::TensorOf(w.parts[i].tensor), 0x100000ULL + i * 0x1000ULL);
   }
   w.tensor = w.parts.front().tensor;
 
   auto& ids = inputs[1];
   ids.desc.format = ir::Dense(fmt::Encoding::kI32, ir::ShapeOf({kRows}));
   ids.desc.nb = ir::NaturalStrides(ids.desc.format);
-  ids.tensor = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, kRows);
+  ids.tensor = kg::Ref(ggml_new_tensor_1d(ctx, GGML_TYPE_I32, kRows));
   ids.side_rows_component = kWeight.component;
-  kg::TensorArena::Bind(ids.tensor, 0x200000ULL);
+  kg::TensorArena::Bind(kg::TensorOf(ids.tensor), 0x200000ULL);
 
   auto& out = outputs[0];
   out.desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({kWidth, kRows}));
   out.desc.nb = ir::NaturalStrides(out.desc.format);
-  out.tensor = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kWidth, kRows);
-  kg::TensorArena::Bind(out.tensor, 0x300000ULL);
+  out.tensor = kg::Ref(ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kWidth, kRows));
+  kg::TensorArena::Bind(kg::TensorOf(out.tensor), 0x300000ULL);
 
   node.key = ir::Primitive(ir::Op::kGetRows);
   node.nsrc = 2;
@@ -264,25 +267,26 @@ TEST(DecodeSelectedRows, MxfpSplitPagedRowsLowerSuccessfully) {
                      .shape = ir::ShapeOf({kWidth, kTableRows})};
     w.paged_weight = kWeight;
     const std::int64_t code_bytes = encoding == fmt::Encoding::kMxfp4 ? kWidth / 2 : kWidth;
-    w.parts = {{Role::kCodes, ggml_new_tensor_2d(ctx, GGML_TYPE_I8, code_bytes, kRows)},
-               {Role::kBlockScales, ggml_new_tensor_2d(ctx, GGML_TYPE_I8, kWidth / 32, kRows)}};
+    w.parts = {
+        {Role::kCodes, kg::Ref(ggml_new_tensor_2d(ctx, GGML_TYPE_I8, code_bytes, kRows))},
+        {Role::kBlockScales, kg::Ref(ggml_new_tensor_2d(ctx, GGML_TYPE_I8, kWidth / 32, kRows))}};
     for (std::size_t i = 0; i < w.parts.size(); ++i) {
-      kg::TensorArena::Bind(w.parts[i].tensor, 0x100000ULL + i * 0x1000ULL);
+      kg::TensorArena::Bind(kg::TensorOf(w.parts[i].tensor), 0x100000ULL + i * 0x1000ULL);
     }
     w.tensor = w.parts.front().tensor;
 
     auto& ids = inputs[1];
     ids.desc.format = ir::Dense(fmt::Encoding::kI32, ir::ShapeOf({kRows}));
     ids.desc.nb = ir::NaturalStrides(ids.desc.format);
-    ids.tensor = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, kRows);
+    ids.tensor = kg::Ref(ggml_new_tensor_1d(ctx, GGML_TYPE_I32, kRows));
     ids.side_rows_component = kWeight.component;
-    kg::TensorArena::Bind(ids.tensor, 0x200000ULL);
+    kg::TensorArena::Bind(kg::TensorOf(ids.tensor), 0x200000ULL);
 
     auto& out = outputs[0];
     out.desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({kWidth, kRows}));
     out.desc.nb = ir::NaturalStrides(out.desc.format);
-    out.tensor = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kWidth, kRows);
-    kg::TensorArena::Bind(out.tensor, 0x300000ULL);
+    out.tensor = kg::Ref(ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kWidth, kRows));
+    kg::TensorArena::Bind(kg::TensorOf(out.tensor), 0x300000ULL);
 
     node.key = ir::Primitive(ir::Op::kGetRows);
     node.nsrc = 2;
@@ -864,9 +868,10 @@ TEST(DecodeSelectedRows, MisalignedOverlappingAndChangedPhysicalBindingsRefuse) 
     Descriptors d(true);
     auto call = (*source)->Lower(nvfp4_impl, d.node, d.inputs, d.outputs);
     ASSERT_TRUE(call);
-    std::array<ggml_tensor*, 5> tensors{d.inputs[0].parts[0].tensor, d.inputs[0].parts[1].tensor,
-                                        d.inputs[0].parts[2].tensor, d.inputs[1].tensor,
-                                        d.outputs[0].tensor};
+    std::array<ggml_tensor*, 5> tensors{
+        kg::TensorOf(d.inputs[0].parts[0].tensor), kg::TensorOf(d.inputs[0].parts[1].tensor),
+        kg::TensorOf(d.inputs[0].parts[2].tensor), kg::TensorOf(d.inputs[1].tensor),
+        kg::TensorOf(d.outputs[0].tensor)};
     for (std::size_t i = 0; i != tensors.size(); ++i)
       tensors[i]->data = reinterpret_cast<void*>(0x100000ULL + i * 0x10000ULL);
     if (bad < 5) {
@@ -1043,6 +1048,7 @@ void PagedCase(int malformed) {
   auto selected = de::RowsSelectedSource();
   ASSERT_TRUE(selected) << selected.error();
   life->selected = *selected;
+  static_cast<void>(llmp::kernels::RegisterBuildKernels());
   auto backend = kg::GgmlBackend::Create(0, life->node.execution(), life->node.stream(0), nullptr,
                                          {.selected = life->selected});
   ASSERT_TRUE(backend) << backend.error();
@@ -1362,6 +1368,7 @@ TEST(DecodeSelectedRowsGpu, RetainedExl3ModelsOwnStateAcrossSwitchAndScratchRema
   ASSERT_TRUE(layout) << layout.error();
   std::uint64_t activation_bytes = 0, pool_bytes = en::kPagedExtent;
   for (std::size_t model = 0; model < 2; ++model) {
+    static_cast<void>(llmp::kernels::RegisterBuildKernels());
     auto backend =
         kg::GgmlBackend::Create(0, life->node.execution(), life->node.stream(0), nullptr, {});
     ASSERT_TRUE(backend) << backend.error();

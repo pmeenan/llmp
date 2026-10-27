@@ -23,12 +23,14 @@
 #include "engine/execution_contract.h"
 #include "engine/graph_plan.h"
 #include "engine/paged_node.h"
-#include "engine/runner_resources.h"
+#include "engine/runner_memory.h"
 #include "format/encoding.h"
 #include "ggml.h"
 #include "ir/builder.h"
+#include "kernels/compose/kernel_set.h"
 #include "kernels/ggml/step_program.h"
 #include "platform/host_probe.h"
+#include "providers/device_runtime.h"
 
 namespace {
 // Watch only the descriptor arena's exact byte-array request, not diagnostic
@@ -112,11 +114,54 @@ struct CompilerPayment {
   ~CompilerPayment() { paid->Release(bytes); }
 };
 
+// These tests reach GGML-backend internals the device backend interface
+// does not expose (its own Lower, Declare's workspace, the library loan's
+// return), so they hold a ggml::GgmlBackend and lend it a cuBLAS handle the
+// way the device backend's BindWorkspaces does (CublasHandle::Create over
+// runner memory of the runtime class, then LendCublas).
+class LibraryLoan : public en::RunnerMemory {
+ public:
+  using RunnerMemory::RunnerMemory;
+  en::Status OpenLibrary(std::string name) {
+    const auto facts = llmp::providers::QueryDeviceFacts(node().device_ordinal());
+    if (!facts) return std::unexpected("the device's facts");
+    library_bytes_ =
+        kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture)).value();
+    if (auto r = Map(library_workspace_, std::move(name), library_bytes_,
+                     llmp::catalog::MemoryClass::kRuntime);
+        !r)
+      return r;
+    auto made = kg::CublasHandle::Create(
+        node().device_ordinal(), node().execution(), node().stream(stream()),
+        {.base = library_workspace_.base, .size = llmp::base::Bytes(library_bytes_)});
+    if (!made) return std::unexpected(made.error().detail);
+    library_ = std::move(*made);
+    return {};
+  }
+  kg::CublasHandle& library() const { return *library_; }
+  std::uint64_t library_bytes() const { return library_bytes_; }
+  en::Status OpenSelectedWorkspace(std::string name, std::uint64_t bytes) {
+    if (bytes == 0) return {};
+    return Map(selected_workspace_, std::move(name), bytes, llmp::catalog::MemoryClass::kRuntime);
+  }
+  const en::Mapped& selected_workspace() const { return selected_workspace_; }
+  // The handle destroyed, then every mapping released, after the fence.
+  void Release(std::vector<std::string>& problems) {
+    library_.reset();
+    ReleaseMappings(problems);
+  }
+
+ private:
+  en::Mapped library_workspace_, selected_workspace_;
+  std::uint64_t library_bytes_ = 0;
+  std::unique_ptr<kg::CublasHandle> library_;
+};
+
 // Positive teardown uses the normal node fence protocol even though tests
 // submit no program work. An unproven teardown retains the complete owner.
 struct Life final : en::PagedModel {
   en::PagedNode node{{.compute_streams = 1, .slots = 1}};
-  en::RunnerResources resources{node, 0, 0};
+  LibraryLoan resources{node, 0, 0};
   std::shared_ptr<Probe> probe;
   std::unique_ptr<kg::GgmlBackend> backend;
   bool opened = false;
@@ -159,6 +204,7 @@ class GgmlConstructionGpu : public testing::TestWithParam<bool> {
     ASSERT_TRUE(paid) << (paid ? "" : paid.error());
     life->probe = std::make_shared<Probe>();
     life->probe->paid = *paid;
+    static_cast<void>(llmp::kernels::RegisterBuildKernels());
     auto made = kg::GgmlBackend::Create(0, life->node.execution(), life->node.stream(0), nullptr);
     ASSERT_TRUE(made) << (made ? "" : made.error());
     life->backend = std::move(*made);
@@ -177,7 +223,7 @@ class GgmlConstructionGpu : public testing::TestWithParam<bool> {
     if (declare) {
       if (!declare_first)
         ASSERT_TRUE(life->backend->Declare({}, life->resources.library_bytes(), charge, release));
-      ASSERT_TRUE(life->backend->LendLibrary(&life->resources.library()));
+      ASSERT_TRUE(life->backend->LendCublas(&life->resources.library()));
     }
   }
   std::unique_ptr<Life, Retire> life;
@@ -234,7 +280,7 @@ TEST_P(GgmlConstructionGpu, LibraryLoanReturnsBeforeOwnerDestructionAndCanBeRele
       ASSERT_TRUE(life->resources.OpenLibrary("descriptor library loan"));
     ASSERT_TRUE(life->resources.OpenSelectedWorkspace("descriptor library source state",
                                                       life->backend->persistent_bytes()));
-    ASSERT_TRUE(life->backend->LendLibrary(&life->resources.library()));
+    ASSERT_TRUE(life->backend->LendCublas(&life->resources.library()));
     {
       const auto& state = life->resources.selected_workspace();
       auto launch =
@@ -259,7 +305,7 @@ TEST_P(GgmlConstructionGpu, CaptureOnAnotherStreamIsRefusedBeforeItsBodyRuns) {
   if (!GetParam()) ASSERT_TRUE(life->resources.OpenLibrary("stream binding library"));
   ASSERT_TRUE(life->resources.OpenSelectedWorkspace("stream binding source state",
                                                     life->backend->persistent_bytes()));
-  ASSERT_TRUE(life->backend->LendLibrary(&life->resources.library()));
+  ASSERT_TRUE(life->backend->LendCublas(&life->resources.library()));
   {
     const auto& state = life->resources.selected_workspace();
     auto launch =

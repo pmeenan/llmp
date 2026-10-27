@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -18,26 +19,20 @@
 #include "kernels/decode/implementations.h"
 #include "kernels/decode/products.h"
 #include "kernels/decode/selected_weight.h"
-#include "kernels/ggml/validate_util.h"
 #include "providers/device_runtime.h"
 
 namespace llmp::kernels::decode {
 namespace {
-namespace kg = ggml;
-using Failure = kg::KernelFailure;
+using Failure = kernels::KernelFailure;
 using Role = format::PartRole;
 
 std::unexpected<Failure> Reject(std::string message) {
   return std::unexpected(Failure{.detail = std::move(message)});
 }
 
-std::uint64_t Address(const ggml_tensor* t) {
-  return static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(t->data));
-}
-
 using detail::BindWeightParts;
 using detail::WeightGeometry;
-std::expected<void, Failure> CheckWeight(const kg::SelectedOperand& w, WeightGeometry& out) {
+std::expected<void, Failure> CheckWeight(const SelectedOperand& w, WeightGeometry& out) {
   auto geometry = detail::WeightOf(w);
   if (!geometry) return std::unexpected(geometry.error());
   out = *geometry;
@@ -45,11 +40,11 @@ std::expected<void, Failure> CheckWeight(const kg::SelectedOperand& w, WeightGeo
 }
 
 struct ActivationGeometry {
-  ggml_tensor* x = nullptr;
-  ggml_tensor* y = nullptr;
+  TensorRef x{};
+  TensorRef y{};
   std::uint64_t k = 0, outputs = 0, rows = 0, batches2 = 1, batches3 = 1;
   std::array<std::int64_t, 4> x_ne{}, y_ne{};
-  std::array<std::size_t, 4> x_nb{}, y_nb{};
+  std::array<std::uint64_t, 4> x_nb{}, y_nb{};
 };
 struct SingleGeometry : ActivationGeometry {
   WeightGeometry weight;
@@ -65,25 +60,48 @@ bool InputRows(const ir::TensorDesc& desc) {
          desc.nb[2] >= desc.nb[1] * desc.ne(1) && desc.nb[3] >= desc.nb[2] * desc.ne(2) &&
          (desc.ne(2) == 1 || desc.nb[2] % 16 == 0) && (desc.ne(3) == 1 || desc.nb[3] % 16 == 0);
 }
-void Remember(ActivationGeometry& g) {
-  std::ranges::copy(g.x->ne, g.x_ne.begin());
-  std::ranges::copy(g.y->ne, g.y_ne.begin());
-  std::ranges::copy(g.x->nb, g.x_nb.begin());
-  std::ranges::copy(g.y->nb, g.y_nb.begin());
+void Remember(ActivationGeometry& g, const TensorFacts& x, const TensorFacts& y) {
+  g.x_ne = x.ne;
+  g.y_ne = y.ne;
+  g.x_nb = x.nb;
+  g.y_nb = y.nb;
 }
-bool CurrentActivations(const ActivationGeometry& g) {
-  return g.x && g.y && kg::detail::Current(g.x) && kg::detail::Current(g.y) &&
-         kg::detail::Extent(g.x) && kg::detail::Extent(g.y) && g.x->type == GGML_TYPE_F32 &&
-         g.y->type == GGML_TYPE_F32 && std::ranges::equal(g.x->ne, g.x_ne) &&
-         std::ranges::equal(g.y->ne, g.y_ne) && std::ranges::equal(g.x->nb, g.x_nb) &&
-         std::ranges::equal(g.y->nb, g.y_nb) && Address(g.x) % 16 == 0 && Address(g.y) % 4 == 0;
+// The activations' addresses (x, y), when their descriptors are current and
+// still those lowering saw; nothing otherwise.
+std::optional<std::array<void*, 2>> CurrentActivations(const ActivationGeometry& g) {
+  if (!g.x || !g.y) return std::nullopt;
+  const auto x = g.x.facts(), y = g.y.facts();
+  if (!x.current || !y.current || !x.extent || !y.extent || x.type != StorageType::kF32 ||
+      y.type != StorageType::kF32 || x.ne != g.x_ne || y.ne != g.y_ne || x.nb != g.x_nb ||
+      y.nb != g.y_nb || AddressOf(x) % 16 != 0 || AddressOf(y) % 4 != 0)
+    return std::nullopt;
+  return std::array{x.data, y.data};
+}
+// Every operand bound, current, of a representable range, and none
+// overlapping another but itself.
+std::expected<void, Failure> Disjoint(std::span<const TensorRef> all) {
+  for (std::size_t i = 0; i < all.size(); ++i) {
+    const auto t = all[i].facts();
+    if (!t.current || AddressOf(t) == 0)
+      return Reject("selected product requires current physical bindings");
+    if (t.bytes > UINT64_MAX - AddressOf(t))
+      return Reject("selected product address range overflows");
+    for (std::size_t j = 0; j < i; ++j) {
+      if (all[i] == all[j]) continue;
+      const auto other = all[j].facts();
+      if (AddressOf(t) < AddressOf(other) + other.bytes &&
+          AddressOf(other) < AddressOf(t) + t.bytes)
+        return Reject("selected product operand ranges overlap");
+    }
+  }
+  return {};
 }
 
 using ProductGeometry = std::variant<SingleGeometry, GluGeometry>;
 
 std::expected<SingleGeometry, Failure> ShapeSingle(Template tmpl, const ir::Node& node,
-                                                   std::span<const kg::SelectedOperand> inputs,
-                                                   std::span<const kg::SelectedOperand> outputs) {
+                                                   std::span<const SelectedOperand> inputs,
+                                                   std::span<const SelectedOperand> outputs) {
   if (node.key != ir::Primitive(ir::Op::kMatMul) || node.nsrc != 2 || node.nout != 1 ||
       inputs.size() != 2 || outputs.size() != 1)
     return Reject("selected product requires one two-input MatMul");
@@ -127,14 +145,15 @@ std::expected<SingleGeometry, Failure> ShapeSingle(Template tmpl, const ir::Node
 
   g.x = x.tensor;
   g.y = y.tensor;
-  if (!g.x || !g.y || g.x->type != GGML_TYPE_F32 || g.y->type != GGML_TYPE_F32 ||
-      !ggml_is_contiguous(g.y) ||
-      static_cast<std::uint64_t>(ggml_nelements(g.x)) != total_x_elems ||
-      static_cast<std::uint64_t>(ggml_nelements(g.y)) != g.outputs * (total_x_elems / g.k))
+  if (!g.x || !g.y) return Reject("selected product activation physical geometry differs");
+  const auto xf = g.x.facts(), yf = g.y.facts();
+  if (xf.type != StorageType::kF32 || yf.type != StorageType::kF32 || !yf.contiguous ||
+      static_cast<std::uint64_t>(xf.elements) != total_x_elems ||
+      static_cast<std::uint64_t>(yf.elements) != g.outputs * (total_x_elems / g.k))
     return Reject("selected product activation physical geometry differs");
 
-  Remember(g);
-  if (!std::ranges::equal(g.x->nb, x.desc.nb) || !std::ranges::equal(g.y->nb, y.desc.nb))
+  Remember(g, xf, yf);
+  if (!std::ranges::equal(xf.nb, x.desc.nb) || !std::ranges::equal(yf.nb, y.desc.nb))
     return Reject("selected product activation strides differ");
   if (x.desc.ne(2) % g.weight.format.shape.ne[2] || x.desc.ne(3) % g.weight.format.shape.ne[3])
     return Reject("selected product weight batches do not broadcast to input");
@@ -142,8 +161,8 @@ std::expected<SingleGeometry, Failure> ShapeSingle(Template tmpl, const ir::Node
 }
 
 std::expected<GluGeometry, Failure> ShapeGlu(const ir::Node& node,
-                                             std::span<const kg::SelectedOperand> inputs,
-                                             std::span<const kg::SelectedOperand> outputs) {
+                                             std::span<const SelectedOperand> inputs,
+                                             std::span<const SelectedOperand> outputs) {
   if (node.key != ir::Fused(ir::FusedKind::kMatMulGlu) || node.nsrc != 3 || node.nout != 1 ||
       inputs.size() != 3 || outputs.size() != 1)
     return Reject("selected vector_glu requires one three-input MatMulGlu");
@@ -195,14 +214,15 @@ std::expected<GluGeometry, Failure> ShapeGlu(const ir::Node& node,
 
   g.x = x.tensor;
   g.y = y.tensor;
-  if (!g.x || !g.y || g.x->type != GGML_TYPE_F32 || g.y->type != GGML_TYPE_F32 ||
-      !ggml_is_contiguous(g.y) ||
-      static_cast<std::uint64_t>(ggml_nelements(g.x)) != total_x_elems ||
-      static_cast<std::uint64_t>(ggml_nelements(g.y)) != g.outputs * (total_x_elems / g.k))
+  if (!g.x || !g.y) return Reject("selected vector_glu activation physical geometry differs");
+  const auto xf = g.x.facts(), yf = g.y.facts();
+  if (xf.type != StorageType::kF32 || yf.type != StorageType::kF32 || !yf.contiguous ||
+      static_cast<std::uint64_t>(xf.elements) != total_x_elems ||
+      static_cast<std::uint64_t>(yf.elements) != g.outputs * (total_x_elems / g.k))
     return Reject("selected vector_glu activation physical geometry differs");
 
-  Remember(g);
-  if (!std::ranges::equal(g.x->nb, x.desc.nb) || !std::ranges::equal(g.y->nb, y.desc.nb))
+  Remember(g, xf, yf);
+  if (!std::ranges::equal(xf.nb, x.desc.nb) || !std::ranges::equal(yf.nb, y.desc.nb))
     return Reject("selected GLU activation strides differ");
   if (x.desc.ne(2) % g.gate.format.shape.ne[2] || x.desc.ne(3) % g.gate.format.shape.ne[3])
     return Reject("selected GLU weight batches do not broadcast to input");
@@ -215,16 +235,16 @@ std::uint64_t MatrixAt(const WeightGeometry& w, std::uint64_t b2, std::uint64_t 
   return b2 / (x2 / w2) + (b3 / (x3 / w3)) * w2;
 }
 
-class Runtime final : public kg::SelectedLaunch {
+class Runtime final : public SelectedLaunch {
  public:
-  Runtime(const kg::SelectedSource* owner, providers::NativeStream stream)
-      : kg::SelectedLaunch(owner, stream) {}
+  Runtime(const SelectedSource* owner, providers::NativeStream stream)
+      : SelectedLaunch(owner, stream) {}
   bool faulted() const override { return failed; }
   bool capturable() const override { return true; }
   bool failed = false;
 };
 
-class BoundCall final : public kg::BoundSelectedCall {
+class BoundCall final : public BoundSelectedCall {
  public:
   BoundCall(Runtime& runtime, ProductGeometry geometry)
       : runtime_(runtime), geometry_(std::move(geometry)) {}
@@ -233,8 +253,11 @@ class BoundCall final : public kg::BoundSelectedCall {
     if (runtime_.failed || stream.handle != runtime_.stream().handle)
       return Reject("selected product cannot run on a failed or foreign stream");
 
-    if (!std::visit([](const auto& g) { return CurrentActivations(g); }, geometry_))
-      return Reject("selected product activation geometry changed");
+    const auto activations =
+        std::visit([](const auto& g) { return CurrentActivations(g); }, geometry_);
+    if (!activations) return Reject("selected product activation geometry changed");
+    void* const x_data = (*activations)[0];
+    void* const y_data = (*activations)[1];
     if (std::holds_alternative<SingleGeometry>(geometry_)) {
       const auto& g = std::get<SingleGeometry>(geometry_);
       const auto parts = BindWeightParts(g.weight);
@@ -247,11 +270,11 @@ class BoundCall final : public kg::BoundSelectedCall {
                          MatrixAt(g.weight, b2, b3, g.batches2, g.batches3)},
               .first = 0,
               .outputs = g.outputs,
-              .x = reinterpret_cast<const float*>(static_cast<const std::byte*>(g.x->data) +
+              .x = reinterpret_cast<const float*>(static_cast<const std::byte*>(x_data) +
                                                   b2 * g.x_nb[2] + b3 * g.x_nb[3]),
               .rows = g.rows,
               .x_stride = g.x_nb[1] / sizeof(float),
-              .y = static_cast<float*>(g.y->data) + offset * g.outputs,
+              .y = static_cast<float*>(y_data) + offset * g.outputs,
               .y_stride = g.outputs,
           };
           Status status;
@@ -265,7 +288,7 @@ class BoundCall final : public kg::BoundSelectedCall {
           if (!status) {
             runtime_.failed = true;
             return std::unexpected(
-                Failure{.error = kg::KernelError::kUnknown, .detail = status.error()});
+                Failure{.error = KernelError::kUnknown, .detail = status.error()});
           }
         }
       }
@@ -287,18 +310,18 @@ class BoundCall final : public kg::BoundSelectedCall {
               .up_first = 0,
               .outputs = g.outputs,
               .glu = g.glu,
-              .x = reinterpret_cast<const float*>(static_cast<const std::byte*>(g.x->data) +
+              .x = reinterpret_cast<const float*>(static_cast<const std::byte*>(x_data) +
                                                   b2 * g.x_nb[2] + b3 * g.x_nb[3]),
               .rows = g.rows,
               .x_stride = g.x_nb[1] / sizeof(float),
-              .y = static_cast<float*>(g.y->data) + offset * g.outputs,
+              .y = static_cast<float*>(y_data) + offset * g.outputs,
               .y_stride = g.outputs,
           };
           auto status = RunVectorGlu(p, stream.handle);
           if (!status) {
             runtime_.failed = true;
             return std::unexpected(
-                Failure{.error = kg::KernelError::kUnknown, .detail = status.error()});
+                Failure{.error = KernelError::kUnknown, .detail = status.error()});
           }
         }
       }
@@ -311,24 +334,24 @@ class BoundCall final : public kg::BoundSelectedCall {
   ProductGeometry geometry_;
 };
 
-class Call final : public kg::SelectedCall {
+class Call final : public SelectedCall {
  public:
-  Call(const kg::SelectedSource* owner, ProductGeometry geometry, base::Sha256Digest identity)
-      : kg::SelectedCall(owner), geometry_(std::move(geometry)), identity_(identity) {}
+  Call(const SelectedSource* owner, ProductGeometry geometry, base::Sha256Digest identity)
+      : SelectedCall(owner), geometry_(std::move(geometry)), identity_(identity) {}
   std::uint64_t scratch_bytes() const override { return 0; }
   std::uint64_t host_bytes() const override { return sizeof(Call) + sizeof(BoundCall) + 128; }
   std::uint64_t launches() const override {
     return std::visit([](const auto& g) { return g.batches2 * g.batches3; }, geometry_);
   }
-  std::expected<std::unique_ptr<kg::BoundSelectedCall>, Failure> Bind(
-      const execution::Implementation& implementation, kg::SelectedLaunch& launch,
-      kg::SelectedWorkspace) const override {
+  std::expected<std::unique_ptr<BoundSelectedCall>, Failure> Bind(
+      const execution::Implementation& implementation, SelectedLaunch& launch,
+      SelectedWorkspace) const override {
     if (launch.owner() != owner() || execution::IdentityOf(implementation) != identity_)
       return Reject("selected product source or implementation identity changed");
     const auto bound = decode::Bind(implementation);
     if (!bound) return Reject("selected product declaration has no decoder");
 
-    if (!std::visit([](const auto& g) { return CurrentActivations(g); }, geometry_))
+    if (!std::visit([](const auto& g) { return CurrentActivations(g).has_value(); }, geometry_))
       return Reject("selected product activation geometry changed");
     if (std::holds_alternative<SingleGeometry>(geometry_)) {
       const auto& g = std::get<SingleGeometry>(geometry_);
@@ -336,27 +359,14 @@ class Call final : public kg::SelectedCall {
         return Reject("selected product implementation template mismatch");
       auto parts = BindWeightParts(g.weight);
       if (!parts) return std::unexpected(parts.error());
-      std::array<const ggml_tensor*, 6> all{};
+      std::array<TensorRef, 6> all{};
       std::size_t all_count = 0;
       for (std::size_t i = 0; i < g.weight.count; ++i) all[all_count++] = g.weight.parts[i];
       all[all_count++] = g.x;
       all[all_count++] = g.y;
-      for (std::size_t i = 0; i < all_count; ++i) {
-        const auto* t = all[i];
-        if (!kg::detail::Current(t) || Address(t) == 0)
-          return Reject("selected product requires current physical bindings");
-        const auto bytes = ggml_nbytes(t);
-        if (bytes > UINT64_MAX - Address(t))
-          return Reject("selected product address range overflows");
-        for (std::size_t j = 0; j < i; ++j) {
-          const auto* other = all[j];
-          if (t == other) continue;
-          if (Address(t) < Address(other) + ggml_nbytes(other) &&
-              Address(other) < Address(t) + bytes)
-            return Reject("selected product operand ranges overlap");
-        }
-      }
-      if (Address(g.x) % 16 != 0 || Address(g.y) % 4 != 0)
+      if (auto disjoint = Disjoint(std::span(all).first(all_count)); !disjoint)
+        return std::unexpected(disjoint.error());
+      if (AddressOf(g.x.facts()) % 16 != 0 || AddressOf(g.y.facts()) % 4 != 0)
         return Reject("selected product input or output is misaligned");
     } else {
       const auto& g = std::get<GluGeometry>(geometry_);
@@ -367,28 +377,15 @@ class Call final : public kg::SelectedCall {
       if (!gate_parts) return std::unexpected(gate_parts.error());
       auto up_parts = BindWeightParts(g.up);
       if (!up_parts) return std::unexpected(up_parts.error());
-      std::array<const ggml_tensor*, 10> all{};
+      std::array<TensorRef, 10> all{};
       std::size_t all_count = 0;
       for (std::size_t i = 0; i < g.gate.count; ++i) all[all_count++] = g.gate.parts[i];
       for (std::size_t i = 0; i < g.up.count; ++i) all[all_count++] = g.up.parts[i];
       all[all_count++] = g.x;
       all[all_count++] = g.y;
-      for (std::size_t i = 0; i < all_count; ++i) {
-        const auto* t = all[i];
-        if (!kg::detail::Current(t) || Address(t) == 0)
-          return Reject("selected product requires current physical bindings");
-        const auto bytes = ggml_nbytes(t);
-        if (bytes > UINT64_MAX - Address(t))
-          return Reject("selected product address range overflows");
-        for (std::size_t j = 0; j < i; ++j) {
-          const auto* other = all[j];
-          if (t == other) continue;
-          if (Address(t) < Address(other) + ggml_nbytes(other) &&
-              Address(other) < Address(t) + bytes)
-            return Reject("selected product operand ranges overlap");
-        }
-      }
-      if (Address(g.x) % 16 != 0 || Address(g.y) % 4 != 0)
+      if (auto disjoint = Disjoint(std::span(all).first(all_count)); !disjoint)
+        return std::unexpected(disjoint.error());
+      if (AddressOf(g.x.facts()) % 16 != 0 || AddressOf(g.y.facts()) % 4 != 0)
         return Reject("selected product input or output is misaligned");
     }
     return std::make_unique<BoundCall>(static_cast<Runtime&>(launch), geometry_);
@@ -399,7 +396,7 @@ class Call final : public kg::SelectedCall {
   base::Sha256Digest identity_;
 };
 
-class Source final : public kg::SelectedSource {
+class Source final : public SelectedSource {
  public:
   explicit Source(std::vector<execution::Implementation> implementations)
       : implementations_(std::move(implementations)) {
@@ -423,10 +420,10 @@ class Source final : public kg::SelectedSource {
   }
   std::uint64_t persistent_bytes() const override { return 0; }
   std::optional<base::Sha256Digest> ExecutionIdentity() const override { return identity_; }
-  std::expected<std::unique_ptr<kg::SelectedCall>, Failure> Lower(
+  std::expected<std::unique_ptr<SelectedCall>, Failure> Lower(
       const execution::Implementation& implementation, const ir::Node& node,
-      std::span<const kg::SelectedOperand> inputs,
-      std::span<const kg::SelectedOperand> outputs) const override {
+      std::span<const SelectedOperand> inputs,
+      std::span<const SelectedOperand> outputs) const override {
     const auto at =
         std::ranges::find(implementations_, implementation.name, &execution::Implementation::name);
     if (at == implementations_.end() ||
@@ -462,9 +459,9 @@ class Source final : public kg::SelectedSource {
     }
     return Reject("unsupported product implementation name");
   }
-  std::expected<std::unique_ptr<kg::SelectedLaunch>, Failure> Launch(
+  std::expected<std::unique_ptr<SelectedLaunch>, Failure> Launch(
       int device, providers::DeviceExecution& execution, providers::StreamId stream,
-      kg::SelectedWorkspace persistent) const override {
+      SelectedWorkspace persistent) const override {
     const auto facts = providers::QueryDeviceFacts(device);
     if (!facts || !CompiledFor(facts->architecture / 10) || persistent.bytes != 0)
       return Reject("selected products device or persistent workspace differs");
@@ -480,7 +477,7 @@ class Source final : public kg::SelectedSource {
 
 }  // namespace
 
-std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> ProductsSelectedSource(
+std::expected<std::shared_ptr<const kernels::SelectedSource>, std::string> ProductsSelectedSource(
     std::optional<format::Encoding> encoding) {
   auto implementations = decode::Implementations();
   std::vector<execution::Implementation> matched;

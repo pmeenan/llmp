@@ -24,7 +24,7 @@
 #include "planner/plan.h"
 #include "planner/policy.h"
 #include "spec/mapping.h"
-#include "spec/mappings/qwen2.h"
+#include "spec/mappings/dense.h"
 
 namespace {
 namespace co = llmp::components;
@@ -93,15 +93,13 @@ TEST(ComponentsQwen2, BothEncodingsUseTheSharedCatalogAndPhysicalShapes) {
     auto values = fam::Qwen2Values(p);
     ASSERT_TRUE(values.has_value()) << values.error();
     const auto source = Source(exl3);
-    const auto& mapping =
-        exl3 ? sp::mappings::Qwen2Exl3Mapping() : sp::mappings::Qwen2GgufMapping();
+    // One canonical mapping; the container selects its dialect.
+    const auto& mapping = sp::mappings::Qwen2Mapping();
     ASSERT_TRUE(sp::ValidateMapping(mapping));
     EXPECT_EQ(sp::FindMapping("qwen2", source.container), &mapping);
     auto spec = sp::Synthesize(mapping, source, *values);
     ASSERT_TRUE(spec.has_value()) << spec.error();
-    const auto other =
-        sp::Synthesize(exl3 ? sp::mappings::Qwen2GgufMapping() : sp::mappings::Qwen2Exl3Mapping(),
-                       Source(!exl3), *values);
+    const auto other = sp::Synthesize(mapping, Source(!exl3), *values);
     ASSERT_TRUE(other.has_value()) << other.error();
     ASSERT_TRUE(spec->stages[0].embedding.has_value());
     ASSERT_TRUE(other->stages[0].embedding.has_value());
@@ -180,7 +178,7 @@ TEST(ComponentsQwen2, RefusesMissingBiasAndTrellisParts) {
   auto source = Source(true);
   const auto values = fam::Qwen2Values(fam::Qwen25Instruct05BExl3());
   ASSERT_TRUE(values.has_value());
-  const auto& mapping = sp::mappings::Qwen2Exl3Mapping();
+  const auto& mapping = sp::mappings::Qwen2Mapping();
   const auto intact = sp::Synthesize(mapping, source, *values);
   ASSERT_TRUE(intact) << (intact ? "" : intact.error());
   for (const auto purpose : {co::ValidationPurpose::kExecution, co::ValidationPurpose::kImport}) {

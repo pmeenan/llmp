@@ -25,7 +25,6 @@
 
 #include "artifact/artifact.h"
 #include "artifact/composition.h"
-#include "planner/policy.h"
 
 namespace llmp::spec {
 struct Mapping;
@@ -59,35 +58,6 @@ struct ApprovedTransform {
   std::string_view name{};
   std::size_t tensors = 0;
   std::string_view digest{};
-};
-
-inline constexpr std::string_view kNativeNumericalEvidence =
-    "114d79515017285c44735f85c40795b2444d7c7694064e7f6f1ac8103b21b29a";
-inline constexpr std::string_view kFinalNumericalEvidence =
-    "62bcea419709532e745efe404cbe1f938ec869d1657cad0797ce42266b51f07d";
-inline constexpr std::string_view kImageNumericalEvidence =
-    "9999175c760fd4a25601978f592daa63dae329ce5efadeae50dc1b3c26a65d6a";
-
-// Historical evidence for an actual rounding/reduction transformation.
-// The enclosing approval binds exact receipts and semantic spec; matching
-// component kinds/anchors identify semantic sites, never model-name branches.
-struct NumericalEvidenceDomain {
-  planner::NumericalChange change{};
-  std::string_view evidence{};  // SHA-256 of the authoritative accepted report
-  std::string_view component_kind{};
-  std::span<const ir::OpKey> anchors{};
-  std::uint32_t arch = 0;
-  std::uint32_t max_context = 0, max_slots = 0;
-  // Actual qualified source envelope; no inference for unrelated smaller
-  // sources. Explicit rows lists constrain evidence established at those rows.
-  std::uint64_t max_rows = 0;
-  std::span<const std::uint64_t> rows{};
-  // Retention of an accepted incumbent recipe, not a new shape-specific
-  // quality claim. Chunk rows are multiplied by actual admitted owners and
-  // the declared semantic multiplicity of this anchor's input.
-  bool incumbent_recipe = true;
-  bool stream_rows = false;
-  std::string_view row_parameter{};
 };
 
 struct Approval {
@@ -130,7 +100,6 @@ struct Approval {
   // The mapping its spec was synthesized by (its policies; a drafter's
   // composition and drafting recipe); null: its architecture's.
   const spec::Mapping& (*mapping)() = nullptr;
-  std::span<const NumericalEvidenceDomain> numerical{};
 };
 
 std::span<const Approval> Approvals();
@@ -149,8 +118,6 @@ struct ImageApproval {
   std::span<const SourceReceipt> sources{};
   std::string_view spec{};
   std::span<const Approval> components{};
-  std::span<const NumericalEvidenceDomain> numerical{};
-  std::uint32_t numerical_width = 0, numerical_height = 0, numerical_prompt_rows = 0;
 };
 
 std::span<const ImageApproval> ImageApprovals();

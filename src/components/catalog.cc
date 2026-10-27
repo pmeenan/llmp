@@ -27,7 +27,6 @@ std::span<const ComponentDef* const> Catalog() {
       &defs::AttentionSpatial(),
       &defs::ConcatSpatial(),
       &defs::ConditionRows(),
-      &defs::ConvCausalFirstFrame(),
       &defs::Conv2d(),
       &defs::EmbeddingInject(),
       &defs::EmbeddingMtp(),

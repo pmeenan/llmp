@@ -39,8 +39,8 @@
 
 #include <cstdint>
 
-#include "kernels/decode/float_formats.cuh"
 #include "kernels/decode/operand.h"
+#include "kernels/device/float_formats.cuh"
 
 namespace llmp::kernels::decode {
 

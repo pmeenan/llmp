@@ -24,6 +24,7 @@
 #include "expected_error.h"
 #include "format/tensor_format.h"
 #include "image_family.h"
+#include "image_recipes.h"
 #include "import/archive_input.h"
 #include "import/image_pipeline.h"
 #include "import/normalize.h"
@@ -31,6 +32,7 @@
 #include "import/readers/gguf.h"
 #include "import/readers/safetensors.h"
 #include "import/sampling_defaults.h"
+#include "import/source_mapping.h"
 #include "import/stream.h"
 #include "import/writer.h"
 #include "import_fixtures.h"
@@ -40,7 +42,6 @@
 #include "qwen38_gguf_normalization_fixture.h"
 #include "runtime/component_admission.h"
 #include "runtime/model_settings.h"
-#include "spec/image_spatial.h"
 #include "spec/stage_recipe.h"
 #include "spec/stored.h"
 
@@ -1830,7 +1831,7 @@ TEST_F(ImportWriterTest, PlainUtf8SourceNamesAreJsonQuotedAndUnsafeNamesFailAtRe
 TEST_F(ImportWriterTest, ImageComponentMetadataPreservesF16AndBf16VaeWeights) {
   const auto& family = test_support::QwenImage();
   const auto tensors = model::VaeDecoderTensors(family.profile.vae, family.mapping->names.vae);
-  auto built = spec::ImageDecodeSpec(family.profile.vae, 64, 64, tensors);
+  auto built = test_support::QwenImageVaeGraph(family.profile, 64, 64);
   ASSERT_TRUE(built) << test_support::Failed(built).value_or("");
   for (const auto encoding : {Encoding::kF16, Encoding::kBF16}) {
     Checkpoint component{
@@ -1900,7 +1901,7 @@ TEST_F(ImportWriterTest, ImageComponentPreservesGgmlQ4KFormatAndLogicalShape) {
 TEST_F(ImportWriterTest, ImageComponentRefusesTensorsItsMappingNeitherReadsNorLeavesOut) {
   const auto& family = test_support::QwenImage();
   const auto tensors = model::VaeDecoderTensors(family.profile.vae, family.mapping->names.vae);
-  auto built = spec::ImageDecodeSpec(family.profile.vae, 64, 64, tensors);
+  auto built = test_support::QwenImageVaeGraph(family.profile, 64, 64);
   ASSERT_TRUE(built) << test_support::Failed(built).value_or("");
   Checkpoint component{
       .role = "vae", .container = "safetensors", .architecture = "AutoencoderKLQwenImage21"};
@@ -1922,9 +1923,10 @@ TEST_F(ImportWriterTest, ImageComponentRefusesTensorsItsMappingNeitherReadsNorLe
   const auto rule = std::ranges::find(family.mapping->components, std::string_view("vae"),
                                       &spec::ImageComponentRule::role);
   ASSERT_NE(rule, family.mapping->components.end());
+  const auto parts = spec::ImportOf(*rule);
   const auto plan = [&] {
-    return image_pipeline_detail::PlanComponent(component, tensors, rule->ignored_tensors,
-                                                built->spec, {});
+    return image_pipeline_detail::PlanComponent(component, tensors, parts.ignored_tensors,
+                                                built->spec, {}, parts.ignored_tensor_prefixes);
   };
   ASSERT_TRUE(plan());
   // What the mapping leaves out by name: the encoder, its quant_conv, the up
@@ -1945,10 +1947,18 @@ TEST_F(ImportWriterTest, ImageComponentRefusesTensorsItsMappingNeitherReadsNorLe
     add(name, {4});
     EXPECT_EQ(test_support::Failed(plan(), &Error::rule), Rule::kContainer) << name;
   }
-  EXPECT_TRUE(spec::IgnoredImageTensor("a.{layer}.b", "a.17.b"));
-  EXPECT_FALSE(spec::IgnoredImageTensor("a.{layer}.b", "a..b"));
-  EXPECT_FALSE(spec::IgnoredImageTensor("a.{layer}.b", "a.17.bc"));
-  EXPECT_TRUE(spec::IgnoredImageTensor("a.{layer}.", "a.3.c.d"));
+  // Both import routes' one matcher: whole names (a "{layer}" a layer
+  // number), and explicit prefixes; a pattern ending in '.' is a name, not a
+  // prefix.
+  const std::array<std::string_view, 1> layered{"a.{layer}.b"};
+  const std::array<std::string_view, 1> dotted{"a.{layer}."};
+  const std::array<std::string_view, 1> prefix{"a."};
+  EXPECT_TRUE(IgnoredTensor(layered, {}, "a.17.b"));
+  EXPECT_FALSE(IgnoredTensor(layered, {}, "a..b"));
+  EXPECT_FALSE(IgnoredTensor(layered, {}, "a.17.bc"));
+  EXPECT_FALSE(IgnoredTensor(dotted, {}, "a.3.c.d"));
+  EXPECT_TRUE(IgnoredTensor({}, prefix, "a.3.c.d"));
+  EXPECT_FALSE(IgnoredTensor({}, prefix, "ab.c"));
 }
 
 TEST_F(ImportWriterTest, StandaloneSpatialRecipePublishesOrderedRoutesAndExplicitOmission) {

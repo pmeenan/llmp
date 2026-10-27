@@ -63,6 +63,14 @@ std::optional<NameMatch> Match(std::string_view pattern, std::string_view name,
                                std::uint32_t layers);
 }  // namespace normalization_detail
 
+// Whether a source tensor is one its mapping leaves out, the one rule both
+// import routes apply: one of `tensors` (each a whole name, a "{layer}" in
+// it a layer number below `layers`: normalization_detail::Match), or a name
+// under one of `prefixes`.
+bool IgnoredTensor(std::span<const std::string_view> tensors,
+                   std::span<const std::string_view> prefixes, std::string_view name,
+                   std::uint32_t layers = normalization_detail::kLayerLimit);
+
 }  // namespace llmp::import
 
 #endif  // LLMP_IMPORT_SOURCE_MAPPING_H_

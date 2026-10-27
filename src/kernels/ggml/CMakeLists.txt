@@ -145,8 +145,8 @@ if(LLMP_CUDA)
                         PUBLIC llmp_ggml_tensors llmp_ggml_cuda llmp_ggml_support llmp_device_memory
                                llmp_cublas llmp_cublaslt llmp_execution llmp_ds4_d2r llmp_ds4_hca
                         # the NVIDIA driver, for ggml_support.cu's device queries
-                        PRIVATE llmp_cuda_device_memory llmp_warnings llmp_ggml_cutlass
-                                llmp_decode_selected llmp_exl3_selected)
+                        PRIVATE llmp_cuda_device_memory llmp_device_runtime llmp_warnings
+                                llmp_ggml_cutlass)
   set_target_properties(llmp_ggml_objects PROPERTIES CUDA_ARCHITECTURES "${architectures}")
   # What each implementation's identity records of the build (D-053): the
   # prepared GGML tree the build used, as the source receipt records it
@@ -191,8 +191,8 @@ if(LLMP_CUDA)
   # build's configure (CONFIGURE_DEPENDS), so none escapes the identity;
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
-  set(module_files measured_ranks.h ../decode/float_formats.cuh float_route.cc float_route.h CMakeLists.txt capabilities.cc capabilities.h recipe_entries.inc lower.cc lower.h step_program.cc
-                   step_program.h selected_operation.h cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_sparse.cu
+  set(module_files measured_ranks.h ../device/float_formats.cuh float_route.cc float_route.h CMakeLists.txt capabilities.cc capabilities.h recipe_entries.inc lower.cc lower.h step_program.cc
+                   step_program.h cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_sparse.cu
                    dsv4_weighted_reduce.h dsv4_weighted_reduce.cc dsv4_weighted_reduce.cu
                    gemma_moe.h gemma_moe.cc gemma_moe.cu
                    graph_read_index.h graph_read_index.cc gemma_moe_fusion.h gemma_moe_fusion.cc

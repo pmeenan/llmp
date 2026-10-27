@@ -74,11 +74,10 @@
 #include "engine/model_runner.h"
 #include "engine/paged_node.h"
 #include "engine/paged_weights.h"
-#include "engine/runner_resources.h"
 #include "engine/support.h"
-#include "kernels/ggml/step_program.h"
 #include "planner/step_shape.h"
 #include "platform/host_probe.h"
+#include "runner_kernels.h"
 #include "runtime/approvals.h"
 #include "runtime/component_admission.h"
 #include "spec/mapping.h"
@@ -90,7 +89,6 @@ namespace {
 namespace co = llmp::components;
 namespace en = llmp::engine;
 namespace ar = llmp::artifact;
-namespace kg = llmp::kernels::ggml;
 namespace kn = llmp::kernels;
 namespace md = llmp::model;
 namespace pl = llmp::planner;
@@ -320,24 +318,22 @@ struct Component {
   std::uint64_t replayed = 0;
 };
 
-// The kernel source's own memory beside the runner (its cuBLAS handle and
-// workspace, which the backend borrows): released by the node's teardown
-// after the runner's, the backend first.
+// The runner's device backend, made as serving makes it: the runner maps
+// its kernel memory and binds and releases its workspaces
+// (RunnerKernelConfig); the backend goes at the node's teardown, after the
+// runner's release.
 class KernelSource final : public en::PagedModel {
  public:
-  explicit KernelSource(en::PagedNode& node)
-      : resources(std::make_unique<en::RunnerResources>(node, 0, 0)) {}
+  explicit KernelSource(en::PagedNode& node) : kernels(node, 0, 0) {}
   std::uint32_t stream() const override { return 0; }
   const llmp::catalog::Closure& fence_closure() const override { return nothing_; }
   std::vector<llmp::catalog::ExtentId> managed_extents() const override { return {}; }
   en::Status Release() override {
-    backend.reset();
     std::vector<std::string> problems;
-    resources->Release(problems);
+    kernels.Release(problems);
     return en::support::Joined(problems);
   }
-  std::unique_ptr<en::RunnerResources> resources;
-  std::unique_ptr<kg::GgmlBackend> backend;
+  llmp::test_support::RunnerKernels kernels;
 
  private:
   llmp::catalog::Closure nothing_;
@@ -448,20 +444,15 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
   std::vector<en::PagedModel*> entered;
   const auto started = [&]() -> en::Status {
     if (auto x = node.Open(); !x) return x;
-    if (auto x = source->resources->OpenLibrary("lowered cuBLAS workspace"); !x) return x;
     const auto pitch = slabs->pitch;
-    auto made = kg::GgmlBackend::Create(
-        0, node.execution(), node.stream(0), &source->resources->library(),
-        {.lower = {
-             .expert_stride = [&place, pitch](const llmp::ir::WeightRef& ref) -> std::uint64_t {
-               const auto at = place.find(ref);
-               if (at == place.end() || !at->second.first || at->second.second >= pitch.size()) {
-                 return 0;
-               }
-               return pitch[at->second.second];
-             }}});
-    if (!made) return std::unexpected(made.error());
-    source->backend = std::move(*made);
+    const auto stride = [&place, pitch](const llmp::ir::WeightRef& ref) -> std::uint64_t {
+      const auto at = place.find(ref);
+      if (at == place.end() || !at->second.first || at->second.second >= pitch.size()) {
+        return 0;
+      }
+      return pitch[at->second.second];
+    };
+    if (auto x = source->kernels.Create({.lower = {.expert_stride = stride}}); !x) return x;
     // Native construction has a separate finite fixture allowance. Retained
     // plans still acquire the runner's ordinary paid ownership before transfer.
     const auto available = llmp::platform::AvailableMemoryBytes();
@@ -469,15 +460,11 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
     auto paid = en::ExecutionMetadataAllowance::Admit(node.catalog(), node.domain(), 128ULL << 20U,
                                                       *available, 6ULL << 30U);
     if (!paid) return std::unexpected(paid.error());
-    if (auto funded = source->backend->FundConstruction(
+    if (auto funded = source->kernels->FundConstruction(
             [paid = *paid](std::uint64_t n) { return paid->Charge(n); },
             [paid = *paid](std::uint64_t n) { paid->Release(n); });
         !funded)
       return std::unexpected(funded.error());
-    if (auto x = source->resources->OpenSelectedWorkspace("selected kernel state",
-                                                          source->backend->persistent_bytes());
-        !x)
-      return x;
     auto target_weights = std::make_unique<en::PagedWeights>();
     if (auto x = target_weights->Open(target); !x) return x;
     en::PagedWeights* tw = target_weights.get();
@@ -496,7 +483,7 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
                                                    .values = values,
                                                    .slots = c.owners,
                                                    .policy = std::nullopt,
-                                                   .backend = source->backend->Backend()});
+                                                   .backend = source->kernels->Backend()});
     if (!stage0) return std::unexpected(stage0.error());
     sources.push_back(std::move(*stage0));
     en::RunnerConfig config;
@@ -523,7 +510,7 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
                                                       .values = assistant_values,
                                                       .slots = c.owners,
                                                       .policy = std::nullopt,
-                                                      .backend = source->backend->Backend()});
+                                                      .backend = source->kernels->Backend()});
       if (!drafter) return std::unexpected(drafter.error());
       sources.push_back(std::move(*drafter));
       config.slots.stages.push_back({.name = "assistant", .layout = layouts[1]});
@@ -538,11 +525,10 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
     config.setup_shapes = shapes;
     config.launch =
         [&](std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
-      return source->backend->Launch(
-          {.base = node.pool().base, .size = llmp::base::Bytes(node.pool().bytes)},
-          {.base = source->resources->selected_workspace().base,
-           .bytes = source->resources->selected_workspace().bytes});
+      return source->kernels->Launch(
+          {.base = node.pool().base, .size = llmp::base::Bytes(node.pool().bytes)});
     };
+    llmp::test_support::RunnerKernelConfig(config, source->kernels.backend(), "lowered");
     config.weight_address = [&place, tw, aw](const llmp::ir::WeightRef& ref,
                                              llmp::format::PartRole) -> std::uint64_t {
       const auto at = place.find(ref);

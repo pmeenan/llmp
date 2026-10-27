@@ -360,6 +360,12 @@ std::optional<std::uint32_t> BlockBytes(Encoding encoding) {
   return std::nullopt;
 }
 
+std::optional<BlockStruct> BlockStructOf(Encoding encoding) {
+  const EncodingInfo& info = Info(encoding);
+  if (!info.ggml.has_value()) return std::nullopt;
+  return BlockStruct{.elements = info.ggml->block_elements, .bytes = info.ggml->block_bytes};
+}
+
 std::optional<Encoding> EncodingByTypeName(std::string_view name) {
   for (const EncodingInfo& info : Encodings()) {
     if (EqualsIgnoreCase(name, info.name)) {
@@ -367,17 +373,6 @@ std::optional<Encoding> EncodingByTypeName(std::string_view name) {
     }
   }
   return std::nullopt;
-}
-
-std::optional<std::uint32_t> LegacyTypeBlockBytes(std::string_view name) {
-  const auto enc = EncodingByTypeName(name);
-  if (!enc) {
-    return std::nullopt;
-  }
-  if (*enc == Encoding::kQ8_1) {
-    return 40U;
-  }
-  return BlockBytes(*enc);
 }
 
 namespace {

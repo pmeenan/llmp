@@ -45,6 +45,11 @@ std::uint64_t Index(SpatialShape s, std::uint64_t x, std::uint64_t y, std::uint6
   return x + s.width * (y + s.height * (c + s.channels * n));
 }
 
+// A 2-D convolution, or (temporal_kernel above 0) the first frame of a
+// causal 3-D one: its source kernel is [out, in, temporal_kernel, k, k], held
+// as [k, k, temporal_kernel, in*out], and an empty history leaves only its
+// last temporal tap, read as a strided view without copying or widening any
+// source bytes.
 constexpr std::array kConvParams{
     ParamSpec{.name = "in_channels", .type = ParamType::kInt, .least = 1, .most = 65536},
     ParamSpec{.name = "out_channels", .type = ParamType::kInt, .least = 1, .most = 65536},
@@ -56,6 +61,12 @@ constexpr std::array kConvParams{
               .most = 16,
               .fallback = 1},
     ParamSpec{.name = "padding",
+              .type = ParamType::kInt,
+              .required = false,
+              .least = 0,
+              .most = 16,
+              .fallback = 0},
+    ParamSpec{.name = "temporal_kernel",
               .type = ParamType::kInt,
               .required = false,
               .least = 0,
@@ -73,8 +84,10 @@ std::expected<std::vector<RoleShape>, std::string> ConvRoles(const Instance& in)
     return std::unexpected("spatial convolution requires a layer and a kernel in [1, 16]");
   const auto ci = static_cast<std::uint64_t>(in.params.Int("in_channels"));
   const auto co = static_cast<std::uint64_t>(in.params.Int("out_channels"));
-  if (!Values({k, k, ci, co}))
+  const auto taps = static_cast<std::uint64_t>(in.params.Int("temporal_kernel"));
+  if (!Values({k, k, ci, co}) || (taps != 0 && !Values({k, k, taps, ci * co})))
     return std::unexpected("spatial convolution kernel exceeds its value bound");
+  if (taps != 0) return std::vector{defs::Role(0, {k, k, taps, ci * co}), defs::Role(1, {co})};
   return std::vector{defs::Role(0, {k, k, ci, co}), defs::Role(1, {co})};
 }
 std::expected<std::vector<RoleShape>, std::string> UpRoles(const Instance& in) {
@@ -121,7 +134,28 @@ std::expected<SpatialValue, std::string> ConvEmit(SpatialFragment& f) {
       .stride = static_cast<std::uint32_t>(f.instance.params.Int("stride")),
       .padding = static_cast<std::uint32_t>(f.instance.params.Int("padding")),
       .dilation = 1};
-  return SpatialValue{f.builder.Conv2d(f.weights[0], f.input, f.weights[1], params), *out};
+  ir::TensorId kernel = f.weights[0];
+  if (const auto taps = static_cast<std::uint64_t>(f.instance.params.Int("temporal_kernel"));
+      taps != 0) {
+    // The source is physically [K, K, T, In*Out]: its last temporal plane.
+    const auto encoding = f.builder.tensor(f.weights[0]).format.encoding;
+    if (encoding != format::Encoding::kF32 && encoding != format::Encoding::kBF16)
+      return std::unexpected("a temporal convolution kernel's encoding differs");
+    const std::uint64_t elem = encoding == format::Encoding::kBF16 ? 2 : 4;
+    const auto k = static_cast<std::uint64_t>(f.instance.params.Int("kernel"));
+    const auto ci = static_cast<std::uint64_t>(f.instance.params.Int("in_channels"));
+    const auto co = static_cast<std::uint64_t>(f.instance.params.Int("out_channels"));
+    std::uint64_t plane = 0, frame = 0, kernel_stride = 0, offset = 0;
+    if (__builtin_mul_overflow(k, k, &plane) || __builtin_mul_overflow(plane, taps, &frame) ||
+        __builtin_mul_overflow(frame, elem, &frame) ||
+        __builtin_mul_overflow(frame, ci, &kernel_stride) ||
+        __builtin_mul_overflow(plane, taps - 1, &offset) ||
+        __builtin_mul_overflow(offset, elem, &offset))
+      return std::unexpected("a temporal convolution kernel's view strides overflow");
+    const std::array<std::uint64_t, format::kMaxDims> strides{elem, k * elem, frame, kernel_stride};
+    kernel = f.builder.View(f.weights[0], ir::ShapeOf({k, k, ci, co}), strides, offset);
+  }
+  return SpatialValue{f.builder.Conv2d(kernel, f.input, f.weights[1], params), *out};
 }
 std::expected<SpatialValue, std::string> UpEmit(SpatialFragment& f) {
   auto out = UpShape(f.instance, f.shape);
@@ -135,8 +169,12 @@ std::expected<void, std::string> ConvReference(SpatialRefIO& io) {
   const auto count = Values(io.shape);
   const auto k = static_cast<std::uint64_t>(io.instance.params.Int("kernel"));
   const auto co = static_cast<std::uint64_t>(io.instance.params.Int("out_channels"));
+  // A temporal kernel's first frame reads its last tap (source order
+  // [Out, In, T, K, K]).
+  const auto taps = std::max<std::uint64_t>(
+      1, static_cast<std::uint64_t>(io.instance.params.Int("temporal_kernel")));
   if (!out || !count || io.input.size() != *count ||
-      io.kernel.size() != k * k * io.shape.channels * co || io.bias.size() != co)
+      io.kernel.size() != k * k * taps * io.shape.channels * co || io.bias.size() != co)
     return std::unexpected("spatial convolution reference input/weight sizes differ");
   std::vector<double> result(static_cast<std::size_t>(*Values(*out)));
   const auto pad = io.instance.params.Int("padding");
@@ -155,7 +193,8 @@ std::expected<void, std::string> ConvReference(SpatialRefIO& io) {
                 if (ix < 0 || iy < 0 || static_cast<std::uint64_t>(ix) >= io.shape.width ||
                     static_cast<std::uint64_t>(iy) >= io.shape.height)
                   continue;
-                const auto weight = kx + k * (ky + k * (ci + io.shape.channels * c));
+                const auto weight =
+                    kx + k * (ky + k * ((taps - 1) + taps * (ci + io.shape.channels * c)));
                 value += io.input[Index(io.shape, static_cast<std::uint64_t>(ix),
                                         static_cast<std::uint64_t>(iy), ci, n)] *
                          io.kernel[weight];

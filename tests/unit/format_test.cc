@@ -605,14 +605,12 @@ TEST(FormatTest, BlockBytesAndTypeLookups) {
   EXPECT_FALSE(format::EncodingByTypeName("invalid").has_value());
   EXPECT_FALSE(format::EncodingByTypeName("").has_value());
 
-  // LegacyTypeBlockBytes: Q8_1 returns 40U, others match BlockBytes.
-  EXPECT_EQ(format::LegacyTypeBlockBytes("q8_1"), 40U);
-  EXPECT_EQ(format::LegacyTypeBlockBytes("Q8_1"), 40U);
-  EXPECT_EQ(format::LegacyTypeBlockBytes("q4_0"), 18U);
-  EXPECT_EQ(format::LegacyTypeBlockBytes("Q8_0"), 34U);
-  EXPECT_EQ(format::LegacyTypeBlockBytes("f32"), 4U);
-  EXPECT_FALSE(format::LegacyTypeBlockBytes("invalid").has_value());
-  EXPECT_FALSE(format::LegacyTypeBlockBytes("mxfp8").has_value());
+  // BlockStructOf: a single-part block encoding's whole block struct only.
+  ASSERT_TRUE(format::BlockStructOf(format::Encoding::kQ8_0));
+  EXPECT_EQ(format::BlockStructOf(format::Encoding::kQ8_0)->elements, 32U);
+  EXPECT_EQ(format::BlockStructOf(format::Encoding::kQ8_0)->bytes, 34U);
+  EXPECT_EQ(format::BlockStructOf(format::Encoding::kQ4_K)->bytes, 144U);
+  EXPECT_FALSE(format::BlockStructOf(format::Encoding::kMxfp8));
 
   // IsSinglePartBlockOrDense.
   EXPECT_TRUE(format::IsSinglePartBlockOrDense(Layout::kDense));

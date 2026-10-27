@@ -4973,7 +4973,7 @@ TEST(PlannerPatternCoverageTest, Bf16RowsRequireOnlyPermittedConsumers) {
   }
 }
 
-TEST(PlannerPatternCoverageTest, Exl3ProductsRequireContiguousInputAndAvailableConversion) {
+TEST(PlannerPatternCoverageTest, TrellisProductsRequireContiguousInputAndAvailableConversion) {
   for (unsigned mutation = 0; mutation != 3; ++mutation) {
     auto implementations = Everything();
     implementations.push_back(Fake("test.product", Any(ir::Primitive(Op::kMatMul))));
@@ -4990,8 +4990,8 @@ TEST(PlannerPatternCoverageTest, Exl3ProductsRequireContiguousInputAndAvailableC
     const auto w = b.Weight(encoded, W(0));
     b.Output(b.MatMul(w, x));
     auto graph = Finish(b);
-    CheckRegisteredRewrite("exl3_products", graph, registry, mutation == 0);
-    if (mutation == 0) CheckMatcherRewrites("exl3_products", graph, registry);
+    CheckRegisteredRewrite("trellis_products", graph, registry, mutation == 0);
+    if (mutation == 0) CheckMatcherRewrites("trellis_products", graph, registry);
   }
 }
 
@@ -5484,9 +5484,9 @@ TEST(PlannerPatternCoverageTest, EveryRegisteredMatcherHasPositiveAndRefusalCont
       {"owner_attention",
        "PlannerPatternCoverageTest.OwnerAttentionRequiresCompatibleOwnersAndPrivateQueries",
        "PlannerPatternCoverageTest.OwnerAttentionRequiresCompatibleOwnersAndPrivateQueries"},
-      {"exl3_products",
-       "PlannerPatternCoverageTest.Exl3ProductsRequireContiguousInputAndAvailableConversion",
-       "PlannerPatternCoverageTest.Exl3ProductsRequireContiguousInputAndAvailableConversion"},
+      {"trellis_products",
+       "PlannerPatternCoverageTest.TrellisProductsRequireContiguousInputAndAvailableConversion",
+       "PlannerPatternCoverageTest.TrellisProductsRequireContiguousInputAndAvailableConversion"},
       {"paired_glu_products",
        "PlannerPatternCoverageTest.PairedAndFloatingGluPreserveSharedInputAndVisibleProducts",
        "PlannerPatternCoverageTest.PairedAndFloatingGluPreserveSharedInputAndVisibleProducts"},

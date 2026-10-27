@@ -24,6 +24,7 @@
 #include "execution/registry.h"
 #include "expected_error.h"
 #include "image_family.h"
+#include "image_recipes.h"
 #include "ir/builder.h"
 #include "kernels/reference/exec.h"
 #include "spec/image_spatial.h"
@@ -323,19 +324,20 @@ TEST(SpatialComponentsTest, ConditionRowsSingleAndPairedViewsExecuteWithinTheirS
   }
 }
 
-TEST(SpatialComponentsTest, CausalFirstFrameConvolutionUsesStridedLastTemporalPlane) {
+// A causal 3-D kernel's first frame (conv.spatial's temporal_kernel): a
+// strided view of its last temporal plane, then the 2-D convolution.
+TEST(SpatialComponentsTest, TemporalKernelConvolutionUsesStridedLastTemporalPlane) {
   for (const auto encoding : {format::Encoding::kF32, format::Encoding::kBF16})
     for (const std::int64_t depth : {1, 3}) {
       spec::Stage stage{.name = "vae", .role = spec::StageRole::kVae, .artifact = 0};
       stage.stream.width = 2;
       spec::Layer layer;
-      layer.components.push_back({.kind = "conv.causal_first_frame",
+      layer.components.push_back({.kind = "conv.spatial",
                                   .version = 1,
                                   .params = {{"in_channels", std::int64_t{2}},
                                              {"out_channels", std::int64_t{3}},
-                                             {"kernel_width", std::int64_t{2}},
-                                             {"kernel_height", std::int64_t{3}},
-                                             {"kernel_depth", depth},
+                                             {"kernel", std::int64_t{2}},
+                                             {"temporal_kernel", depth},
                                              {"padding", std::int64_t{1}}},
                                   .weights = {{.role = "kernel", .tensor = "kernel"},
                                               {.role = "bias", .tensor = "bias"}}});
@@ -344,7 +346,7 @@ TEST(SpatialComponentsTest, CausalFirstFrameConvolutionUsesStridedLastTemporalPl
       spec::Canonicalize(model);
       const std::vector<BoundTensor> tensors{
           {"kernel",
-           ir::Dense(encoding, ir::ShapeOf({2, 3, static_cast<std::uint64_t>(depth), 6}))},
+           ir::Dense(encoding, ir::ShapeOf({2, 2, static_cast<std::uint64_t>(depth), 6}))},
           {"bias", ir::Dense(encoding, ir::ShapeOf({3}))}};
       const std::array<std::span<const BoundTensor>, 1> tables{tensors};
       const std::array owners{SpatialOwner{0, {3, 2, 2, 1}}};
@@ -368,19 +370,19 @@ TEST(SpatialComponentsTest, CausalFirstFrameConvolutionUsesStridedLastTemporalPl
       const auto& descriptor = graph->graph().tensor(view->out[0]);
       EXPECT_EQ(view->src[0], graph->weights()[0].tensor);
       EXPECT_EQ(graph->weights().size(), 2U);
-      EXPECT_EQ(descriptor.shape(), ir::ShapeOf({2, 3, 2, 3}));
+      EXPECT_EQ(descriptor.shape(), ir::ShapeOf({2, 2, 2, 3}));
       EXPECT_EQ(
           std::ranges::count_if(
               nodes, [](const auto& node) { return node.key == ir::Primitive(ir::Op::kCont); }),
           0);
-      EXPECT_EQ(descriptor.view_offset, 6U * static_cast<std::uint64_t>(depth - 1) * elem);
+      EXPECT_EQ(descriptor.view_offset, 4U * static_cast<std::uint64_t>(depth - 1) * elem);
       EXPECT_EQ(descriptor.nb[0], elem);
       EXPECT_EQ(descriptor.nb[1], 2U * elem);
-      EXPECT_EQ(descriptor.nb[2], 6U * static_cast<std::uint64_t>(depth) * elem);
-      EXPECT_EQ(descriptor.nb[3], 12U * static_cast<std::uint64_t>(depth) * elem);
+      EXPECT_EQ(descriptor.nb[2], 4U * static_cast<std::uint64_t>(depth) * elem);
+      EXPECT_EQ(descriptor.nb[3], 8U * static_cast<std::uint64_t>(depth) * elem);
       auto executor = ref::Executor::Create(graph->graph());
       ASSERT_TRUE(executor) << Failed(executor, &ref::ExecFailure::detail).value_or("");
-      std::vector<float> kernel(36U * static_cast<std::uint64_t>(depth)), bias{0.25F, -0.5F, 1.0F};
+      std::vector<float> kernel(24U * static_cast<std::uint64_t>(depth)), bias{0.25F, -0.5F, 1.0F};
       for (std::size_t i = 0; i < kernel.size(); ++i)
         kernel[i] = static_cast<float>(static_cast<int>(i) - 25) / 16.0F;
       std::vector<float> input{1, 2, 3, 4, 5, 6, -1, -2, -3, -4, -5, -6};
@@ -404,17 +406,16 @@ TEST(SpatialComponentsTest, CausalFirstFrameConvolutionUsesStridedLastTemporalPl
       for (std::size_t i = 0; i < actual->size(); ++i)
         EXPECT_NEAR((*actual)[i], reference.output[i], 1e-4);
     }
-  const auto* def = Find("conv.causal_first_frame", 1);
+  EXPECT_EQ(Find("conv.causal_first_frame", 1), nullptr);
+  const auto* def = Find("conv.spatial", 1);
   ASSERT_NE(def, nullptr);
-  EXPECT_EQ(MaxSpatialNodes(*def), 2);
   auto bad = spec::ComponentRef{
-      .kind = "conv.causal_first_frame",
+      .kind = "conv.spatial",
       .version = 1,
       .params = {{"in_channels", std::int64_t{2}},
                  {"out_channels", std::int64_t{3}},
-                 {"kernel_width", std::int64_t{2}},
-                 {"kernel_height", std::int64_t{2}},
-                 {"kernel_depth", std::int64_t{3}}},
+                 {"kernel", std::int64_t{2}},
+                 {"temporal_kernel", std::int64_t{3}}},
       .weights = {{.role = "kernel", .tensor = "kernel"}, {.role = "bias", .tensor = "bias"}}};
   auto params = Params::Of(def->params, bad);
   ASSERT_TRUE(params);
@@ -459,7 +460,7 @@ TEST(SpatialComponentsTest, CausalFirstFrameConvolutionUsesStridedLastTemporalPl
       BuildSpatialStep(bad_model, wrong_encoding_tables, bad_owner, encoding_budget.Payment());
   ASSERT_FALSE(bad_encoding);
   EXPECT_NE(
-      Failed(bad_encoding).value_or("").find("first-frame convolution kernel encoding differs"),
+      Failed(bad_encoding).value_or("").find("temporal convolution kernel's encoding differs"),
       std::string::npos)
       << Failed(bad_encoding).value_or("");
 }
@@ -1473,14 +1474,26 @@ TEST(SpatialComponentsTest, BackwardResidualEdgesPreserveOwnersGammaEncodingAndR
   EXPECT_EQ(no_reference->graph().Digest(), graph->graph().Digest());
 }
 
+// A full profile of the frozen family's with one part replaced (the
+// recipes read the whole family).
+model::ImageProfile WithDenoiser(const model::ImageDenoiserProfile& denoiser) {
+  auto profile = ::llmp::test_support::QwenImageProfile();
+  profile.denoiser = denoiser;
+  return profile;
+}
+model::ImageProfile WithVae(const model::ImageVaeProfile& vae) {
+  auto profile = ::llmp::test_support::QwenImageProfile();
+  profile.vae = vae;
+  return profile;
+}
+
 TEST(SpatialComponentsTest, CompleteReducedDecoderSharesAllFragmentsAndIndependentReferences) {
   auto profile = ::llmp::test_support::QwenImageProfile().vae;
   profile.z_dim = 2;
   profile.base = 1;
   profile.dim_mult = {1, 2, 2, 2, 2};
-  const auto steps = model::VaeDecoderPlan(profile, 2, 2);
   const auto source = model::VaeDecoderTensors(profile, ::llmp::test_support::QwenImageNames().vae);
-  auto mapped = spec::VaeDecoderSpec(steps, source);
+  auto mapped = ::llmp::test_support::QwenImageDecoderGraph(WithVae(profile), 2, 2);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   std::vector<BoundTensor> tensors;
   for (const auto& weight : source) {
@@ -1572,10 +1585,12 @@ std::vector<double> ProjectRows(std::span<const double> input, std::uint64_t pix
 TEST(SpatialComponentsTest, TimestepBranchesKeepBothOutputsAndChangedMultiownerInputs) {
   auto profile = ::llmp::test_support::QwenImageProfile().denoiser;
   profile.width = 4;
+  profile.heads = 1;  // the recipe's stream width is heads x head_dim
+  profile.head_dim = 4;
   profile.timestep_dim = 2;
   const auto source =
       model::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
-  auto mapping = spec::ImageTimestepSpec(profile, source);
+  auto mapping = ::llmp::test_support::QwenImageTimestepGraph(WithDenoiser(profile));
   ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
   auto tensors = TimestepTensors(source);
   const std::array<std::span<const BoundTensor>, 1> tables{tensors};
@@ -1662,7 +1677,7 @@ TEST(SpatialComponentsTest, FullTimestepSourceMetadataDoesNotAllocateDecodedWeig
   const auto& profile = ::llmp::test_support::QwenImageProfile().denoiser;
   const auto source =
       model::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
-  auto mapping = spec::ImageTimestepSpec(profile, source);
+  auto mapping = ::llmp::test_support::QwenImageTimestepGraph(WithDenoiser(profile));
   ASSERT_TRUE(mapping);
   auto tensors = TimestepTensors(source);
   const std::array<std::span<const BoundTensor>, 1> tables{tensors};
@@ -1700,21 +1715,12 @@ TEST(SpatialComponentsTest, FullTimestepSourceMetadataDoesNotAllocateDecodedWeig
 TEST(SpatialComponentsTest, TimestepRefusesMalformedSourcesExportsAndPaymentBeforeGraphCopies) {
   auto profile = ::llmp::test_support::QwenImageProfile().denoiser;
   profile.width = 4;
+  profile.heads = 1;  // the recipe's stream width is heads x head_dim
+  profile.head_dim = 4;
   profile.timestep_dim = 2;
   auto source = model::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
-  auto mapping = spec::ImageTimestepSpec(profile, source);
+  auto mapping = ::llmp::test_support::QwenImageTimestepGraph(WithDenoiser(profile));
   ASSERT_TRUE(mapping);
-  auto wrong = source;
-  wrong[0].name = source[2].name;
-  EXPECT_FALSE(spec::ImageTimestepSpec(profile, wrong));
-  wrong = source;
-  wrong[2].dtype = "F32";
-  EXPECT_FALSE(spec::ImageTimestepSpec(profile, wrong));
-  wrong = source;
-  wrong[2].shape[1] = 3;
-  EXPECT_FALSE(spec::ImageTimestepSpec(profile, wrong));
-  wrong.erase(wrong.begin() + 2);
-  EXPECT_FALSE(spec::ImageTimestepSpec(profile, wrong));
   auto tensors = TimestepTensors(source);
   const std::array<std::span<const BoundTensor>, 1> tables{tensors};
   const std::array owners{SpatialOwner{0, {1, 2, 2, 1}}};
@@ -1888,7 +1894,7 @@ TEST(SpatialComponentsTest, ConditionedBlockConsumesBothCarriesAndOwnerLocalType
   p.timestep_dim = 4;
   p.rope_axes = {2, 2, 4};
   const auto source = model::DenoiserTensors(p, ::llmp::test_support::QwenImageNames().denoiser);
-  auto mapped = spec::ImageTransformerBlockSpec(p, 0, 2, source);
+  auto mapped = ::llmp::test_support::QwenImageBlockGraph(WithDenoiser(p), 2);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   const auto tensors = BlockTensors(source);
   const std::array<std::span<const BoundTensor>, 1> tables{tensors};
@@ -2170,7 +2176,7 @@ TEST(SpatialComponentsTest, SourceAxesUseNormalOffsetsAndIndependentNegativePosi
 TEST(SpatialComponentsTest, ConditionedBlockPaysFullSourcesAndRefusesMalformedPortsAndCarries) {
   const auto& p = ::llmp::test_support::QwenImageProfile().denoiser;
   const auto source = model::DenoiserTensors(p, ::llmp::test_support::QwenImageNames().denoiser);
-  auto mapped = spec::ImageTransformerBlockSpec(p, 0, 2, source);
+  auto mapped = ::llmp::test_support::QwenImageBlockGraph(WithDenoiser(p), 2);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   const auto tensors = BlockTensors(source);
   const std::array<std::span<const BoundTensor>, 1> tables{tensors};
@@ -2232,16 +2238,6 @@ TEST(SpatialComponentsTest, ConditionedBlockPaysFullSourcesAndRefusesMalformedPo
   budget.limit = 1;
   EXPECT_TRUE(refused());
   EXPECT_EQ(budget.used, 0U);
-  auto wrong = source;
-  auto role = std::ranges::find(wrong, "transformer_blocks.0.attn.norm_q.weight",
-                                &model::ImageTensor::name);
-  ASSERT_NE(role, wrong.end());
-  role->shape[0] = 64;
-  EXPECT_FALSE(spec::ImageTransformerBlockSpec(p, 0, 2, wrong));
-  EXPECT_FALSE(spec::ImageTransformerBlockSpec(p, p.blocks, 2, source));
-  auto invalid = p;
-  invalid.rope_axes = {15, 57, 56};
-  EXPECT_FALSE(spec::ImageTransformerBlockSpec(invalid, 0, 2, source));
 }
 
 std::vector<BoundTensor> FlowTensors(std::span<const model::ImageTensor> source) {
@@ -2336,7 +2332,7 @@ TEST(SpatialComponentsTest, CompleteFlowUsesAllBlocksAndIndependentBoundaryMathF
   p.in_channels = 4;
   p.out_channels = 4;
   const auto source = model::DenoiserTensors(p, ::llmp::test_support::QwenImageNames().denoiser);
-  auto mapping = spec::ImageFlowSpec(p, 2, 4, source);
+  auto mapping = ::llmp::test_support::QwenImageFlowGraph(WithDenoiser(p), 2, 4);
   ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
   ASSERT_EQ(mapping->links.size(), 31U);
   const auto tensors = FlowTensors(source);
@@ -2431,7 +2427,7 @@ TEST(SpatialComponentsTest, FullFlowPays563ComponentsAndRefusesDecodedReferenceB
   const auto& p = ::llmp::test_support::QwenImageProfile().denoiser;
   const auto source = model::DenoiserTensors(p, ::llmp::test_support::QwenImageNames().denoiser);
   ASSERT_EQ(source.size(), 297U);
-  auto mapping = spec::ImageFlowSpec(p, 2, 4, source);
+  auto mapping = ::llmp::test_support::QwenImageFlowGraph(WithDenoiser(p), 2, 4);
   ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
   ASSERT_EQ(mapping->links.size(), 211U);
   const auto tensors = FlowTensors(source);
@@ -2489,15 +2485,6 @@ TEST(SpatialComponentsTest, FullFlowPays563ComponentsAndRefusesDecodedReferenceB
                                  .inputs = ports}));
   EXPECT_EQ(reference.calls, 2U);
   EXPECT_EQ(reference.used, 0U);
-  auto invalid = p;
-  invalid.blocks = UINT32_MAX;
-  EXPECT_FALSE(spec::ImageFlowSpecBound(invalid, source));
-  invalid = p;
-  invalid.context = 4095;
-  EXPECT_FALSE(spec::ImageFlowSpec(invalid, 2, 4, source));
-  auto bad_source = source;
-  bad_source.push_back(source.front());
-  EXPECT_FALSE(spec::ImageFlowSpec(p, 2, 4, bad_source));
   auto too_many = mapping->spec;
   auto& components = too_many.stages[0].layers[0].components;
   components.resize(spec::kMaxComponents + 1ULL);
@@ -2654,7 +2641,7 @@ TEST(SpatialComponentsTest, RealTextAnd1024FlowMetadataArePaidWithoutReferencePa
   EXPECT_EQ(deny_reference.used, 0U);
   const auto flow_source =
       model::DenoiserTensors(profile.denoiser, ::llmp::test_support::QwenImageNames().denoiser);
-  auto flow = spec::ImageFlowSpec(profile.denoiser, 25, 4096, flow_source);
+  auto flow = ::llmp::test_support::QwenImageFlowGraph(profile, 25, 4096);
   ASSERT_TRUE(flow) << Failed(flow).value_or("");
   const auto flow_tensors = FlowTensors(flow_source);
   const std::array<std::span<const BoundTensor>, 1> flow_tables{flow_tensors};
@@ -2741,7 +2728,7 @@ TEST(SpatialComponentsTest, LatentReshapeAndChannelAffinePreserveOwnerPlanes) {
 TEST(SpatialComponentsTest, Actual1024DecoderHandoffIsPaidBeforeReferenceAllocation) {
   const auto& profile = ::llmp::test_support::QwenImageProfile().vae;
   const auto source = model::VaeDecoderTensors(profile, ::llmp::test_support::QwenImageNames().vae);
-  auto mapping = spec::ImageDecodeSpec(profile, 64, source);
+  auto mapping = ::llmp::test_support::QwenImageVaeGraph(WithVae(profile), 64, 64);
   ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
   auto tensors = FlowTensors(source);
   const std::array<std::span<const BoundTensor>, 1> tables{tensors};
@@ -2763,17 +2750,6 @@ TEST(SpatialComponentsTest, Actual1024DecoderHandoffIsPaidBeforeReferenceAllocat
       BuildSpatialStep(mapping->spec, tables, owners, no_reference.Payment(),
                        {.links = mapping->links, .exports = mapping->exports, .inputs = ports}));
   EXPECT_EQ(no_reference.used, 0U);
-  auto invalid = profile;
-  invalid.res_blocks = UINT32_MAX;
-  EXPECT_FALSE(spec::ImageDecodeSpec(invalid, 64, source));
-  invalid = profile;
-  invalid.base = UINT32_MAX;
-  EXPECT_FALSE(spec::ImageDecodeSpec(invalid, 64, source));
-  invalid = profile;
-  invalid.spatial_factor = 8;
-  EXPECT_FALSE(spec::ImageDecodeSpec(invalid, 64, source));
-  EXPECT_FALSE(spec::ImageDecodeSpec(profile, UINT32_MAX, source));
-  EXPECT_FALSE(spec::ImageDecodeSpec(profile, 64, std::span(source).first(127)));
 }
 
 TEST(SpatialComponentsTest, DecoderBoundsFollowTheNumberOfLevels) {
@@ -2792,7 +2768,7 @@ TEST(SpatialComponentsTest, DecoderBoundsFollowTheNumberOfLevels) {
         model::VaeDecoderTensors(profile, ::llmp::test_support::QwenImageNames().vae);
     const auto steps = model::VaeDecoderPlan(profile, 1, 1);
     if (levels == 3) EXPECT_EQ(source.size(), 68U);
-    auto mapping = spec::ImageDecodeSpec(profile, 1, source);
+    auto mapping = ::llmp::test_support::QwenImageVaeGraph(WithVae(profile), 1, 1);
     ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
     EXPECT_EQ(mapping->links.size(), steps.size() - (levels - 1) + 2);
     auto tensors = FlowTensors(source);
@@ -2827,20 +2803,6 @@ TEST(SpatialComponentsTest, DecoderBoundsFollowTheNumberOfLevels) {
       EXPECT_EQ(reference_budget.calls, 2U);
       EXPECT_EQ(reference_budget.used, 0U);
     }
-    EXPECT_FALSE(spec::ImageDecodeSpec(profile, 1, std::span(source).first(source.size() - 1)));
-    auto invalid = profile;
-    invalid.dim_mult.clear();
-    EXPECT_FALSE(spec::ImageDecodeSpec(invalid, 1, source));
-    invalid.dim_mult = {1};
-    EXPECT_FALSE(spec::ImageDecodeSpec(invalid, 1, source));
-    invalid.dim_mult.assign(17, 1);
-    EXPECT_FALSE(spec::ImageDecodeSpec(invalid, 1, source));
-    invalid = profile;
-    invalid.temporal_upsample.resize(levels - 2);
-    EXPECT_FALSE(spec::ImageDecodeSpec(invalid, 1, source));
-    invalid = profile;
-    invalid.res_blocks = UINT32_MAX;
-    EXPECT_FALSE(spec::ImageDecodeSpec(invalid, 1, source));
   }
 }
 
@@ -2853,7 +2815,7 @@ TEST(ComponentsSpatial, RectangularDecoderCarriesGeometryInItsGraphIdentity) {
   std::vector<base::Sha256Digest> identities;
   for (const auto dimensions : {std::array<std::uint32_t, 2>{32, 64}, {64, 32}, {31, 33}}) {
     const auto height = dimensions[0], width = dimensions[1];
-    auto mapping = spec::ImageDecodeSpec(profile, height, width, source);
+    auto mapping = ::llmp::test_support::QwenImageVaeGraph(WithVae(profile), height, width);
     ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
     const std::array owners{SpatialOwner{0, {1, std::uint64_t{height} * width, 64, 1}}};
     Budget budget;
@@ -2871,12 +2833,9 @@ TEST(ComponentsSpatial, RectangularDecoderCarriesGeometryInItsGraphIdentity) {
   ASSERT_EQ(identities.size(), 3U);
   EXPECT_NE(identities[0], identities[1]);  // same area, different row/column layout
   EXPECT_NE(identities[1], identities[2]);
-  // The source plan accepts a width beyond the old incidental4096 cap. Actual
+  // The stored graph binds a width beyond the old incidental 4096 cap. Actual
   // activation/workspace admission and selected kernel contracts remain later checks.
-  EXPECT_TRUE(spec::ImageDecodeSpec(profile, 1, 272, source));
-  EXPECT_FALSE(spec::ImageDecodeSpec(profile, 0, 32, source));
-  EXPECT_FALSE(spec::ImageDecodeSpec(profile, 32, 0, source));
-  EXPECT_FALSE(spec::ImageDecodeSpec(profile, UINT32_MAX, 2, source));
+  EXPECT_TRUE(::llmp::test_support::QwenImageVaeGraph(WithVae(profile), 1, 272));
 }
 
 }  // namespace

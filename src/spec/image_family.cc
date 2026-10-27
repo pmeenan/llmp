@@ -18,6 +18,7 @@
 #include <variant>
 #include <vector>
 
+#include "spec/expr.h"
 #include "spec/mappings/qwen_image.h"
 
 namespace llmp::spec {
@@ -102,7 +103,7 @@ bool InRange(const Schema& s, double v) {
 }
 
 // A value read as the schema's type, checked; nullopt where it is not.
-std::optional<ParamValue> Typed(const Schema& s, const ParamValue& v, bool reverse) {
+std::optional<ParamValue> Typed(const Schema& s, const ParamValue& v) {
   switch (s.type) {
     case Type::kInt: {
       double d = 0;
@@ -130,7 +131,6 @@ std::optional<ParamValue> Typed(const Schema& s, const ParamValue& v, bool rever
       const auto* list = std::get_if<std::vector<std::int64_t>>(&v);
       if (!list || list->size() < s.shortest || list->size() > s.longest) return std::nullopt;
       std::vector<std::int64_t> out = *list;
-      if (reverse) std::ranges::reverse(out);
       for (const auto i : out)
         if (!InRange(s, static_cast<double>(i))) return std::nullopt;
       return ParamValue(std::move(out));
@@ -144,7 +144,6 @@ std::optional<ParamValue> Typed(const Schema& s, const ParamValue& v, bool rever
       else
         return std::nullopt;
       if (out.size() < s.shortest || out.size() > s.longest) return std::nullopt;
-      if (reverse) std::ranges::reverse(out);
       for (const auto d : out)
         if (!InRange(s, d)) return std::nullopt;
       return ParamValue(std::move(out));
@@ -180,6 +179,22 @@ std::string_view WhereOf(const ImageParamRule& r) {
   return !r.role.empty() ? r.role : (!r.file.empty() ? r.file : std::string_view("a constant"));
 }
 
+// The first source key a rule's value reads (for a refusal's text).
+std::string_view FirstKey(const Expr& value) {
+  std::string_view key;
+  (void)VisitExpr(value, [&](const Expr& e) -> std::expected<void, std::string> {
+    if (key.empty() && e.kind == ExprKind::kValue) key = e.name;
+    return {};
+  });
+  return key;
+}
+
+// An environment without values (a constant's).
+class NoValues final : public Env {
+ public:
+  std::expected<Datum, std::string> Value(std::string_view) const override { return Datum(); }
+};
+
 std::expected<model::ImageProfile, std::string> ProfileOf(const ModelSpec& spec,
                                                           const ImageMapping& mapping, bool widths);
 
@@ -198,19 +213,19 @@ const ImageMapping* FindImageMapping(std::string_view architecture) {
   return nullptr;
 }
 
-bool IgnoredImageTensor(std::string_view rule, std::string_view name) {
-  const auto rest_matches = [](std::string_view rest, std::string_view tail) {
-    return rest.ends_with('.') ? tail.starts_with(rest) : tail == rest;
-  };
-  const auto at = rule.find(kLayerField);
-  if (at == std::string_view::npos) return rest_matches(rule, name);
-  const auto prefix = rule.substr(0, at);
-  if (!name.starts_with(prefix)) return false;
-  const auto tail = name.substr(prefix.size());
-  std::size_t digits = 0;
-  while (digits < tail.size() && digits < 5 && tail[digits] >= '0' && tail[digits] <= '9') ++digits;
-  return digits > 0 && digits < 5 && !(digits > 1 && tail[0] == '0') &&
-         rest_matches(rule.substr(at + kLayerField.size()), tail.substr(digits));
+ComponentImport ImportOf(const ImageComponentRule& rule) {
+  if (rule.mapping == nullptr)
+    return {.recipe = rule.recipe,
+            .ignored_tensors = rule.ignored_tensors,
+            .ignored_tensor_prefixes = rule.ignored_tensor_prefixes,
+            .auxiliary = rule.auxiliary,
+            .null_keys = rule.null_keys};
+  const Mapping& m = rule.mapping();
+  return {.recipe = m.stage_recipe,
+          .ignored_tensors = m.ignored_tensors,
+          .ignored_tensor_prefixes = m.ignored_tensor_prefixes,
+          .auxiliary = m.auxiliary,
+          .null_keys = m.null_semantics};
 }
 
 std::expected<void, std::string> ValidateImageMapping(const ImageMapping& m) {
@@ -231,6 +246,18 @@ std::expected<void, std::string> ValidateImageMapping(const ImageMapping& m) {
         return Refused(std::format("{}: nonempty unique component containers", c.role));
     for (const auto kind : c.kinds)
       if (!KnownKind(kind)) return Refused(std::format("{}: an unknown kind {}", c.role, kind));
+    if (c.mapping != nullptr) {
+      // A configured component mapping's import: its own rules, none here.
+      const Mapping& component = c.mapping();
+      if (c.recipe != nullptr || !c.ignored_tensors.empty() || !c.ignored_tensor_prefixes.empty() ||
+          !c.auxiliary.empty() || !c.null_keys.empty() || component.stage_recipe == nullptr ||
+          component.stage_recipe->role != c.stage_role ||
+          component.pipeline != PipelineKind::kImage)
+        return Refused(
+            std::format("{}: a configured component mapping and rules of its own", c.role));
+      if (auto valid = ValidateMapping(component); !valid)
+        return Refused(std::format("{}: {}", c.role, valid.error()));
+    }
     for (const auto ignored : c.ignored_tensors) {
       // At most one "{layer}", with a source key around it.
       std::string text(ignored);
@@ -239,6 +266,9 @@ std::expected<void, std::string> ValidateImageMapping(const ImageMapping& m) {
       if (ignored.empty() || text.contains('{') || !IsSourceKey(text))
         return Refused(std::format("{}: an ignored tensor name that is not a source key", c.role));
     }
+    for (const auto prefix : c.ignored_tensor_prefixes)
+      if (!IsSourceKey(prefix) || !prefix.ends_with('.'))
+        return Refused(std::format("{}: an ignored tensor prefix that is not a key's", c.role));
     for (const auto& aux : c.auxiliary)
       if (!IsSourceKey(aux.prefix) || aux.reason.empty() || !aux.equals_tensor.empty())
         return Refused(std::format("{}: an invalid configuration key classification", c.role));
@@ -269,21 +299,28 @@ std::expected<void, std::string> ValidateImageMapping(const ImageMapping& m) {
     const auto schema = std::ranges::find_if(
         kSchema, [&](const auto& s) { return s.kind == r.kind && s.param == r.param; });
     if (schema == kSchema.end()) return Refused(std::format("{}.{}: unknown", r.kind, r.param));
-    const bool keyed = !r.key.empty();
+    if (auto shaped = CheckExpr(r.value); !shaped)
+      return Refused(std::format("{}.{}: {}", r.kind, r.param, shaped.error()));
+    const bool keyed = ReadsEnvironment(r.value);
     if ((keyed && r.role.empty() == r.file.empty()) ||
         (!keyed && (!r.role.empty() || !r.file.empty())))
       return Refused(
           std::format("{}.{}: a key of one role or file, or a constant", r.kind, r.param));
-    if (keyed && !IsSourceKey(r.key)) return Refused(std::format("{}: not a source key", r.key));
+    std::string_view bad_key;
+    (void)VisitExpr(r.value, [&](const Expr& e) -> std::expected<void, std::string> {
+      if (e.kind == ExprKind::kValue && !IsSourceKey(e.name) && bad_key.empty()) bad_key = e.name;
+      return {};
+    });
+    if (!bad_key.empty()) return Refused(std::format("{}: not a source key", bad_key));
     if (!r.role.empty() && !std::ranges::contains(m.components, r.role, &ImageComponentRule::role))
       return Refused(std::format("{}.{}: no component {}", r.kind, r.param, r.role));
     if (!keyed && (schema->type == Type::kInts || schema->type == Type::kReals))
       return Refused(std::format("{}.{}: a list from a key only", r.kind, r.param));
-    if (!keyed &&
-        !Typed(*schema,
-               schema->type == Type::kInt ? ParamValue(r.value.integer) : ParamValue(r.value.real),
-               false))
-      return Refused(std::format("{}.{}: a constant out of range", r.kind, r.param));
+    if (!keyed) {
+      const auto constant = Evaluate(r.value, NoValues{});
+      if (!constant || !*constant || !Typed(*schema, **constant))
+        return Refused(std::format("{}.{}: a constant out of range", r.kind, r.param));
+    }
   }
   for (const auto& q : m.requirements) {
     if (static_cast<unsigned>(q.type) > static_cast<unsigned>(ValueType::kString) ||
@@ -420,22 +457,23 @@ std::expected<ModelSpec, std::string> SynthesizeImageFamily(
         if (s.kind != kind) continue;
         const auto r = std::ranges::find_if(
             mapping.params, [&](const auto& p) { return p.kind == kind && p.param == s.param; });
-        std::optional<ParamValue> typed;
-        if (r->key.empty()) {
-          typed = Typed(
-              s, s.type == Type::kInt ? ParamValue(r->value.integer) : ParamValue(r->value.real),
-              false);
-        } else {
-          const auto values = values_of(r->role, r->file);
+        // Its value over its role's or file's values (a constant's, none).
+        std::optional<std::span<const SourceValue>> values;
+        if (!r->role.empty() || !r->file.empty()) {
+          values = values_of(r->role, r->file);
           if (!values) return Refused(std::format("{}.{}: no {}", kind, s.param, WhereOf(*r)));
-          const ParamValue* v = ValueOf(*values, r->key);
-          if (v == nullptr)
-            return Refused(std::format("{}.{}: {} has no {}", kind, s.param, WhereOf(*r), r->key));
-          typed = Typed(s, *v, r->reverse);
         }
+        const SourceValuesEnv env(values ? *values : std::span<const SourceValue>{});
+        const auto value = Evaluate(r->value, env, {.strict = false});
+        const auto key = FirstKey(r->value);
+        if (!value)
+          return Refused(std::format("{}.{}: {}: {}", kind, s.param, WhereOf(*r), value.error()));
+        if (!*value)
+          return Refused(std::format("{}.{}: {} has no {}", kind, s.param, WhereOf(*r), key));
+        const std::optional<ParamValue> typed = Typed(s, **value);
         if (!typed)
           return Refused(std::format("{}.{}: {} of another type or out of range", kind, s.param,
-                                     r->key.empty() ? std::string_view("its constant") : r->key));
+                                     key.empty() ? std::string_view("its constant") : key));
         ref.params.push_back({.name = std::string(s.param), .value = std::move(*typed)});
       }
       layer.components.push_back(std::move(ref));
@@ -468,7 +506,7 @@ std::expected<model::ImageProfile, std::string> ProfileOf(const ModelSpec& spec,
       if (s.kind != ref.kind) continue;
       const Param* given = ref.Find(s.param);
       if (given == nullptr) return Refused(std::format("{} has no {}", ref.kind, s.param));
-      auto typed = Typed(s, given->value, false);
+      auto typed = Typed(s, given->value);
       if (!typed || *typed != given->value)
         return Refused(std::format("{}.{} of another type or out of range", ref.kind, s.param));
       out.push_back(*given);

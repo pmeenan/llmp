@@ -183,11 +183,16 @@ std::optional<Encoding> EncodingByName(std::string_view name);
 // The byte size of one block of a single-part encoding (1-element dense
 // encodings included); nullopt for multi-part encodings.
 std::optional<std::uint32_t> BlockBytes(Encoding encoding);
+// An encoding's whole block struct where it has one (GGML's block types at
+// the pin: layout.h kGgmlBlocks, and NVFP4's kGgmlNvfp4Blocks): its block's
+// values along ne[0] and its bytes; nothing for any other encoding.
+struct BlockStruct {
+  std::uint32_t elements = 0;
+  std::uint32_t bytes = 0;
+};
+std::optional<BlockStruct> BlockStructOf(Encoding encoding);
 // Case-insensitive lookup by encoding or container/GGML type name.
 std::optional<Encoding> EncodingByTypeName(std::string_view name);
-// Legacy v0 type block size lookup by type name ("Q8_1" is 40 in v0's
-// representation table, all other single-part types match BlockBytes).
-std::optional<std::uint32_t> LegacyTypeBlockBytes(std::string_view name);
 // A GGML type name of the pinned table, and a safetensors container dtype,
 // as encodings.
 std::optional<Encoding> EncodingOfGgmlType(std::string_view type);

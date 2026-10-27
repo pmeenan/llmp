@@ -55,14 +55,15 @@ Status PagedNode::MapWorkspace(std::uint64_t activations, std::uint64_t pool,
       return r;
     }
   }
-  if (auto r = MapRegion(pool_, "the GGML pool", pool, providers::BackingKind::kDevice,
+  if (auto r = MapRegion(pool_, "the kernel scratch pool", pool, providers::BackingKind::kDevice,
                          MemoryClass::kScratch, catalog::Recovery::kDiscardable, kShared, !pageable,
                          effective_virtual_capacity);
       !r) {
     if (effective_virtual_capacity != virtual_capacity && !pool_.reservation.valid()) {
-      if (auto fallback = MapRegion(pool_, "the GGML pool", pool, providers::BackingKind::kDevice,
-                                    MemoryClass::kScratch, catalog::Recovery::kDiscardable, kShared,
-                                    !pageable, virtual_capacity);
+      if (auto fallback =
+              MapRegion(pool_, "the kernel scratch pool", pool, providers::BackingKind::kDevice,
+                        MemoryClass::kScratch, catalog::Recovery::kDiscardable, kShared, !pageable,
+                        virtual_capacity);
           !fallback)
         return fallback;
     } else {

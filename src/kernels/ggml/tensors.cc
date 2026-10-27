@@ -16,6 +16,7 @@
 
 #include "base/check.h"
 #include "ggml.h"
+#include "kernels/ggml/validate_util.h"
 
 namespace llmp::kernels::ggml {
 
@@ -141,6 +142,62 @@ std::expected<ggml_type, KernelFailure> GgmlTypeOf(std::string_view name) {
   }
   return std::unexpected(KernelFailure{.error = KernelError::kRejected,
                                        .detail = std::format("{} is not a GGML type", name)});
+}
+
+namespace {
+
+TensorFacts ReadFacts(const void* handle) {
+  const auto* t = static_cast<const ggml_tensor*>(handle);
+  // ggml_row_size, without its assertion: a partial block row has no size.
+  const auto block = ggml_blck_size(t->type);
+  const std::uint64_t row =
+      block > 0 && t->ne[0] >= 0 && t->ne[0] % block == 0
+          ? ggml_type_size(t->type) * static_cast<std::uint64_t>(t->ne[0] / block)
+          : 0;
+  TensorFacts facts{.type = StorageOf(t->type),
+                    .data = t->data,
+                    .bytes = ggml_nbytes(t),
+                    .element_bytes = ggml_type_size(t->type),
+                    .row_bytes = row,
+                    .elements = ggml_nelements(t),
+                    .contiguous = ggml_is_contiguous(t),
+                    .current = detail::Current(t),
+                    .extent = detail::Extent(t)};
+  for (std::size_t d = 0; d < 4; ++d) {
+    facts.ne[d] = t->ne[d];
+    facts.nb[d] = t->nb[d];
+  }
+  return facts;
+}
+
+}  // namespace
+
+StorageType StorageOf(ggml_type type) {
+  switch (type) {
+    case GGML_TYPE_F32:
+      return StorageType::kF32;
+    case GGML_TYPE_F16:
+      return StorageType::kF16;
+    case GGML_TYPE_BF16:
+      return StorageType::kBF16;
+    case GGML_TYPE_I8:
+      return StorageType::kI8;
+    case GGML_TYPE_I32:
+      return StorageType::kI32;
+    case GGML_TYPE_Q8_0:
+      return StorageType::kQ8_0;
+    case GGML_TYPE_NVFP4:
+      return StorageType::kNvfp4;
+    default:
+      return StorageType::kOther;
+  }
+}
+
+TensorRef Ref(const ggml_tensor* tensor) { return {tensor, &ReadFacts}; }
+
+ggml_tensor* TensorOf(const TensorRef& ref) {
+  if (!ref || ref.reader() != &ReadFacts) return nullptr;
+  return static_cast<ggml_tensor*>(const_cast<void*>(ref.handle()));
 }
 
 }  // namespace llmp::kernels::ggml

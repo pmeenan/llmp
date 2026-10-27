@@ -99,19 +99,24 @@ differ. See the
 
 | Code | Only in | Everything else |
 | --- | --- | --- |
-| CUDA: headers, runtime and driver API names and types, kernels and launches, `.cu` files | `src/providers/cuda/` and `src/kernels/` | reaches the device through the provider interfaces, the device runtime and the kernels' own vendor-free headers |
-| Kernel libraries: `ggml`, `exl3`, `cublas` and `cutlass` headers, namespaces, types and words | `src/kernels/` (for `engine/`, `runtime/`, `ir/` and `execution/`) | reaches the backend through `kernels/common/` (`DeviceBackend`, `StreamLibrary`, `SelectedSource`, `StepProgram`, `LowerOptions`) and `engine/runner_resources.h` |
+| CUDA: headers, runtime and driver API names and types, kernels and launches, `.cu` files | `src/providers/cuda/`, the kernel sources (`src/kernels/<source>/`), the device code they share (`src/kernels/device/`) and the composition root (`src/kernels/compose/`); never `src/kernels/common/` | reaches the device through the provider interfaces, the device runtime and the kernels' own vendor-free headers |
+| Kernel libraries: `ggml`, `exl3`, `cublas` and `cutlass` headers, namespaces, types and words, embedded in identifiers or in string literals | the kernel sources, the composition root (`src/kernels/compose/`) and the format, import, artifact and tokenizer layers; the planner, components, specs, model layer and `kernels/common/` may use the format layer's layout and encoding names (the check's `FORMAT_WORDS`) | reaches the backend through `kernels/common/` (`DeviceBackend` and the registered `KernelSet`, `SelectedSource` over `TensorRef`, `StepProgram`, `LowerOptions`) and `engine/device_backend.h`; data may name the EXL3 container and GGUF's tokenizer keys (`FORMAT_STRINGS`) |
+| Another kernel source's headers | each kernel source (`src/kernels/<source>/`) includes only its own and `kernels/common/`; `kernels/common/` includes no source's | the sources meet only through the common interface and the composition root (`src/kernels/compose/`), which alone links them all |
 | Linux-specific headers and calls: `<linux/...>`, epoll, eventfd, signalfd, io_uring, memfd, `O_DIRECT`, `O_TMPFILE`, `getrandom`, `accept4`, `SOCK_CLOEXEC`, `MSG_NOSIGNAL`, prctl, raw system calls, `/proc` and `/sys` paths | `src/platform/` and the Linux providers (`src/providers/uring_storage.*`) | calls the platform module |
 | POSIX (open, poll, sockets, mmap, pthreads) | anywhere | macOS has it; a Windows port gives the platform module its own implementations (below) |
 
-`tools/llmp_boundaries.py` enforces the first three rows over `src/`, in
+`tools/llmp_boundaries.py` enforces the first four rows over `src/`, in
 the light check tier (`tools/check`'s `boundaries` step) and in the tools
 tests (`tools/tests/test_boundaries.py` checks this tree). It reads code
-with comments removed, matches names outside string literals and paths
-inside them, and fails on an include of `providers/cuda/`,
-`platform/io_uring.h` or `providers/uring_storage.h` elsewhere, or any
-kernel-library header or identifier under `src/engine/`, `src/runtime/`,
-`src/ir/` or `src/execution/`. The latter two also reject embedded vendor
+with comments removed, matches names in code and in string literals
+(include paths are checked as includes), resolves relative (`../`),
+`src/`-prefixed and macro includes before comparing them, and fails on an
+include of `providers/cuda/`, `platform/io_uring.h` or
+`providers/uring_storage.h` elsewhere, an include it cannot resolve, any
+kernel-library header, embedded identifier or string under `src/engine/`,
+`src/runtime/`, `src/scheduler/`, `src/ir/` or `src/execution/` (where not
+even the format layer's layout names may appear), and one kernel source's
+include of another's. `ir/` and `execution/` also reject embedded vendor
 identifiers, device names and diagnostic strings; provenance comments remain
 allowed. Included `.inc` source tables are checked too. An
 exception needs an entry in its `EXCEPTIONS` table with the reason, and a
@@ -164,9 +169,30 @@ source and the spatial graph executor) names no kernel library either,
 reaching the device through the device runtime and the paging kernels
 (`kernels/paging/`, which have CUDA kernels and host loops for the fake
 runtime), and builds in every profile; a program links one backend's
-runtime and paging kernels. In CUDA builds, `llmp_engine` adds runner
-resources (`runner_resources.h`) and the expert slab (`expert_slab.h`)
-(D-096 as amended 2026-10-08).
+runtime and paging kernels. The expert slabs (`expert_slab.h`) are the
+core's too. In CUDA builds, `llmp_engine` adds the runners' device backend
+(`device_backend.h`), made through the build's registered kernel set
+(below) (D-096 as amended 2026-10-08).
+
+### The kernel set (2026-10-26)
+
+The engine and runtime name no kernel source. A program registers one
+`KernelSet` (`kernels/common/device_backend.h`): its device backend's
+capabilities and factory and the kernel sources lent to every backend after
+the caller's own. The CUDA build's composition root (`kernels/compose/`,
+`RegisterBuildKernels`, which `engine::CreateDeviceBackend` calls) is the
+only library that links GGML's step backend, the decoders and EXL3; the
+sources link only `kernels/common/`. `ComposeSelectedSources` composes the
+caller's source and the set's (`CompositeSelectedSource`,
+`kernels/common/composite_source.h`). Sources read the step backend's
+tensors only through `TensorRef` (`kernels/common/tensor_ref.h`), an opaque
+handle and the owning backend's reader, which reports a descriptor's facts
+when read; GGML adapts `ggml_tensor` to it (`kernels/ggml/tensors.h`). Host
+programs and the CPU-only build register the fake set
+(`kernels/common/fake_device_backend.h`), whose backend binds its workspace
+and launches recorded work but lowers nothing. One residual edge remains:
+EXL3's F32 input conversion reuses GGML's pinned converter (an upstream
+header and link, not a kernel source's include).
 
 ### What moved out of the engine (2026-09-29)
 
@@ -482,7 +508,7 @@ serving classes with one skeleton and one runner in `src/engine/`
 | State spill and restore | `live_state.h`: `LiveState` regions, spill file, clear, read, places, quarantine; `slot_lifecycle.h`: `SlotLifecycle` derived from each stage's `StateContract` | byte-identical `RegisterState`, `Clear`, `ReadState` in each |
 | Plans and shape caches | `plan_cache.h`: `BasicPlanCache` (indexed by the key's hash); `model_runner.h`: one plan per step shape over `ComponentStepSource` (`component_source.h`); `coverage.h`: `CheckCoverage` | four identical `Planned` structs, `PlaceAndPlan` and `PlanPlaced`, four planning bodies, three coverage checks |
 | Speculation mechanics | `slot_lifecycle.h` (`SlotLifecycle::Accept`, `DiscardVerify`, `Settle`) over `LiveState`'s verify snapshot (`live_state.h`: `Save`, `Accept`, `Rollback`, `Settle`), queued as the paging kernels' range copies on the job's stream; `decoding.h` (`DecodingOrchestrator`) and `execution/program.h` (`DecodingMode`) | the same semantics written twice |
-| Setup and teardown | `runner_memory.h` (own memory, staging) and `runner_resources.h` (cuBLAS, the launch context and registry), their ordered release; `ReleaseMapped` for the node, `ModelRunner`, `StagedExecution` and the FP16 benchmark runner (`benchmarks/fp16_runner.h`) | copied per runner |
+| Setup and teardown | `runner_memory.h` (own memory, staging) and `device_backend.h` (the device backend and the kernel memory it binds), their ordered release; `ReleaseMapped` for the node, `ModelRunner`, `StagedExecution` and the FP16 benchmark runner (`benchmarks/fp16_runner.h`) | copied per runner |
 | Weight paging | `paged_weights.h` for every runner: host groups, expert slabs (`ExpertSlabsOf`, `expert_slab.h`), `PleTable` / `PleRead` / `PleRowPlan` / `PlanPleRows` (`ple_rows.h`), per-extent groups, place checks; `LayOutSlab` | DeepSeek's own `ReservePart`/`Register` |
 | The request's lease (D-093) | `PagedNode::WithRequest` | three copies of begin-body-end |
 
@@ -495,14 +521,11 @@ Every LLM runs on `ModelRunner` (`engine/model_runner.h`) over
 `StagedExecution` (`engine/staged_execution.h`), served through
 `EngineImage` (`runtime/engine_image.h`, assembled by
 `ComponentImageGenerationBuild` and `ComponentImageServingBuild` in
-`runtime/component_image_build.h`). The serving adapters name no kernel
-library, but the two build units do: `component_build.cc` and
-`component_image_build.cc` construct `kernels::ggml::GgmlBackend`
-(`GgmlBackendOptions`) and `CublasHandle`, size the cuBLAS workspace from the
-compute capability and open device 0, and `engine/runner_resources.h` and
-`expert_slab.cc` include GGML headers. `llmp_boundaries.py` checks CUDA names,
-not kernel-library names, so nothing enforces this edge; a port needs an
-engine-side backend factory first. A port changes the skeleton once: a
+`runtime/component_image_build.h`). Neither the serving adapters nor the
+two build units (`component_build.cc`, `component_image_build.cc`) name a
+kernel library: they make backends through `engine::CreateDeviceBackend`
+and the registered kernel set, which the boundary check enforces. A port
+registers its own kernel set and changes the skeleton once: a
 backend without recorded work uses `StepRuns`' launch-by-launch fallback,
 and a platform's spill file is `LiveState`'s. Both LLMs and image pipelines
 verify their registered places after every swap.

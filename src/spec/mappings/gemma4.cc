@@ -14,6 +14,7 @@
 #include "format/encoding.h"
 #include "format/tensor_format.h"
 #include "spec/mapping.h"
+#include "spec/mappings/names.h"
 #include "spec/mappings/rules.h"
 #include "spec/spec.h"
 
@@ -26,6 +27,18 @@ using enum ValueType;
 
 constexpr std::string_view kExperts = "expert_count";
 constexpr std::string_view kPolicyExperts = "gemma4.expert_count";
+
+// Gemma 4's own tensors: its routed-expert block's three extra norms, its
+// router's and experts' scales, and each layer's output scale.
+constexpr TensorName kFfnPostNorm1{"blk.{layer}.post_ffw_norm_1.weight",
+                                   "model.layers.{layer}.post_feedforward_layernorm_1.weight"};
+constexpr TensorName kFfnPreNorm2{"blk.{layer}.pre_ffw_norm_2.weight",
+                                  "model.layers.{layer}.pre_feedforward_layernorm_2.weight"};
+constexpr TensorName kFfnPostNorm2{"blk.{layer}.post_ffw_norm_2.weight",
+                                   "model.layers.{layer}.post_feedforward_layernorm_2.weight"};
+constexpr std::string_view kRouterScale = "blk.{layer}.ffn_gate_inp.scale";
+constexpr std::string_view kExpertScale = "blk.{layer}.ffn_down_exps.scale";
+constexpr std::string_view kLayerOutputScale = "blk.{layer}.layer_output_scale.weight";
 
 constexpr std::array kSlots = {
     SlotRule{.slot = "embedding", .site = Site::kEmbedding, .kind = "embedding.token"},
@@ -44,64 +57,54 @@ constexpr std::array kSlots = {
 };
 
 constexpr std::array kTensors = {
-    TensorRule{.pattern = "token_embd.weight", .slot = "embedding", .role = "table"},
-    TensorRule{.pattern = "blk.{layer}.attn_norm.weight", .slot = "attention", .role = "norm"},
-    TensorRule{.pattern = "blk.{layer}.attn_q.weight", .slot = "attention", .role = "q"},
-    TensorRule{.pattern = "blk.{layer}.attn_k.weight", .slot = "attention", .role = "k"},
+    TensorRule{.pattern = names::kTokenEmbd.gguf, .slot = "embedding", .role = "table"},
+    TensorRule{.pattern = names::kAttnNorm.gguf, .slot = "attention", .role = "norm"},
+    TensorRule{.pattern = names::kAttnQ.gguf, .slot = "attention", .role = "q"},
+    TensorRule{.pattern = names::kAttnK.gguf, .slot = "attention", .role = "k"},
     // The global layers have none: their V is K's.
-    TensorRule{.pattern = "blk.{layer}.attn_v.weight",
-               .slot = "attention",
-               .role = "v",
-               .layer_types = "l"},
-    TensorRule{.pattern = "blk.{layer}.attn_q_norm.weight", .slot = "attention", .role = "q_norm"},
-    TensorRule{.pattern = "blk.{layer}.attn_k_norm.weight", .slot = "attention", .role = "k_norm"},
-    TensorRule{.pattern = "blk.{layer}.attn_output.weight", .slot = "attention", .role = "output"},
-    TensorRule{.pattern = "blk.{layer}.post_attention_norm.weight",
-               .slot = "attention",
-               .role = "post_norm"},
+    TensorRule{.pattern = names::kAttnV.gguf, .slot = "attention", .role = "v", .layer_types = "l"},
+    TensorRule{.pattern = names::kAttnQNorm.gguf, .slot = "attention", .role = "q_norm"},
+    TensorRule{.pattern = names::kAttnKNorm.gguf, .slot = "attention", .role = "k_norm"},
+    TensorRule{.pattern = names::kAttnOutput.gguf, .slot = "attention", .role = "output"},
+    TensorRule{.pattern = names::kAttnPostNorm.gguf, .slot = "attention", .role = "post_norm"},
     // The global layers' proportional rotation factors, one table.
-    TensorRule{.pattern = "rope_freqs.weight",
+    TensorRule{.pattern = names::kRopeFreqs.gguf,
                .slot = "attention",
                .role = "rope_freqs",
                .layer_types = "g"},
     // Routed-expert layers: the dense GLU beside the experts.
-    TensorRule{.pattern = "blk.{layer}.ffn_norm.weight", .slot = "moe", .role = "norm"},
-    TensorRule{.pattern = "blk.{layer}.ffn_gate.weight", .slot = "moe", .role = "gate"},
-    TensorRule{.pattern = "blk.{layer}.ffn_up.weight", .slot = "moe", .role = "up"},
-    TensorRule{.pattern = "blk.{layer}.ffn_down.weight", .slot = "moe", .role = "down"},
-    TensorRule{
-        .pattern = "blk.{layer}.post_ffw_norm_1.weight", .slot = "moe", .role = "dense_post_norm"},
-    TensorRule{.pattern = "blk.{layer}.ffn_gate_inp.weight", .slot = "moe", .role = "router"},
-    TensorRule{.pattern = "blk.{layer}.ffn_gate_inp.scale", .slot = "moe", .role = "router_scale"},
-    TensorRule{
-        .pattern = "blk.{layer}.pre_ffw_norm_2.weight", .slot = "moe", .role = "routed_norm"},
-    TensorRule{.pattern = "blk.{layer}.ffn_gate_up_exps.weight",
+    TensorRule{.pattern = names::kFfnPreNorm.gguf, .slot = "moe", .role = "norm"},
+    TensorRule{.pattern = names::kFfnGate.gguf, .slot = "moe", .role = "gate"},
+    TensorRule{.pattern = names::kFfnUp.gguf, .slot = "moe", .role = "up"},
+    TensorRule{.pattern = names::kFfnDown.gguf, .slot = "moe", .role = "down"},
+    TensorRule{.pattern = kFfnPostNorm1.gguf, .slot = "moe", .role = "dense_post_norm"},
+    TensorRule{.pattern = names::kFfnGateInp.gguf, .slot = "moe", .role = "router"},
+    TensorRule{.pattern = kRouterScale, .slot = "moe", .role = "router_scale"},
+    TensorRule{.pattern = kFfnPreNorm2.gguf, .slot = "moe", .role = "routed_norm"},
+    TensorRule{.pattern = names::kFfnGateUpExpsFused.gguf,
                .slot = "moe",
                .role = "gate_up_experts",
                .experts = true},
-    TensorRule{.pattern = "blk.{layer}.ffn_down_exps.weight",
+    TensorRule{.pattern = names::kFfnDownExps.gguf,
                .slot = "moe",
                .role = "down_experts",
                .experts = true},
-    TensorRule{.pattern = "blk.{layer}.ffn_down_exps.scale", .slot = "moe", .role = "expert_scale"},
-    TensorRule{
-        .pattern = "blk.{layer}.post_ffw_norm_2.weight", .slot = "moe", .role = "routed_post_norm"},
-    TensorRule{.pattern = "blk.{layer}.post_ffw_norm.weight", .slot = "moe", .role = "post_norm"},
+    TensorRule{.pattern = kExpertScale, .slot = "moe", .role = "expert_scale"},
+    TensorRule{.pattern = kFfnPostNorm2.gguf, .slot = "moe", .role = "routed_post_norm"},
+    TensorRule{.pattern = names::kFfnPostNorm.gguf, .slot = "moe", .role = "post_norm"},
     // Dense layers.
-    TensorRule{.pattern = "blk.{layer}.ffn_norm.weight", .slot = "ffn", .role = "norm"},
-    TensorRule{.pattern = "blk.{layer}.ffn_gate.weight", .slot = "ffn", .role = "gate"},
-    TensorRule{.pattern = "blk.{layer}.ffn_up.weight", .slot = "ffn", .role = "up"},
-    TensorRule{.pattern = "blk.{layer}.ffn_down.weight", .slot = "ffn", .role = "down"},
-    TensorRule{.pattern = "blk.{layer}.post_ffw_norm.weight", .slot = "ffn", .role = "post_norm"},
-    TensorRule{.pattern = "blk.{layer}.layer_output_scale.weight",
-               .slot = "output_scale",
-               .role = "weight"},
-    TensorRule{.pattern = "output_norm.weight", .slot = "final_norm", .role = "weight"},
+    TensorRule{.pattern = names::kFfnPreNorm.gguf, .slot = "ffn", .role = "norm"},
+    TensorRule{.pattern = names::kFfnGate.gguf, .slot = "ffn", .role = "gate"},
+    TensorRule{.pattern = names::kFfnUp.gguf, .slot = "ffn", .role = "up"},
+    TensorRule{.pattern = names::kFfnDown.gguf, .slot = "ffn", .role = "down"},
+    TensorRule{.pattern = names::kFfnPostNorm.gguf, .slot = "ffn", .role = "post_norm"},
+    TensorRule{.pattern = kLayerOutputScale, .slot = "output_scale", .role = "weight"},
+    TensorRule{.pattern = names::kOutputNorm.gguf, .slot = "final_norm", .role = "weight"},
     // The checkpoint ties its output to the embedding (no output.weight).
-    TensorRule{.pattern = "output.weight",
+    TensorRule{.pattern = names::kOutput.gguf,
                .slot = "output",
                .role = "weight",
-               .fallback = "token_embd.weight"},
+               .fallback = names::kTokenEmbd.gguf},
 };
 
 constexpr std::string_view kEps = "attention.layer_norm_rms_epsilon";
@@ -268,51 +271,54 @@ constexpr std::array kGemma4LayerTypeCodes{
 };
 // Gemma 4 stores direct RMS gamma in HF and MLX, as in GGUF. Unlike
 // Gemma 2/3, neither a zero-centered parameter nor a plus-one fold applies.
-constexpr auto kGemma4NativeTensors = [] {
-  std::array<TensorRule, kTensors.size() + 5> out{};
-  std::size_t n = 0;
-  for (auto r : kTensors) {
-    if (r.pattern == "rope_freqs.weight") {
-      r.optional = true;
-    } else if (r.pattern == "blk.{layer}.ffn_gate_up_exps.weight") {
-      r.optional = true;
-      r.any_part = true;
-    } else if (r.pattern == "blk.{layer}.ffn_down_exps.weight") {
-      r.optional = true;
-      r.any_part = true;
-    } else if (r.role == "table" || r.role == "q" || r.role == "k" || r.role == "v" ||
-               r.role == "output" || r.role == "gate" || r.role == "up" || r.role == "down" ||
-               r.role == "router" || (r.slot == "output" && r.role == "weight")) {
-      r.any_part = true;
-    }
-    out[n++] = r;
-  }
-  out[n++] = TensorRule{.pattern = "blk.{layer}.ffn_gate_exps.weight",
-                        .slot = "moe",
-                        .role = "gate_experts",
-                        .experts = true,
-                        .optional = true,
-                        .any_part = true};
-  out[n++] = TensorRule{.pattern = "blk.{layer}.ffn_up_exps.weight",
-                        .slot = "moe",
-                        .role = "up_experts",
-                        .experts = true,
-                        .optional = true,
-                        .any_part = true};
-  out[n++] = TensorRule{.pattern = "blk.{layer}.ffn_gate_exps.weight_scale_2",
-                        .slot = "moe",
-                        .role = "gate_scale",
-                        .optional = true};
-  out[n++] = TensorRule{.pattern = "blk.{layer}.ffn_up_exps.weight_scale_2",
-                        .slot = "moe",
-                        .role = "up_scale",
-                        .optional = true};
-  out[n++] = TensorRule{.pattern = "blk.{layer}.ffn_down_exps.weight_scale_2",
-                        .slot = "moe",
-                        .role = "down_scale",
-                        .optional = true};
-  return out;
-}();
+// The native form of the canonical rules: matrices with whatever part they
+// hold, the rotation factors and the stacked experts optional (an MLX or
+// ModelOpt export's per-expert arrays and their tensor scales instead).
+constexpr std::array kGemma4NativeEdits{
+    TensorEdit{.slot = "attention", .role = "rope_freqs", .optional = true},
+    TensorEdit{.slot = "moe", .role = "gate_up_experts", .optional = true, .any_part = true},
+    TensorEdit{.slot = "moe", .role = "down_experts", .optional = true, .any_part = true},
+    TensorEdit{.slot = "embedding", .role = "table", .any_part = true},
+    TensorEdit{.slot = "attention", .role = "q", .any_part = true},
+    TensorEdit{.slot = "attention", .role = "k", .any_part = true},
+    TensorEdit{.slot = "attention", .role = "v", .any_part = true},
+    TensorEdit{.slot = "attention", .role = "output", .any_part = true},
+    TensorEdit{.slot = "moe", .role = "gate", .any_part = true},
+    TensorEdit{.slot = "moe", .role = "up", .any_part = true},
+    TensorEdit{.slot = "moe", .role = "down", .any_part = true},
+    TensorEdit{.slot = "moe", .role = "router", .any_part = true},
+    TensorEdit{.slot = "ffn", .role = "gate", .any_part = true},
+    TensorEdit{.slot = "ffn", .role = "up", .any_part = true},
+    TensorEdit{.slot = "ffn", .role = "down", .any_part = true},
+    TensorEdit{.slot = "output", .role = "weight", .any_part = true},
+};
+constexpr std::array kGemma4NativeExtras{
+    TensorRule{.pattern = names::kFfnGateExps.gguf,
+               .slot = "moe",
+               .role = "gate_experts",
+               .experts = true,
+               .optional = true,
+               .any_part = true},
+    TensorRule{.pattern = names::kFfnUpExps.gguf,
+               .slot = "moe",
+               .role = "up_experts",
+               .experts = true,
+               .optional = true,
+               .any_part = true},
+    TensorRule{.pattern = "blk.{layer}.ffn_gate_exps.weight_scale_2",
+               .slot = "moe",
+               .role = "gate_scale",
+               .optional = true},
+    TensorRule{.pattern = "blk.{layer}.ffn_up_exps.weight_scale_2",
+               .slot = "moe",
+               .role = "up_scale",
+               .optional = true},
+    TensorRule{.pattern = "blk.{layer}.ffn_down_exps.weight_scale_2",
+               .slot = "moe",
+               .role = "down_scale",
+               .optional = true},
+};
+constexpr auto kGemma4NativeTensors = Overlay<kTensors, kGemma4NativeEdits, kGemma4NativeExtras>();
 constexpr std::array kGemma4NativeParams = {
     FromKey(kStageSlot, "context", "context_length", kInt),
     Int(kStageSlot, "context", 131072),
@@ -353,7 +359,7 @@ constexpr std::array kGemma4NativeParams = {
     Flag("attention", "kv_tie", false, "l"),
     Flag("attention", "kv_tie", true, "g"),
     Flag("attention", "rope_freqs", false, "l"),
-    FromTensor("attention", "rope_freqs", "rope_freqs.weight", "g"),
+    FromTensor("attention", "rope_freqs", names::kRopeFreqs.gguf, "g"),
     Flag("attention", "rope_freqs", false, "g"),
     Name("moe", "placement", "parallel"),
     FromKey("moe", "eps", kEps, kReal),
@@ -373,7 +379,7 @@ constexpr std::array kGemma4NativeParams = {
     Flag("moe", "up_scale", false),
     FromTensor("moe", "down_scale", "blk.{layer}.ffn_down_exps.weight_scale_2"),
     Flag("moe", "down_scale", false),
-    FromTensor("moe", "stacked", "blk.{layer}.ffn_gate_up_exps.weight"),
+    FromTensor("moe", "stacked", names::kFfnGateUpExpsFused.gguf),
     Flag("moe", "stacked", false),
     Name("ffn", "placement", "sandwich"),
     FromKey("ffn", "eps", kEps, kReal),
@@ -403,96 +409,62 @@ constexpr std::array kGemma4NativeParams = {
 constexpr std::array kGemma4KeyAliases = {
     KeyAlias{"enable_moe_block", "enable_moe_block"},
     KeyAlias{"hidden_activation", "hidden_activation"},
-    KeyAlias{"hidden_act", "hidden_act"},
-    KeyAlias{"attention_bias", "attention_bias"},
-    KeyAlias{"is_encoder_decoder", "is_encoder_decoder"},
+    keys::kHiddenAct,
+    keys::kAttentionBias,
+    keys::kEncoderDecoder,
     KeyAlias{"attention_k_eq_v", "attention_k_eq_v"},
     KeyAlias{"use_double_wide_mlp", "use_double_wide_mlp"},
-    KeyAlias{"use_bidirectional_attention", "use_bidirectional_attention"},
+    keys::kBidirectional,
     KeyAlias{"text_config.model_type", "text_model_type"},
     KeyAlias{"rope_parameters.full_attention.rope_type", "rope.full.type"},
     KeyAlias{"rope_parameters.sliding_attention.rope_type", "rope.local.type"},
-    KeyAlias{"num_hidden_layers", "block_count"},
-    KeyAlias{"max_position_embeddings", "context_length"},
-    KeyAlias{"hidden_size", "embedding_length"},
-    KeyAlias{"intermediate_size", kFfn},
-    KeyAlias{"rms_norm_eps", kEps},
-    KeyAlias{"num_attention_heads", "attention.head_count"},
-    KeyAlias{"num_key_value_heads", "attention.head_count_kv"},
+    keys::kLayerCount,
+    keys::kContext,
+    keys::kWidth,
+    keys::kFfnWidth,
+    keys::kRmsEps,
+    keys::kHeads,
+    keys::kKvHeads,
     KeyAlias{"num_global_key_value_heads", "attention.head_count_kv_global"},
     KeyAlias{"head_dim", "attention.key_length_swa"},
     KeyAlias{"global_head_dim", "attention.key_length"},
-    KeyAlias{"sliding_window", "attention.sliding_window"},
+    keys::kSlidingWindow,
     KeyAlias{"rope_local_base_freq", "rope.freq_base_swa"},
     KeyAlias{"rope_parameters.sliding_attention.rope_theta", "rope.freq_base_swa"},
-    KeyAlias{"rope_theta", "rope.freq_base"},
+    keys::kRopeTheta,
     KeyAlias{"rope_parameters.full_attention.rope_theta", "rope.freq_base"},
     KeyAlias{"rope_parameters.full_attention.partial_rotary_factor", "rope.partial_rotary_factor"},
-    KeyAlias{"num_experts", kExperts},
+    keys::kExperts,
     KeyAlias{"top_k_experts", "expert_used_count"},
-    KeyAlias{"num_experts_per_tok", "expert_used_count"},
-    KeyAlias{"moe_intermediate_size", "expert_feed_forward_length"},
+    keys::kExpertsUsed,
+    keys::kExpertWidth,
     KeyAlias{"num_kv_shared_layers", "attention.shared_kv_layers"},
     KeyAlias{"hidden_size_per_layer_input", "embedding_length_per_layer_input"},
-    KeyAlias{"layer_types", "layer_types"},
+    keys::kLayerTypes,
     KeyAlias{"final_logit_softcapping", "final_logit_softcapping"},
 };
-constexpr std::array kGemma4TensorAliases = {
-    TensorAlias{"model.embed_tokens.weight", "token_embd.weight"},
-    TensorAlias{"model.norm.weight", "output_norm.weight"},
-    TensorAlias{"lm_head.weight", "output.weight"},
-    TensorAlias{"model.layers.{layer}.input_layernorm.weight", "blk.{layer}.attn_norm.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.q_proj.weight", "blk.{layer}.attn_q.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.k_proj.weight", "blk.{layer}.attn_k.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.v_proj.weight", "blk.{layer}.attn_v.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.q_norm.weight", "blk.{layer}.attn_q_norm.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.k_norm.weight", "blk.{layer}.attn_k_norm.weight"},
-    TensorAlias{"model.layers.{layer}.self_attn.o_proj.weight", "blk.{layer}.attn_output.weight"},
-    TensorAlias{"model.layers.{layer}.post_attention_layernorm.weight",
-                "blk.{layer}.post_attention_norm.weight"},
-    TensorAlias{"model.layers.{layer}.pre_feedforward_layernorm.weight",
-                "blk.{layer}.ffn_norm.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.gate_proj.weight", "blk.{layer}.ffn_gate.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.up_proj.weight", "blk.{layer}.ffn_up.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.down_proj.weight", "blk.{layer}.ffn_down.weight"},
-    TensorAlias{"model.layers.{layer}.post_feedforward_layernorm.weight",
-                "blk.{layer}.post_ffw_norm.weight"},
-    TensorAlias{"model.layers.{layer}.post_feedforward_layernorm_1.weight",
-                "blk.{layer}.post_ffw_norm_1.weight"},
-    TensorAlias{"model.layers.{layer}.pre_feedforward_layernorm_2.weight",
-                "blk.{layer}.pre_ffw_norm_2.weight"},
-    TensorAlias{"model.layers.{layer}.post_feedforward_layernorm_2.weight",
-                "blk.{layer}.post_ffw_norm_2.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.router.proj.weight", "blk.{layer}.ffn_gate_inp.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.router.scale", "blk.{layer}.ffn_gate_inp.scale"},
-    TensorAlias{"model.layers.{layer}.router.proj.weight", "blk.{layer}.ffn_gate_inp.weight"},
-    TensorAlias{"model.layers.{layer}.router.scale", "blk.{layer}.ffn_gate_inp.scale"},
-    TensorAlias{"model.layers.{layer}.router.per_expert_scale", "blk.{layer}.ffn_down_exps.scale"},
-    TensorAlias{"model.layers.{layer}.mlp.experts.gate_up_proj",
-                "blk.{layer}.ffn_gate_up_exps.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.experts.gate_up_proj.weight",
-                "blk.{layer}.ffn_gate_up_exps.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.experts.down_proj", "blk.{layer}.ffn_down_exps.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.experts.down_proj.weight",
-                "blk.{layer}.ffn_down_exps.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.experts.per_expert_scale",
-                "blk.{layer}.ffn_down_exps.scale"},
-    TensorAlias{"model.layers.{layer}.mlp.experts.{expert}.gate_proj.weight",
-                "blk.{layer}.ffn_gate_exps.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.experts.{expert}.up_proj.weight",
-                "blk.{layer}.ffn_up_exps.weight"},
-    TensorAlias{"model.layers.{layer}.mlp.experts.{expert}.down_proj.weight",
-                "blk.{layer}.ffn_down_exps.weight"},
-    TensorAlias{"model.layers.{layer}.experts.{expert}.gate_proj.weight",
-                "blk.{layer}.ffn_gate_exps.weight"},
-    TensorAlias{"model.layers.{layer}.experts.{expert}.up_proj.weight",
-                "blk.{layer}.ffn_up_exps.weight"},
-    TensorAlias{"model.layers.{layer}.experts.{expert}.down_proj.weight",
-                "blk.{layer}.ffn_down_exps.weight"},
-    TensorAlias{"model.layers.{layer}.layer_scalar", "blk.{layer}.layer_output_scale.weight"},
-    TensorAlias{"model.layers.{layer}.layer_scalar.weight",
-                "blk.{layer}.layer_output_scale.weight"},
-};
+constexpr auto kGemma4TensorAliases = Aliases(
+    names::kTokenEmbd, names::kOutputNorm, names::kOutput, names::kAttnNorm, names::kAttnQ,
+    names::kAttnK, names::kAttnV, names::kAttnQNorm, names::kAttnKNorm, names::kAttnOutput,
+    names::kAttnPostNorm, names::kFfnPreNorm, names::kFfnGate, names::kFfnUp, names::kFfnDown,
+    names::kFfnPostNorm,
+    // Its routed-expert block's own norms, router and scales.
+    kFfnPostNorm1, kFfnPreNorm2, kFfnPostNorm2,
+    TensorAlias{"model.layers.{layer}.mlp.router.proj.weight", names::kFfnGateInp.gguf},
+    TensorAlias{"model.layers.{layer}.mlp.router.scale", kRouterScale},
+    TensorAlias{"model.layers.{layer}.router.proj.weight", names::kFfnGateInp.gguf},
+    TensorAlias{"model.layers.{layer}.router.scale", kRouterScale},
+    TensorAlias{"model.layers.{layer}.router.per_expert_scale", kExpertScale},
+    names::kFfnGateUpExpsFused, names::kFfnGateUpExpsFusedWeight, names::kFfnDownExpsFused,
+    names::kFfnDownExpsFusedWeight,
+    TensorAlias{"model.layers.{layer}.mlp.experts.per_expert_scale", kExpertScale},
+    names::kFfnGateExps, names::kFfnUpExps, names::kFfnDownExps,
+    // An export's experts outside its MLP.
+    TensorAlias{"model.layers.{layer}.experts.{expert}.gate_proj.weight", names::kFfnGateExps.gguf},
+    TensorAlias{"model.layers.{layer}.experts.{expert}.up_proj.weight", names::kFfnUpExps.gguf},
+    TensorAlias{"model.layers.{layer}.experts.{expert}.down_proj.weight", names::kFfnDownExps.gguf},
+    TensorAlias{"model.layers.{layer}.layer_scalar", kLayerOutputScale},
+    TensorAlias{"model.layers.{layer}.layer_scalar.weight", kLayerOutputScale});
 constexpr std::array<std::string_view, 6> kGemma4IgnoredTensors{
     "model.layers.{layer}.mlp.experts.{expert}.gate_proj.input_scale",
     "model.layers.{layer}.mlp.experts.{expert}.up_proj.input_scale",
@@ -540,42 +512,8 @@ constexpr std::array kGemma4NativeRequirements{
                       .flag_of_positive = "expert_count"}};
 constexpr std::array<std::string_view, 3> kGemma4Containers{"gguf", "safetensors", "mlx"};
 constexpr std::array<std::string_view, 1> kGemma4NativeSourceAliases{"gemma4_text"};
-constexpr std::array kGemma4AllTensors = [] {
-  constexpr auto new_roles = std::ranges::count_if(kGemma4NativeTensors, [](const auto& native) {
-    return !std::ranges::any_of(kTensors, [&](const auto& base) {
-      return base.slot == native.slot && base.role == native.role;
-    });
-  });
-  std::array<TensorRule, kTensors.size() + new_roles> out{};
-  std::ranges::copy(kTensors, out.begin());
-  std::size_t next = kTensors.size();
-  for (const auto& native : kGemma4NativeTensors) {
-    if (std::ranges::any_of(kTensors, [&](const auto& base) {
-          return base.slot == native.slot && base.role == native.role;
-        }))
-      continue;
-    out[next++] = native;
-  }
-  return out;
-}();
-constexpr std::array kGemma4AllParams = [] {
-  constexpr auto new_roles = std::ranges::count_if(kGemma4NativeParams, [](const auto& native) {
-    return !std::ranges::any_of(kParams, [&](const auto& base) {
-      return base.slot == native.slot && base.param == native.param;
-    });
-  });
-  std::array<ParamRule, kParams.size() + new_roles> out{};
-  std::ranges::copy(kParams, out.begin());
-  std::size_t next = kParams.size();
-  for (const auto& native : kGemma4NativeParams) {
-    if (std::ranges::any_of(kParams, [&](const auto& base) {
-          return base.slot == native.slot && base.param == native.param;
-        }))
-      continue;
-    out[next++] = native;
-  }
-  return out;
-}();
+constexpr auto kGemma4AllTensors = WithNewIdentities<kTensors, kGemma4NativeTensors>();
+constexpr auto kGemma4AllParams = WithNewIdentities<kParams, kGemma4NativeParams>();
 constexpr SourceDialect Gemma4NativeDialect(std::string_view architecture,
                                             std::string_view container) {
   return {.architecture = architecture,
@@ -658,30 +596,26 @@ constexpr std::array kAssistantSlots = {
 constexpr std::array kAssistantTensors = {
     // Its input rows are its target's token table's.
     TensorRule{
-        .pattern = "token_embd.weight", .slot = "embedding", .role = "table", .target = true},
+        .pattern = names::kTokenEmbd.gguf, .slot = "embedding", .role = "table", .target = true},
     TensorRule{.pattern = "nextn.pre_projection.weight", .slot = "embedding", .role = "projection"},
-    TensorRule{.pattern = "blk.{layer}.attn_norm.weight", .slot = "attention", .role = "norm"},
-    TensorRule{.pattern = "blk.{layer}.attn_q.weight", .slot = "attention", .role = "q"},
-    TensorRule{.pattern = "blk.{layer}.attn_q_norm.weight", .slot = "attention", .role = "q_norm"},
-    TensorRule{.pattern = "blk.{layer}.attn_output.weight", .slot = "attention", .role = "output"},
-    TensorRule{.pattern = "blk.{layer}.post_attention_norm.weight",
-               .slot = "attention",
-               .role = "post_norm"},
-    TensorRule{.pattern = "rope_freqs.weight",
+    TensorRule{.pattern = names::kAttnNorm.gguf, .slot = "attention", .role = "norm"},
+    TensorRule{.pattern = names::kAttnQ.gguf, .slot = "attention", .role = "q"},
+    TensorRule{.pattern = names::kAttnQNorm.gguf, .slot = "attention", .role = "q_norm"},
+    TensorRule{.pattern = names::kAttnOutput.gguf, .slot = "attention", .role = "output"},
+    TensorRule{.pattern = names::kAttnPostNorm.gguf, .slot = "attention", .role = "post_norm"},
+    TensorRule{.pattern = names::kRopeFreqs.gguf,
                .slot = "attention",
                .role = "rope_freqs",
                .layer_types = "g"},
-    TensorRule{.pattern = "blk.{layer}.ffn_norm.weight", .slot = "ffn", .role = "norm"},
-    TensorRule{.pattern = "blk.{layer}.ffn_gate.weight", .slot = "ffn", .role = "gate"},
-    TensorRule{.pattern = "blk.{layer}.ffn_up.weight", .slot = "ffn", .role = "up"},
-    TensorRule{.pattern = "blk.{layer}.ffn_down.weight", .slot = "ffn", .role = "down"},
-    TensorRule{.pattern = "blk.{layer}.post_ffw_norm.weight", .slot = "ffn", .role = "post_norm"},
-    TensorRule{.pattern = "blk.{layer}.layer_output_scale.weight",
-               .slot = "output_scale",
-               .role = "weight"},
-    TensorRule{.pattern = "output_norm.weight", .slot = "final_norm", .role = "weight"},
+    TensorRule{.pattern = names::kFfnPreNorm.gguf, .slot = "ffn", .role = "norm"},
+    TensorRule{.pattern = names::kFfnGate.gguf, .slot = "ffn", .role = "gate"},
+    TensorRule{.pattern = names::kFfnUp.gguf, .slot = "ffn", .role = "up"},
+    TensorRule{.pattern = names::kFfnDown.gguf, .slot = "ffn", .role = "down"},
+    TensorRule{.pattern = names::kFfnPostNorm.gguf, .slot = "ffn", .role = "post_norm"},
+    TensorRule{.pattern = kLayerOutputScale, .slot = "output_scale", .role = "weight"},
+    TensorRule{.pattern = names::kOutputNorm.gguf, .slot = "final_norm", .role = "weight"},
     // Its own token table is its head.
-    TensorRule{.pattern = "token_embd.weight", .slot = "output", .role = "weight"},
+    TensorRule{.pattern = names::kTokenEmbd.gguf, .slot = "output", .role = "weight"},
     TensorRule{.pattern = "nextn.post_projection.weight", .slot = "output", .role = "projection"},
 };
 
@@ -776,7 +710,6 @@ constexpr Mapping kAssistantMapping{
 }  // namespace
 
 const Mapping& Gemma4Mapping() { return kCanonicalMapping; }
-const Mapping& Gemma4SafetensorsMapping() { return kCanonicalMapping; }
 const Mapping& Gemma4AssistantMapping() { return kAssistantMapping; }
 
 }  // namespace llmp::spec::mappings

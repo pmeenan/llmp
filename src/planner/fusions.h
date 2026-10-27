@@ -59,7 +59,7 @@ std::optional<Match> MoeGluMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> MoeCombineMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> VecQGluMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> Mxfp8InputsMatch(const MatchContext& c, ir::NodeId anchor);
-std::optional<Match> Exl3ProductsMatch(const MatchContext& c, ir::NodeId anchor);
+std::optional<Match> TrellisProductsMatch(const MatchContext& c, ir::NodeId anchor);
 // Round 1 (over round 0's result).
 std::optional<Match> HcFoldInputsMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> Bf16InputsMatch(const MatchContext& c, ir::NodeId anchor);

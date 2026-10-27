@@ -702,7 +702,9 @@ void RunCatalogSpatialGpuCase(const CatalogSpatialCase& sc) {
   ASSERT_TRUE(lowered.has_value())
       << sc.ref.kind << " (" << sc.label << "): " << lowered.error().detail;
 
-  if (sc.ref.kind == "conv.causal_first_frame") {
+  // A causal 3-D kernel's first frame: conv.spatial with a temporal_kernel.
+  const bool temporal = sc.ref.kind == "conv.spatial" && sc.ref.Find("temporal_kernel") != nullptr;
+  if (temporal) {
     ASSERT_EQ(lowered->plan.steps.size(), 1U);
     EXPECT_EQ(lowered->plan.steps.front().implementation, kg::kConv2dStridedName);
     ASSERT_EQ(lowered->plan.steps.front().nodes.size(), 1U);
@@ -713,7 +715,7 @@ void RunCatalogSpatialGpuCase(const CatalogSpatialCase& sc) {
     EXPECT_GT(custom->src[0]->nb[2],
               custom->src[0]->nb[1] * static_cast<std::uint64_t>(custom->src[0]->ne[1]));
   }
-  if (sc.ref.kind == "conv.spatial") {
+  if (sc.ref.kind == "conv.spatial" && !temporal) {
     ASSERT_FALSE(lowered->plan.steps.empty());
     EXPECT_EQ(lowered->plan.steps.front().implementation, "ggml.conv2d.f32");
   }
@@ -737,7 +739,7 @@ void RunCatalogSpatialGpuCase(const CatalogSpatialCase& sc) {
     ASSERT_FALSE(lowered->keep.empty());
     initial_gpu_output = mem.ReadTensorValues(lowered->keep[0]);
 
-    if (sc.ref.kind == "conv.causal_first_frame") {
+    if (temporal) {
       std::vector<float> changed = input_f;
       for (float& value : changed) value += 0.125F;
       ASSERT_TRUE(exec->BindValues(graph->graph().inputs()[0], changed));

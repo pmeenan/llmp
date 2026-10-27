@@ -57,6 +57,7 @@
 #include "ggml.h"
 #include "ir/builder.h"
 #include "kernels/common/device_backend.h"
+#include "kernels/compose/kernel_set.h"
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
@@ -422,7 +423,8 @@ TEST_F(GgmlOpsTest, LiveFusionPreferencesDecideTheFusedCandidate) {
   }
   std::uint64_t charged = 0;
   constexpr std::uint64_t budget = 64ULL << 20U;
-  auto created = llmp::kernels::DeviceBackend::Create(0, *execution_, stream_);
+  static_cast<void>(llmp::kernels::RegisterBuildKernels());
+  auto created = llmp::kernels::CreateDeviceBackend(0, *execution_, stream_);
   ASSERT_TRUE(created.has_value());
   struct BackendLifetime {
     std::unique_ptr<llmp::kernels::DeviceBackend> backend;

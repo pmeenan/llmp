@@ -37,10 +37,13 @@ the device through the providers, the device runtime and the paging kernels
 (`kernels/paging/paging.h`), and links no device backend: a program links the
 CUDA one, or the fake device runtime (`providers/fake/fake_device_runtime.h`:
 host memory, work queued on fake streams that runs when a fence is queried) with
-the paging kernels' host loops (`llmp_fake_device_backend`), which the core's
-tests use in every profile. `llmp_engine` (CUDA builds only) adds the runners'
-cuBLAS and launch context (`runner_resources.h`) and the expert slabs
-(`ExpertSlabsOf`, `expert_slab.h`).
+the paging kernels' host loops and the fake kernel set
+(`llmp_fake_device_backend`), which the core's tests use in every profile.
+The expert slabs (`ExpertSlabsOf`, `expert_slab.h`) are the core's.
+`llmp_engine` (CUDA builds only) adds the runners' device backend and the
+kernel memory it binds (`device_backend.h`), made through the build's
+registered kernel set (`kernels/common/device_backend.h`, registered by
+`kernels/compose/`).
 
 ## The node
 
@@ -71,12 +74,12 @@ them; nothing in them is virtual, and nothing runs per kernel.
 
 | Part | File | What it does | The runner supplies |
 | --- | --- | --- | --- |
-| Weights | `paged_weights.h` | Opens an artifact; registers its shards as the model's weight files (`PagedNode::AddWeightFile`), open for direct reads only while the model is active and size-checked as they open; reserves and catalogs, in file order, a 2 MiB-aligned device region per dense group, a slab per layer of routed experts (`LayOutSlab`; a GGML runner's `ExpertSlab`, `expert_slab.h`) and host regions for groups the CPU reads; registers every page source and span; checks the places still pinned; the resource and expert-array addresses a plan binds | Which group goes where (`GroupPlace`), the slabs and their alignment |
+| Weights | `paged_weights.h` | Opens an artifact; registers its shards as the model's weight files (`PagedNode::AddWeightFile`), open for direct reads only while the model is active and size-checked as they open; reserves and catalogs, in file order, a 2 MiB-aligned device region per dense group, a slab per layer of routed experts (`LayOutSlab`; `ExpertSlabsOf`, `expert_slab.h`) and host regions for groups the CPU reads; registers every page source and span; checks the places still pinned; the resource and expert-array addresses a plan binds | Which group goes where (`GroupPlace`), the slabs and their alignment |
 | Live state | `live_state.h` | Stable virtual regions registered before the weights, physical backing only for used extents; successful source/pin checks reused under scheduler lifetime/epoch with mutation invalidation (not residency or leases); sparse unnamed direct-I/O spill files, clear, packed copies, pinned places and quarantine; a verify's snapshot, accept, owed restore and commit, rollback, and undoing a failed verify, queued on the job's stream as the paging kernels' range copies | The state layout and each step's used ranges; which ranges a verify writes; a commit if kept rows need one |
 | Planned shapes | `plan_cache.h` (`plan_account.h`, `coverage.h`) | `BasicPlanCache` (per key, found through an index of the keys' hashes, variants, no fixed number, each plan's host bytes and planning time kept); `PlanAccount` (what the plans and graphs hold, charged to the node: a plan as it is added, a graph before its capture, D-090 as amended), `PlanStep` (a step's plans spared by any reclaim while it runs), `PlanCacheBase`, `CollectPlans` and `ReclaimPlan` (the plans and graphs as candidates for the node's reclaim order, and one's reclaim); the coverage check (BP-A1) | The step source and its plan key |
 | Runs and graphs | `step_runs.h` (`run_stats.h`) | `StepRuns`: stages a run's inputs in the pinned staging, queues copies, work between inputs and plan, the step program and the outputs; captures a shape (or when the runner asks), replays its graph from then on with the staging checked, falls back to launch by launch on a refused capture; records another planned shape's graph without running it; `GraphStats`, `RunPath` | When a run may be captured (decode steps, verifies, drafts, hinted prefill) and what it copies out |
 | Prefill lookahead | `prefill_lookahead.h` | `PrefillLookahead` and fixed-capacity `PrefillLookaheadGroup`: independent optional host allowances before CPU-only future plans, sequential builds during current device work, ordered installation after successful completion, exact cache-charge transfer and destruction before unused-grant release | Shape prediction, graph construction, binding/coverage/cache installation and capture policy |
-| Resources | `runner_memory.h`, `runner_resources.h` | The runner's own device memory (pinned) and pinned staging (`RunnerMemory`, the core's); for a GGML runner, cuBLAS and its workspace, a measuring launch context, the launch context over the pool and the registry (`RunnerResources`); and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
+| Resources | `runner_memory.h`, `device_backend.h` | The runner's own device memory (pinned) and pinned staging (`RunnerMemory`, the core's); the runner's device backend (`CreateDeviceBackend`) and the kernel memory it binds (`BackendKernelMemory`: its stream library's workspace and any persistent selected-source state, mapped as the runner's own through `RunnerConfig::kernel_memory`, bound by `prepare` through `DeviceBackend::BindWorkspaces`, which makes the library, and released by `retire` through `ReleaseWorkspaces`); and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
 | Request cohort | `request_cohort.h` | Several request slots of one model: the active set selected between completed units (several only under one held stream request), the closures (everything, the state fence, the execution closure, each slot's fence) and the held request's refresh, and the cohort's fault (every slot quarantined until retirement) | Its slots' live states and the shared extents |
 | Slot lifecycle | `slot_lifecycle.h` (`model/state_contract.h`) | Request slots of one LiveState per stage (target, then each drafter) and every verb that moves their state, a verify's Accept, discard and settle among them, derived from the stages' state contracts, with the reconciled guards ([below](#the-shared-slot-lifecycle)); used by all models on `ModelRunner` (Gemma 2, Gemma 3, Gemma 4, Qwen2, Qwen3.8, DeepSeek V4 Flash, drafters, and image compositions) | The stages' contracts and read alignments, the shared extents, the spec's digest, its invalidation and plan-dropping hooks, and a write record before every job that writes a slot |
 
@@ -94,8 +97,9 @@ The module contains only shared engine code (no per-family code):
 | `copy_sink.h` | — | Output copy destination contracts |
 | `coverage.h` | `coverage.cc` | Tensor role and coverage checks |
 | `decoding.h` | `decoding.cc` | Decoding modes (`DecodingOrchestrator`): plain, sampled, speculative cascade/alternatives |
+| `device_backend.h` | `device_backend.cc` | A runner's device backend, made through the registered kernel set, and the kernel memory it binds (`llmp_engine`) |
 | `execution_contract.h` | `execution_contract.cc` | Execution contract validation and lifecycle |
-| `expert_slab.h` | `expert_slab.cc` | Expert slab layout and pitch (`llmp_engine`) |
+| `expert_slab.h` | `expert_slab.cc` | Expert slab layout and pitch from the native formats |
 | `graph_plan.h` | `graph_plan.cc` | Planned step graph binding and lowering |
 | `host_buffer.h` | — | Bounded host buffer helpers |
 | `live_state.h` | `live_state.cc` | Virtual state regions, sparse spill files, verify snapshots |
@@ -112,7 +116,7 @@ The module contains only shared engine code (no per-family code):
 | `request_cohort.h` | `request_cohort.cc` | Request slots, active sets, closures, fault isolation |
 | `runner_memory.h` | `runner_memory.cc` | Runner device memory and pinned staging |
 | `runner_owner.h` | `runner_owner.cc` | Node-retained paid runner root and authenticated retirement |
-| `runner_resources.h` | `runner_resources.cc` | cuBLAS handles, workspace and launch context (`llmp_engine`) |
+
 | `run_stats.h` | — | Execution statistics, graph paths, run counts |
 | `slot_lifecycle.h` | `slot_lifecycle.cc` | Shared request slot lifecycle derived from state contracts |
 | `specialization.h` | — | Step specialization descriptors |
@@ -732,7 +736,7 @@ What the shared pieces reproduce of each family (completed in M3.6):
 | Gemma4 | Quads as `group_segments` 4, the 8/12 groups as `invariant_group_segments`/`group_segments`; one future without capture ahead (`prefill_lookahead` 1, `capture_ahead` false); per-group isolation in `RunWave`; the assistant's frozen borrows, tapped features and carry (decoding modes); prompts stepping alone and, outside the envelope, one owner a step (its mapping's rules, `prompts_alone`, `owners_alone`); bounded owner roots and common widths (the planner's owner-attention options) | Joined prompt admission (would change the routed products' arithmetic; M3 prefilled alone) |
 | Qwen3.8 | Groups of consecutive owners while rows fit 16 (`group_rows`), 2,048-aligned joined reads (`joined_read_align`), state backed through that alignment before the step (an owner out of capacity there steps alone at 256 rather than being refused), two futures and prepare ahead, state-only cuts; joined draft and verify waves; per-product joined limits (draft head 8, VecQ, MoE GEMV, MXFP8 columns, HC cuBLAS 16: planner patterns), BF16 head sharing by row count, on-demand n-gram row gather (`ple_rows.h`), prefill capture policy | — |
 | DeepSeek V4 | Total wave rows ≤ 16 (`max_step_rows`), joined row-local work with per-owner state (`planner/owner_products.h`), scalar prefill (`join_prefill` false), two futures and prepare ahead, state-only cuts; joined drafts and verifies (decoding modes); float products over groups of whole owners fitting 8 columns and `SetVecQOneToken` for one-row waves (planner, from the shape); HCA per-position patch (`Position`, uncapturable `PlanKey::capturable = false`) | — |
-| Qwen2, Llama, Mistral | Generic pre-norm dense decoder (`embedding.token`, `attention.dense` with GQA, RoPE / `rope_freqs` / YaRN, `ffn.glu` (`silu`), `norm.rms`, `head.linear` tied or untied) across GGUF, plain (unquantized) safetensors and EXL3 (`spec/mappings/qwen2.h`), served via `kDefaultServingRecipe` | Served and verified only for Llama 3.2 1B (GGUF) and Qwen2.5 0.5B (GGUF FP16, EXL3); Mistral and the safetensors/EXL3 forms of Llama are synthetic-source tested only. HF-quantized safetensors (AWQ, GPTQ, compressed-tensors, ModelOpt, MLX) have no import path for these families. Qwen2 serves single-owner (`max_decode_rows 1`, `owners_alone`) |
+| Qwen2, Llama, Mistral | Generic pre-norm dense decoder (`embedding.token`, `attention.dense` with GQA, RoPE / `rope_freqs` / YaRN, `ffn.glu` (`silu`), `norm.rms`, `head.linear` tied or untied) across GGUF, plain (unquantized) safetensors and EXL3 (`spec/mappings/dense.h`), served via `kDefaultServingRecipe` | Served and verified only for Llama 3.2 1B (GGUF) and Qwen2.5 0.5B (GGUF FP16, EXL3); Mistral and the safetensors/EXL3 forms of Llama are synthetic-source tested only. HF-quantized safetensors (AWQ, GPTQ, compressed-tensors, ModelOpt, MLX) have no import path for these families. Qwen2 serves single-owner (`max_decode_rows 1`, `owners_alone`) |
 
 ## The serving adapter
 
@@ -911,10 +915,10 @@ When a new model architecture uses existing components in `src/components/`
 1. **Declare the architecture mapping (`src/spec/mappings/`):**
    - Add or extend a mapping header/source (for example, `LlamaMapping()` and
      `MistralMapping()` alongside `Qwen2Mapping()` in
-     `src/spec/mappings/qwen2.{h,cc}`; `LLMP_DEFINE_DENSE_FAMILY_MAPPINGS`
-     defines four `Mapping` objects per family: the base one and one each for
-     the `gguf`, `safetensors` and `exl3` containers, all registered)
-     declaring `SlotRule`s (`embedding.token`,
+     `src/spec/mappings/dense.{h,cc}`: one canonical `Mapping` a family,
+     registered once, whose `gguf`, `safetensors` and `exl3` source
+     dialects respell its tensors and keys from the shared dictionary,
+     `src/spec/mappings/names.h`) declaring `SlotRule`s (`embedding.token`,
      `attention.dense`, `ffn.glu`, `norm.rms`, `head.linear`), `TensorRule`s,
      `ParamRule`s (including RoPE scaling/frequency rules or sliding-window
      parameters), container `FoldRule`s, and default `PolicyRule`s.

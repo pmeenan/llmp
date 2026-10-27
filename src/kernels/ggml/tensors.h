@@ -36,13 +36,33 @@ using kernels::KernelError;
 using kernels::KernelFailure;
 using kernels::SelectedCall;
 using kernels::SelectedLaunch;
-using kernels::SelectedNode;
 using kernels::SelectedOperand;
 using kernels::SelectedPart;
 using kernels::SelectedRoute;
 using kernels::SelectedRouteBuffers;
 using kernels::SelectedSource;
 using kernels::SelectedWorkspace;
+using kernels::StorageType;
+using kernels::TensorFacts;
+using kernels::TensorRef;
+
+// The vendor-free view of a descriptor that a selected source reads
+// (kernels/common/tensor_ref.h); null for a null tensor.
+TensorRef Ref(const ggml_tensor* tensor);
+// The descriptor behind a reference made by Ref; null for an empty
+// reference or one another backend made.
+ggml_tensor* TensorOf(const TensorRef& ref);
+// The source-facing storage type of a GGML type (kOther when no source
+// reads it).
+StorageType StorageOf(ggml_type type);
+
+// A selected call's marker is an ordinary dense output with all physical
+// inputs attached. It is never submitted to a third-party graph dispatcher.
+struct SelectedNode {
+  ggml_tensor* tensor = nullptr;
+  const execution::Implementation* implementation = nullptr;
+  std::unique_ptr<SelectedCall> call;
+};
 
 class TensorArena {
  public:

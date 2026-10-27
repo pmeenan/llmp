@@ -72,6 +72,14 @@ if(LLMP_CUDA)
   target_link_libraries(llmp_paged_node INTERFACE llmp_paged_programs llmp_engine)
 endif()
 
+# A test runner's device backend made, mapped, bound and released as
+# production does a model's (runner_kernels.h), for the GPU tests.
+if(LLMP_CUDA)
+  add_library(llmp_runner_kernels STATIC runner_kernels.cc)
+  target_include_directories(llmp_runner_kernels PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(llmp_runner_kernels PUBLIC llmp_engine PRIVATE llmp_warnings)
+endif()
+
 # A step source whose programs run as host work on the fake device and
 # write deterministic bytes (fake_step_source.h), for the engine core's
 # runner, wave composer and prefill tests in every profile.
@@ -100,7 +108,7 @@ function(llmp_check_no_test_support)
   while(pending)
     list(POP_FRONT pending target)
     # Anywhere in the item, so that a generator expression cannot hide it.
-    if(target MATCHES "(^|[^A-Za-z0-9_])llmp_(test_expected|plan_record|plan_record_sample|launch_recorder|paged_programs|paged_node|paged_runners|fake_step_source|test_artifact_writer|corpus_score)([^A-Za-z0-9_]|$)")
+    if(target MATCHES "(^|[^A-Za-z0-9_])llmp_(test_expected|plan_record|plan_record_sample|launch_recorder|paged_programs|paged_node|paged_runners|fake_step_source|test_artifact_writer|corpus_score|runner_kernels)([^A-Za-z0-9_]|$)")
       message(FATAL_ERROR "A production binary links the test support library: ${target}.")
     endif()
     if(target IN_LIST seen OR NOT TARGET "${target}")

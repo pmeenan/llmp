@@ -19,7 +19,6 @@
 #ifndef LLMP_KERNELS_GGML_STEP_PROGRAM_H_
 #define LLMP_KERNELS_GGML_STEP_PROGRAM_H_
 
-#include <concepts>
 #include <cstdint>
 #include <expected>
 #include <functional>
@@ -84,7 +83,9 @@ class GgmlStepLaunch final : public kernels::StepLaunch {
 
 struct GgmlBackendOptions {
   LowerOptions lower{};
-  // Build-time native operation source; owned for the whole backend lifetime.
+  // The caller's own build-time native operation source, owned for the whole
+  // backend lifetime together with the registered kernel set's
+  // (kernels::ComposeSelectedSources), which Create composes after it.
   std::shared_ptr<const SelectedSource> selected{};
   // Current executor supports either the ordinary stream or all four lanes.
   kernels::LaneConfiguration lanes{};
@@ -97,16 +98,11 @@ class GgmlBackend {
   }
   // On `stream` of `execution`'s device `device`, lending `cublas` (null:
   // none; a plan needing it is refused) to its launches, which must
-  // outlive the backend.
+  // outlive the backend. Refused before a kernel set is registered
+  // (kernels/common/device_backend.h).
   static std::expected<std::unique_ptr<GgmlBackend>, std::string> Create(
       int device, providers::DeviceExecution& execution, providers::StreamId stream,
       CublasHandle* cublas, GgmlBackendOptions options = {});
-  template <std::same_as<kernels::StreamLibrary> Lib>
-  static std::expected<std::unique_ptr<GgmlBackend>, std::string> Create(
-      int device, providers::DeviceExecution& execution, providers::StreamId stream, Lib* library,
-      GgmlBackendOptions options = {}) {
-    return CreateFromLibrary(device, execution, stream, library, std::move(options));
-  }
   GgmlBackend(const GgmlBackend&) = delete;
   GgmlBackend& operator=(const GgmlBackend&) = delete;
   GgmlBackend(GgmlBackend&&) = delete;
@@ -143,7 +139,6 @@ class GgmlBackend {
   // made. Its plans are built the same with or without one (only running a
   // cuBLAS product needs it).
   std::expected<void, std::string> LendCublas(CublasHandle* cublas);
-  std::expected<void, std::string> LendLibrary(kernels::StreamLibrary* library);
   // Exact source-owned state requirement, separate from discardable scratch.
   std::uint64_t persistent_bytes() const {
     return options_.selected ? options_.selected->persistent_bytes() : 0;
@@ -167,9 +162,6 @@ class GgmlBackend {
       const kernels::LowerInput& input) const;
 
  private:
-  static std::expected<std::unique_ptr<GgmlBackend>, std::string> CreateFromLibrary(
-      int device, providers::DeviceExecution& execution, providers::StreamId stream,
-      kernels::StreamLibrary* library, GgmlBackendOptions options);
   GgmlBackend(int device, providers::DeviceExecution& execution, providers::StreamId stream,
               CublasHandle* cublas, GgmlBackendOptions options);
 
@@ -195,6 +187,13 @@ class GgmlBackend {
   const GgmlStepLaunch* launch_ = nullptr;  // the one Launch made
   std::uint64_t launch_generation_ = 0;
 };
+
+// The CUDA build's device backend (kernels/common/device_backend.h): a
+// GgmlBackend with a cuBLAS handle over the kernel workspace it binds. The
+// kernel set (kernels/compose) registers it; nothing else names it.
+std::expected<std::unique_ptr<kernels::DeviceBackend>, std::string> CreateDeviceBackend(
+    int device, providers::DeviceExecution& execution, providers::StreamId stream,
+    kernels::DeviceBackendOptions options);
 
 }  // namespace llmp::kernels::ggml
 

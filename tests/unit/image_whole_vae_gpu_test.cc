@@ -29,16 +29,15 @@
 #include "engine/graph_plan.h"
 #include "engine/paged_weights.h"
 #include "engine/plan_cache.h"
-#include "engine/runner_resources.h"
 #include "engine/step_runs.h"
 #include "engine/support.h"
 #include "expected_error.h"
 #include "image_family.h"
 #include "image_published.h"
-#include "kernels/ggml/step_program.h"
+#include "image_recipes.h"
 #include "platform/host_probe.h"
 #include "providers/device_runtime.h"
-#include "spec/image_spatial.h"
+#include "runner_kernels.h"
 #include "spec/stored.h"
 
 namespace {
@@ -47,7 +46,6 @@ namespace co = llmp::components;
 namespace sp = llmp::spec;
 namespace mo = llmp::model;
 namespace ir = llmp::ir;
-namespace kg = llmp::kernels::ggml;
 namespace kn = llmp::kernels;
 namespace ca = llmp::catalog;
 namespace fm = llmp::format;
@@ -103,8 +101,7 @@ struct Lifetime final : en::PagedModel {
   en::PagedNode node{{.compute_streams = 1, .slots = 1}};
   std::shared_ptr<en::ExecutionMetadataAllowance> paid;
   en::PagedWeights weights;
-  en::RunnerResources resources{node, 0, 0};
-  std::unique_ptr<kg::GgmlBackend> backend;
+  llmp::test_support::RunnerKernels kernels{node, 0, 0};
   std::unique_ptr<kn::StepLaunch> launch;
   std::array<SpanCase, 2> cases;
   std::vector<std::uint32_t> resource_ids;
@@ -129,10 +126,8 @@ struct Lifetime final : en::PagedModel {
     }
     step_runs.SetLaunch(nullptr);
     launch.reset();
-    if (backend) backend->LaunchReleased();
-    backend.reset();
     std::vector<std::string> errors;
-    resources.Release(errors);
+    kernels.Release(errors);
     if (auto r = weights.Release(node.memory()); !r) errors.push_back(r.error());
     return en::support::Joined(errors);
   }
@@ -275,15 +270,18 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   for (std::size_t i = 0; i < 2; ++i) {
     auto& item = life.cases[i];
     std::vector<sp::GraphLink> links;
+    // The actual decoder (the VAE recipe's stage): its first two
+    // convolutions, then the whole of it.
+    auto decoder =
+        ::llmp::test_support::QwenImageDecoderGraph(::llmp::test_support::QwenImageProfile(), 2, 2);
+    if (!decoder) return Error(decoder.error());
     if (i == 0) {
-      auto mapped = sp::VaeSpatialSpec(std::span(steps).first(2), tensors);
-      if (!mapped) return Error(mapped.error());
-      item.spec = std::move(*mapped);
-    } else {
-      auto mapped = sp::VaeDecoderSpec(steps, tensors);
+      auto mapped = ::llmp::test_support::SelectStage(*decoder, {.values = {1, 2}});
       if (!mapped) return Error(mapped.error());
       item.spec = std::move(mapped->spec);
-      links = std::move(mapped->links);
+    } else {
+      item.spec = std::move(decoder->spec);
+      links = std::move(decoder->links);
       if (links.size() != 109) return Error("complete source composition");
     }
     item.shape = {2, 2, 64, 1};
@@ -317,30 +315,20 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
     for (std::size_t n = 0; n < item.input.size(); ++n)
       item.input[n] = static_cast<float>(static_cast<int>((n * 17 + 3) % 257) - 128) / 128.F;
   }
-  auto backend = kg::GgmlBackend::Create(0, life.node.execution(), life.node.stream(0), nullptr);
-  if (!backend) return Error(backend.error());
-  life.backend = std::move(*backend);
-  if (auto r = life.resources.OpenSelectedWorkspace("selected kernel state",
-                                                    life.backend->persistent_bytes());
-      !r)
-    return r;
-  const auto facts = llmp::providers::QueryDeviceFacts(0);
-  if (!facts) return Error("actual device facts");
-  const auto workspace = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
-  if (workspace.value() > 64 * kMiB) return Error("handle workspace");
-  if (auto r = life.backend->FundConstruction(
+  if (auto r = life.kernels.Create(); !r) return r;
+  if (life.kernels->library_workspace_bytes() > 64 * kMiB) return Error("handle workspace");
+  if (auto r = life.kernels->FundConstruction(
           [paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
           [paid = life.paid](std::uint64_t n) { paid->Release(n); });
       !r)
     return r;
-  if (auto r = life.backend->Declare(
-          {}, workspace.value(), [paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
+  if (auto r = life.kernels->Declare(
+          {}, [paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
           [paid = life.paid](std::uint64_t n) { paid->Release(n); });
       !r)
     return Error(r.error());
-  if (auto r = life.resources.OpenLibrary("spatial qualified handle"); !r) return r;
-  if (auto r = life.backend->LendLibrary(&life.resources.library()); !r) return Error(r.error());
-  const auto owned = life.backend->Backend();
+  if (auto r = life.kernels.Bind("spatial qualified"); !r) return r;
+  const auto owned = life.kernels->Backend();
   if (!owned.owner || !owned.owner->Ready()) return Error("owned backend readiness");
   const auto& table = owned.owner->backend();
   for (std::size_t i = 0; i < 2; ++i) {
@@ -358,12 +346,11 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
     if (auto r = CheckProgram(item, **measured, i); !r) return r;
   }
   if (auto r = life.node.MapWorkspace(kActivation, kPool); !r) return r;
-  auto launch = life.backend->Launch({life.node.pool().base, Bytes(life.node.pool().bytes)},
-                                     {.base = life.resources.selected_workspace().base,
-                                      .bytes = life.resources.selected_workspace().bytes});
+  auto launch = life.kernels->Launch({life.node.pool().base, Bytes(life.node.pool().bytes)},
+                                     /*allow_lanes=*/false);
   if (!launch) return Error(launch.error());
   life.launch = std::move(*launch);
-  auto host = life.resources.Pinned(kPinned);
+  auto host = life.kernels.Pinned(kPinned);
   if (!host) return Error(host.error());
   life.host = static_cast<std::byte*>(*host);
   life.step_runs.SetStaging(life.host, 2 * kMiB);
@@ -393,7 +380,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   if (auto r = life.weights.Register(life.node, 0); !r) return r;
   // Closure construction remains before Run: no live catalog read off
   // scheduler.
-  std::vector<ca::ExtentId> extents = life.resources.extents();
+  std::vector<ca::ExtentId> extents = life.kernels.extents();
   const auto append = [&](const auto& more) {
     extents.insert(extents.end(), more.begin(), more.end());
   };

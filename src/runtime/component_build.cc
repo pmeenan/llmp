@@ -25,10 +25,10 @@
 #include "components/step.h"
 #include "engine/component_source.h"
 #include "engine/decoding.h"
+#include "engine/device_backend.h"
 #include "engine/expert_slab.h"
 #include "engine/paged_weights.h"
 #include "engine/ple_rows.h"
-#include "engine/runner_resources.h"
 #include "format/tensor_format.h"
 #include "planner/construction.h"
 #include "planner/plan.h"
@@ -363,10 +363,9 @@ std::expected<std::unique_ptr<engine::StepSource>, std::string> SealComponentSou
     }
     const auto artifact_index = hold.spec.stages[stage].artifact;
     const auto& admitted_artifact = artifact_index == 0 ? artifact : *drafter;
-    auto numerical = AdmittedNumerics(
-        hold.spec, hold.sources.at(artifact_index), admitted_artifact.sources(),
-        FindApproval(admitted_artifact.model().architecture, admitted_artifact.sources()),
-        hold.numerical_semantics[stage], {.context = context, .slots = slots}, stage, backend);
+    auto numerical = AdmittedNumerics(hold.spec, hold.sources.at(artifact_index),
+                                      admitted_artifact.sources(), hold.numerical_semantics[stage],
+                                      {.context = context, .slots = slots}, stage, backend);
     if (!numerical) return Error(numerical.error());
     stage_policy->numerical = std::move(*numerical);
     auto made = engine::ComponentStepSource::Create(
@@ -718,7 +717,7 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
                          {.context = settings.context.value, .slots = settings.max_slots.value});
       if (!policy) return Error(policy.error());
       stored_policy = *policy;
-      if (auto checked = CheckStoredHashTables(*artifact, stored_bindings->model); !checked)
+      if (auto checked = CheckStoredTables(*artifact, stored_bindings->model); !checked)
         return Error(checked.error());
       hold->stored_payment = std::move(stored_bindings->payment);
       synthesized = std::move(stored_bindings->model);

@@ -16,6 +16,7 @@
 #include "execution/registry.h"
 #include "format/tensor_format.h"
 #include "ir/builder.h"
+#include "kernels/common/composite_source.h"
 #include "kernels/decode/implementations.h"
 #include "kernels/decode/operand.h"
 #include "kernels/decode/products.h"
@@ -57,26 +58,26 @@ struct SingleProductFixture {
     auto* c = arena.context();
     auto& w = inputs[0];
     w.desc.format = AffineWeightFormat();
-    w.parts = {{Role::kCodes, ggml_new_tensor_2d(c, GGML_TYPE_I8, 16, kN)},
-               {Role::kBlockScales, ggml_new_tensor_2d(c, GGML_TYPE_I8, 2, kN)},
-               {Role::kBiases, ggml_new_tensor_2d(c, GGML_TYPE_I8, 2, kN)}};
+    w.parts = {{Role::kCodes, kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I8, 16, kN))},
+               {Role::kBlockScales, kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I8, 2, kN))},
+               {Role::kBiases, kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I8, 2, kN))}};
     const std::array<std::uint64_t, 3> addrs{0x100000ULL, 0x101000ULL, 0x102000ULL};
     for (std::size_t i = 0; i < w.parts.size(); ++i) {
-      kg::TensorArena::Bind(w.parts[i].tensor, addrs[i]);
+      kg::TensorArena::Bind(kg::TensorOf(w.parts[i].tensor), addrs[i]);
     }
     w.tensor = w.parts[0].tensor;
 
     auto& x = inputs[1];
     x.desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({kK, rows}));
     x.desc.nb = ir::NaturalStrides(x.desc.format);
-    x.tensor = ggml_new_tensor_2d(c, GGML_TYPE_F32, kK, rows);
-    kg::TensorArena::Bind(x.tensor, 0x200000ULL);
+    x.tensor = kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_F32, kK, rows));
+    kg::TensorArena::Bind(kg::TensorOf(x.tensor), 0x200000ULL);
 
     auto& y = outputs[0];
     y.desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({kN, rows}));
     y.desc.nb = ir::NaturalStrides(y.desc.format);
-    y.tensor = ggml_new_tensor_2d(c, GGML_TYPE_F32, kN, rows);
-    kg::TensorArena::Bind(y.tensor, 0x300000ULL);
+    y.tensor = kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_F32, kN, rows));
+    kg::TensorArena::Bind(kg::TensorOf(y.tensor), 0x300000ULL);
 
     node.key = ir::Primitive(ir::Op::kMatMul);
     node.nsrc = 2;
@@ -95,37 +96,37 @@ struct GluProductFixture {
 
     auto& gate = inputs[0];
     gate.desc.format = AffineWeightFormat();
-    gate.parts = {{Role::kCodes, ggml_new_tensor_2d(c, GGML_TYPE_I8, 16, kN)},
-                  {Role::kBlockScales, ggml_new_tensor_2d(c, GGML_TYPE_I8, 2, kN)},
-                  {Role::kBiases, ggml_new_tensor_2d(c, GGML_TYPE_I8, 2, kN)}};
+    gate.parts = {{Role::kCodes, kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I8, 16, kN))},
+                  {Role::kBlockScales, kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I8, 2, kN))},
+                  {Role::kBiases, kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I8, 2, kN))}};
     const std::array<std::uint64_t, 3> gate_addrs{0x100000ULL, 0x101000ULL, 0x102000ULL};
     for (std::size_t i = 0; i < gate.parts.size(); ++i) {
-      kg::TensorArena::Bind(gate.parts[i].tensor, gate_addrs[i]);
+      kg::TensorArena::Bind(kg::TensorOf(gate.parts[i].tensor), gate_addrs[i]);
     }
     gate.tensor = gate.parts[0].tensor;
 
     auto& up = inputs[1];
     up.desc.format = AffineWeightFormat();
-    up.parts = {{Role::kCodes, ggml_new_tensor_2d(c, GGML_TYPE_I8, 16, kN)},
-                {Role::kBlockScales, ggml_new_tensor_2d(c, GGML_TYPE_I8, 2, kN)},
-                {Role::kBiases, ggml_new_tensor_2d(c, GGML_TYPE_I8, 2, kN)}};
+    up.parts = {{Role::kCodes, kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I8, 16, kN))},
+                {Role::kBlockScales, kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I8, 2, kN))},
+                {Role::kBiases, kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_I8, 2, kN))}};
     const std::array<std::uint64_t, 3> up_addrs{0x110000ULL, 0x111000ULL, 0x112000ULL};
     for (std::size_t i = 0; i < up.parts.size(); ++i) {
-      kg::TensorArena::Bind(up.parts[i].tensor, up_addrs[i]);
+      kg::TensorArena::Bind(kg::TensorOf(up.parts[i].tensor), up_addrs[i]);
     }
     up.tensor = up.parts[0].tensor;
 
     auto& x = inputs[2];
     x.desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({kK, kRows}));
     x.desc.nb = ir::NaturalStrides(x.desc.format);
-    x.tensor = ggml_new_tensor_2d(c, GGML_TYPE_F32, kK, kRows);
-    kg::TensorArena::Bind(x.tensor, 0x200000ULL);
+    x.tensor = kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_F32, kK, kRows));
+    kg::TensorArena::Bind(kg::TensorOf(x.tensor), 0x200000ULL);
 
     auto& y = outputs[0];
     y.desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({kN, kRows}));
     y.desc.nb = ir::NaturalStrides(y.desc.format);
-    y.tensor = ggml_new_tensor_2d(c, GGML_TYPE_F32, kN, kRows);
-    kg::TensorArena::Bind(y.tensor, 0x300000ULL);
+    y.tensor = kg::Ref(ggml_new_tensor_2d(c, GGML_TYPE_F32, kN, kRows));
+    kg::TensorArena::Bind(kg::TensorOf(y.tensor), 0x300000ULL);
 
     node.key = ir::Fused(ir::FusedKind::kMatMulGlu);
     node.nsrc = 3;
@@ -204,7 +205,8 @@ TEST(DecodeSelectedProducts, CompositeCaptureRequiresOnlyTheExactCallsRuntimeOpt
   ASSERT_TRUE(stream);
   const auto unsafe = std::make_shared<WorkspaceSource>(0, "fake.unsafe", false);
   const auto safe = std::make_shared<WorkspaceSource>(0, "fake.safe", true);
-  const auto source = de::CompositeSelectedSource({de::CompositeSelectedSource({unsafe}), safe});
+  const auto source = llmp::kernels::CompositeSelectedSource(
+      {llmp::kernels::CompositeSelectedSource({unsafe}), safe});
   const auto implementations = source->Implementations();
   auto launch = source->Launch(0, execution, *stream, {});
   ASSERT_TRUE(launch);
@@ -233,7 +235,7 @@ TEST(DecodeSelectedProducts, CompositeWorkspacesAlignAndRefuseInvalidBoundsBefor
   ASSERT_TRUE(stream);
   const auto a = std::make_shared<WorkspaceSource>(1);
   const auto b = std::make_shared<WorkspaceSource>(257);
-  const auto source = de::CompositeSelectedSource({a, b});
+  const auto source = llmp::kernels::CompositeSelectedSource({a, b});
   EXPECT_EQ(source->persistent_bytes(), 768U);
   for (const kg::SelectedWorkspace workspace :
        {kg::SelectedWorkspace{.base = 0x100000, .bytes = 767},
@@ -257,7 +259,7 @@ TEST(DecodeSelectedProducts, CompositeWorkspacesAlignAndRefuseInvalidBoundsBefor
                            std::array<std::uint64_t, 2>{UINT64_MAX - 255, 256}}) {
     const auto huge = std::make_shared<WorkspaceSource>(sizes[0]);
     const auto tail = std::make_shared<WorkspaceSource>(sizes[1]);
-    const auto overflow = de::CompositeSelectedSource({huge, tail});
+    const auto overflow = llmp::kernels::CompositeSelectedSource({huge, tail});
     EXPECT_EQ(overflow->persistent_bytes(), UINT64_MAX);
     EXPECT_FALSE(overflow->Launch(0, execution, *stream, {.base = 0, .bytes = UINT64_MAX}));
     EXPECT_TRUE(huge->workspaces.empty());
@@ -397,7 +399,7 @@ kg::SelectedOperand RawWeight(ggml_context* c, const fmt::TensorFormat& format,
     auto* t = ggml_new_tensor_1d(c, GGML_TYPE_I8, static_cast<std::int64_t>(extent.readable));
     kg::TensorArena::Bind(t, base);
     base += 0x100000;
-    weight.parts.push_back({extent.role, t});
+    weight.parts.push_back({extent.role, kg::Ref(t)});
   }
   weight.tensor = weight.parts.front().tensor;
   return weight;
@@ -409,8 +411,8 @@ kg::SelectedOperand Activation(ggml_context* c, const fmt::Shape& shape, fmt::En
   operand.desc.nb = ir::NaturalStrides(operand.desc.format);
   std::array<std::int64_t, 4> ne{};
   for (std::size_t d = 0; d < 4; ++d) ne[d] = static_cast<std::int64_t>(shape.ne[d]);
-  operand.tensor = ggml_new_tensor(c, type, std::max<int>(1, shape.rank), ne.data());
-  kg::TensorArena::Bind(operand.tensor, base);
+  operand.tensor = kg::Ref(ggml_new_tensor(c, type, std::max<int>(1, shape.rank), ne.data()));
+  kg::TensorArena::Bind(kg::TensorOf(operand.tensor), base);
   return operand;
 }
 TEST(DecodeSelectedProducts, EveryDecoderLowersAllProductTemplatesWithBatchedBroadcast) {
@@ -448,7 +450,7 @@ TEST(DecodeSelectedProducts, EveryDecoderLowersAllProductTemplatesWithBatchedBro
     }
     // A row pitch supported by the product templates remains reachable.
     inputs[1].desc.nb = {4, 1040, 3120, 12480};
-    std::ranges::copy(inputs[1].desc.nb, inputs[1].tensor->nb);
+    std::ranges::copy(inputs[1].desc.nb, kg::TensorOf(inputs[1].tensor)->nb);
     const auto vector = std::ranges::find(
         implementations,
         de::ImplementationName({.tmpl = de::Template::kVector, .gate = decoder, .up = decoder}),

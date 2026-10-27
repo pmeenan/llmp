@@ -1277,11 +1277,21 @@ void FuzzStageRecipe(std::span<const std::byte> rest) {
       }
     }
   }
+  // The source tensor headers the recipes read their widths and dialect from
+  // (the VAE's causal 3-D first convolution; the transformer's timestep
+  // embedder), in the container's outermost-first order.
+  std::vector<llmp::import::Tensor> headers;
+  if (vae) {
+    headers.push_back({.name = "decoder.conv_in.weight", .dims = {384, 16, 3, 3, 3}});
+  } else {
+    headers.push_back({.name = "t_embedder.mlp.0.weight", .dims = {1024, 256}});
+    headers.push_back({.name = "t_embedder.mlp.2.weight", .dims = {256, 1024}});
+  }
   constexpr std::uint64_t kBudget = std::uint64_t{64} << 20U;
-  const auto preflight =
-      llmp::import::PreflightStageRecipe(*mapping->stage_recipe, {}, kBudget, config);
-  const auto expanded =
-      llmp::import::ExpandStageRecipe(*mapping->stage_recipe, {}, kBudget, config);
+  const auto preflight = llmp::import::PreflightStageRecipe(*mapping->stage_recipe, {}, kBudget,
+                                                            config, headers, "safetensors");
+  const auto expanded = llmp::import::ExpandStageRecipe(*mapping->stage_recipe, {}, kBudget, config,
+                                                        headers, "safetensors");
   Check(!base || (preflight && expanded));
   if (!expanded) {
     return;

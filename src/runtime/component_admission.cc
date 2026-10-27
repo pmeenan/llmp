@@ -553,60 +553,56 @@ std::expected<void, std::string> CheckScaleAtomSlots(const artifact::Artifact& a
   return {};
 }
 
-std::expected<void, std::string> CheckStoredHashTables(const artifact::Artifact& artifact,
-                                                       const spec::ModelSpec& model) {
+std::expected<void, std::string> CheckStoredTables(const artifact::Artifact& artifact,
+                                                   const spec::ModelSpec& model) {
   for (const spec::Stage& stage : model.stages) {
-    for (const spec::SideInput& side : stage.side) {
-      if (side.source.kind != "side.hash") continue;
-      const spec::Param* experts_param = side.source.Find("experts");
-      const spec::Param* used_param = side.source.Find("used");
-      const auto* experts =
-          experts_param ? std::get_if<std::int64_t>(&experts_param->value) : nullptr;
-      const auto* used = used_param ? std::get_if<std::int64_t>(&used_param->value) : nullptr;
-      if (experts == nullptr || used == nullptr || *experts <= 0 || *used <= 0)
-        return Unexpected("stored hash routing has no expert count");
-      for (const spec::WeightBinding& binding : side.source.weights) {
-        auto index = artifact.FindResource(binding.tensor);
-        if (!index) return Unexpected("stored hash-routing table is missing");
-        auto place = artifact.ResourcePlacement(*index);
+    std::expected<void, std::string> checked;
+    spec::EachComponent(stage, [&](const spec::ComponentRef& ref, const std::string&) {
+      if (!checked) return;
+      const components::ComponentDef* def = components::Find(ref.kind, ref.version);
+      if (def == nullptr || def->check_stored == nullptr) return;
+      auto params = components::Params::Of(def->params, ref);
+      if (!params) {
+        checked = Unexpected(std::format("stored {}: {}", ref.kind, params.error()));
+        return;
+      }
+      components::Instance instance;
+      instance.def = def;
+      instance.ref = &ref;
+      instance.params = std::move(*params);
+      for (const spec::WeightBinding& binding : ref.weights) {
+        // Another stage's tensor is its own artifact's to check.
+        if (!binding.stage.empty()) continue;
+        const auto role = components::RoleIndex(*def, binding.role);
+        const auto index = artifact.FindResource(binding.tensor);
+        if (!role || !index) {
+          checked = Unexpected(std::format("stored {} {} is missing", ref.kind, binding.role));
+          return;
+        }
+        const auto place = artifact.ResourcePlacement(*index);
         const auto& format = artifact.resources()[*index].format;
-        // Its entries are read as I32: a table of any other encoding is not
-        // reinterpreted.
-        if (!format || format->encoding != format::Encoding::kI32 ||
-            format->layout != format::Layout::kDense)
-          return Unexpected("stored hash-routing table is not dense I32");
-        if (format->shape.rank != 2 || format->shape.ne[0] != static_cast<std::uint64_t>(*used) ||
-            format->shape.ne[1] == 0 || format->shape.ne[1] > (std::uint64_t{1} << 32U))
-          return Unexpected("stored hash-routing table has another shape");
-        const auto count = format->shape.ne[0] * format->shape.ne[1];
-        if (!place || place->bytes.value() != count * sizeof(std::int32_t))
-          return Unexpected("stored hash-routing table has an inconsistent byte count");
+        if (!place || !format) {
+          checked =
+              Unexpected(std::format("stored {} {} has no placement", ref.kind, binding.role));
+          return;
+        }
         const auto& group = artifact.groups()[place->group];
         const auto& shard = artifact.shards()[group.shard];
-        if ((shard.data_offset.value() + group.offset.value() + place->offset.value()) %
-            sizeof(std::int32_t))
-          return Unexpected("stored hash-routing table is unaligned");
-        // Aligned: each window holds whole entries (4,096 is a multiple of 4).
-        bool invalid = false;
-        auto read =
-            ReadPlaced(artifact, *place,
-                       [&](std::uint64_t,
-                           std::span<const std::byte> bytes) -> std::expected<void, std::string> {
-                         for (std::size_t at = 0; at + sizeof(std::int32_t) <= bytes.size();
-                              at += sizeof(std::int32_t)) {
-                           std::int32_t expert = 0;
-                           std::memcpy(&expert, bytes.data() + at, sizeof(expert));
-                           if (expert < 0 || std::cmp_greater_equal(expert, *experts)) {
-                             invalid = true;
-                             return std::unexpected("invalid");
-                           }
-                         }
-                         return {};
-                       });
-        if (invalid) return Unexpected("stored hash-routing table names an invalid expert");
-        if (!read) return Unexpected("reading stored hash-routing table: " + read.error());
+        const components::StoredWeight weight{
+            .role = *role,
+            .format = &*format,
+            .bytes = place->bytes.value(),
+            .file_offset = shard.data_offset.value() + group.offset.value() + place->offset.value(),
+            .read = [&](const components::StoredBytes& each) {
+              return ReadPlaced(artifact, *place, each);
+            }};
+        if (auto stored = def->check_stored(instance, weight); !stored) {
+          checked = Unexpected(stored.error());
+          return;
+        }
       }
-    }
+    });
+    if (!checked) return checked;
   }
   return {};
 }
@@ -815,9 +811,15 @@ std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::stri
   // Equivalent primitive sites may produce the same semantic grant. Keep
   // one lookup record; the paid vector capacity remains the exact pre-counted
   // construction inventory, including that deterministic temporary excess.
+  // The order is total: grants for one site that differ only in their
+  // evidence row (overlapping evidence, numerical_evidence.cc) keep a
+  // defined order, an incumbent recipe's first, so the first match
+  // (planner::SelectionView) attributes the same evidence and status in
+  // every build.
   std::ranges::sort(entries, {}, [](const auto& e) {
     return std::tuple(e.change, e.stage, e.component, e.anchor, e.min_rows, e.max_rows, e.max_k,
-                      e.max_n, e.weight_role);
+                      e.max_n, e.weight_role, !e.incumbent_recipe, e.evidence, e.arch,
+                      e.exact_shape, e.exact_dimensions, e.source, e.semantic);
   });
   entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
   return planner::NumericalQualifications::Bind(std::move(entries), source, semantic,
@@ -827,7 +829,7 @@ std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::stri
 
 std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::string>
 AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
-                 std::span<const artifact::Source> origins, const Approval*,
+                 std::span<const artifact::Source> origins,
                  const base::Sha256Digest& admitted_semantic, const spec::Envelope& envelope,
                  std::uint16_t active_stage, const planner::DeviceFacts& device,
                  std::shared_ptr<const kernels::ConstructionFunder> funder) {
@@ -972,19 +974,18 @@ AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
 
 std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::string>
 AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
-                 std::span<const artifact::Source> origins, const Approval* approval,
+                 std::span<const artifact::Source> origins,
                  const base::Sha256Digest& admitted_semantic, const spec::Envelope& envelope,
                  std::uint16_t active_stage, const kernels::StepBackend& backend) {
   const auto& effective = backend.owner ? backend.owner->backend() : backend;
-  return AdmittedNumerics(model, source, origins, approval, admitted_semantic, envelope,
-                          active_stage, effective.device, backend.ConstructionFunding());
+  return AdmittedNumerics(model, source, origins, admitted_semantic, envelope, active_stage,
+                          effective.device, backend.ConstructionFunding());
 }
 
 std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::string>
-AdmittedImageNumerics(const spec::ModelSpec& family, const ImageApproval*,
-                      const artifact::Composition& composition, const ir::Graph& graph,
-                      const spec::ModelSpec& stage_spec, std::uint16_t stage,
-                      const planner::DeviceFacts& device,
+AdmittedImageNumerics(const spec::ModelSpec& family, const artifact::Composition& composition,
+                      const ir::Graph& graph, const spec::ModelSpec& stage_spec,
+                      std::uint16_t stage, const planner::DeviceFacts& device,
                       std::shared_ptr<const kernels::ConstructionFunder> funder) {
   if (!OriginsWellFormed(composition.sources()))
     return Refused("image numerical evidence has no valid active source identity");

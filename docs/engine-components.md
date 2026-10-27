@@ -1121,8 +1121,10 @@ and nearest upsampling; the existing GGML clamped-L2 kernel supplies normalizati
 The source-defined gamma ranks and F32 resident weights remain intact. Logical
 clamping is not replaced with RMS normalization or legacy BF16 rounding.
 
-`VaeDecoderSpec` consumes the existing stored decoder plan and common role
-visitor. Its 113 source steps become 109 components because four saved copies
+`VaeDecoderSpec` (since retired: the decoder is its mapping's recipe, and
+tests select its components from the recipe's expansion,
+`tests/support/image_recipes.h`) consumed the existing stored decoder plan and
+common role visitor. Its 113 source steps become 109 components because four saved copies
 are immutable aliases. GPU graph construction can explicitly omit unused scalar
 reference buffers while retaining complete prepaid compiler/source metadata;
 CPU reference callers keep the prior default payment. The 2x2-latent diagnostic
@@ -1883,6 +1885,30 @@ Gemma 3 GGUF that omits the scale refuses because its source has lost the
 information needed to distinguish the math. An explicit scale removes that
 refusal. The catalog gives these kinds their meaning.
 
+#### The value language
+
+Every value a mapping computes at import is an expression of one language
+(`spec/expr.h`: one AST, one typed environment, one evaluator). The
+environment is one namespace: a source's metadata keys, an image pipeline's
+family parameters (`"<kind>.<param>"`, `image.vae_decoder.base`), the bound
+indices (a recipe repeat's, `layer` and `layers` for a per-layer parameter),
+the source's tensors (raw header dimensions, outermost first) and the folds
+it carries. A name the environment does not hold (a JSON null among them)
+is absent: `kFirst` falls through to its alternative, `kPresent` tests it,
+an LLM rule resolves nothing and its parameter's next rule is tried, and a
+recipe's strict evaluation refuses it. Arithmetic is checked (overflow,
+division domains, reals that are not finite, list indices, nesting depth).
+LLM `ParamRule` tables keep their table syntax; each rule lowers through one
+lowering (`mapping.cc` `LoweredRule`) into a gate (`when_key`/`when_value`,
+`unless_fold`) and a value (its key, a per-layer entry, a ratio or product,
+a transform, a typed read, a string-matched flag), which the evaluator runs;
+the importer's pre-synthesis requirement check is the same lowering
+(`spec::CheckRequirement`). An image family parameter (`ImageParamRule`) is
+an expression over its component's or kept file's values, and a stage
+recipe's values are expressions over the family and the component's own
+config and tensors, so one recipe serves a composition (family values) and
+a standalone import (config values) alike.
+
 Gemma 4 (slice G2a) extends the mapping language, all as data: slots
 gated by a source key (`ffn.moe` layers when `gemma4.expert_count` is
 above zero, `ffn.glu` otherwise; a pattern may repeat only across two
@@ -2417,6 +2443,20 @@ Native C++, part of the distribution; no Python (D-109).
   and folds chosen from a fixed, compiled catalog. Mappings are data
   compiled into the importer and validated as untrusted input like
   everything else it reads (D-009); a mapping cannot run code.
+  *As built (2026-10-26):* the source names the mappings share are one
+  dictionary (`spec/mappings/names.h`, after gguf-py's tensor mappings):
+  a tensor's GGUF spelling, which tensor rules match, beside its
+  transformers spelling, which a safetensors, MLX or EXL3 dialect aliases
+  to it (an EXL3 matrix's trellis parts are made from it), and the shared
+  transformers config keys. A mapping names those, its slots and roles,
+  and spells only its own family's tensors. Each architecture has one
+  canonical mapping; a container's form of its tables is the canonical
+  one overlaid by rule identity (slot, role and part; slot, parameter and
+  key), never by pattern text (`spec/mappings/rules.h` `Overlay`), and a
+  drafter's extraction values invert the forward rules it shares with its
+  target (`InvertedValues`, Qwen3.8's MTP). The generic dense decoders
+  (Qwen2, Llama, Mistral) are `spec/mappings/dense.{h,cc}`, Qwen3.5
+  `spec/mappings/qwen35.{h,cc}`.
 - **Output** is a prepared artifact whose manifest carries the spec, every
   tensor's encoding and layout, the folds applied, and the importer's
   identity, under a new format version whose identifiers are `llmp-`
@@ -3368,10 +3408,24 @@ name; each stage binds what it needs) and the stored family profile, then verifi
 actual inferred stage outputs against that geometry. It preserves stored
 components, weight bindings, links and exports. The text encoder still builds
 its request graph through `spec/image_spatial.h`. Mapping-owned `StageRecipe`
-data expands flow and VAE topology at import, using typed configuration values,
-checked arithmetic, finite repeats and branches. Preflight bounds the expansion
-and pays retained metadata and comparison work; only the expanded ordinary spec
-is serialized. Family hyperparameters are data
+data expands flow and VAE topology at import, its values expressions of the
+mappings' value language over the family's parameters and the component's
+config and tensors, with finite repeats, branches and conditional parameters.
+One visitor walks a recipe (`import/stage_recipe.cc`) in four policies: a
+static check of every step and expression, a collection of the names it
+reads (its config keys, for their classification), a counting run of the
+expansion over the actual source, and the expansion itself, which charges
+each node what counting counted; normalization's bound uses those counts,
+not a separate model of the expansion. Only the expanded ordinary spec is
+serialized. One VAE mapping (`spec/mappings/qwen_image_vae.cc`, source
+classes `AutoencoderKLQwenImage` and `AutoencoderKLQwenImage21`) imports both
+Qwen-Image-2.1's VAE (in its composition, where its values are the family's)
+and Ming-Image's (standalone): its dialects are what the checkpoint says,
+its kernels' rank (2-D, or causal 3-D kernels whose first frame reads their
+last temporal tap: `conv.spatial`'s `temporal_kernel`, a strided view of the
+source bytes) and its config's `is_residual` (duplicating up blocks, or
+upsamplers that halve their channels, BF16-rounded norms and a clamped
+output). Family hyperparameters are data
 (`spec/image_family.h`). An image mapping (`spec/mappings/qwen_image.cc`
 for `QwenImage21Pipeline`) names the pipeline's components (each a
 composition role, a stored stage, its accepted architectures and the
@@ -3391,11 +3445,12 @@ stage a component, each one layer of family components
 `image.flow_schedule`, `image.vae_decoder`) whose parameters the schema
 reads as its types and range-checks; the composition keeps it as its
 `spec.json` (D-113). Each component artifact keeps the tensors its mapping
-names; the ones it names as left out (`ImageComponentRule::ignored_tensors`:
-the text encoder's vision tower, output head and final norm, the VAE's
-encoder and its up blocks' temporal convolutions, which text to image never
-runs) are not imported, and any other tensor is refused, as on the LLM
-route. Each also keeps a spec of itself at a minimal
+names; the ones it names as left out (`ImageComponentRule::ignored_tensors`,
+whole names with an optional `{layer}`, and `ignored_tensor_prefixes`, matched
+by the one rule both import routes apply, `import::IgnoredTensor`: the text
+encoder's vision tower, output head and final norm, the VAE's encoder and its
+up blocks' temporal convolutions, which text to image never runs) are not
+imported, and any other tensor is refused, as on the LLM route. Each also keeps a spec of itself at a minimal
 geometry; since that spec binds every tensor in one spatial layer, the
 importer groups the tensors as the component's structure divides them
 (`import::ComponentPlan::groups`: the text encoder's token table and one

@@ -814,7 +814,7 @@ D-122).
       explicitly omitted. The approved Q4 image import completes the registered
       512×512, two-step request twice with matching digests; the pinned BF16
       import matches the published frozen pixels for the 1024×1024, 40-step
-      fixture. The second configuration imports the pinned Ming transformer
+      fixture. (Revised by F8: the second configuration imports through the one Qwen-Image VAE mapping, whose 2-D/causal-3-D and residual/halving dialects the checkpoint selects.) The second configuration imports the pinned Ming transformer
       and first-frame RGBA VAE into native components using declarative mapping
       tables and shared importer/compiler/runtime primitives; no
       Ming-specific importer, compiler, or runtime wiring was added.
@@ -907,7 +907,7 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
 - [ ] **F7 Decode GEMV and planner cost:** one-pass VecQ at 5–8 columns, rank
       data instead of capability vetoes, upstream prefetch, stable op identity in
       digests, cheaper inference, geometric decode buckets.
-- [ ] **F8 Boundaries and mapping language:** a vendor-free
+- [x] **F8 Boundaries and mapping language:** a vendor-free
       selected-operation interface, no kernel-source include cycles and a
       stricter boundary check; one mapping value language, one Qwen-Image VAE
       mapping and a shared tensor-name dictionary.

@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -12,10 +13,11 @@
 #include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include "expected_error.h"
+#include "image_recipes.h"
 #include "kernels/reference/exec.h"
-#include "spec/image_spatial.h"
 #include "spec/mappings/qwen_image.h"
 
 namespace llmp::runtime {
@@ -218,37 +220,61 @@ TEST(ImageStage, ImportedTemplatesPreserveSourceGraphsAcrossRequestGeometries) {
                       .rope_axes = {2, 2, 2},
                       .rope_theta = 10000,
                       .eps = 1e-6F};
-  const auto& names = spec::mappings::QwenImage21Mapping().names;
-  const auto vae_tensors = model::VaeDecoderTensors(profile.vae, names.vae);
-  const auto flow_tensors = model::DenoiserTensors(profile.denoiser, names.denoiser);
-  auto vae = spec::ImageDecodeSpec(profile.vae, 1, 1, vae_tensors);
-  auto flow = spec::ImageFlowSpec(profile.denoiser, 1, 1, flow_tensors);
+  // The stored templates: the mapping's recipes expanded as the importer
+  // stores them (test_support/image_recipes.h).
+  const auto family = test_support::QwenImageFamilyOf(profile);
+  const auto stored = [&](std::string_view role) -> std::expected<spec::ModelSpec, std::string> {
+    auto expanded = test_support::QwenImageStage(family, profile, role);
+    if (!expanded) return std::unexpected(expanded.error());
+    spec::ModelSpec spec{.pipeline = spec::PipelineKind::kImage,
+                         .stages = {std::move(expanded->stage)}};
+    spec::Canonicalize(spec);
+    return spec;
+  };
+  auto vae = stored("vae");
+  auto flow = stored("transformer");
   ASSERT_TRUE(vae) << Failed(vae).value_or("");
   ASSERT_TRUE(flow) << Failed(flow).value_or("");
-  vae->spec.stages[0].scalar_bindings = {{1, "height", "latent_height"},
-                                         {1, "width", "latent_width"}};
+  EXPECT_EQ(vae->stages[0].scalar_bindings,
+            (std::vector<spec::StageScalarBinding>{{1, "height", "latent_height"},
+                                                   {1, "width", "latent_width"}}));
   const auto output_slice = static_cast<std::uint16_t>(15 + 6 * profile.denoiser.blocks);
-  flow->spec.stages[0].scalar_bindings = {
-      {8, "input_rows", "latent_rows"},           {8, "rows", "latent_rows"},
-      {11, "prefix_rows", "text_rows"},           {12, "prefix_rows", "text_rows"},
-      {13, "prefix_rows", "text_rows"},           {14, "prefix_rows", "text_rows"},
-      {output_slice, "input_rows", "joint_rows"}, {output_slice, "rows", "latent_rows"},
-      {output_slice, "start", "text_rows"}};
+  EXPECT_EQ(flow->stages[0].scalar_bindings,
+            (std::vector<spec::StageScalarBinding>{{8, "input_rows", "latent_rows"},
+                                                   {8, "rows", "latent_rows"},
+                                                   {11, "prefix_rows", "text_rows"},
+                                                   {12, "prefix_rows", "text_rows"},
+                                                   {13, "prefix_rows", "text_rows"},
+                                                   {14, "prefix_rows", "text_rows"},
+                                                   {output_slice, "input_rows", "joint_rows"},
+                                                   {output_slice, "rows", "latent_rows"},
+                                                   {output_slice, "start", "text_rows"}}));
+  // A template bound at a geometry is the template with exactly its bound
+  // parameters set to the request's scalars.
+  const auto expected = [](spec::ModelSpec spec, std::span<const spec::StageScalar> scalars) {
+    auto& stage = spec.stages[0];
+    for (const auto& binding : stage.scalar_bindings) {
+      auto& component = stage.layers[0].components[binding.component - 1];
+      const auto value = std::ranges::find(scalars, binding.source, &spec::StageScalar::name);
+      std::ranges::find(component.params, binding.parameter, &spec::Param::name)->value =
+          value->value;
+    }
+    stage.scalar_bindings.clear();
+    return spec;
+  };
   for (const auto geometry : {ImageStageGeometry{6, 4, 5, 2}, ImageStageGeometry{4, 8, 7, 1}}) {
     auto dimensions = ImageStageDimensionsOf(profile, geometry);
     ASSERT_TRUE(dimensions);
-    auto decoded = BindImageStage(vae->spec, profile, geometry);
-    auto denoised = BindImageStage(flow->spec, profile, geometry);
-    auto old_decode =
-        spec::ImageDecodeSpec(profile.vae, dimensions->height, dimensions->width, vae_tensors);
-    auto old_flow = spec::ImageFlowSpec(profile.denoiser, dimensions->text_rows, dimensions->rows,
-                                        flow_tensors);
+    const auto scalars = dimensions->Scalars();
+    auto decoded = BindImageStage(*vae, profile, geometry);
+    auto denoised = BindImageStage(*flow, profile, geometry);
     ASSERT_TRUE(decoded) << Failed(decoded).value_or("");
     ASSERT_TRUE(denoised) << Failed(denoised).value_or("");
-    ASSERT_TRUE(old_decode) << Failed(old_decode).value_or("");
-    ASSERT_TRUE(old_flow) << Failed(old_flow).value_or("");
-    EXPECT_EQ(*decoded, old_decode->spec);
-    EXPECT_EQ(*denoised, old_flow->spec);
+    EXPECT_EQ(*decoded, expected(*vae, scalars));
+    EXPECT_EQ(*denoised, expected(*flow, scalars));
+    const auto* width = decoded->stages[0].layers[0].components[0].Find("width");
+    ASSERT_NE(width, nullptr);
+    EXPECT_EQ(width->value, (spec::ParamValue{std::int64_t{dimensions->width}}));
   }
 }
 }  // namespace

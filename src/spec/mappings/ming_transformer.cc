@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 
+#include "spec/expr.h"
 #include "spec/stage_recipe.h"
 
 namespace llmp::spec::mappings {
@@ -17,30 +18,16 @@ namespace {
 constexpr std::array<std::string_view, 1> kSourceArchitectures{"DiffusionTransformer"};
 constexpr std::array<std::string_view, 1> kContainers{"safetensors"};
 
-constexpr RecipeValue I(std::int64_t value) { return {.literal = value}; }
-constexpr RecipeValue R(double value) { return {.literal = value}; }
-constexpr RecipeValue B(bool value) { return {.literal = value}; }
-constexpr RecipeValue S(std::string_view value) { return {.literal = std::string(value)}; }
-constexpr RecipeValue Source(std::string_view key) {
-  return {.kind = RecipeValueKind::kSourceValue, .source_key = key};
-}
-constexpr RecipeValue SourceList(std::string_view key, std::int64_t index) {
-  return {.kind = RecipeValueKind::kSourceListElement, .source_key = key, .fixed_index = index};
-}
-constexpr RecipeValue Index(std::string_view name) {
-  return {.kind = RecipeValueKind::kIndex, .index_name = name};
-}
-consteval RecipeValue E(RecipeValueKind kind, const RecipeValue& left, const RecipeValue& right) {
-  return {.kind = kind, .left = &left, .right = &right};
-}
-consteval RecipeValue U(RecipeValueKind kind, const RecipeValue& value) {
-  return {.kind = kind, .left = &value};
-}
-consteval RecipeValue Select(const RecipeValue& condition, const RecipeValue& yes,
-                             const RecipeValue& no) {
-  return {.kind = RecipeValueKind::kSelect, .left = &condition, .right = &yes, .alternate = &no};
-}
-constexpr RecipeParam P(std::string_view name, RecipeValue value,
+using ex::B;
+using ex::E;
+using ex::I;
+using ex::R;
+using ex::S;
+using ex::U;
+using K = ExprKind;
+constexpr RecipeValue Source(std::string_view key) { return ex::V(key); }
+constexpr RecipeValue Index(std::string_view name) { return ex::Idx(name); }
+constexpr RecipeParam P(std::string_view name, const RecipeValue& value,
                         std::string_view request_scalar = {}) {
   return {.name = name, .value = value, .request_scalar = request_scalar};
 }
@@ -48,7 +35,7 @@ constexpr RecipeWeight W(std::string_view role, std::string_view tensor) {
   return {.role = role, .tensor = tensor};
 }
 using WeightSpans = std::array<std::span<const RecipeWeight>, 15>;
-constexpr RecipeRef V(std::string_view name) {
+constexpr RecipeRef Link(std::string_view name) {
   return {.kind = RecipeRefKind::kNamedValue, .name = name};
 }
 constexpr RecipeRef H(std::uint16_t port) {
@@ -56,44 +43,57 @@ constexpr RecipeRef H(std::uint16_t port) {
 }
 constexpr RecipeRef Input() { return {.kind = RecipeRefKind::kStageInput}; }
 
-// All expressions are named static objects because RecipeValue stores child
-// pointers. The checked recipe vocabulary evaluates them only during import.
+// All expressions are named static objects because an Expr stores child
+// pointers. The checked value language evaluates them only during import.
 constexpr auto kDim = Source("dim");
 constexpr auto kHeads = Source("n_heads");
-constexpr auto kHeadDim = E(RecipeValueKind::kDivideFloor, kDim, kHeads);
+constexpr auto kHeadDim = E(K::kDivideFloor, kDim, kHeads);
 constexpr auto kEight = I(8);
 constexpr auto kThree = I(3);
-constexpr auto kMlpNumerator = E(RecipeValueKind::kMultiply, kDim, kEight);
-constexpr auto kMlp = E(RecipeValueKind::kDivideFloor, kMlpNumerator, kThree);
+constexpr auto kMlpNumerator = E(K::kMultiply, kDim, kEight);
+constexpr auto kMlp = E(K::kDivideFloor, kMlpNumerator, kThree);
 constexpr auto kCaptionDim = Source("cap_feat_dim");
 constexpr auto kLatentChannels = Source("in_channels");
-constexpr auto kPatchHeight = SourceList("all_patch_size", 0);
-constexpr auto kPatchWidth = SourceList("all_patch_size", 0);
-constexpr auto kPatchFrames = SourceList("all_f_patch_size", 0);
-constexpr auto kPatchPixels = E(RecipeValueKind::kMultiply, kPatchHeight, kPatchWidth);
-constexpr auto kPatchVolume = E(RecipeValueKind::kMultiply, kPatchPixels, kPatchFrames);
-constexpr auto kPatchFeatures = E(RecipeValueKind::kMultiply, kPatchVolume, kLatentChannels);
+constexpr auto kPatchSizes = Source("all_patch_size");
+constexpr auto kFramePatchSizes = Source("all_f_patch_size");
+constexpr auto kPatchHeight = ex::At(kPatchSizes, 0);
+constexpr auto kPatchWidth = ex::At(kPatchSizes, 0);
+constexpr auto kPatchFrames = ex::At(kFramePatchSizes, 0);
+constexpr auto kPatchPixels = E(K::kMultiply, kPatchHeight, kPatchWidth);
+constexpr auto kPatchVolume = E(K::kMultiply, kPatchPixels, kPatchFrames);
+constexpr auto kPatchFeatures = E(K::kMultiply, kPatchVolume, kLatentChannels);
 constexpr auto kRefinerCount = Source("n_refiner_layers");
 constexpr auto kLayerCount = Source("n_layers");
 constexpr auto kNormEps = Source("norm_eps");
 constexpr auto kQkNorm = Source("qk_norm");
 constexpr auto kRopeTheta = Source("rope_theta");
-constexpr auto kAxis0 = SourceList("axes_dims", 0);
-constexpr auto kAxis1 = SourceList("axes_dims", 1);
-constexpr auto kAxis2 = SourceList("axes_dims", 2);
+constexpr auto kAxes = Source("axes_dims");
+constexpr auto kAxis0 = ex::At(kAxes, 0);
+constexpr auto kAxis1 = ex::At(kAxes, 1);
+constexpr auto kAxis2 = ex::At(kAxes, 2);
 constexpr auto kScaleOne = R(1.0);
-constexpr auto kHeadRoot = U(RecipeValueKind::kSqrt, kHeadDim);
-constexpr auto kAttentionScale = E(RecipeValueKind::kRealDivide, kScaleOne, kHeadRoot);
+constexpr auto kHeadRoot = U(K::kSqrt, kHeadDim);
+constexpr auto kAttentionScale = E(K::kRealDivide, kScaleOne, kHeadRoot);
 constexpr auto kFour = I(4);
-constexpr auto kFourDim = E(RecipeValueKind::kMultiply, kFour, kDim);
+constexpr auto kFourDim = E(K::kMultiply, kFour, kDim);
 constexpr auto kTwo = I(2);
-constexpr auto k256 = I(256);
-constexpr auto kTwoRefiners = E(RecipeValueKind::kMultiply, kTwo, kRefinerCount);
+constexpr auto kTwoRefiners = E(K::kMultiply, kTwo, kRefinerCount);
 constexpr auto kBlockIndex = Index("block");
-constexpr auto kContextGroup = E(RecipeValueKind::kAdd, kBlockIndex, kRefinerCount);
-constexpr auto kJointGroup = E(RecipeValueKind::kAdd, kBlockIndex, kTwoRefiners);
-constexpr auto kDimBelowTime = E(RecipeValueKind::kLess, kDim, k256);
-constexpr auto kTimeWidth = Select(kDimBelowTime, kDim, k256);
+constexpr auto kContextGroup = E(K::kAdd, kBlockIndex, kRefinerCount);
+constexpr auto kJointGroup = E(K::kAdd, kBlockIndex, kTwoRefiners);
+// The timestep embedder's widths, which the source library fixes in code
+// (its frequency embedding and hidden widths, and the modulation width
+// min(dim, ADALN_EMBED_DIM)), as the checkpoint's headers state them: its
+// first linear's [hidden, frequencies], its second's outputs.
+constexpr auto kTimeFrequencies = ex::TensorDim("t_embedder.mlp.0.weight", 1);
+constexpr auto kTimeHidden = ex::TensorDim("t_embedder.mlp.0.weight", 0);
+constexpr auto kTimeWidth = ex::TensorDim("t_embedder.mlp.2.weight", 0);
+// The import-time check geometry: a caption and an image of a few rows
+// (any fit; the stored graph's only row counts are its output slice's, and
+// those are request-bound).
+constexpr auto kCheckCaptionRows = I(32);
+constexpr auto kCheckImageRows = I(32);
+constexpr auto kCheckJointRows = E(K::kAdd, kCheckCaptionRows, kCheckImageRows);
 
 const std::array kProjectionModParams{P("in_channels", kTimeWidth), P("out_channels", kFourDim),
                                       P("bias", B(true)), P("silu", B(false)), P("gelu", B(false))};
@@ -248,40 +248,40 @@ const std::array<std::string_view, 15> kNoiseNames{
     "noise.attn.scale.{block}",    "noise.attn.{block}",       "noise.attn.norm2.{block}",
     "noise.attn.residual.{block}", "noise.ffn.norm1.{block}",  "noise.ffn.scale.{block}",
     "noise.ffn.{block}",           "noise.ffn.norm2.{block}",  "noise.ffn.residual.{block}"};
-const std::array<RecipeRef, 15> kNoiseInputs{V("time.raw"),
-                                             V("noise.stream.{block}"),
-                                             V("noise.stream.{block}"),
-                                             V("noise.stream.{block}"),
-                                             V("noise.stream.{block}"),
-                                             V("noise.stream.{block}"),
-                                             V("noise.attn.norm1.{block}"),
-                                             V("noise.attn.scale.{block}"),
-                                             V("noise.attn.{block}"),
-                                             V("noise.attn.norm2.{block}"),
-                                             V("noise.attn.residual.{block}"),
-                                             V("noise.ffn.norm1.{block}"),
-                                             V("noise.ffn.scale.{block}"),
-                                             V("noise.ffn.{block}"),
-                                             V("noise.ffn.norm2.{block}")};
+const std::array<RecipeRef, 15> kNoiseInputs{Link("time.raw"),
+                                             Link("noise.stream.{block}"),
+                                             Link("noise.stream.{block}"),
+                                             Link("noise.stream.{block}"),
+                                             Link("noise.stream.{block}"),
+                                             Link("noise.stream.{block}"),
+                                             Link("noise.attn.norm1.{block}"),
+                                             Link("noise.attn.scale.{block}"),
+                                             Link("noise.attn.{block}"),
+                                             Link("noise.attn.norm2.{block}"),
+                                             Link("noise.attn.residual.{block}"),
+                                             Link("noise.ffn.norm1.{block}"),
+                                             Link("noise.ffn.scale.{block}"),
+                                             Link("noise.ffn.{block}"),
+                                             Link("noise.ffn.norm2.{block}")};
 const std::array<RecipeRef, 15> kNoiseAux{RecipeRef{},
-                                          V("noise.mod.{block}"),
-                                          V("noise.mod.{block}"),
-                                          V("noise.mod.{block}"),
-                                          V("noise.mod.{block}"),
+                                          Link("noise.mod.{block}"),
+                                          Link("noise.mod.{block}"),
+                                          Link("noise.mod.{block}"),
+                                          Link("noise.mod.{block}"),
                                           {},
-                                          V("noise.condition0.{block}"),
+                                          Link("noise.condition0.{block}"),
                                           H(2),
                                           {},
-                                          V("noise.condition1.{block}"),
+                                          Link("noise.condition1.{block}"),
                                           {},
-                                          V("noise.condition2.{block}"),
+                                          Link("noise.condition2.{block}"),
                                           {},
                                           {},
-                                          V("noise.condition3.{block}")};
+                                          Link("noise.condition3.{block}")};
 const std::array<RecipeRef, 15> kNoiseCarry{
     RecipeRef{}, RecipeRef{}, RecipeRef{}, RecipeRef{}, RecipeRef{},
-    {},          {},          H(3),        {},          V("noise.stream.{block}"),
-    {},          {},          {},          {},          V("noise.attn.residual.{block}")};
+    {},          {},          H(3),        {},          Link("noise.stream.{block}"),
+    {},          {},          {},          {},          Link("noise.attn.residual.{block}")};
 const auto kNoiseNodes =
     MakeModNodes(kNoiseNames, kNoiseInputs, kNoiseAux, kNoiseCarry, kNoiseModWeights, kBlockIndex);
 
@@ -291,40 +291,40 @@ const std::array<std::string_view, 15> kJointNames{
     "joint.attn.scale.{block}",    "joint.attn.{block}",       "joint.attn.norm2.{block}",
     "joint.attn.residual.{block}", "joint.ffn.norm1.{block}",  "joint.ffn.scale.{block}",
     "joint.ffn.{block}",           "joint.ffn.norm2.{block}",  "joint.ffn.residual.{block}"};
-const std::array<RecipeRef, 15> kJointInputs{V("time.raw"),
-                                             V("joint.stream.{block}"),
-                                             V("joint.stream.{block}"),
-                                             V("joint.stream.{block}"),
-                                             V("joint.stream.{block}"),
-                                             V("joint.stream.{block}"),
-                                             V("joint.attn.norm1.{block}"),
-                                             V("joint.attn.scale.{block}"),
-                                             V("joint.attn.{block}"),
-                                             V("joint.attn.norm2.{block}"),
-                                             V("joint.attn.residual.{block}"),
-                                             V("joint.ffn.norm1.{block}"),
-                                             V("joint.ffn.scale.{block}"),
-                                             V("joint.ffn.{block}"),
-                                             V("joint.ffn.norm2.{block}")};
+const std::array<RecipeRef, 15> kJointInputs{Link("time.raw"),
+                                             Link("joint.stream.{block}"),
+                                             Link("joint.stream.{block}"),
+                                             Link("joint.stream.{block}"),
+                                             Link("joint.stream.{block}"),
+                                             Link("joint.stream.{block}"),
+                                             Link("joint.attn.norm1.{block}"),
+                                             Link("joint.attn.scale.{block}"),
+                                             Link("joint.attn.{block}"),
+                                             Link("joint.attn.norm2.{block}"),
+                                             Link("joint.attn.residual.{block}"),
+                                             Link("joint.ffn.norm1.{block}"),
+                                             Link("joint.ffn.scale.{block}"),
+                                             Link("joint.ffn.{block}"),
+                                             Link("joint.ffn.norm2.{block}")};
 const std::array<RecipeRef, 15> kJointAux{RecipeRef{},
-                                          V("joint.mod.{block}"),
-                                          V("joint.mod.{block}"),
-                                          V("joint.mod.{block}"),
-                                          V("joint.mod.{block}"),
+                                          Link("joint.mod.{block}"),
+                                          Link("joint.mod.{block}"),
+                                          Link("joint.mod.{block}"),
+                                          Link("joint.mod.{block}"),
                                           {},
-                                          V("joint.condition0.{block}"),
+                                          Link("joint.condition0.{block}"),
                                           H(6),
                                           {},
-                                          V("joint.condition1.{block}"),
+                                          Link("joint.condition1.{block}"),
                                           {},
-                                          V("joint.condition2.{block}"),
+                                          Link("joint.condition2.{block}"),
                                           {},
                                           {},
-                                          V("joint.condition3.{block}")};
+                                          Link("joint.condition3.{block}")};
 const std::array<RecipeRef, 15> kJointCarry{
     RecipeRef{}, RecipeRef{}, RecipeRef{}, RecipeRef{}, RecipeRef{},
-    {},          {},          H(7),        {},          V("joint.stream.{block}"),
-    {},          {},          {},          {},          V("joint.attn.residual.{block}")};
+    {},          {},          H(7),        {},          Link("joint.stream.{block}"),
+    {},          {},          {},          {},          Link("joint.attn.residual.{block}")};
 const auto kJointNodes =
     MakeModNodes(kJointNames, kJointInputs, kJointAux, kJointCarry, kJointModWeights, kJointGroup);
 
@@ -341,14 +341,14 @@ const std::array kContextNodes{RecipeNode{.name = "context.attn.norm1.{block}",
                                           .component_kind = "norm.rms",
                                           .params = kRmsParams,
                                           .weights = kContextAttentionNormWeights,
-                                          .input = V("context.stream.{block}"),
+                                          .input = Link("context.stream.{block}"),
                                           .group = RecipeGroupKind::kLayer,
                                           .group_index = kContextGroup},
                                RecipeNode{.name = "context.attn.{block}",
                                           .component_kind = "attention.dense",
                                           .params = kAttentionParams,
                                           .weights = kContextAttentionWeights,
-                                          .input = V("context.attn.norm1.{block}"),
+                                          .input = Link("context.attn.norm1.{block}"),
                                           .auxiliary = H(4),
                                           .carry = H(5),
                                           .has_auxiliary = true,
@@ -359,39 +359,39 @@ const std::array kContextNodes{RecipeNode{.name = "context.attn.norm1.{block}",
                                           .component_kind = "norm.rms",
                                           .params = kRmsParams,
                                           .weights = kContextAttentionPostNormWeights,
-                                          .input = V("context.attn.{block}"),
+                                          .input = Link("context.attn.{block}"),
                                           .group = RecipeGroupKind::kLayer,
                                           .group_index = kContextGroup},
                                RecipeNode{.name = "context.attn.residual.{block}",
                                           .component_kind = "residual.spatial",
-                                          .input = V("context.attn.norm2.{block}"),
-                                          .auxiliary = V("context.stream.{block}"),
+                                          .input = Link("context.attn.norm2.{block}"),
+                                          .auxiliary = Link("context.stream.{block}"),
                                           .has_auxiliary = true},
                                RecipeNode{.name = "context.ffn.norm1.{block}",
                                           .component_kind = "norm.rms",
                                           .params = kRmsParams,
                                           .weights = kContextFfnNormWeights,
-                                          .input = V("context.attn.residual.{block}"),
+                                          .input = Link("context.attn.residual.{block}"),
                                           .group = RecipeGroupKind::kLayer,
                                           .group_index = kContextGroup},
                                RecipeNode{.name = "context.ffn.{block}",
                                           .component_kind = "ffn.glu",
                                           .params = kGluParams,
                                           .weights = kContextFfnWeights,
-                                          .input = V("context.ffn.norm1.{block}"),
+                                          .input = Link("context.ffn.norm1.{block}"),
                                           .group = RecipeGroupKind::kLayer,
                                           .group_index = kContextGroup},
                                RecipeNode{.name = "context.ffn.norm2.{block}",
                                           .component_kind = "norm.rms",
                                           .params = kRmsParams,
                                           .weights = kContextFfnPostNormWeights,
-                                          .input = V("context.ffn.{block}"),
+                                          .input = Link("context.ffn.{block}"),
                                           .group = RecipeGroupKind::kLayer,
                                           .group_index = kContextGroup},
                                RecipeNode{.name = "context.ffn.residual.{block}",
                                           .component_kind = "residual.spatial",
-                                          .input = V("context.ffn.norm2.{block}"),
-                                          .auxiliary = V("context.attn.residual.{block}"),
+                                          .input = Link("context.ffn.norm2.{block}"),
+                                          .auxiliary = Link("context.attn.residual.{block}"),
                                           .has_auxiliary = true}};
 const std::array<RecipeStep, 8> kContextSteps{
     RecipeStep{.kind = RecipeStep::Kind::kNode, .node = &kContextNodes[0]},
@@ -403,11 +403,11 @@ const std::array<RecipeStep, 8> kContextSteps{
     RecipeStep{.kind = RecipeStep::Kind::kNode, .node = &kContextNodes[6]},
     RecipeStep{.kind = RecipeStep::Kind::kNode, .node = &kContextNodes[7]}};
 
-const std::array kTime0Params{P("in_channels", I(256)), P("out_channels", I(1024)),
+const std::array kTime0Params{P("in_channels", kTimeFrequencies), P("out_channels", kTimeHidden),
                               P("bias", B(true)), P("silu", B(true)), P("gelu", B(false))};
 const std::array kTime0Weights{W("weight", "t_embedder.mlp.0.weight"),
                                W("bias", "t_embedder.mlp.0.bias")};
-const std::array kTime1Params{P("in_channels", I(1024)), P("out_channels", kTimeWidth),
+const std::array kTime1Params{P("in_channels", kTimeHidden), P("out_channels", kTimeWidth),
                               P("bias", B(true)), P("silu", B(false)), P("gelu", B(false))};
 const std::array kTime1Weights{W("weight", "t_embedder.mlp.2.weight"),
                                W("bias", "t_embedder.mlp.2.bias")};
@@ -420,7 +420,7 @@ const RecipeNode kTime1{.name = "time.raw",
                         .component_kind = "projection.spatial",
                         .params = kTime1Params,
                         .weights = kTime1Weights,
-                        .input = V("time.hidden")};
+                        .input = Link("time.hidden")};
 const std::array kCaptionNormParams{P("channels", kCaptionDim), P("eps", kNormEps),
                                     P("norm_zero_centered", B(false))};
 const std::array kCaptionNormWeights{W("weight", "cap_embedder.0.weight")};
@@ -438,7 +438,7 @@ const RecipeNode kCaptionProjection{.name = "caption.embedded",
                                     .component_kind = "projection.spatial",
                                     .params = kCaptionProjectionParams,
                                     .weights = kCaptionProjectionWeights,
-                                    .input = V("caption.norm")};
+                                    .input = Link("caption.norm")};
 const std::array kImageProjectionParams{P("in_channels", kPatchFeatures), P("out_channels", kDim),
                                         P("bias", B(true)), P("silu", B(false)),
                                         P("gelu", B(false))};
@@ -453,14 +453,14 @@ const RecipeNode kImageProjection{.name = "image.embedded",
 const RecipeRepeat kNoiseRepeat{.index = "block",
                                 .count = kRefinerCount,
                                 .body = kNoiseSteps,
-                                .input = V("image.embedded"),
+                                .input = Link("image.embedded"),
                                 .input_name = "noise.stream.{block}",
                                 .body_yield = "noise.ffn.residual.{block}",
                                 .yield = "noise.final"};
 const RecipeRepeat kContextRepeat{.index = "block",
                                   .count = kRefinerCount,
                                   .body = kContextSteps,
-                                  .input = V("caption.embedded"),
+                                  .input = Link("caption.embedded"),
                                   .input_name = "context.stream.{block}",
                                   .body_yield = "context.ffn.residual.{block}",
                                   .yield = "context.final"};
@@ -468,13 +468,13 @@ const std::array kConcatParams{P("axis", I(1))};
 const RecipeNode kConcat{.name = "joint.input",
                          .component_kind = "concat.spatial",
                          .params = kConcatParams,
-                         .input = V("noise.final"),
-                         .auxiliary = V("context.final"),
+                         .input = Link("noise.final"),
+                         .auxiliary = Link("context.final"),
                          .has_auxiliary = true};
 const RecipeRepeat kJointRepeat{.index = "block",
                                 .count = kLayerCount,
                                 .body = kJointSteps,
-                                .input = V("joint.input"),
+                                .input = Link("joint.input"),
                                 .input_name = "joint.stream.{block}",
                                 .body_yield = "joint.ffn.residual.{block}",
                                 .yield = "joint.final"};
@@ -483,7 +483,7 @@ const std::array kHeadSiluParams{P("activation", S("silu"))};
 const RecipeNode kHeadSilu{.name = "head.time.silu",
                            .component_kind = "activation.elementwise",
                            .params = kHeadSiluParams,
-                           .input = V("time.raw")};
+                           .input = Link("time.raw")};
 const std::array kHeadModParams{P("in_channels", kTimeWidth), P("out_channels", kDim),
                                 P("bias", B(true)), P("silu", B(false)), P("gelu", B(false))};
 const std::array kHeadModWeights{W("weight", "all_final_layer.2-1.adaLN_modulation.1.weight"),
@@ -492,21 +492,21 @@ const RecipeNode kHeadMod{.name = "head.modulation",
                           .component_kind = "projection.spatial",
                           .params = kHeadModParams,
                           .weights = kHeadModWeights,
-                          .input = V("head.time.silu")};
+                          .input = Link("head.time.silu")};
 const std::array kHeadConditionParams{P("quarter", I(0)), P("quarters", I(1)),
                                       P("prefix_rows", I(0))};
 const RecipeNode kHeadCondition{.name = "head.scale",
                                 .component_kind = "condition.rows",
                                 .params = kHeadConditionParams,
-                                .input = V("joint.final"),
-                                .auxiliary = V("head.modulation"),
+                                .input = Link("joint.final"),
+                                .auxiliary = Link("head.modulation"),
                                 .has_auxiliary = true};
 const std::array kHeadNormParams{P("side", S("scale")), P("eps", R(1.0e-6))};
 const RecipeNode kHeadNorm{.name = "head.norm",
                            .component_kind = "norm.adaptive",
                            .params = kHeadNormParams,
-                           .input = V("joint.final"),
-                           .auxiliary = V("head.scale"),
+                           .input = Link("joint.final"),
+                           .auxiliary = Link("head.scale"),
                            .has_auxiliary = true};
 const std::array kHeadProjectionParams{P("in_channels", kDim), P("out_channels", kPatchFeatures),
                                        P("bias", B(true)), P("silu", B(false)),
@@ -517,13 +517,13 @@ const RecipeNode kHeadProjection{.name = "head.full",
                                  .component_kind = "projection.spatial",
                                  .params = kHeadProjectionParams,
                                  .weights = kHeadProjectionWeights,
-                                 .input = V("head.norm")};
-const std::array kSliceParams{P("start", I(0)), P("rows", I(32), "latent_rows"),
-                              P("input_rows", I(64), "joint_rows")};
+                                 .input = Link("head.norm")};
+const std::array kSliceParams{P("start", I(0)), P("rows", kCheckImageRows, "latent_rows"),
+                              P("input_rows", kCheckJointRows, "joint_rows")};
 const RecipeNode kPrediction{.name = "prediction",
                              .component_kind = "slice.spatial",
                              .params = kSliceParams,
-                             .input = V("head.full")};
+                             .input = Link("head.full")};
 
 const std::array kRecipeSteps{
     RecipeStep{.kind = RecipeStep::Kind::kNode, .node = &kTime0},
@@ -542,32 +542,44 @@ const std::array kRecipeSteps{
     RecipeStep{.kind = RecipeStep::Kind::kNode, .node = &kHeadProjection},
     RecipeStep{.kind = RecipeStep::Kind::kNode, .node = &kPrediction}};
 
+constexpr auto kOne = I(1);
 const RecipeSpatialOperand kPrimaryInput{
-    .shape = {.width = I(1), .height = I(32), .channels = kCaptionDim, .images = I(1)}};
+    .shape = {.width = kOne, .height = kCheckCaptionRows, .channels = kCaptionDim, .images = kOne}};
+// Image patches, the timestep's sinusoid, then each attention's positions
+// and mask: the noise refiner's (image rows), the context refiner's
+// (caption rows) and the joint blocks' (both).
 const std::array kHostPorts{
+    RecipeSpatialOperand{.shape = {.width = kOne,
+                                   .height = kCheckImageRows,
+                                   .channels = kPatchFeatures,
+                                   .images = kOne}},
     RecipeSpatialOperand{
-        .shape = {.width = I(1), .height = I(32), .channels = kPatchFeatures, .images = I(1)}},
+        .shape = {.width = kOne, .height = kOne, .channels = kTimeFrequencies, .images = kOne}},
     RecipeSpatialOperand{
-        .shape = {.width = I(1), .height = I(1), .channels = I(256), .images = I(1)}},
-    RecipeSpatialOperand{
-        .shape = {.width = I(32), .height = I(3), .channels = I(1), .images = I(1)},
+        .shape = {.width = kCheckImageRows, .height = kThree, .channels = kOne, .images = kOne},
         .encoding = format::Encoding::kI32},
+    RecipeSpatialOperand{.shape = {.width = kCheckImageRows,
+                                   .height = kCheckImageRows,
+                                   .channels = kOne,
+                                   .images = kOne}},
     RecipeSpatialOperand{
-        .shape = {.width = I(32), .height = I(32), .channels = I(1), .images = I(1)}},
-    RecipeSpatialOperand{
-        .shape = {.width = I(32), .height = I(3), .channels = I(1), .images = I(1)},
+        .shape = {.width = kCheckCaptionRows, .height = kThree, .channels = kOne, .images = kOne},
         .encoding = format::Encoding::kI32},
+    RecipeSpatialOperand{.shape = {.width = kCheckCaptionRows,
+                                   .height = kCheckCaptionRows,
+                                   .channels = kOne,
+                                   .images = kOne}},
     RecipeSpatialOperand{
-        .shape = {.width = I(32), .height = I(32), .channels = I(1), .images = I(1)}},
-    RecipeSpatialOperand{
-        .shape = {.width = I(64), .height = I(3), .channels = I(1), .images = I(1)},
+        .shape = {.width = kCheckJointRows, .height = kThree, .channels = kOne, .images = kOne},
         .encoding = format::Encoding::kI32},
-    RecipeSpatialOperand{
-        .shape = {.width = I(64), .height = I(64), .channels = I(1), .images = I(1)}}};
+    RecipeSpatialOperand{.shape = {.width = kCheckJointRows,
+                                   .height = kCheckJointRows,
+                                   .channels = kOne,
+                                   .images = kOne}}};
 const RecipeSpatialShape kOutputShape{
-    .width = I(1), .height = I(32), .channels = kPatchFeatures, .images = I(1)};
+    .width = kOne, .height = kCheckImageRows, .channels = kPatchFeatures, .images = kOne};
 const std::array kOutputShapes{kOutputShape};
-const std::array kExports{V("prediction")};
+const std::array kExports{Link("prediction")};
 const StageRecipe kRecipe{.name = "transformer",
                           .role = StageRole::kDenoiser,
                           .artifact = 0,

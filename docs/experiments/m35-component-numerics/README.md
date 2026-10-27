@@ -33,6 +33,33 @@ qualification. These records do not claim a newly measured checkpoint result.
 | [Final M3.6 record](../m36-final/README.md) | Accepted DeepSeek artifact's dense Q4_K/Q5_K/Q6_K/Q8_0 and selected-expert IQ2_XS/IQ3_XXS/MXFP4 arithmetic at rows 1–5 |
 | [Image fusion record](../m36-runtime-fusion/README.md) | BF16 weight products and F32 SwiGLU, stateless attention and adaptive-normalization carry sites; additional transfer checks below still owed |
 
+Each record's `incumbent_recipe` is what a plan report states for its
+grants: `ACCEPTED_INCUMBENT_RECIPE` when true, `MEASURED_SAME_QUALITY` when
+false. The pre-U4 domains attached to approvals (`NumericalEvidenceDomain` in
+`runtime/approvals.h`, deleted since: nothing read them) defaulted it to
+true, so the Qwen native and Qwen GGUF vector records were incumbents there;
+`ComponentNumericalEvidence` defaults it to false and sets it only on the two
+final DeepSeek records. Since U4 the Qwen native and GGUF grants therefore
+report `MEASURED_SAME_QUALITY`. Their rows, dimensions and arithmetic are
+unchanged; only the reported status changed.
+
+Two records overlap: the Qwen GGUF vector record and the final DeepSeek
+record both cover `product.block32_q8` for Q6_K and Q8_0 at rows 1–4 (their
+`product.selected_block32_q8` encodings are disjoint). Both grant the same
+change, so arithmetic is unaffected, and Q6_K/Q8_0 products also take the
+final record's row 5 (D-126). Admission keeps one entry per record, in a
+total order (F8, 2026-10-26): the incumbent recipe's entry first, then by
+evidence digest. The first match a plan reads is therefore the final
+DeepSeek record, with `ACCEPTED_INCUMBENT_RECIPE`, in every build. Before,
+two entries with the same key kept an unspecified order, so the attributed
+evidence, the reported status and the qualification digest inside the
+policy digest depended on sort internals. This applies to every GGUF whose
+dense products include Q6_K or Q8_0 (Qwen3.8, DeepSeek V4, and the dense
+and Gemma GGUFs, whose attention and FFN declare the site); the defined
+order can change their reported policy digests once, but no grant, plan
+choice or served bit. A unit test pins the overlap to exactly this pair and
+the order of every overlapping pair.
+
 The final DeepSeek encoding inventory was read from the accepted artifact
 `698b1cd8696f75355d8a130b71369099c2c5d1d241932330565d33480cbc0bfd` on Spark.
 Its `index.json` SHA-256 is

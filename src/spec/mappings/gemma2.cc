@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "spec/mapping.h"
+#include "spec/mappings/names.h"
 #include "spec/mappings/rules.h"
 #include "spec/spec.h"
 
@@ -29,26 +30,24 @@ constexpr std::array kSlots = {
 };
 
 constexpr std::array kTensors = {
-    TensorRule{.pattern = "token_embd.weight", .slot = "embedding", .role = "table"},
-    TensorRule{.pattern = "blk.{layer}.attn_norm.weight", .slot = "attention", .role = "norm"},
-    TensorRule{.pattern = "blk.{layer}.attn_q.weight", .slot = "attention", .role = "q"},
-    TensorRule{.pattern = "blk.{layer}.attn_k.weight", .slot = "attention", .role = "k"},
-    TensorRule{.pattern = "blk.{layer}.attn_v.weight", .slot = "attention", .role = "v"},
-    TensorRule{.pattern = "blk.{layer}.attn_output.weight", .slot = "attention", .role = "output"},
-    TensorRule{.pattern = "blk.{layer}.post_attention_norm.weight",
-               .slot = "attention",
-               .role = "post_norm"},
-    TensorRule{.pattern = "blk.{layer}.ffn_norm.weight", .slot = "ffn", .role = "norm"},
-    TensorRule{.pattern = "blk.{layer}.ffn_gate.weight", .slot = "ffn", .role = "gate"},
-    TensorRule{.pattern = "blk.{layer}.ffn_up.weight", .slot = "ffn", .role = "up"},
-    TensorRule{.pattern = "blk.{layer}.ffn_down.weight", .slot = "ffn", .role = "down"},
-    TensorRule{.pattern = "blk.{layer}.post_ffw_norm.weight", .slot = "ffn", .role = "post_norm"},
-    TensorRule{.pattern = "output_norm.weight", .slot = "final_norm", .role = "weight"},
+    TensorRule{.pattern = names::kTokenEmbd.gguf, .slot = "embedding", .role = "table"},
+    TensorRule{.pattern = names::kAttnNorm.gguf, .slot = "attention", .role = "norm"},
+    TensorRule{.pattern = names::kAttnQ.gguf, .slot = "attention", .role = "q"},
+    TensorRule{.pattern = names::kAttnK.gguf, .slot = "attention", .role = "k"},
+    TensorRule{.pattern = names::kAttnV.gguf, .slot = "attention", .role = "v"},
+    TensorRule{.pattern = names::kAttnOutput.gguf, .slot = "attention", .role = "output"},
+    TensorRule{.pattern = names::kAttnPostNorm.gguf, .slot = "attention", .role = "post_norm"},
+    TensorRule{.pattern = names::kFfnPreNorm.gguf, .slot = "ffn", .role = "norm"},
+    TensorRule{.pattern = names::kFfnGate.gguf, .slot = "ffn", .role = "gate"},
+    TensorRule{.pattern = names::kFfnUp.gguf, .slot = "ffn", .role = "up"},
+    TensorRule{.pattern = names::kFfnDown.gguf, .slot = "ffn", .role = "down"},
+    TensorRule{.pattern = names::kFfnPostNorm.gguf, .slot = "ffn", .role = "post_norm"},
+    TensorRule{.pattern = names::kOutputNorm.gguf, .slot = "final_norm", .role = "weight"},
     // The checkpoint ties its output to the embedding (no output.weight).
-    TensorRule{.pattern = "output.weight",
+    TensorRule{.pattern = names::kOutput.gguf,
                .slot = "output",
                .role = "weight",
-               .fallback = "token_embd.weight"},
+               .fallback = names::kTokenEmbd.gguf},
 };
 
 constexpr std::string_view kEps = "attention.layer_norm_rms_epsilon";
@@ -132,7 +131,7 @@ constexpr std::array kDialects{
                   .overrides = kHfOverrides,
                   .params = kGemmaHfParams,
                   .defaults = kHfDefaults,
-                  .parts = kGemmaHfParts,
+                  .parts = kHfMatrixParts,
                   .folds = kGemmaHfFolds,
                   .tensor_aliases = kGemmaHfTensors,
                   .key_aliases = kGemmaSafetensorsKeys,

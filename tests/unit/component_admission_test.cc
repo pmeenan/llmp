@@ -14,9 +14,11 @@
 #include <expected>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -321,28 +323,20 @@ llmp::planner::DeviceFacts NumericalDevice() {
       .device_class = "sm_121", .arch = 121, .device_model = "NVIDIA GB10", .multiprocessors = 48};
 }
 
-TEST_F(ComponentAdmissionTest, NumericalContractsIgnoreApprovalMembershipAndContainerOrigin) {
+// Grants come from component contracts and evidence alone: no approval
+// argument exists, and the source's container changes nothing.
+TEST_F(ComponentAdmissionTest, NumericalContractsIgnoreContainerOrigin) {
   auto owner = std::make_shared<NumericalOwner>();
   const auto funder = NumericalFunder(owner);
   const auto semantic = model.Digest();
-  const auto* pinned = rt::FindApproval(source.architecture, origins);
-  ASSERT_NE(pinned, nullptr);
-  auto empty_approval = *pinned;
-  empty_approval.numerical = {};
-  const auto bind = [&](const rt::Approval* approval) {
-    return rt::AdmittedNumerics(model, source, origins, approval, semantic,
-                                {.context = 8192, .slots = 4}, 0, NumericalDevice(), funder);
+  const auto bind = [&] {
+    return rt::AdmittedNumerics(model, source, origins, semantic, {.context = 8192, .slots = 4}, 0,
+                                NumericalDevice(), funder);
   };
-  auto pinned_facts = bind(pinned);
-  auto empty_facts = bind(&empty_approval);
-  auto unpinned_facts = bind(nullptr);
+  auto pinned_facts = bind();
   ASSERT_TRUE(pinned_facts && *pinned_facts);
-  ASSERT_TRUE(empty_facts && *empty_facts);
-  ASSERT_TRUE(unpinned_facts && *unpinned_facts);
-  EXPECT_EQ((*pinned_facts)->digest(), (*empty_facts)->digest());
-  EXPECT_EQ((*pinned_facts)->digest(), (*unpinned_facts)->digest());
   source.container = "safetensors";
-  auto other_container = bind(nullptr);
+  auto other_container = bind();
   ASSERT_TRUE(other_container && *other_container);
   EXPECT_EQ((*pinned_facts)->digest(), (*other_container)->digest());
   for (const auto& entry : (*pinned_facts)->entries()) {
@@ -350,6 +344,75 @@ TEST_F(ComponentAdmissionTest, NumericalContractsIgnoreApprovalMembershipAndCont
     EXPECT_TRUE(entry.exact_dimensions);
     EXPECT_NE(entry.weight_role, UINT16_MAX);
     EXPECT_EQ(entry.semantic, semantic);
+  }
+}
+
+// Two evidence records grant one product at one encoding and row only where
+// the review found (F8, S-F5): the Qwen GGUF vector record and the final
+// DeepSeek record share Q6_K and Q8_0 block products at rows 1-4. Both
+// grants are kept, in a total order that puts the incumbent recipe's first
+// (ProjectNumerics), so a plan attributes the same evidence and status in
+// every build (ExpectDefinedAttribution). Any other overlap is new and
+// refused here.
+// Grants for one site that differ only in their evidence keep a defined
+// order: an incumbent recipe's first, then by evidence.
+void ExpectDefinedAttribution(std::span<const llmp::planner::NumericalQualification> entries) {
+  const auto site = [](const llmp::planner::NumericalQualification& e) {
+    return std::tuple(e.change, e.stage, e.component, e.anchor, e.min_rows, e.max_rows, e.max_k,
+                      e.max_n, e.weight_role);
+  };
+  for (std::size_t i = 1; i < entries.size(); ++i) {
+    const auto& a = entries[i - 1];
+    const auto& b = entries[i];
+    if (site(a) != site(b)) continue;
+    EXPECT_TRUE(a.incumbent_recipe >= b.incumbent_recipe &&
+                (a.incumbent_recipe != b.incumbent_recipe || a.evidence <= b.evidence))
+        << "grants for one site in an undefined order at " << i;
+  }
+}
+
+TEST(NumericalEvidenceTableTest, RecordsOverlapOnlyAtTheKnownBlockProductRows) {
+  const auto table = rt::ComponentNumericalEvidenceTable();
+  struct Overlap {
+    std::size_t first, second;
+    fm::Encoding encoding;
+    std::uint64_t row;
+    bool operator==(const Overlap&) const = default;
+  };
+  std::vector<Overlap> overlaps;
+  for (std::size_t a = 0; a < table.size(); ++a)
+    for (std::size_t b = a + 1; b < table.size(); ++b) {
+      const auto& x = table[a];
+      const auto& y = table[b];
+      if (x.pipeline != y.pipeline || x.change != y.change || x.semantic != y.semantic ||
+          x.device_class != y.device_class || x.device_model != y.device_model ||
+          x.arch != y.arch || x.multiprocessors != y.multiprocessors)
+        continue;
+      for (const auto encoding : x.encodings) {
+        if (!std::ranges::contains(y.encodings, encoding)) continue;
+        // A record without listed rows covers every row of its owner bound.
+        if (x.rows.empty() || y.rows.empty()) {
+          overlaps.push_back({a, b, encoding, 0});
+          continue;
+        }
+        for (const auto row : x.rows)
+          if (std::ranges::contains(y.rows, row)) overlaps.push_back({a, b, encoding, row});
+      }
+    }
+  ASSERT_EQ(overlaps.size(), 8U);
+  const auto& first = table[overlaps.front().first];
+  const auto& second = table[overlaps.front().second];
+  EXPECT_EQ(first.semantic, "product.block32_q8");
+  EXPECT_EQ(first.report, "docs/experiments/qwen38-gguf/README.md");
+  EXPECT_FALSE(first.incumbent_recipe);
+  EXPECT_EQ(second.report, "docs/experiments/m36-final/README.md");
+  EXPECT_TRUE(second.incumbent_recipe);
+  for (const auto& overlap : overlaps) {
+    EXPECT_EQ(overlap.first, overlaps.front().first);
+    EXPECT_EQ(overlap.second, overlaps.front().second);
+    EXPECT_TRUE(overlap.encoding == fm::Encoding::kQ6_K || overlap.encoding == fm::Encoding::kQ8_0);
+    EXPECT_GE(overlap.row, 1U);
+    EXPECT_LE(overlap.row, 4U);
   }
 }
 
@@ -366,7 +429,7 @@ TEST_F(ComponentAdmissionTest, MissingDeviceOrEncodingEvidenceKeepsExactPathWith
     if (mutation == 1) device.device_model = "another device";
     if (mutation == 2) device.multiprocessors = 1;
     if (mutation == 3) device = {};
-    auto facts = rt::AdmittedNumerics(model, source, origins, nullptr, semantic,
+    auto facts = rt::AdmittedNumerics(model, source, origins, semantic,
                                       {.context = 8192, .slots = 4}, 0, device, funder);
     ASSERT_TRUE(facts);
     EXPECT_FALSE(*facts);
@@ -375,8 +438,8 @@ TEST_F(ComponentAdmissionTest, MissingDeviceOrEncodingEvidenceKeepsExactPathWith
   for (auto& tensor : source.tensors)
     if (tensor.format.encoding == fm::Encoding::kQ8_0) tensor.format.encoding = fm::Encoding::kQ2_0;
   auto uncovered =
-      rt::AdmittedNumerics(model, source, origins, nullptr, semantic, {.context = 8192, .slots = 4},
-                           0, NumericalDevice(), funder);
+      rt::AdmittedNumerics(model, source, origins, semantic, {.context = 8192, .slots = 4}, 0,
+                           NumericalDevice(), funder);
   ASSERT_TRUE(uncovered);
   EXPECT_FALSE(*uncovered);
   EXPECT_EQ(owner->charges, 0U);
@@ -387,13 +450,13 @@ TEST_F(ComponentAdmissionTest, NumericalProjectionAuthenticatesAndRetainsPaidSto
   auto funder = NumericalFunder(owner);
   const auto semantic = model.Digest();
   const auto bind = [&](std::shared_ptr<const llmp::kernels::ConstructionFunder> payment) {
-    return rt::AdmittedNumerics(model, source, origins, nullptr, semantic,
-                                {.context = 8192, .slots = 4}, 0, NumericalDevice(), payment);
+    return rt::AdmittedNumerics(model, source, origins, semantic, {.context = 8192, .slots = 4}, 0,
+                                NumericalDevice(), payment);
   };
   auto wrong = semantic;
   wrong[0] ^= 1;
-  EXPECT_FALSE(rt::AdmittedNumerics(model, source, origins, nullptr, wrong,
-                                    {.context = 8192, .slots = 4}, 0, NumericalDevice(), funder));
+  EXPECT_FALSE(rt::AdmittedNumerics(model, source, origins, wrong, {.context = 8192, .slots = 4}, 0,
+                                    NumericalDevice(), funder));
   const auto original = source.tensors.front();
   source.tensors.front().format.encoding = static_cast<fm::Encoding>(UINT16_MAX);
   EXPECT_FALSE(bind(funder));
@@ -425,7 +488,7 @@ TEST_F(ComponentAdmissionTest, AliasQ8KvEncodingKeepsTheAdmittedNumericalIdentit
   const auto funder = NumericalFunder(owner);
   const auto semantic = model.Digest();
   const auto bind = [&](const sp::ModelSpec& projected) {
-    return rt::AdmittedNumerics(projected, source, origins, nullptr, semantic,
+    return rt::AdmittedNumerics(projected, source, origins, semantic,
                                 {.context = 8192, .slots = 4}, 0, NumericalDevice(), funder);
   };
   auto encoded = model;
@@ -473,19 +536,17 @@ class NumericalBackendOwner final : public llmp::kernels::BackendOwner {
 TEST(ComponentAdmissionModelOptTest, ServingNumericsUseOwnedFactsAndPayerInsteadOfTokenFields) {
   const auto fixture = llmp::test_support::qwen38::NativeModelOpt();
   const auto origins = llmp::test_support::qwen38::ModelOptOrigins();
-  const auto* approval = rt::FindApproval(fixture.source.architecture, origins);
-  ASSERT_NE(approval, nullptr);
   auto payer = std::make_shared<NumericalOwner>();
   llmp::kernels::StepBackend table{.device = NumericalDevice(),
                                    .construction_funder = NumericalFunder(payer)};
-  const auto bind = [&](const llmp::kernels::StepBackend& backend, const rt::Approval* overlay) {
-    return rt::AdmittedNumerics(fixture.model, fixture.source, origins, overlay,
-                                fixture.model.Digest(), {.context = 8192, .slots = 4}, 0, backend);
+  const auto bind = [&](const llmp::kernels::StepBackend& backend) {
+    return rt::AdmittedNumerics(fixture.model, fixture.source, origins, fixture.model.Digest(),
+                                {.context = 8192, .slots = 4}, 0, backend);
   };
-  const auto absent = bind({}, nullptr);
+  const auto absent = bind({});
   ASSERT_TRUE(absent);
   EXPECT_FALSE(*absent);
-  auto direct = bind(table, nullptr);
+  auto direct = bind(table);
   ASSERT_TRUE(direct && *direct);
   ASSERT_FALSE((*direct)->entries().empty());
   for (const auto change : {llmp::planner::NumericalChange::kBf16HyperConnectionIntermediates,
@@ -499,17 +560,15 @@ TEST(ComponentAdmissionModelOptTest, ServingNumericsUseOwnedFactsAndPayerInstead
   EXPECT_EQ(token.device.arch, 0U);
   EXPECT_TRUE(token.device.device_class.empty());
   EXPECT_FALSE(token.construction_funder);
-  for (const auto* overlay : {approval, static_cast<const rt::Approval*>(nullptr)}) {
-    auto declared = bind(token, overlay);
-    ASSERT_TRUE(declared && *declared);
-    EXPECT_EQ((*declared)->entries().size(), (*direct)->entries().size());
-    EXPECT_EQ((*declared)->digest(), (*direct)->digest());
-  }
+  auto declared = bind(token);
+  ASSERT_TRUE(declared && *declared);
+  EXPECT_EQ((*declared)->entries().size(), (*direct)->entries().size());
+  EXPECT_EQ((*declared)->digest(), (*direct)->digest());
   auto impostor = std::make_shared<NumericalOwner>();
   impostor->available = 0;
   token.device = {.device_class = "forged", .arch = 86};
   token.construction_funder = NumericalFunder(impostor);
-  auto unchanged = bind(token, nullptr);
+  auto unchanged = bind(token);
   ASSERT_TRUE(unchanged && *unchanged);
   EXPECT_EQ((*unchanged)->digest(), (*direct)->digest());
   EXPECT_EQ(impostor->charges, 0U);
@@ -518,7 +577,7 @@ TEST(ComponentAdmissionModelOptTest, ServingNumericsUseOwnedFactsAndPayerInstead
   unknown.device = {};
   token.owner = std::make_shared<NumericalBackendOwner>(std::move(unknown), payer);
   token.device = NumericalDevice();
-  auto denied = bind(token, approval);
+  auto denied = bind(token);
   ASSERT_TRUE(denied);
   EXPECT_FALSE(*denied);
   // Nor can a wrapper's payer replace a missing authoritative payer.
@@ -526,7 +585,7 @@ TEST(ComponentAdmissionModelOptTest, ServingNumericsUseOwnedFactsAndPayerInstead
   unpaid.construction_funder.reset();
   token.owner = std::make_shared<NumericalBackendOwner>(std::move(unpaid), payer);
   token.construction_funder = table.construction_funder;
-  EXPECT_FALSE(bind(token, approval));
+  EXPECT_FALSE(bind(token));
 }
 
 TEST_F(ComponentAdmissionTest, NativeNumericalContractsUseActualEncodingAcrossContainers) {
@@ -537,7 +596,7 @@ TEST_F(ComponentAdmissionTest, NativeNumericalContractsUseActualEncodingAcrossCo
   const auto funder = NumericalFunder(owner);
   const auto semantic = fixture.model.Digest();
   const auto bind = [&] {
-    return rt::AdmittedNumerics(fixture.model, fixture.source, opt_origins, nullptr, semantic,
+    return rt::AdmittedNumerics(fixture.model, fixture.source, opt_origins, semantic,
                                 {.context = 8192, .slots = 4}, 0, NumericalDevice(), funder);
   };
   auto native = bind();
@@ -588,7 +647,7 @@ TEST(ComponentAdmissionModelOptTest, GdnMxfp8ResultRoundingReachesTheRegisteredR
   const llmp::kernels::StepBackend declared{
       .owner = std::make_shared<NumericalBackendOwner>(table, payer)};
   const auto numerical =
-      rt::AdmittedNumerics(fixture.model, fixture.source, origins, nullptr, fixture.model.Digest(),
+      rt::AdmittedNumerics(fixture.model, fixture.source, origins, fixture.model.Digest(),
                            {.context = 8192, .slots = 4}, 0, declared);
   ASSERT_TRUE(numerical && *numerical);
   // This fake implementation only answers availability: authority comes from
@@ -683,12 +742,13 @@ TEST(ComponentAdmissionGgufTest, MixedExpertsAndPleBindOnlyTheirObservedSites) {
   ASSERT_TRUE(instances);
   auto owner = std::make_shared<NumericalOwner>();
   const auto bind = [&] {
-    return rt::AdmittedNumerics(model, source, Origins(), nullptr, model.Digest(),
+    return rt::AdmittedNumerics(model, source, Origins(), model.Digest(),
                                 {.context = 8192, .slots = 4}, 0, NumericalDevice(),
                                 NumericalFunder(owner));
   };
   const auto facts = bind();
   ASSERT_TRUE(facts && *facts);
+  ExpectDefinedAttribution((*facts)->entries());
   unsigned ple_products = 0, mixed_experts = 0;
   for (const auto& layer : instances->layers) {
     for (const auto& instance : layer) {
@@ -803,22 +863,13 @@ TEST(ComponentAdmissionImageTest, NumericalContractsRequireDeclaredSiteStageDevi
   };
   auto graph = make_graph(1);
   ASSERT_TRUE(graph);
-  const auto bind = [&](const rt::ImageApproval* approval,
-                        const llmp::planner::DeviceFacts& device) {
-    return rt::AdmittedImageNumerics(family.spec, approval, *opened, *graph, generated, 1, device,
-                                     funder);
+  const auto bind = [&](const llmp::planner::DeviceFacts& device) {
+    return rt::AdmittedImageNumerics(family.spec, *opened, *graph, generated, 1, device, funder);
   };
-  auto pinned = bind(&rt::ImageApprovals().front(), NumericalDevice());
-  rt::ImageApproval empty;
-  auto no_overlay = bind(&empty, NumericalDevice());
-  auto unpinned = bind(nullptr, NumericalDevice());
-  ASSERT_TRUE(pinned && *pinned);
-  ASSERT_TRUE(no_overlay && *no_overlay);
+  auto unpinned = bind(NumericalDevice());
   ASSERT_TRUE(unpinned && *unpinned);
-  EXPECT_EQ((*pinned)->digest(), (*unpinned)->digest());
-  EXPECT_EQ((*no_overlay)->digest(), (*unpinned)->digest());
-  auto other_identity = rt::AdmittedImageNumerics(family.spec, nullptr, *other_opened, *graph,
-                                                  generated, 1, NumericalDevice(), funder);
+  auto other_identity = rt::AdmittedImageNumerics(family.spec, *other_opened, *graph, generated, 1,
+                                                  NumericalDevice(), funder);
   ASSERT_TRUE(other_identity && *other_identity);
   EXPECT_NE((*other_identity)->digest(), (*unpinned)->digest());
   for (const auto& entry : (*unpinned)->entries()) {
@@ -831,7 +882,7 @@ TEST(ComponentAdmissionImageTest, NumericalContractsRequireDeclaredSiteStageDevi
   sm86.device_class = "sm_86";
   sm86.arch = 86;
   for (const auto& device : {sm86, llmp::planner::DeviceFacts{}}) {
-    auto absent = bind(nullptr, device);
+    auto absent = bind(device);
     ASSERT_TRUE(absent);
     EXPECT_FALSE(*absent);
   }
@@ -842,7 +893,7 @@ TEST(ComponentAdmissionImageTest, NumericalContractsRequireDeclaredSiteStageDevi
                                                           {"out_channels", std::int64_t{width}}};
     graph = make_graph(1, rows, width);
     ASSERT_TRUE(graph);
-    auto other_shape = bind(nullptr, NumericalDevice());
+    auto other_shape = bind(NumericalDevice());
     ASSERT_TRUE(other_shape && *other_shape);
     for (const auto& entry : (*other_shape)->entries()) {
       EXPECT_EQ(entry.min_rows, rows);
@@ -853,19 +904,19 @@ TEST(ComponentAdmissionImageTest, NumericalContractsRequireDeclaredSiteStageDevi
   const auto covered_charges = owner->charges;
   graph = make_graph(1, 25, 4096, fm::Encoding::kF32);
   ASSERT_TRUE(graph);
-  auto wrong_encoding = bind(nullptr, NumericalDevice());
+  auto wrong_encoding = bind(NumericalDevice());
   ASSERT_TRUE(wrong_encoding);
   EXPECT_FALSE(*wrong_encoding);
   for (const auto encoding : {fm::Encoding::kQ4_K, fm::Encoding::kQ6_K}) {
     graph = make_graph(1, 25, 4096, encoding);
     ASSERT_TRUE(graph);
-    auto unqualified_quant = bind(nullptr, NumericalDevice());
+    auto unqualified_quant = bind(NumericalDevice());
     ASSERT_TRUE(unqualified_quant);
     EXPECT_FALSE(*unqualified_quant);
   }
   graph = make_graph(0);
   ASSERT_TRUE(graph);
-  auto wrong_stage = bind(nullptr, NumericalDevice());
+  auto wrong_stage = bind(NumericalDevice());
   ASSERT_TRUE(wrong_stage);
   EXPECT_FALSE(*wrong_stage);
   graph = make_graph(1);
@@ -874,7 +925,7 @@ TEST(ComponentAdmissionImageTest, NumericalContractsRequireDeclaredSiteStageDevi
                                                  .version = 1,
                                                  .params = {{"eps", 1e-6}},
                                                  .weights = {{.role = "weight", .tensor = "w"}}};
-  auto unrelated = bind(nullptr, NumericalDevice());
+  auto unrelated = bind(NumericalDevice());
   ASSERT_TRUE(unrelated);
   EXPECT_FALSE(*unrelated);
   EXPECT_EQ(owner->charges, covered_charges);
@@ -1682,22 +1733,17 @@ TEST(ComponentAdmissionModelOptTest, EquivalentScaleDeclarationsHaveTheSameStruc
   sp::Canonicalize(independent);
   ASSERT_NE(legacy.Digest(), independent.Digest());
   const auto origins = llmp::test_support::qwen38::ModelOptOrigins();
-  const auto* approval = rt::FindApproval(fixture.source.architecture, origins);
-  ASSERT_NE(approval, nullptr);
   auto owner = std::make_shared<NumericalOwner>();
   auto funder = NumericalFunder(owner);
-  const auto bind = [&](const sp::ModelSpec& model, const rt::Approval* overlay, unsigned slots) {
-    return rt::AdmittedNumerics(model, fixture.source, origins, overlay, model.Digest(),
+  const auto bind = [&](const sp::ModelSpec& model, unsigned slots) {
+    return rt::AdmittedNumerics(model, fixture.source, origins, model.Digest(),
                                 {.context = 262144, .slots = slots}, 0, NumericalDevice(), funder);
   };
   for (const auto slots : {1U, 4U}) {
-    auto old = bind(legacy, approval, slots);
-    auto current = bind(independent, approval, slots);
-    auto unpinned = bind(independent, nullptr, slots);
+    auto old = bind(legacy, slots);
+    auto current = bind(independent, slots);
     ASSERT_TRUE(old && *old);
     ASSERT_TRUE(current && *current);
-    ASSERT_TRUE(unpinned && *unpinned);
-    EXPECT_EQ((*current)->digest(), (*unpinned)->digest());
     auto old_entries = std::vector((*old)->entries().begin(), (*old)->entries().end());
     auto new_entries = std::vector((*current)->entries().begin(), (*current)->entries().end());
     for (auto& entry : old_entries) entry.semantic = {};
@@ -1742,7 +1788,7 @@ TEST(ComponentAdmissionModelOptTest, EquivalentScaleDeclarationsHaveTheSameStruc
   sp::Canonicalize(independent);
   const auto admitted = rt::CheckComponentAdmission(independent, fixture.source, origins);
   ASSERT_TRUE(admitted) << (admitted ? "" : admitted.error());
-  auto changed_encoding = bind(independent, nullptr, 1);
+  auto changed_encoding = bind(independent, 1);
   ASSERT_TRUE(changed_encoding) << (changed_encoding ? "" : changed_encoding.error());
   if (*changed_encoding)
     for (const auto& grant : (*changed_encoding)->entries())
@@ -1757,7 +1803,7 @@ TEST(ComponentAdmissionModelOptTest, EquivalentScaleDeclarationsHaveTheSameStruc
         if (component.kind == "ffn.routed")
           for (auto& param : component.params)
             if (param.name == "used") param.value = std::int64_t{0};
-  auto zero_used_numerics = bind(zero_used, nullptr, 1);
+  auto zero_used_numerics = bind(zero_used, 1);
   EXPECT_FALSE(zero_used_numerics);
 }
 
@@ -2092,7 +2138,7 @@ TEST(ComponentAdmissionHashTableTest, StoredTablesAreReadAndRefusedByShapeBytesA
                          auto entry) -> std::expected<void, std::string> {
     auto artifact = publish(name, encoding, rows, entry);
     if (!artifact) return std::unexpected("publishing: " + artifact.error());
-    return rt::CheckStoredHashTables(*artifact, model);
+    return rt::CheckStoredTables(*artifact, model);
   };
 
   // Every expert in [0, experts): read and accepted.
@@ -2126,10 +2172,10 @@ TEST(ComponentAdmissionHashTableTest, StoredTablesAreReadAndRefusedByShapeBytesA
   ASSERT_TRUE(artifact) << artifact.error();
   auto missing = model;
   missing.stages[0].side[0].source.weights[0].tensor = "blk.1.ffn_gate_tid2eid.weight";
-  EXPECT_FALSE(rt::CheckStoredHashTables(*artifact, missing));
+  EXPECT_FALSE(rt::CheckStoredTables(*artifact, missing));
   auto uncounted = model;
   uncounted.stages[0].side[0].source.params.erase(
       uncounted.stages[0].side[0].source.params.begin());
-  EXPECT_FALSE(rt::CheckStoredHashTables(*artifact, uncounted));
+  EXPECT_FALSE(rt::CheckStoredTables(*artifact, uncounted));
   std::filesystem::remove_all(scratch, ec);
 }

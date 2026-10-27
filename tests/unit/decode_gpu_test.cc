@@ -1428,7 +1428,7 @@ llmp::kernels::ggml::SelectedOperand SelectedWeight(llmp::kernels::ggml::TensorA
     auto* tensor =
         ggml_new_tensor_1d(arena.context(), GGML_TYPE_I8, static_cast<std::int64_t>(part.bytes));
     kg::TensorArena::Bind(tensor, reinterpret_cast<std::uintptr_t>(part.address));
-    operand.parts.push_back({part.role, tensor});
+    operand.parts.push_back({part.role, kg::Ref(tensor)});
   }
   operand.tensor = operand.parts.front().tensor;
   return operand;
@@ -1441,8 +1441,10 @@ llmp::kernels::ggml::SelectedOperand SelectedActivation(llmp::kernels::ggml::Ten
   operand.desc.nb = ir::NaturalStrides(operand.desc.format);
   std::array<std::int64_t, 4> ne{};
   for (std::size_t i = 0; i < 4; ++i) ne[i] = static_cast<std::int64_t>(shape.ne[i]);
-  operand.tensor = ggml_new_tensor(arena.context(), type, shape.rank, ne.data());
-  llmp::kernels::ggml::TensorArena::Bind(operand.tensor, reinterpret_cast<std::uintptr_t>(address));
+  operand.tensor =
+      llmp::kernels::ggml::Ref(ggml_new_tensor(arena.context(), type, shape.rank, ne.data()));
+  llmp::kernels::ggml::TensorArena::Bind(llmp::kernels::ggml::TensorOf(operand.tensor),
+                                         reinterpret_cast<std::uintptr_t>(address));
   return operand;
 }
 
@@ -1466,7 +1468,7 @@ TEST_F(DecodeGpuTest, SelectedProductsExecuteBatchedBroadcastAndPitchesForEveryD
                       SelectedActivation(arena, ir::ShapeOf({k, rows, batch2, batch3}),
                                          Encoding::kF32, GGML_TYPE_F32, x.device->as<void>())};
     inputs[1].desc.nb = {4, x.stride * 4, x.stride * rows * 4, x.stride * rows * batch2 * 4};
-    std::ranges::copy(inputs[1].desc.nb, inputs[1].tensor->nb);
+    std::ranges::copy(inputs[1].desc.nb, kg::TensorOf(inputs[1].tensor)->nb);
     std::array outputs{SelectedActivation(arena, ir::ShapeOf({kN, rows, batch2, batch3}),
                                           Encoding::kF32, GGML_TYPE_F32, y.as<void>())};
     ir::Node node;
@@ -1481,9 +1483,9 @@ TEST_F(DecodeGpuTest, SelectedProductsExecuteBatchedBroadcastAndPitchesForEveryD
       auto call = source->Lower(*at, node, inputs, outputs);
       ASSERT_TRUE(call) << Failed(call)->detail;
       // Pitched outputs are not supported; mutation must be caught at Bind.
-      outputs[0].tensor->nb[1] += 4;
+      kg::TensorOf(outputs[0].tensor)->nb[1] += 4;
       EXPECT_FALSE((*call)->Bind(*at, *launch, {}));
-      outputs[0].tensor->nb[1] -= 4;
+      kg::TensorOf(outputs[0].tensor)->nb[1] -= 4;
       auto bound = (*call)->Bind(*at, *launch, {});
       ASSERT_TRUE(bound) << Failed(bound)->detail;
       ASSERT_TRUE((*bound)->Run(native));
@@ -1542,9 +1544,9 @@ TEST_F(DecodeGpuTest, SelectedResidentRowsExecuteBatchedTablesForEveryDecoder) {
     ASSERT_NE(at, implementations.end());
     auto call = source->Lower(*at, node, inputs, outputs);
     ASSERT_TRUE(call) << Failed(call)->detail;
-    inputs[1].tensor->ne[0] = 10;
+    kg::TensorOf(inputs[1].tensor)->ne[0] = 10;
     EXPECT_FALSE((*call)->Bind(*at, *launch, {}));
-    inputs[1].tensor->ne[0] = 5;
+    kg::TensorOf(inputs[1].tensor)->ne[0] = 5;
     auto bound = (*call)->Bind(*at, *launch, {});
     ASSERT_TRUE(bound) << Failed(bound)->detail;
     ASSERT_TRUE((*bound)->Run(native));
@@ -1585,7 +1587,7 @@ TEST_F(DecodeGpuTest, SelectedGluCapturesSameAndMixedFormatsInBothOperandOrders)
     auto input = SelectedActivation(arena, ir::ShapeOf({k, rows, batches}), Encoding::kF32,
                                     GGML_TYPE_F32, x.device->as<void>());
     input.desc.nb = {4, x.stride * 4, x.stride * rows * 4, x.stride * rows * batches * 4};
-    std::ranges::copy(input.desc.nb, input.tensor->nb);
+    std::ranges::copy(input.desc.nb, kg::TensorOf(input.tensor)->nb);
     std::array outputs{SelectedActivation(arena, ir::ShapeOf({kN, rows, batches}), Encoding::kF32,
                                           GGML_TYPE_F32, y.as<void>())};
     for (const bool swapped : {false, true}) {

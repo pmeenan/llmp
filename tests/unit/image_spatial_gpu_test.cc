@@ -29,17 +29,17 @@
 #include "engine/graph_plan.h"
 #include "engine/paged_weights.h"
 #include "engine/plan_cache.h"
-#include "engine/runner_resources.h"
 #include "engine/step_runs.h"
 #include "engine/support.h"
 #include "expected_error.h"
 #include "image_family.h"
 #include "image_published.h"
+#include "image_recipes.h"
 #include "kernels/ggml/conv2d_tiled.h"
-#include "kernels/ggml/step_program.h"
+#include "kernels/ggml/plan_step.h"
 #include "platform/host_probe.h"
 #include "providers/device_runtime.h"
-#include "spec/image_spatial.h"
+#include "runner_kernels.h"
 #include "spec/stored.h"
 
 namespace {
@@ -110,8 +110,7 @@ struct Lifetime final : en::PagedModel {
   en::PagedNode node{{.compute_streams = 1, .slots = 1}};
   std::shared_ptr<en::ExecutionMetadataAllowance> paid;
   en::PagedWeights weights;
-  en::RunnerResources resources{node, 0, 0};
-  std::unique_ptr<kg::GgmlBackend> backend;
+  llmp::test_support::RunnerKernels kernels{node, 0, 0};
   std::unique_ptr<kn::StepLaunch> launch;
   std::array<SpanCase, 2> cases;
   std::array<std::uint32_t, 6> resource_ids{};
@@ -140,10 +139,8 @@ struct Lifetime final : en::PagedModel {
     }
     step_runs.SetLaunch(nullptr);
     launch.reset();
-    if (backend) backend->LaunchReleased();
-    backend.reset();
     std::vector<std::string> errors;
-    resources.Release(errors);
+    kernels.Release(errors);
     if (auto r = weights.Release(node.memory()); !r) errors.push_back(r.error());
     return en::support::Joined(errors);
   }
@@ -293,30 +290,24 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
     return Error(std::format("reserved source page geometry: {} bytes, {} extents",
                              life.weights.bytes(), life.weights.extents().size()));
 
-  auto steps = mo::VaeDecoderPlan(::llmp::test_support::QwenImageProfile().vae, 64, 64);
-  std::array<std::vector<mo::VaeStep>, 2> spans;
-  spans[0].assign(steps.begin(), steps.begin() + 2);
-  for (std::size_t i = 0; i + 1 < steps.size(); ++i) {
-    if (steps[i].kind != mo::VaeStep::Kind::kUpsample || steps[i + 1].weight < 0 ||
-        tensors[static_cast<std::size_t>(steps[i + 1].weight)].name != kNames[4])
-      continue;
-    spans[1] = {steps[i], steps[i + 1]};
-  }
-  if (spans[1].size() != 2) return Error("actual upsample span");
-  // Reduced geometry is explicit; tensor identities/channels/kernel stay
-  // actual.
-  spans[1][0].height = spans[1][0].width = 4;
-  spans[1][1].height = spans[1][1].width = 8;
-  if (pointwise) {
-    spans[0] = {steps[0]};
-    spans[1] = spans[0];
-  }
-  if (life.tiled) {
-    spans[0] = {steps[1]};
-    spans[0][0].width = static_cast<std::uint32_t>(tile_width);
-    spans[0][0].height = static_cast<std::uint32_t>(tile_height);
-    spans[1] = spans[0];
-  }
+  // The spans, of the actual decoder (the VAE recipe's stage): its first
+  // two convolutions (or the pointwise one, or the 3x3 one tiled), and the
+  // last upsampler with its convolution. Reduced geometry is explicit in
+  // the owners; tensor identities/channels/kernel stay actual.
+  auto decoder =
+      ::llmp::test_support::QwenImageDecoderGraph(::llmp::test_support::QwenImageProfile(), 64, 64);
+  if (!decoder) return Error(decoder.error());
+  const auto upconv = ::llmp::test_support::FindComponent(*decoder, "conv.spatial", kNames[4]);
+  if (!upconv || *upconv < 2 ||
+      decoder->spec.stages[0].layers[0].components[*upconv - 2].kind != "upsample.nearest")
+    return Error("actual upsample span");
+  std::array<::llmp::test_support::StageSelection, 2> spans{
+      ::llmp::test_support::StageSelection{.values = {1, 2}},
+      ::llmp::test_support::StageSelection{
+          .values = {static_cast<std::uint16_t>(*upconv - 1), *upconv},
+          .input = static_cast<std::uint16_t>(*upconv - 2)}};
+  if (pointwise) spans[0] = spans[1] = {.values = {1}};
+  if (life.tiled) spans[0] = spans[1] = {.values = {2}, .input = 1};
   const std::array<std::span<const co::BoundTensor>, 1> tables{source->tensors};
   for (std::size_t i = 0; i < 2; ++i) {
     auto& item = life.cases[i];
@@ -331,9 +322,9 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
       // (the 1x1 convolution's own, or the planned default) is held to.
       item.policy.ranks.push_back({"sm_121", "ggml.conv2d.f32", 0});
     }
-    auto spec = sp::VaeSpatialSpec(spans[i], tensors);
+    auto spec = ::llmp::test_support::SelectStage(*decoder, spans[i]);
     if (!spec) return Error(spec.error());
-    item.spec = std::move(*spec);
+    item.spec = std::move(spec->spec);
     item.shape = life.tiled ? co::SpatialShape{tile_width, tile_height, 64, 1}
                             : ((pointwise || i == 0) ? co::SpatialShape{64, 64, 64, 1}
                                                      : co::SpatialShape{4, 4, 288, 1});
@@ -380,17 +371,8 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
     for (std::size_t n = 0; n < item.input.size(); ++n)
       item.input[n] = static_cast<float>(static_cast<int>((n * 17 + 3) % 257) - 128) / 128.F;
   }
-  auto backend = kg::GgmlBackend::Create(0, life.node.execution(), life.node.stream(0), nullptr);
-  if (!backend) return Error(backend.error());
-  life.backend = std::move(*backend);
-  if (auto r = life.resources.OpenSelectedWorkspace("selected kernel state",
-                                                    life.backend->persistent_bytes());
-      !r)
-    return r;
-  const auto facts = llmp::providers::QueryDeviceFacts(0);
-  if (!facts) return Error("actual device facts");
-  const auto workspace = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
-  if (workspace.value() > 64 * kMiB) return Error("handle workspace");
+  if (auto r = life.kernels.Create(); !r) return r;
+  if (life.kernels->library_workspace_bytes() > 64 * kMiB) return Error("handle workspace");
   std::vector<llmp::execution::TunedShape> tuning;
   if (life.tiled)
     tuning.push_back({.implementation = kg::kConv2dTiledF32,
@@ -398,20 +380,18 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
                       .k = 576,
                       .n = 1152,
                       .output_encoding = fm::Encoding::kF32});
-  if (auto r = life.backend->FundConstruction(
+  if (auto r = life.kernels->FundConstruction(
           [paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
           [paid = life.paid](std::uint64_t n) { paid->Release(n); });
       !r)
     return r;
-  if (auto r = life.backend->Declare(
-          tuning, workspace.value(),
-          [paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
+  if (auto r = life.kernels->Declare(
+          tuning, [paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
           [paid = life.paid](std::uint64_t n) { paid->Release(n); });
       !r)
     return Error(r.error());
-  if (auto r = life.resources.OpenLibrary("spatial qualified handle"); !r) return r;
-  if (auto r = life.backend->LendLibrary(&life.resources.library()); !r) return Error(r.error());
-  const auto owned = life.backend->Backend();
+  if (auto r = life.kernels.Bind("spatial qualified"); !r) return r;
+  const auto owned = life.kernels->Backend();
   if (!owned.owner || !owned.owner->Ready()) return Error("owned backend readiness");
   const auto& table = owned.owner->backend();
   for (std::size_t i = 0; i < 2; ++i) {
@@ -430,12 +410,11 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
   if (auto r = life.node.MapWorkspace(life.activation + 2 * life.guard, life.pool + 2 * life.guard);
       !r)
     return r;
-  auto launch = life.backend->Launch({life.node.pool().base + life.guard, Bytes(life.pool)},
-                                     {.base = life.resources.selected_workspace().base,
-                                      .bytes = life.resources.selected_workspace().bytes});
+  auto launch = life.kernels->Launch({life.node.pool().base + life.guard, Bytes(life.pool)},
+                                     /*allow_lanes=*/false);
   if (!launch) return Error(launch.error());
   life.launch = std::move(*launch);
-  auto host = life.resources.Pinned(life.pinned);
+  auto host = life.kernels.Pinned(life.pinned);
   if (!host) return Error(host.error());
   life.host = static_cast<std::byte*>(*host);
   life.step_runs.SetStaging(life.host, life.tiled ? 4 * kMiB : 2 * kMiB);
@@ -464,7 +443,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
   if (auto r = life.weights.Register(life.node, 0); !r) return r;
   // Closure construction remains before Run: no live catalog read off
   // scheduler.
-  std::vector<ca::ExtentId> extents = life.resources.extents();
+  std::vector<ca::ExtentId> extents = life.kernels.extents();
   const auto append = [&](const auto& more) {
     extents.insert(extents.end(), more.begin(), more.end());
   };

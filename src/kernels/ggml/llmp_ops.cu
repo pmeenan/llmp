@@ -18,7 +18,7 @@
 #include "base/bytes.h"
 #include "common.cuh"
 #include "dequantize.cuh"
-#include "kernels/decode/float_formats.cuh"
+#include "kernels/device/float_formats.cuh"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/moe_cutlass.h"

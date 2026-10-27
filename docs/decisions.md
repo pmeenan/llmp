@@ -439,6 +439,21 @@ expanded components, links, exports and scalar bindings. There is no runtime
 recipe interpreter or additional serialized expression schema. The text encoder
 retains its existing request construction.
 
+*Amendment, 2026-10-26 (M3.5 review fix C8).* Recipe values, image family
+parameters and LLM parameter rules share one import-time value language
+(`spec/expr.h`): one expression AST over one environment (source keys, family
+parameters as `<kind>.<param>`, bound indices, source tensor dimensions, folds)
+with one evaluator; LLM `ParamRule` tables keep their syntax and lower into it.
+Recipes may emit a parameter or a raw-dimension contract conditionally, and one
+recipe may serve a composition and a standalone import. One VAE mapping covers
+`AutoencoderKLQwenImage` and `AutoencoderKLQwenImage21` in two dialects the
+checkpoint selects (kernel rank, `is_residual`). The stored-spec vocabulary
+loses `conv.causal_first_frame`: a causal 3-D kernel's first frame is
+`conv.spatial` with `temporal_kernel` (absent or 0: a 2-D kernel). Qwen-Image's
+stored specs are unchanged; a standalone Ming VAE artifact must be re-imported.
+Ignored tensors use one matcher on both import routes: whole names
+(`{layer}` once) and explicit `ignored_tensor_prefixes`.
+
 Every source tensor must either match the derived role inventory or an explicit
 mapping omission. Formats and their physical extents determine retained encoded
 payloads; topology does not imply BF16 weights. An optional exact raw source-axis
@@ -549,8 +564,8 @@ architecture's declarative mapping (`spec::Mapping` with a `ServingRecipe` or
   admissible for its container (`InventoryForm`), that its applied folds are
   declared by the mapping, and that its stored `ModelSpec` passes
   `components::ValidateSpec` against its tensor inventory plus
-  `CheckScaleAtomSlots` and `CheckStoredHashTables`. Its execution envelope and
-  planning policy derive from the stored spec (`stage.context`), its mapping's
+  `CheckScaleAtomSlots` and `CheckStoredTables` (each component's stored-table
+  hook). Its execution envelope and planning policy derive from the stored spec (`stage.context`), its mapping's
   `ServingRecipe`, `DraftRecipe`, and `PolicyRule`, and the three-layer model
   settings (`D-103`).
 - **`runtime/approvals.cc` pins the qualified reference fleet.** When a v1

@@ -28,7 +28,6 @@
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/plan_step.h"
-#include "kernels/ggml/selected_operation.h"
 #include "kernels/ggml/tensors.h"
 
 namespace llmp::kernels::ggml {

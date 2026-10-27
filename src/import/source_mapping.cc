@@ -317,6 +317,15 @@ std::optional<NameMatch> Match(std::string_view pattern, std::string_view name,
 }
 }  // namespace normalization_detail
 
+bool IgnoredTensor(std::span<const std::string_view> tensors,
+                   std::span<const std::string_view> prefixes, std::string_view name,
+                   std::uint32_t layers) {
+  return std::ranges::any_of(prefixes, [&](std::string_view p) { return name.starts_with(p); }) ||
+         std::ranges::any_of(tensors, [&](std::string_view pattern) {
+           return normalization_detail::Match(pattern, name, layers).has_value();
+         });
+}
+
 std::expected<void, Error> ValidateImportMapping(const spec::Mapping& table,
                                                  std::string_view container) {
   if (!table.dialects.empty()) {

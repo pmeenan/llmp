@@ -20,8 +20,6 @@
 #include "base/check.h"
 #include "base/json_stream.h"
 #include "execution/registry.h"
-#include "kernels/decode/selected_source.h"
-#include "kernels/exl3/selected_source.h"
 #include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/conv2d_tiled.h"
@@ -786,19 +784,11 @@ std::expected<std::unique_ptr<GgmlBackend>, std::string> GgmlBackend::Create(
   std::unique_ptr<GgmlBackend> backend(new GgmlBackend(device, execution, stream, cublas, options));
   if (options.lower.selected_source && options.lower.selected_source != options.selected.get())
     return std::unexpected("the selected lowering and owned source differ");
-  std::vector<std::string> preferred;
-  if (options.selected)
-    for (const auto& implementation : options.selected->Implementations())
-      preferred.push_back(implementation.name);
-  auto decoders = decode::DecodeResidentSelectedSource();
-  if (!decoders) return std::unexpected(decoders.error());
-  auto exl3 = exl3::DeviceSelectedSource(device);
-  if (!exl3) return std::unexpected(exl3.error());
-  std::vector<std::shared_ptr<const SelectedSource>> sources;
-  if (options.selected) sources.push_back(options.selected);
-  sources.push_back(*decoders);
-  sources.push_back(*exl3);
-  options.selected = decode::CompositeSelectedSource(std::move(sources));
+  // The caller's source (preferred), then the registered kernel set's.
+  auto composed = kernels::ComposeSelectedSources(device, std::move(options.selected));
+  if (!composed) return std::unexpected(composed.error());
+  std::vector<std::string> preferred = std::move(composed->preferred);
+  options.selected = std::move(composed->source);
   options.lower.selected_source = options.selected.get();
   backend->options_ = options;
   auto implementations = Implementations();
@@ -837,12 +827,6 @@ std::expected<std::unique_ptr<GgmlBackend>, std::string> GgmlBackend::Create(
   if (options.selected) backend->facts_.tuned = options.selected->Tuning(arch);
   backend->facts_.preferred = std::move(preferred);
   return backend;
-}
-
-std::expected<std::unique_ptr<GgmlBackend>, std::string> GgmlBackend::CreateFromLibrary(
-    int device, providers::DeviceExecution& execution, providers::StreamId stream,
-    kernels::StreamLibrary* library, GgmlBackendOptions options) {
-  return Create(device, execution, stream, static_cast<CublasHandle*>(library), std::move(options));
 }
 
 kernels::StepBackend GgmlBackend::Backend() {
@@ -994,38 +978,12 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> GgmlBackend::L
   return program;
 }
 
-std::expected<void, std::string> GgmlBackend::LendLibrary(kernels::StreamLibrary* library) {
-  return LendCublas(static_cast<CublasHandle*>(library));
-}
-
-}  // namespace llmp::kernels::ggml
-
-namespace llmp::kernels {
-
-std::expected<std::uint64_t, std::string> StreamLibraryWorkspaceBytes(int device) {
-  const auto facts = providers::QueryDeviceFacts(device);
-  if (!facts) return std::unexpected(std::format("the device's facts: {}", facts.error().text()));
-  return ggml::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture)).value();
-}
-
-std::expected<std::unique_ptr<StreamLibrary>, std::string> CreateStreamLibrary(
-    int device, providers::DeviceExecution& execution, providers::StreamId stream,
-    providers::DeviceSlice workspace) {
-  auto handle = ggml::CublasHandle::Create(device, execution, stream,
-                                           {.base = workspace.base, .size = workspace.size});
-  if (!handle) return std::unexpected(std::format("cuBLAS: {}", handle.error().detail));
-  return std::unique_ptr<StreamLibrary>(std::move(*handle));
-}
-
-BackendCapabilities DeviceBackend::Capabilities() { return ggml::GgmlBackend::Capabilities(); }
-
 namespace {
 
 class GgmlDeviceBackend final : public DeviceBackend {
  public:
   GgmlDeviceBackend(int device, providers::DeviceExecution& execution, providers::StreamId stream,
-                    std::uint64_t library_workspace_bytes,
-                    std::unique_ptr<ggml::GgmlBackend> backend)
+                    std::uint64_t library_workspace_bytes, std::unique_ptr<GgmlBackend> backend)
       : device_(device),
         execution_(execution),
         stream_(stream),
@@ -1039,15 +997,6 @@ class GgmlDeviceBackend final : public DeviceBackend {
   const planner::DeviceFacts& device() const override { return backend_->device(); }
   StepBackend Backend() override { return backend_->Backend(); }
 
-  std::vector<execution::TunedShape> ImageAttentionTuning(std::uint64_t head_dim) const override {
-    return {{.implementation = ggml::kAttentionF32,
-             .rows = 1,
-             .k = head_dim,
-             .n = head_dim,
-             .output_encoding = format::Encoding::kF32,
-             .all_rows = true}};
-  }
-
   std::expected<void, std::string> FundConstruction(
       std::function<bool(std::uint64_t)> charge,
       std::function<void(std::uint64_t)> release) override {
@@ -1056,8 +1005,20 @@ class GgmlDeviceBackend final : public DeviceBackend {
 
   std::expected<void, std::string> Declare(std::span<const execution::TunedShape> tuning,
                                            std::function<bool(std::uint64_t)> charge,
-                                           std::function<void(std::uint64_t)> release) override {
-    return backend_->Declare(tuning, library_workspace_bytes_, std::move(charge),
+                                           std::function<void(std::uint64_t)> release,
+                                           DeclaredDefaults defaults) override {
+    if (defaults.image_attention_head_dim == 0)
+      return backend_->Declare(tuning, library_workspace_bytes_, std::move(charge),
+                               std::move(release));
+    // The image attention's F32 tensor-core kernel, at every row count.
+    std::vector<execution::TunedShape> declared(tuning.begin(), tuning.end());
+    declared.push_back({.implementation = kAttentionF32,
+                        .rows = 1,
+                        .k = defaults.image_attention_head_dim,
+                        .n = defaults.image_attention_head_dim,
+                        .output_encoding = format::Encoding::kF32,
+                        .all_rows = true});
+    return backend_->Declare(declared, library_workspace_bytes_, std::move(charge),
                              std::move(release));
   }
 
@@ -1066,9 +1027,9 @@ class GgmlDeviceBackend final : public DeviceBackend {
       return std::unexpected("the kernel workspaces are not mapped");
     }
     selected_state_ = {persistent_bytes() ? bases[1] : 0, persistent_bytes()};
-    auto cublas = ggml::CublasHandle::Create(
-        device_, execution_, stream_,
-        {.base = bases[0], .size = base::Bytes(library_workspace_bytes_)});
+    auto cublas =
+        CublasHandle::Create(device_, execution_, stream_,
+                             {.base = bases[0], .size = base::Bytes(library_workspace_bytes_)});
     if (!cublas) return std::unexpected(std::format("cuBLAS: {}", cublas.error().detail));
     cublas_ = std::move(*cublas);
     return backend_->LendCublas(cublas_.get());
@@ -1080,11 +1041,11 @@ class GgmlDeviceBackend final : public DeviceBackend {
     cublas_.reset();
   }
 
-  std::expected<std::unique_ptr<StepLaunch>, std::string> Launch(providers::DeviceSlice pool,
+  std::expected<std::unique_ptr<StepLaunch>, std::string> Launch(providers::AddressRange pool,
                                                                  bool allow_lanes = true) override {
     auto made = backend_->Launch({.base = pool.base, .size = pool.size}, selected_state_);
     if (!made) return std::unexpected(made.error());
-    if (!allow_lanes && static_cast<ggml::GgmlStepLaunch*>(made->get())->context().lanes() != 0) {
+    if (!allow_lanes && static_cast<GgmlStepLaunch*>(made->get())->context().lanes() != 0) {
       return std::unexpected("an image launch has concurrent lanes");
     }
     return made;
@@ -1095,31 +1056,32 @@ class GgmlDeviceBackend final : public DeviceBackend {
   providers::DeviceExecution& execution_;
   providers::StreamId stream_;
   std::uint64_t library_workspace_bytes_;
-  std::unique_ptr<ggml::GgmlBackend> backend_;
-  std::unique_ptr<ggml::CublasHandle> cublas_;
-  ggml::SelectedWorkspace selected_state_{};
+  // Declared before the backend, so it is destroyed after it: the backend's
+  // descriptor context borrows the handle until it is gone.
+  std::unique_ptr<CublasHandle> cublas_;
+  std::unique_ptr<GgmlBackend> backend_;
+  SelectedWorkspace selected_state_{};
 };
 
 }  // namespace
 
-std::expected<std::unique_ptr<DeviceBackend>, std::string> DeviceBackend::Create(
+std::expected<std::unique_ptr<DeviceBackend>, std::string> CreateDeviceBackend(
     int device, providers::DeviceExecution& execution, providers::StreamId stream,
     DeviceBackendOptions options) {
   const auto facts = providers::QueryDeviceFacts(device);
   if (!facts) return std::unexpected(std::format("the device's facts: {}", facts.error().text()));
   const std::uint64_t library_workspace_bytes =
-      ggml::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture)).value();
-  ggml::GgmlBackendOptions ggml_options{
+      CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture)).value();
+  GgmlBackendOptions ggml_options{
       .lower = std::move(options.lower),
       .selected = std::move(options.selected),
       .lanes = options.lanes,
   };
-  auto backend =
-      ggml::GgmlBackend::Create(device, execution, stream,
-                                static_cast<ggml::CublasHandle*>(nullptr), std::move(ggml_options));
+  auto backend = GgmlBackend::Create(device, execution, stream, static_cast<CublasHandle*>(nullptr),
+                                     std::move(ggml_options));
   if (!backend) return std::unexpected(backend.error());
   return std::make_unique<GgmlDeviceBackend>(device, execution, stream, library_workspace_bytes,
                                              std::move(*backend));
 }
 
-}  // namespace llmp::kernels
+}  // namespace llmp::kernels::ggml

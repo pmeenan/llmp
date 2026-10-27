@@ -39,7 +39,7 @@
 #include "qwen2_exl3_normalization_fixture.h"
 #include "qwen2_gguf_normalization_fixture.h"
 #include "qwen38_gguf_normalization_fixture.h"
-#include "spec/mappings/qwen2.h"
+#include "spec/mappings/dense.h"
 #include "spec/mappings/qwen38.h"
 
 namespace llmp::import {
@@ -1980,7 +1980,7 @@ TEST(ImportNormalizeSafetensorsTest, Qwen2SafetensorsMappingValidatesAndGgufSynt
       {.key = "qwen2.rope.freq_base", .value = 1000000.0},
       {.key = "qwen2.attention.layer_norm_rms_epsilon", .value = static_cast<double>(1e-6F)},
   };
-  auto spec = spec::Synthesize(spec::mappings::Qwen2GgufMapping(), source, values);
+  auto spec = spec::Synthesize(spec::mappings::Qwen2Mapping(), source, values);
   ASSERT_TRUE(spec.has_value()) << spec.error();
   EXPECT_EQ(spec->stages[0].stream.width, 3584U);
   EXPECT_EQ(spec->stages[0].layers.size(), 1U);
@@ -2631,7 +2631,7 @@ TEST(ImportNormalizeTest, LlamaMappingSynthesizesLlama3FrequencyScaledRope) {
       {"llama.rope.scaling.original_context_length", std::int64_t{8192}},
       {"llama.feed_forward_length", std::int64_t{4864}},
   };
-  auto spec = spec::Synthesize(spec::mappings::LlamaGgufMapping(), source, values);
+  auto spec = spec::Synthesize(spec::mappings::LlamaMapping(), source, values);
   ASSERT_TRUE(spec) << spec.error();
   const auto& attn = spec->stages.front().layers.front().components.front();
   ASSERT_NE(attn.Find("llama3_rope"), nullptr);

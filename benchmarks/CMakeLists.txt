@@ -245,19 +245,19 @@ if(LLMP_CUDA)
   # the retired M3 Gemma 4 runner (docs/experiments/gemma-attention-c4,
   # gemma-dense-ffn); they name no runner.
   add_executable(llmp_gemma_attention_replay gemma_attention_replay.cc)
-  target_link_libraries(llmp_gemma_attention_replay PRIVATE llmp_engine llmp_warnings)
+  target_link_libraries(llmp_gemma_attention_replay PRIVATE llmp_ggml_kernels llmp_engine llmp_warnings)
   target_link_options(llmp_gemma_attention_replay PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
   add_executable(llmp_gemma_attention_global_owner_replay gemma_attention_global_owner_replay.cc)
-  target_link_libraries(llmp_gemma_attention_global_owner_replay PRIVATE llmp_engine llmp_warnings)
+  target_link_libraries(llmp_gemma_attention_global_owner_replay PRIVATE llmp_ggml_kernels llmp_engine llmp_warnings)
   target_link_options(llmp_gemma_attention_global_owner_replay PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
   # Explicit owner-root MMA operand proof only; no production selector.
   add_executable(llmp_gemma_attention_owner_replay gemma_attention_owner_replay.cc)
-  target_link_libraries(llmp_gemma_attention_owner_replay PRIVATE llmp_engine llmp_warnings)
+  target_link_libraries(llmp_gemma_attention_owner_replay PRIVATE llmp_ggml_kernels llmp_engine llmp_warnings)
   target_link_options(llmp_gemma_attention_owner_replay PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
   add_executable(llmp_gemma_dense_ffn_replay gemma_dense_ffn_replay.cc)
-  target_link_libraries(llmp_gemma_dense_ffn_replay PRIVATE llmp_engine llmp_warnings)
+  target_link_libraries(llmp_gemma_dense_ffn_replay PRIVATE llmp_ggml_kernels llmp_engine llmp_warnings)
   target_link_options(llmp_gemma_dense_ffn_replay PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 

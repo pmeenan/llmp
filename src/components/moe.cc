@@ -44,6 +44,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <numeric>
 #include <span>
@@ -776,6 +777,43 @@ std::expected<void, std::string> HashReference(RefIO& io) {
   return {};
 }
 
+// Its stored table, before any routed work: I32 [used, tokens] of
+// consistent, aligned bytes (read as I32: a table of any other encoding is
+// never reinterpreted) whose every entry names one of its experts, read
+// through admission's bounded windows (no whole-table copy).
+std::expected<void, std::string> HashCheckStored(const Instance& in, const StoredWeight& weight) {
+  const auto experts = in.params.Int("experts");
+  const auto used = static_cast<std::uint64_t>(in.params.Int("used"));
+  const format::TensorFormat& format = *weight.format;
+  if (format.encoding != format::Encoding::kI32 || format.layout != format::Layout::kDense)
+    return std::unexpected("stored hash-routing table is not dense I32");
+  if (format.shape.rank != 2 || format.shape.ne[0] != used || format.shape.ne[1] == 0 ||
+      format.shape.ne[1] > (std::uint64_t{1} << 32U))
+    return std::unexpected("stored hash-routing table has another shape");
+  if (weight.bytes != format.shape.ne[0] * format.shape.ne[1] * sizeof(std::int32_t))
+    return std::unexpected("stored hash-routing table has an inconsistent byte count");
+  // Aligned: each window holds whole entries (4,096 is a multiple of 4).
+  if (weight.file_offset % sizeof(std::int32_t) != 0)
+    return std::unexpected("stored hash-routing table is unaligned");
+  bool invalid = false;
+  auto read = weight.read(
+      [&](std::uint64_t, std::span<const std::byte> bytes) -> std::expected<void, std::string> {
+        for (std::size_t at = 0; at + sizeof(std::int32_t) <= bytes.size();
+             at += sizeof(std::int32_t)) {
+          std::int32_t expert = 0;
+          std::memcpy(&expert, bytes.data() + at, sizeof(expert));
+          if (expert < 0 || expert >= experts) {
+            invalid = true;
+            return std::unexpected("invalid");
+          }
+        }
+        return {};
+      });
+  if (invalid) return std::unexpected("stored hash-routing table names an invalid expert");
+  if (!read) return std::unexpected("reading stored hash-routing table: " + read.error());
+  return {};
+}
+
 }  // namespace
 
 const ComponentDef& SideHash() {
@@ -792,6 +830,7 @@ const ComponentDef& SideHash() {
       .reference = HashReference,
       .side_rows = HashRows,
       .side_count = HashCount,
+      .check_stored = HashCheckStored,
   };
   return def;
 }

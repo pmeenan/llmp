@@ -25,38 +25,6 @@ using support::Round;
 
 }  // namespace
 
-std::expected<SlabSpec, std::string> ExpertSlab(
-    const artifact::Artifact& artifact,
-    std::span<const std::pair<std::uint32_t, std::string_view>> arrays, std::uint32_t count,
-    std::uint64_t alignment, std::uint32_t layer) {
-  std::uint64_t unit = 16;
-  std::optional<std::uint32_t> first_group;
-  for (const auto& [index, type_name] : arrays) {
-    const auto& a = artifact.expert_arrays()[index];
-    const auto encoding = format::EncodingByTypeName(type_name);
-    if (!encoding) {
-      return Error(std::format("unknown expert encoding: {}", type_name));
-    }
-    const auto block = format::BlockBytes(*encoding);
-    if (!block) {
-      return Error(std::format("expert encoding has no block bytes: {}", type_name));
-    }
-    unit = std::lcm(unit, *block);
-    if (first_group && *first_group != a.first_group) {
-      return Error(std::format("layer {}'s expert arrays do not share their groups", layer));
-    }
-    first_group = a.first_group;
-  }
-  const std::uint32_t g = first_group.value_or(0);
-  if (g >= artifact.groups().size()) {
-    return Error(std::format("layer {}'s expert arrays name no group", layer));
-  }
-  return SlabSpec{.first_group = g,
-                  .count = count,
-                  .stride = Round(artifact.groups()[g].stored.value(), unit),
-                  .alignment = alignment};
-}
-
 std::expected<LayerSlabs, std::string> ExpertSlabsOf(const artifact::Artifact& artifact,
                                                      std::uint64_t alignment) {
   LayerSlabs out;
@@ -65,23 +33,25 @@ std::expected<LayerSlabs, std::string> ExpertSlabsOf(const artifact::Artifact& a
   out.pitch.assign(arrays.size(), 0);
   std::map<std::uint32_t, std::vector<std::uint32_t>> layers;
   for (std::uint32_t i = 0; i < arrays.size(); ++i) layers[arrays[i].layer].push_back(i);
-  if (alignment == 0) return Error("expert slab alignment is zero");
+  if (alignment == 0 || alignment % 16 != 0)
+    return Error("expert slab alignment is not a positive multiple of 16");
   std::vector<bool> covered(artifact.groups().size(), false);
   for (const auto& [layer, list] : layers) {
-    std::uint64_t unit = 16, quantum = alignment;
+    // A multiple of the alignment (and so of the 16-byte expert base) and
+    // of every array's block bytes.
+    std::uint64_t quantum = alignment;
     const auto& first = arrays[list.front()];
     for (const auto index : list) {
       const auto& array = arrays[index];
       if (array.first_group != first.first_group || array.count != first.count)
         return Error(std::format("layer {}'s expert arrays differ in groups or experts", layer));
-      std::uint64_t element_bytes = 0, block_bytes = 0;
-      // Native descriptors are authoritative.
+      std::uint64_t block_bytes = 0;
       // A split or scale-atom encoding's parts (codes, block scales, a
       // tensor scale; an affine encoding's biases or zero points) are
-      // separate arrays of one expert group: each part's
-      // slice is placed at the writer's member alignment, read by the
-      // format's decoders or the block-scaled grouped GEMM, not as
-      // legacy blocks; the slab keeps 16-byte expert bases.
+      // separate arrays of one expert group: each part's slice is placed at
+      // the writer's member alignment and read by the format's decoders or
+      // the block-scaled grouped GEMM, not as whole blocks; the slab keeps
+      // 16-byte expert bases.
       const bool split =
           array.format &&
           (array.format->layout == format::Layout::kSplit ||
@@ -94,11 +64,11 @@ std::expected<LayerSlabs, std::string> ExpertSlabsOf(const artifact::Artifact& a
                       !format::IsSinglePartBlockOrDense(array.format->layout))))
         return Error("native expert slab needs a valid single-part block or split-part slice");
       if (split) {
-        element_bytes = block_bytes = 16;
+        block_bytes = 16;
       } else {
         const auto block = format::BlockBytes(array.format->encoding);
         if (!block) return Error("native expert slice has no block geometry");
-        element_bytes = block_bytes = *block;
+        block_bytes = *block;
       }
       const auto combine = [](std::uint64_t current,
                               std::uint64_t block) -> std::optional<std::uint64_t> {
@@ -107,24 +77,19 @@ std::expected<LayerSlabs, std::string> ExpertSlabsOf(const artifact::Artifact& a
           return std::nullopt;
         return std::lcm(current, block);
       };
-      const auto next_unit = combine(unit, element_bytes),
-                 next_quantum = combine(quantum, block_bytes);
-      if (!next_unit || !next_quantum) return Error("expert slab block alignment overflows");
-      unit = *next_unit;
-      quantum = *next_quantum;
+      const auto next = combine(quantum, block_bytes);
+      if (!next) return Error("expert slab block alignment overflows");
+      quantum = *next;
     }
     const auto g = first.first_group;
     if (g >= artifact.groups().size() || first.count > artifact.groups().size() - g)
       return Error(std::format("layer {}'s expert arrays name missing groups", layer));
     const auto stored = artifact.groups()[g].stored.value();
-    if (stored > std::numeric_limits<std::uint64_t>::max() - (unit - 1))
-      return Error("expert slab stored size overflows");
-    const auto stride = Round(stored, unit);
-    if (stride > std::numeric_limits<std::uint64_t>::max() - (quantum - 1))
+    if (stored > std::numeric_limits<std::uint64_t>::max() - (quantum - 1))
       return Error(std::format("layer {}'s expert pitch overflows", layer));
     const SlabSpec slab{.first_group = g,
                         .count = first.count,
-                        .stride = Round(stride, quantum),
+                        .stride = Round(stored, quantum),
                         .alignment = alignment};
     for (const auto index : list) out.pitch[index] = slab.stride;
     for (std::uint32_t e = 0; e < slab.count; ++e) {

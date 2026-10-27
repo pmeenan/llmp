@@ -29,17 +29,16 @@
 #include "engine/graph_plan.h"
 #include "engine/paged_weights.h"
 #include "engine/plan_cache.h"
-#include "engine/runner_resources.h"
 #include "engine/step_runs.h"
 #include "engine/support.h"
 #include "expected_error.h"
 #include "image_family.h"
 #include "image_published.h"
-#include "kernels/ggml/step_program.h"
+#include "image_recipes.h"
 #include "planner/policy.h"
 #include "platform/host_probe.h"
 #include "providers/device_runtime.h"
-#include "spec/image_spatial.h"
+#include "runner_kernels.h"
 #include "spec/stored.h"
 
 namespace {
@@ -48,7 +47,6 @@ namespace co = llmp::components;
 namespace sp = llmp::spec;
 namespace mo = llmp::model;
 namespace ir = llmp::ir;
-namespace kg = llmp::kernels::ggml;
 namespace kn = llmp::kernels;
 namespace ca = llmp::catalog;
 namespace fm = llmp::format;
@@ -158,8 +156,7 @@ struct Lifetime final : en::PagedModel {
   en::PagedNode node{{.compute_streams = 1, .slots = 1}};
   std::shared_ptr<en::ExecutionMetadataAllowance> paid;
   en::PagedWeights weights;
-  en::RunnerResources resources{node, 0, 0};
-  std::unique_ptr<kg::GgmlBackend> backend;
+  llmp::test_support::RunnerKernels kernels{node, 0, 0};
   std::unique_ptr<kn::StepLaunch> launch;
   std::optional<co::SpatialGraph> graph;
   std::map<std::pair<ir::WeightRef, fm::PartRole>, std::uint32_t> bindings;
@@ -189,10 +186,8 @@ struct Lifetime final : en::PagedModel {
     graph.reset();
     step_runs.SetLaunch(nullptr);
     launch.reset();
-    if (backend) backend->LaunchReleased();
-    backend.reset();
     std::vector<std::string> errors;
-    resources.Release(errors);
+    kernels.Release(errors);
     if (auto r = weights.Release(node.memory()); !r) errors.push_back(r.error());
     return en::support::Joined(errors);
   }
@@ -355,16 +350,15 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
       life.weights.host_bytes() != 0 || life.weights.extents().size() != life.limits.reserved_pages)
     return Error(std::format("global group virtual reservation differs: {} bytes, {} extents",
                              life.weights.bytes(), life.weights.extents().size()));
-  if (life.flow) {
-    auto mapping_bound = sp::ImageFlowSpecBound(profile, all_tensors);
-    if (!mapping_bound || *mapping_bound != kFlowMappingBytes || !life.paid->Charge(*mapping_bound))
-      return Error("whole flow mapping prepayment");
-  }
-  // The specs read the denoiser's whole tensor list by role (its order);
-  // only the bound subset is placed.
-  auto mapping = life.flow    ? sp::ImageFlowSpec(profile, 2, 4, all_tensors)
-                 : life.block ? sp::ImageTransformerBlockSpec(profile, 0, 2, all_tensors)
-                              : sp::ImageTimestepSpec(profile, all_tensors);
+  // The whole flow's stored-spec allowance, prepaid as before.
+  if (life.flow && !life.paid->Charge(kFlowMappingBytes))
+    return Error("whole flow mapping prepayment");
+  // The specs are the flow recipe's stage (or its timestep projections, or
+  // its conditioner and first block); only the bound subset is placed.
+  const auto& family = ::llmp::test_support::QwenImageProfile();
+  auto mapping = life.flow    ? ::llmp::test_support::QwenImageFlowGraph(family, 2, 4)
+                 : life.block ? ::llmp::test_support::QwenImageBlockGraph(family, 2)
+                              : ::llmp::test_support::QwenImageTimestepGraph(family);
   if (!mapping) return Error(mapping.error());
   const std::array<std::span<const co::BoundTensor>, 1> tables{bound};
   const std::array owners{co::SpatialOwner{0, life.flow    ? co::SpatialShape{1, 2, 4096, 1}
@@ -421,30 +415,20 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
         !life.bindings.emplace(std::pair{weight.ref, part}, *id).second)
       return Error("exact timestep role binding");
   }
-  auto backend = kg::GgmlBackend::Create(0, life.node.execution(), life.node.stream(0), nullptr);
-  if (!backend) return Error(backend.error());
-  life.backend = std::move(*backend);
-  if (auto r = life.resources.OpenSelectedWorkspace("selected kernel state",
-                                                    life.backend->persistent_bytes());
-      !r)
-    return r;
-  const auto facts = llmp::providers::QueryDeviceFacts(0);
-  if (!facts) return Error("actual device facts");
-  const auto workspace = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
-  if (workspace.value() > 32 * kMiB) return Error("owned handle workspace");
-  if (auto r = life.backend->FundConstruction(
+  if (auto r = life.kernels.Create(); !r) return r;
+  if (life.kernels->library_workspace_bytes() > 32 * kMiB) return Error("owned handle workspace");
+  if (auto r = life.kernels->FundConstruction(
           [paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
           [paid = life.paid](std::uint64_t n) { paid->Release(n); });
       !r)
     return r;
-  if (auto r = life.backend->Declare(
-          {}, workspace.value(), [paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
+  if (auto r = life.kernels->Declare(
+          {}, [paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
           [paid = life.paid](std::uint64_t n) { paid->Release(n); });
       !r)
     return Error(r.error());
-  if (auto r = life.resources.OpenLibrary("timestep owned handle"); !r) return r;
-  if (auto r = life.backend->LendLibrary(&life.resources.library()); !r) return Error(r.error());
-  const auto owned = life.backend->Backend();
+  if (auto r = life.kernels.Bind("timestep owned"); !r) return r;
+  const auto owned = life.kernels->Backend();
   if (!owned.owner || !owned.owner->Ready()) return Error("owned backend readiness");
   const auto& table = owned.owner->backend();
   en::GraphBuildIO io{life.graph->graph(), life.graph->graph().inputs(),
@@ -466,12 +450,11 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
     if (auto r = CheckProgram(life, **measured); !r) return r;
   }
   if (auto r = life.node.MapWorkspace(life.limits.activation, life.limits.pool); !r) return r;
-  auto launch = life.backend->Launch({life.node.pool().base, Bytes(life.node.pool().bytes)},
-                                     {.base = life.resources.selected_workspace().base,
-                                      .bytes = life.resources.selected_workspace().bytes});
+  auto launch = life.kernels->Launch({life.node.pool().base, Bytes(life.node.pool().bytes)},
+                                     /*allow_lanes=*/false);
   if (!launch) return Error(launch.error());
   life.launch = std::move(*launch);
-  auto host = life.resources.Pinned(kPinned);
+  auto host = life.kernels.Pinned(kPinned);
   if (!host) return Error(host.error());
   life.host = static_cast<std::byte*>(*host);
   life.step_runs.SetStaging(life.host, life.limits.output_offset);
@@ -488,7 +471,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   if (auto r = CheckProgram(life, *life.program); !r) return r;
   if (auto r = life.node.Start(Bytes(life.limits.domain)); !r) return r;
   if (auto r = life.weights.Register(life.node, 0); !r) return r;
-  auto extents = life.resources.extents();
+  auto extents = life.kernels.extents();
   for (const auto* more : {&life.node.activations().extents, &life.node.pool().extents})
     extents.insert(extents.end(), more->begin(), more->end());
   std::vector<ca::ExtentId> selected;

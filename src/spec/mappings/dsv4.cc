@@ -17,6 +17,7 @@
 #include "format/encoding.h"
 #include "format/tensor_format.h"
 #include "spec/mapping.h"
+#include "spec/mappings/names.h"
 #include "spec/mappings/rules.h"
 #include "spec/spec.h"
 
@@ -59,7 +60,7 @@ constexpr std::array kCodes = {
   Plain("blk.{layer}.hc_attn_fn.weight", "attn_mix", "fn"),               \
       Plain("blk.{layer}.hc_attn_base.weight", "attn_mix", "base"),       \
       Plain("blk.{layer}.hc_attn_scale.weight", "attn_mix", "scale"),     \
-      Plain("blk.{layer}.attn_norm.weight", "attn_mix", "post_norm"),     \
+      Plain(names::kAttnNorm.gguf, "attn_mix", "post_norm"),              \
       Plain("blk.{layer}.attn_q_a.weight", "attention", "q_a"),           \
       Plain("blk.{layer}.attn_q_a_norm.weight", "attention", "q_norm"),   \
       Plain("blk.{layer}.attn_q_b.weight", "attention", "q_b"),           \
@@ -71,21 +72,20 @@ constexpr std::array kCodes = {
       Plain("blk.{layer}.hc_ffn_fn.weight", "ffn_mix", "fn"),             \
       Plain("blk.{layer}.hc_ffn_base.weight", "ffn_mix", "base"),         \
       Plain("blk.{layer}.hc_ffn_scale.weight", "ffn_mix", "scale"),       \
-      Plain("blk.{layer}.ffn_norm.weight", "ffn_mix", "post_norm"),       \
+      Plain(names::kFfnNorm.gguf, "ffn_mix", "post_norm"),                \
       Plain("output_hc_fn.weight", "output_mix", "fn"),                   \
       Plain("output_hc_base.weight", "output_mix", "base"),               \
       Plain("output_hc_scale.weight", "output_mix", "scale"),             \
-      Plain("output_norm.weight", "output_mix", "post_norm")
+      Plain(names::kOutputNorm.gguf, "output_mix", "post_norm")
 
 // An MoE slot's tensors.
-#define LLMP_DSV4_MOE_TENSORS(SLOT)                                      \
-  Plain("blk.{layer}.ffn_gate_inp.weight", SLOT, "router"),              \
-      Experts("blk.{layer}.ffn_gate_exps.weight", SLOT, "gate_experts"), \
-      Experts("blk.{layer}.ffn_up_exps.weight", SLOT, "up_experts"),     \
-      Experts("blk.{layer}.ffn_down_exps.weight", SLOT, "down_experts"), \
-      Plain("blk.{layer}.ffn_gate_shexp.weight", SLOT, "gate"),          \
-      Plain("blk.{layer}.ffn_up_shexp.weight", SLOT, "up"),              \
-      Plain("blk.{layer}.ffn_down_shexp.weight", SLOT, "down")
+#define LLMP_DSV4_MOE_TENSORS(SLOT)                                                               \
+  Plain(names::kFfnGateInp.gguf, SLOT, "router"),                                                 \
+      Experts(names::kFfnGateExps.gguf, SLOT, "gate_experts"),                                    \
+      Experts(names::kFfnUpExps.gguf, SLOT, "up_experts"),                                        \
+      Experts(names::kFfnDownExps.gguf, SLOT, "down_experts"),                                    \
+      Plain(names::kFfnGateShexp.gguf, SLOT, "gate"), Plain(names::kFfnUpShexp.gguf, SLOT, "up"), \
+      Plain(names::kFfnDownShexp.gguf, SLOT, "down")
 
 // The block parameters both mappings read.
 #define LLMP_DSV4_BLOCK_PARAMS                                                                     \
@@ -176,7 +176,7 @@ constexpr std::array kSlots = {
 };
 
 constexpr std::array kTensors = {
-    Plain("token_embd.weight", "embedding", "table"),
+    Plain(names::kTokenEmbd.gguf, "embedding", "table"),
     Plain("blk.{layer}.ffn_gate_tid2eid.weight", "hash", "table"),
     LLMP_DSV4_BLOCK_TENSORS,
     // The compressor (CSA and HCA layers) and the indexer (CSA's).
@@ -193,7 +193,7 @@ constexpr std::array kTensors = {
     LLMP_DSV4_MOE_TENSORS("moe_hash"),
     LLMP_DSV4_MOE_TENSORS("moe"),
     Plain("blk.{layer}.exp_probs_b.bias", "moe", "router_bias"),
-    Plain("output.weight", "output", "weight"),
+    Plain(names::kOutput.gguf, "output", "weight"),
 };
 
 constexpr std::array kParams = {
@@ -265,7 +265,7 @@ constexpr std::array kDsv4Auxiliary{
     kGgufAuxiliary[0], kGgufAuxiliary[1], kGgufAuxiliary[2],
     AuxiliaryNamespace{"deepseek4.nextn_predict_layers", "MTP layers the import does not hold"},
     AuxiliaryNamespace{"deepseek4.vocab_size", "the vocabulary the token table states",
-                       "token_embd.weight", 1}};
+                       names::kTokenEmbd.gguf, 1}};
 constexpr std::array kDsv4Lists{
     ListRequirement{.key = "attention.compress_ratios",
                     .size = kLayerLimit,
@@ -318,13 +318,13 @@ constexpr std::array kDsparkSlots = {
 
 constexpr std::array kDsparkTensors = {
     TensorRule{
-        .pattern = "token_embd.weight", .slot = "embedding", .role = "table", .target = true},
+        .pattern = names::kTokenEmbd.gguf, .slot = "embedding", .role = "table", .target = true},
     Plain("fc.weight", "embedding", "fc"),
     Plain("enc.output_norm.weight", "embedding", "norm"),
     LLMP_DSV4_BLOCK_TENSORS,
     LLMP_DSV4_MOE_TENSORS("moe"),
     Plain("blk.{layer}.exp_probs_b.bias", "moe", "router_bias"),
-    TensorRule{.pattern = "output.weight", .slot = "output", .role = "weight", .target = true},
+    TensorRule{.pattern = names::kOutput.gguf, .slot = "output", .role = "weight", .target = true},
     Plain("markov_w1.weight", "output", "markov_w1"),
     Plain("markov_w2.weight", "output", "markov_w2"),
     // The confidence head: bound by today's runner, never read.

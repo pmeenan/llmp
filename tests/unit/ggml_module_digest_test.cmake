@@ -45,7 +45,7 @@ endif()
 
 file(REMOVE_RECURSE "${WORK}")
 # The module inventory may name files outside its directory (the GGML
-# module's ../decode/float_formats.cuh). Keep such relative paths within
+# module's ../device/float_formats.cuh). Keep such relative paths within
 # the scratch root.
 set(copy_base "${WORK}/root/src/kernels/module")
 file(MAKE_DIRECTORY "${copy_base}")

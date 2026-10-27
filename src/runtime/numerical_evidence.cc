@@ -5,8 +5,7 @@
 
 #include <algorithm>
 #include <array>
-
-#include "runtime/approvals.h"
+#include <string_view>
 
 namespace llmp::runtime {
 namespace {
@@ -17,6 +16,14 @@ constexpr std::array kBf16{Encoding::kBF16};
 constexpr std::array kMxfp8{Encoding::kMxfp8};
 constexpr std::array kPrepared{Encoding::kNvfp4, Encoding::kMxfp8};
 constexpr std::array kNvfp4{Encoding::kNvfp4};
+// The accepted reports' SHA-256 digests (each report's identity in a plan's
+// attributed evidence).
+constexpr std::string_view kNativeNumericalEvidence =
+    "114d79515017285c44735f85c40795b2444d7c7694064e7f6f1ac8103b21b29a";
+constexpr std::string_view kFinalNumericalEvidence =
+    "62bcea419709532e745efe404cbe1f938ec869d1657cad0797ce42266b51f07d";
+constexpr std::string_view kImageNumericalEvidence =
+    "9999175c760fd4a25601978f592daa63dae329ce5efadeae50dc1b3c26a65d6a";
 // The accepted qwen38-gguf source checkpoint's stored matrix inventory.
 // Its layer 2 gate/up experts are IQ3_S, while the other 47 are IQ2_S;
 // the report's tuning examples do not enumerate this one mixed layer.

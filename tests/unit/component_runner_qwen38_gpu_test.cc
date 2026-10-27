@@ -62,15 +62,14 @@
 #include "engine/model_runner.h"
 #include "engine/paged_node.h"
 #include "engine/paged_weights.h"
-#include "engine/runner_resources.h"
 #include "engine/support.h"
 #include "families/qwen.h"
-#include "kernels/ggml/step_program.h"
 #include "model/state_contract.h"
 #include "planner/policy.h"
 #include "planner/step_shape.h"
 #include "platform/host_probe.h"
 #include "providers/device_runtime.h"
+#include "runner_kernels.h"
 #include "runtime/component_admission.h"
 #include "spec/mapping.h"
 #include "spec/mappings/qwen38.h"
@@ -83,7 +82,6 @@ namespace {
 namespace co = llmp::components;
 namespace en = llmp::engine;
 namespace ar = llmp::artifact;
-namespace kg = llmp::kernels::ggml;
 namespace kn = llmp::kernels;
 namespace fm = llmp::test_support::families;
 namespace md = llmp::model;
@@ -321,24 +319,22 @@ std::uint64_t UsedBytes(std::string_view name, std::uint64_t cell_bytes, std::ui
 
 // ------------------------------------------------------------ the components
 
-// The kernel source's own memory beside the runner (its cuBLAS handle and
-// workspace, which the backend borrows): released by the node's teardown
-// after the runner's, the backend first.
+// The runner's device backend, made as serving makes it: the runner maps
+// its kernel memory and binds and releases its workspaces
+// (RunnerKernelConfig); the backend goes at the node's teardown, after the
+// runner's release.
 class KernelSource final : public en::PagedModel {
  public:
-  explicit KernelSource(en::PagedNode& node)
-      : resources(std::make_unique<en::RunnerResources>(node, 0, 0)) {}
+  explicit KernelSource(en::PagedNode& node) : kernels(node, 0, 0) {}
   std::uint32_t stream() const override { return 0; }
   const llmp::catalog::Closure& fence_closure() const override { return nothing_; }
   std::vector<llmp::catalog::ExtentId> managed_extents() const override { return {}; }
   en::Status Release() override {
-    backend.reset();
     std::vector<std::string> problems;
-    resources->Release(problems);
+    kernels.Release(problems);
     return en::support::Joined(problems);
   }
-  std::unique_ptr<en::RunnerResources> resources;
-  std::unique_ptr<kg::GgmlBackend> backend;
+  llmp::test_support::RunnerKernels kernels;
 
  private:
   llmp::catalog::Closure nothing_;
@@ -435,15 +431,11 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
   std::vector<en::PagedModel*> entered;
   const auto started = [&]() -> en::Status {
     if (auto x = node.Open(); !x) return x;
-    if (auto x = source->resources->OpenLibrary("lowered cuBLAS workspace"); !x) return x;
-    auto made = kg::GgmlBackend::Create(
-        0, node.execution(), node.stream(0), &source->resources->library(),
-        {.lower = {.expert_stride = [&pitch_of](const llmp::ir::WeightRef& ref) -> std::uint64_t {
-           const auto at = pitch_of.find(ref);
-           return at == pitch_of.end() ? 0 : at->second;
-         }}});
-    if (!made) return std::unexpected(made.error());
-    source->backend = std::move(*made);
+    const auto stride = [&pitch_of](const llmp::ir::WeightRef& ref) -> std::uint64_t {
+      const auto at = pitch_of.find(ref);
+      return at == pitch_of.end() ? 0 : at->second;
+    };
+    if (auto x = source->kernels.Create({.lower = {.expert_stride = stride}}); !x) return x;
     // Native construction has a separate finite fixture allowance. Retained
     // plans still acquire the runner's ordinary paid ownership before transfer.
     const auto available = llmp::platform::AvailableMemoryBytes();
@@ -451,15 +443,11 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
     auto paid = en::ExecutionMetadataAllowance::Admit(node.catalog(), node.domain(), 128ULL << 20U,
                                                       *available, 6ULL << 30U);
     if (!paid) return std::unexpected(paid.error());
-    if (auto funded = source->backend->FundConstruction(
+    if (auto funded = source->kernels->FundConstruction(
             [paid = *paid](std::uint64_t n) { return paid->Charge(n); },
             [paid = *paid](std::uint64_t n) { paid->Release(n); });
         !funded)
       return std::unexpected(funded.error());
-    if (auto x = source->resources->OpenSelectedWorkspace("selected kernel state",
-                                                          source->backend->persistent_bytes());
-        !x)
-      return x;
     auto weights = std::make_unique<en::PagedWeights>();
     if (auto x = weights->Open(t.root); !x) return x;
     en::PagedWeights* tw = weights.get();
@@ -473,7 +461,7 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
          .values = {},
          .slots = kOwners,
          .policy = t.policy,
-         .backend = source->backend->Backend()});
+         .backend = source->kernels->Backend()});
     if (!stage0) return std::unexpected(stage0.error());
     en::RunnerConfig config;
     config.slots = {.model = "lowered",
@@ -496,11 +484,10 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
     config.capture_phases = 0x1F;
     config.launch =
         [&](std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
-      return source->backend->Launch(
-          {.base = node.pool().base, .size = llmp::base::Bytes(node.pool().bytes)},
-          {.base = source->resources->selected_workspace().base,
-           .bytes = source->resources->selected_workspace().bytes});
+      return source->kernels->Launch(
+          {.base = node.pool().base, .size = llmp::base::Bytes(node.pool().bytes)});
     };
+    llmp::test_support::RunnerKernelConfig(config, source->kernels.backend(), "lowered");
     config.weight_address = [&place, tw](const llmp::ir::WeightRef& ref,
                                          llmp::format::PartRole role) -> std::uint64_t {
       const auto at = place.find({ref, role});

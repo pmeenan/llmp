@@ -27,7 +27,6 @@
 #include "engine/component_source.h"
 #include "engine/execution_contract.h"
 #include "engine/model_runner.h"
-#include "engine/runner_resources.h"
 #include "engine/support.h"
 #include "execution/registry.h"
 #include "expected_error.h"
@@ -36,6 +35,7 @@
 #include "kernels/ggml/step_program.h"
 #include "platform/host_probe.h"
 #include "providers/device_runtime.h"
+#include "runner_kernels.h"
 #include "spec/stored.h"
 
 namespace llmp::test_support {
@@ -515,20 +515,22 @@ std::filesystem::path Artifact(const std::filesystem::path& root, const sp::Mode
   return ts::Publish(root, files);
 }
 
+// The runner's device backend, made as serving makes it, and a second one
+// for the declaration control; released after the runner's release.
 class KernelOwner final : public en::PagedModel {
  public:
-  explicit KernelOwner(en::PagedNode& node) : resources(node, 0, 0) {}
+  explicit KernelOwner(en::PagedNode& node) : kernels(node, 0, 0) {}
   std::uint32_t stream() const override { return 0; }
   const ca::Closure& fence_closure() const override { return empty; }
   std::vector<ca::ExtentId> managed_extents() const override { return {}; }
   en::Status Release() override {
-    backend.reset();
     std::vector<std::string> errors;
-    resources.Release(errors);
+    if (other) other->Release(errors);
+    kernels.Release(errors);
     return en::support::Joined(errors);
   }
-  en::RunnerResources resources;
-  std::unique_ptr<kg::GgmlBackend> backend;
+  llmp::test_support::RunnerKernels kernels;
+  std::unique_ptr<llmp::test_support::RunnerKernels> other;
   ca::Closure empty;
 };
 struct FixtureLimits {
@@ -686,32 +688,19 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
   life->entered.push_back(life->kernel.get());
   auto selected = de::GroupedSelectedSource();
   if (!selected) return Error(selected.error());
-  auto backend = kg::GgmlBackend::Create(0, node.execution(), node.stream(0), nullptr,
-                                         {.selected = *selected});
-  if (!backend) return Error(backend.error());
-  life->kernel->backend = std::move(*backend);
-  if (auto r = life->kernel->backend->FundConstruction(
+  if (auto r = life->kernel->kernels.Create({.selected = *selected}); !r) return r;
+  if (auto r = life->kernel->kernels->FundConstruction(
           [paid = life->paid](std::uint64_t n) { return paid->Charge(n); },
           [paid = life->paid](std::uint64_t n) { paid->Release(n); });
       !r)
     return Error(r.error());
-  if (auto r = life->kernel->resources.OpenSelectedWorkspace(
-          "selected kernel state", life->kernel->backend->persistent_bytes());
-      !r)
-    return r;
-  const auto facts = llmp::providers::QueryDeviceFacts(0);
-  if (!facts) return Error("device facts");
-  const auto workspace = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
-  if (workspace.value() > 64 * kMiB) return Error("handle workspace bound");
+  if (life->kernel->kernels->library_workspace_bytes() > 64 * kMiB)
+    return Error("handle workspace bound");
   auto* held = life.get();
-  if (auto r = life->kernel->backend->Declare(
-          {}, workspace.value(),
-          [paid = life->paid](std::uint64_t bytes) { return paid->Charge(bytes); },
+  if (auto r = life->kernel->kernels->Declare(
+          {}, [paid = life->paid](std::uint64_t bytes) { return paid->Charge(bytes); },
           [paid = life->paid](std::uint64_t bytes) { paid->Release(bytes); });
       !r)
-    return Error(r.error());
-  if (auto r = life->kernel->resources.OpenLibrary("routed shared handle"); !r) return r;
-  if (auto r = life->kernel->backend->LendLibrary(&life->kernel->resources.library()); !r)
     return Error(r.error());
   auto domain = en::NumericalDomain::Create({{.stage = 0,
                                               .name = "target",
@@ -730,7 +719,7 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
        .bound_digest = *digest,
        .slots = 1,
        .policy = pl::Policy{},
-       .backend = life->kernel->backend->Backend(),
+       .backend = life->kernel->kernels->Backend(),
        .execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*domain)),
        .validate_program = [held](const kn::LowerInput& input,
                                   const kn::StepProgram& program) -> en::Status {
@@ -771,7 +760,7 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
          }
          std::size_t selected = 0;
          for (const auto& op : input.plan.steps)
-           if (held->kernel->backend->registry().at(op.implementation).name ==
+           if (held->kernel->kernels->registry().at(op.implementation).name ==
                "llmp.decode.grouped.nvfp4.split")
              ++selected;
          if (selected != 2 * held->route_groups)
@@ -845,14 +834,12 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
   };
   config.launch =
       [held](std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
-    auto launch = held->kernel->backend->Launch(
-        {.base = held->node.pool().base, .size = Bytes(held->node.pool().bytes)},
-        {.base = held->kernel->resources.selected_workspace().base,
-         .bytes = held->kernel->resources.selected_workspace().bytes});
+    auto launch = held->kernel->kernels->Launch(
+        {.base = held->node.pool().base, .size = Bytes(held->node.pool().bytes)});
     if (launch) held->launch = launch->get();
     return launch;
   };
-  config.retire = [held] { held->kernel->backend->LaunchReleased(); };
+  llmp::test_support::RunnerKernelConfig(config, life->kernel->kernels.backend(), "routed shared");
   auto runner = en::ModelRunner::Create(node, std::move(config), std::move(*component), 0, 0);
   if (!runner) return Error(runner.error());
   life->runner = std::move(*runner);
@@ -1208,22 +1195,17 @@ TEST(RoutedComponentGpu, OwnedBackendSealsAdapterIdentityAndRejectsLaterSubstitu
   life->entered.push_back(life->kernel.get());
   const auto facts = llmp::providers::QueryDeviceFacts(0);
   ASSERT_TRUE(facts);
-  const auto workspace = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
-  ASSERT_LE(workspace.value(), 64 * kMiB);
-  ASSERT_TRUE(life->kernel->resources.OpenLibrary("declared native adapter control"));
   const auto real = de::GroupedSelectedSource();
   ASSERT_TRUE(real);
   auto source = std::make_shared<DeclarationSource>(*real);
-  auto backend = kg::GgmlBackend::Create(0, life->node.execution(), life->node.stream(0), nullptr,
-                                         {.selected = source});
-  ASSERT_TRUE(backend);
-  life->kernel->backend = std::move(*backend);
-  ASSERT_TRUE(life->kernel->backend->FundConstruction(
+  ASSERT_TRUE(life->kernel->kernels.Create({.selected = source}));
+  ASSERT_LE(life->kernel->kernels->library_workspace_bytes(), 64 * kMiB);
+  ASSERT_TRUE(life->kernel->kernels->FundConstruction(
       [paid = life->paid](std::uint64_t n) { return paid->Charge(n); },
       [paid = life->paid](std::uint64_t n) { paid->Release(n); }));
   const auto declare = [&] {
-    return life->kernel->backend->Declare(
-        {}, workspace.value(), [paid = life->paid](std::uint64_t n) { return paid->Charge(n); },
+    return life->kernel->kernels->Declare(
+        {}, [paid = life->paid](std::uint64_t n) { return paid->Charge(n); },
         [paid = life->paid](std::uint64_t n) { paid->Release(n); });
   };
   EXPECT_FALSE(declare());  // Default/absent selected identity remains refused.
@@ -1238,8 +1220,8 @@ TEST(RoutedComponentGpu, OwnedBackendSealsAdapterIdentityAndRejectsLaterSubstitu
   const auto fixed_capacity = payment->capacity();
   const auto fixed_used = payment->used();
   const auto metadata_extents = life->node.catalog().ExtentsOf(life->node.domain()).size();
-  auto limited = life->kernel->backend->Declare(
-      {}, workspace.value(), [payment](std::uint64_t n) { return payment->Charge(n); },
+  auto limited = life->kernel->kernels->Declare(
+      {}, [payment](std::uint64_t n) { return payment->Charge(n); },
       [payment](std::uint64_t n) { payment->Release(n); });
   if (facts->architecture / 10 == 121 && facts->multiprocessors == 48) {
     EXPECT_FALSE(limited);
@@ -1252,8 +1234,8 @@ TEST(RoutedComponentGpu, OwnedBackendSealsAdapterIdentityAndRejectsLaterSubstitu
   };
   auto requested = std::make_shared<Requests>();
   if (!limited) {
-    ASSERT_TRUE(life->kernel->backend->Declare(
-        {}, workspace.value(),
+    ASSERT_TRUE(life->kernel->kernels->Declare(
+        {},
         [payment, held = life.get(), available = *available, requested](std::uint64_t n) {
           if (requested->count < requested->bytes.size()) requested->bytes[requested->count++] = n;
           return payment
@@ -1271,7 +1253,7 @@ TEST(RoutedComponentGpu, OwnedBackendSealsAdapterIdentityAndRejectsLaterSubstitu
   }
   testing::Test::RecordProperty(
       "backend_tuning_facts",
-      std::to_string(life->kernel->backend->Backend().owner->backend().device.tuned.size()));
+      std::to_string(life->kernel->kernels->Backend().owner->backend().device.tuned.size()));
   testing::Test::RecordProperty("backend_declaration_temporary_requested",
                                 std::to_string(requested->bytes[0]));
   testing::Test::RecordProperty("backend_declaration_retained_requested",
@@ -1284,15 +1266,15 @@ TEST(RoutedComponentGpu, OwnedBackendSealsAdapterIdentityAndRejectsLaterSubstitu
       stderr,
       "backend metadata: tuning_facts=%zu temporary_requested=%llu retained_requested=%llu "
       "host_peak=%llu host_retained=%llu host_paid=%llu selected_device_state=%llu\n",
-      life->kernel->backend->Backend().owner->backend().device.tuned.size(),
+      life->kernel->kernels->Backend().owner->backend().device.tuned.size(),
       static_cast<unsigned long long>(requested->bytes[0]),
       static_cast<unsigned long long>(requested->bytes[1]),
       static_cast<unsigned long long>(payment->peak()),
       static_cast<unsigned long long>(payment->used()),
       static_cast<unsigned long long>(payment->capacity()),
-      static_cast<unsigned long long>(life->kernel->backend->persistent_bytes()));
-  ASSERT_TRUE(life->kernel->backend->LendLibrary(&life->kernel->resources.library()));
-  const auto owner = life->kernel->backend->Backend().owner;
+      static_cast<unsigned long long>(life->kernel->kernels->persistent_bytes()));
+  ASSERT_TRUE(life->kernel->kernels.Bind("declared native adapter control"));
+  const auto owner = life->kernel->kernels->Backend().owner;
   ASSERT_TRUE(owner);
   const auto& device = owner->backend().device;
   ASSERT_EQ(device.arch, facts->architecture / 10);
@@ -1322,15 +1304,15 @@ TEST(RoutedComponentGpu, OwnedBackendSealsAdapterIdentityAndRejectsLaterSubstitu
                               .n = outputs,
                               .arch = device.arch,
                               .features = device.features};
-    const auto selected = ex::Candidates(life->kernel->backend->registry(), query);
+    const auto selected = ex::Candidates(life->kernel->kernels->registry(), query);
     ASSERT_EQ(selected.size(), 1U);
-    EXPECT_EQ(life->kernel->backend->registry().at(selected[0]).name,
+    EXPECT_EQ(life->kernel->kernels->registry().at(selected[0]).name,
               "llmp.decode.grouped.nvfp4.split");
     query.features &= ~static_cast<std::uint32_t>(ex::kBf16Mma);
-    EXPECT_TRUE(ex::Candidates(life->kernel->backend->registry(), query).empty());
+    EXPECT_TRUE(ex::Candidates(life->kernel->kernels->registry(), query).empty());
     query.features = device.features;
     query.k = kWidth - 1;
-    EXPECT_TRUE(ex::Candidates(life->kernel->backend->registry(), query).empty());
+    EXPECT_TRUE(ex::Candidates(life->kernel->kernels->registry(), query).empty());
   }
   auto first = owner->Ready();
   ASSERT_TRUE(first);
@@ -1345,13 +1327,13 @@ TEST(RoutedComponentGpu, OwnedBackendSealsAdapterIdentityAndRejectsLaterSubstitu
   // Same registry declarations, different explicit adapter identity: it must
   // produce a different execution recipe, not collide on implementation names.
   source->identity->at(0) ^= 1U;
-  auto other = kg::GgmlBackend::Create(0, life->node.execution(), life->node.stream(0), nullptr,
-                                       {.selected = source});
-  ASSERT_TRUE(other);
+  auto& other = life->kernel->other;
+  other = std::make_unique<llmp::test_support::RunnerKernels>(life->node, 0, 0);
+  ASSERT_TRUE(other->Create({.selected = source}));
   ASSERT_TRUE((*other)->Declare(
-      {}, workspace.value(), [paid = life->paid](std::uint64_t n) { return paid->Charge(n); },
+      {}, [paid = life->paid](std::uint64_t n) { return paid->Charge(n); },
       [paid = life->paid](std::uint64_t n) { paid->Release(n); }));
-  ASSERT_TRUE((*other)->LendLibrary(&life->kernel->resources.library()));
+  ASSERT_TRUE(other->Bind("declared native adapter comparison"));
   auto second = (*other)->Backend().owner->Ready();
   ASSERT_TRUE(second);
   EXPECT_NE(first->recipe, second->recipe);

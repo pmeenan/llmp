@@ -36,6 +36,7 @@
 #include "execution/registry.h"
 #include "families/dsv4.h"
 #include "ir/builder.h"
+#include "kernels/compose/kernel_set.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_qhead.h"
@@ -3064,6 +3065,7 @@ TEST(GgmlRoundedConsumerGpu, DeclaredCountsSelectOneFullMaskAcrossChangedCapture
                                          {.base = cublas_address, .size = workspace});
   ASSERT_TRUE(cublas);
   life->cublas = std::move(*cublas);
+  static_cast<void>(llmp::kernels::RegisterBuildKernels());
   auto backend = kg::GgmlBackend::Create(0, *life->execution, life->stream, nullptr,
                                          {.lower = {.index_scratch_limit = 1U << 20}});
   ASSERT_TRUE(backend);
@@ -3438,6 +3440,7 @@ TEST(GgmlRoundedConsumerGpu, RealMappedSourceBuildsAndExecutesItsAttentionPipeli
                                          {.base = workspace_address, .size = workspace});
   ASSERT_TRUE(cublas);
   life->cublas = std::move(*cublas);
+  static_cast<void>(llmp::kernels::RegisterBuildKernels());
   auto backend = kg::GgmlBackend::Create(0, *life->execution, life->stream, nullptr,
                                          {.lower = {.index_scratch_limit = 1U << 20}});
   ASSERT_TRUE(backend);
