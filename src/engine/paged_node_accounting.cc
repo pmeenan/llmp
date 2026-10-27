@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
+#include <algorithm>
+#include <optional>
+
+#include "engine/execution_contract.h"
 #include "engine/paged_node_internal.h"
 
 namespace llmp::engine {
@@ -118,6 +122,69 @@ bool PagedNode::ChargeHost(std::uint64_t bytes, bool required) {
   (void)Recharge(host_total_ + bytes, true, nullptr);
   host_total_ += bytes;
   return true;
+}
+
+namespace {
+
+// What a refused metadata charge asks the reclaim order for: its shortfall
+// in whole extents (the order frees whole candidates).
+std::uint64_t MetadataAsk(std::uint64_t shortfall) {
+  return shortfall > UINT64_MAX - (kPagedExtent - 1)
+             ? shortfall
+             : (shortfall + kPagedExtent - 1) / kPagedExtent * kPagedExtent;
+}
+
+}  // namespace
+
+std::expected<std::shared_ptr<ExecutionMetadataAllowance>, std::string> PagedNode::AdmitMetadata(
+    std::uint64_t bytes, std::uint64_t cap) {
+  if (scheduler_ == nullptr || torn_down_)
+    return Error("execution metadata admission needs a started node");
+  std::string refused = "execution metadata admission did not complete";
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    std::uint64_t shortfall = 0;
+    std::optional<std::expected<std::shared_ptr<ExecutionMetadataAllowance>, std::string>> done;
+    const auto posted = Call(
+        [&]() -> Status {
+          done = ExecutionMetadataAllowance::AdmitInBudget(
+              catalog_, domain_, bytes, std::min(cap, budget().value()), &shortfall);
+          return *done ? Status{} : Status{Error(done->error())};
+        },
+        "admitting retained execution metadata payment");
+    // A completed admission is authoritative even when the call reports
+    // otherwise (its catalog change was made).
+    if (done && *done) return std::move(*done);
+    refused = done ? done->error() : (posted ? refused : posted.error());
+    if (!done || shortfall == 0 || job_active_ ||
+        AskReclaim(MetadataAsk(shortfall), ReclaimFor::kPlan) == 0)
+      break;
+  }
+  return Error(std::move(refused));
+}
+
+Status PagedNode::ChargeMetadata(ExecutionMetadataAllowance& allowance, std::uint64_t bytes,
+                                 std::uint64_t cap) {
+  if (scheduler_ == nullptr || torn_down_)
+    return Error("execution metadata growth needs a started node");
+  Status result = Error("execution metadata growth did not complete");
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    std::uint64_t shortfall = 0;
+    std::optional<Status> done;
+    const auto posted = Call(
+        [&]() -> Status {
+          done = allowance.ChargeOrGrowInBudget(catalog_, domain_, bytes,
+                                                std::min(cap, budget().value()), &shortfall);
+          return *done;
+        },
+        "growing retained execution metadata payment");
+    // A completed charge is authoritative even when the call reports
+    // otherwise (its catalog change was made).
+    result = done ? *done : posted;
+    if (result || !done || shortfall == 0 || job_active_ ||
+        AskReclaim(MetadataAsk(shortfall), ReclaimFor::kPlan) == 0)
+      break;
+  }
+  return result;
 }
 
 bool PagedNode::TryChargeHost(std::uint64_t bytes) {

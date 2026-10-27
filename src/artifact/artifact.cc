@@ -37,6 +37,7 @@
 
 #include "artifact/error.h"
 #include "artifact/format_json.h"
+#include "artifact/importer_schema.h"
 #include "artifact/json.h"
 #include "artifact/layout.h"
 #include "artifact/schema.h"
@@ -431,57 +432,14 @@ class Opener {
     return CheckFiles(schema::Get(m, "files"));
   }
 
-  // v1's importer: what made the artifact, so that the same sources, the
-  // same importer and the same options give the same bytes and ID.
+  // v1's importer: what made the artifact (importer_schema.h), with the
+  // architecture mapping it ran.
   Step CheckImporter(json::Value importer) {
-    if (auto ok = schema::Object(importer, {"name", "version", "build", "options_sha256"},
-                                 {"mapping_architecture", "mapping_version"}, "importer keys");
-        !ok) {
-      return ok;
+    auto converter = schema::ReadImporter(importer, true);
+    if (!converter) {
+      return Pass(converter);
     }
-    auto name = schema::Str(schema::Get(importer, "name"), schema::IsText, "importer.name");
-    if (!name) {
-      return Pass(name);
-    }
-    auto version =
-        schema::Str(schema::Get(importer, "version"), schema::IsText, "importer.version");
-    if (!version) {
-      return Pass(version);
-    }
-    auto build = schema::Str(schema::Get(importer, "build"), schema::IsText, "importer.build");
-    if (!build) {
-      return Pass(build);
-    }
-    auto options = schema::Str(schema::Get(importer, "options_sha256"), schema::IsHex,
-                               "importer.options_sha256");
-    if (!options) {
-      return Pass(options);
-    }
-    const auto map_arch = importer.find("mapping_architecture");
-    const auto map_ver = importer.find("mapping_version");
-    if (map_arch.has_value() != map_ver.has_value()) {
-      return Fail(Rule::kSchema, "importer keys");
-    }
-    std::string mapping_architecture;
-    std::uint32_t mapping_version = 0;
-    if (map_arch) {
-      auto arch = schema::Str(*map_arch, schema::IsName, "importer.mapping_architecture");
-      if (!arch) {
-        return Pass(arch);
-      }
-      auto ver = schema::Int(*map_ver, 1, 65535, "importer.mapping_version");
-      if (!ver) {
-        return Pass(ver);
-      }
-      mapping_architecture = std::string(*arch);
-      mapping_version = static_cast<std::uint32_t>(*ver);
-    }
-    artifact_.converter_ = {.name = std::string(*name),
-                            .version = std::string(*version),
-                            .build = std::string(*build),
-                            .options_sha256 = schema::DigestFromHex(*options).value_or(Digest{}),
-                            .mapping_architecture = std::move(mapping_architecture),
-                            .mapping_version = mapping_version};
+    artifact_.converter_ = std::move(*converter);
     return {};
   }
 

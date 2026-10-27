@@ -101,6 +101,14 @@ std::expected<void, SamplingError> ValidateLogits(std::span<const float> logits)
   return {};
 }
 
+std::span<const float> VocabularyRow(std::span<const float> logits, std::size_t vocabulary) {
+  return vocabulary == 0 || logits.size() <= vocabulary ? logits : logits.first(vocabulary);
+}
+
+bool InVocabulary(std::int32_t token, std::size_t vocabulary) {
+  return token >= 0 && (vocabulary == 0 || static_cast<std::size_t>(token) < vocabulary);
+}
+
 std::expected<std::int32_t, SamplingError> Greedy(std::span<const float> logits) {
   const auto scan = ScanLogits(logits);
   if (!scan) {

@@ -27,6 +27,7 @@
 
 #include "artifact/artifact.h"
 #include "artifact/error.h"
+#include "artifact/importer_schema.h"
 #include "artifact/json.h"
 #include "artifact/schema.h"
 #include "base/bytes.h"
@@ -530,35 +531,13 @@ class CompositionOpener {
     return {};
   }
 
-  // v1's importer, as an artifact's (artifact.cc CheckImporter).
+  // v1's importer, as an artifact's without its mapping (importer_schema.h).
   Step CheckImporter(json::Value importer) {
-    if (auto ok = schema::Object(importer, {"name", "version", "build", "options_sha256"}, {},
-                                 "importer keys");
-        !ok) {
-      return ok;
+    auto converter = schema::ReadImporter(importer, false);
+    if (!converter) {
+      return Pass(converter);
     }
-    auto name = schema::Str(schema::Get(importer, "name"), schema::IsText, "importer.name");
-    if (!name) {
-      return Pass(name);
-    }
-    auto version =
-        schema::Str(schema::Get(importer, "version"), schema::IsText, "importer.version");
-    if (!version) {
-      return Pass(version);
-    }
-    auto build = schema::Str(schema::Get(importer, "build"), schema::IsText, "importer.build");
-    if (!build) {
-      return Pass(build);
-    }
-    auto options = schema::Str(schema::Get(importer, "options_sha256"), schema::IsHex,
-                               "importer.options_sha256");
-    if (!options) {
-      return Pass(options);
-    }
-    out_.converter_ = {.name = std::string(*name),
-                       .version = std::string(*version),
-                       .build = std::string(*build),
-                       .options_sha256 = schema::DigestFromHex(*options).value_or(Digest{})};
+    out_.converter_ = std::move(*converter);
     return {};
   }
 

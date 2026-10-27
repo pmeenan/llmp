@@ -1151,6 +1151,16 @@ bool AcceptsTopK(const ex::CapabilityQuery& q) {
          x->ne[1] != 0 && x->ne[2] != 0 && x->ne[3] != 0 && x->ne[1] <= max / x->ne[2] / x->ne[3];
 }
 
+// llmp.top_k.stable: the incumbent's shapes, k at most 65,536 and the
+// radix select's extents (CheckStableTopK).
+bool AcceptsStableTopK(const ex::CapabilityQuery& q) {
+  if (!AcceptsTopK(q)) return false;
+  const auto p = ParamsOf<ir::TopKParams>(q);
+  const auto* x = Operand(q, 0);
+  constexpr auto max = static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
+  return p->k <= 65536 && x->ne[0] <= max / 4 && x->ne[1] * x->ne[2] * x->ne[3] <= max / p->k;
+}
+
 bool AcceptsCont(const ex::CapabilityQuery& q) {
   const auto* input = Operand(q, 0);
   const auto* output = Operand(q, ex::kOutputOperand);
@@ -2558,6 +2568,11 @@ const std::array kEntries = {
           Cap(P(Op::kSelectedMask), kSelectedMaskRules, &AcceptsSelectedMask, true), kBuilt},
     Entry{kTopKName, Cap(P(Op::kTopK), kF32In, &AcceptsTopK, true),
           "; selectable for the build's SASS architectures: F32 rows within I32 counts"},
+    // Ranked above GGML's radix select (priority 1): the same selection with
+    // ties to the lower index, so a selection repeats (RE-031).
+    Entry{kStableTopKName, Cap(P(Op::kTopK), kF32In, &AcceptsStableTopK, true, {}, 1),
+          "; selectable for the build's SASS architectures: F32 rows within I32 counts, k at "
+          "most 65,536"},
     Entry{"ggml.norm", Cap(P(Op::kLayerNorm), kF32In, &AcceptsLayerNorm, true),
           "; locked centered F32 normalization over packed rows; finite nonnegative epsilon"},
     Entry{"ggml.l2_norm", Cap(P(Op::kL2Norm), kF32In, &AcceptsL2Norm, true), kBuilt},

@@ -775,8 +775,10 @@ std::span<const AuxiliaryNamespace> HfProvenanceKeys();
 // keys (`_class_name`, `_diffusers_version`, ...) besides the HF ones.
 std::span<const AuxiliaryNamespace> DiffusersProvenanceKeys();
 // The index in `keys` of the entry `key` is: the key itself, or the key
-// under its sub-configs (each leading "<name>_config." segment stripped:
-// "text_config.use_cache" is "use_cache").
+// under its model sub-configs (each leading "text_config.",
+// "vision_config." or "audio_config." segment stripped:
+// "text_config.use_cache" is "use_cache"; "router_config.top_k" is not
+// "top_k").
 std::optional<std::size_t> ProvenanceIndex(std::span<const AuxiliaryNamespace> keys,
                                            std::string_view key);
 

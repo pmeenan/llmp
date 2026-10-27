@@ -487,6 +487,12 @@ class Llm final : public Served {
     // The kept layout ID (D-105) of the state it holds: the process's own
     // (KeptLayout) for one it saved, its kept record's for one adopted.
     std::string layout;
+    // The drafter taps' bookkeeping beside the state it saved (the taps'
+    // cells are state it holds: model::CheckpointWrites keeps a per-row
+    // tap whole), put back by its restore, so the next draft catches up
+    // from the same features as at the capture. None for one adopted from a
+    // kept record (its next draft starts without them, as before).
+    engine::SlotTapRows taps;
   };
 
  public:
@@ -1279,8 +1285,12 @@ class Llm final : public Served {
   // Whether a greedy plain step or verify of the branch keeps the device's
   // choices: its constraint restricts nothing, or (no forced span pending)
   // the runner reads back the head row of a choice the constraint refuses,
-  // which the host then makes from that row (HeadRows).
+  // which the host then makes from that row (HeadRows). Never without
+  // retained head rows where the head is wider than the tokenizer (RE-050).
   bool DeviceChooses(const Branch& branch) const;
+  // The head has rows past the tokenizer's vocabulary (RE-050): padding a
+  // device's argmax over the whole head may pick, which the host never does.
+  bool PaddedHead() const;
   // GreedyWithoutRows with DeviceChooses for its constraint: a decode or
   // plain-form wave, whose head rows the policy reads back.
   bool DeviceGreedy(const PreparedGeneration& unit) const;

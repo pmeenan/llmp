@@ -59,24 +59,17 @@ inline std::expected<std::shared_ptr<engine::ExecutionMetadataAllowance>, std::s
   return owner;
 }
 
+// Before the node starts, physical headroom less kUncountedMargin bounds
+// admission and growth beside `cap`; once it has started, its budget
+// alone does, through the reclaim order (PagedNode::AdmitMetadata and
+// ChargeMetadata): the budget already set the margin apart, and a dedicated
+// pool fills its headroom, so the physical availability is not judged again.
 inline std::expected<std::shared_ptr<engine::ExecutionMetadataAllowance>, std::string>
 AdmitExecutionMetadata(engine::PagedNode& node, std::uint64_t bytes, std::uint64_t cap) {
-  using Payment = std::shared_ptr<engine::ExecutionMetadataAllowance>;
-  std::optional<std::expected<Payment, std::string>> completed;
-  const auto admit = [&]() -> engine::Status {
-    const auto budget = node.open_for_setup() ? cap : std::min(cap, node.budget().value());
-    completed = engine::ExecutionMetadataAllowance::AdmitWithin(
-        node.catalog(), node.domain(), bytes, budget, platform::AvailableMemoryBytes().value_or(0),
-        kUncountedMargin);
-    return *completed ? engine::Status{} : engine::Status{Error(completed->error())};
-  };
-  if (node.open_for_setup()) {
-    (void)admit();
-    return std::move(*completed);
-  }
-  const auto posted = node.Call(admit, "admitting retained execution metadata payment");
-  if (completed) return std::move(*completed);
-  return Error(posted ? "execution metadata admission did not complete" : posted.error());
+  if (!node.open_for_setup()) return node.AdmitMetadata(bytes, cap);
+  return engine::ExecutionMetadataAllowance::AdmitWithin(
+      node.catalog(), node.domain(), bytes, cap, platform::AvailableMemoryBytes().value_or(0),
+      kUncountedMargin);
 }
 
 // Growth is an explicit caller contract: absent node/cap keeps a diagnostic's
@@ -87,21 +80,11 @@ inline bool ChargeExecutionMetadata(
   if (!allowance) return false;
   if (bytes <= allowance->capacity() - allowance->used()) return allowance->Charge(bytes);
   if (!node || cap == 0) return false;
-  const auto grow = [&]() -> engine::Status {
-    const auto budget = node->open_for_setup() ? cap : std::min(cap, node->budget().value());
-    return allowance->ChargeOrGrow(node->catalog(), node->domain(), bytes, budget,
-                                   platform::AvailableMemoryBytes().value_or(0), kUncountedMargin);
-  };
-  if (node->open_for_setup()) return grow().has_value();
-  std::optional<engine::Status> completed;
-  const auto posted = node->Call(
-      [&]() -> engine::Status {
-        completed = grow();
-        return *completed;
-      },
-      "growing retained execution metadata payment");
-  // Completed catalog admission remains authoritative after cancellation.
-  return (completed ? *completed : posted).has_value();
+  if (!node->open_for_setup()) return node->ChargeMetadata(*allowance, bytes, cap).has_value();
+  return allowance
+      ->ChargeOrGrow(node->catalog(), node->domain(), bytes, cap,
+                     platform::AvailableMemoryBytes().value_or(0), kUncountedMargin)
+      .has_value();
 }
 
 // A caller-retained execution metadata charge: tracks its paid bytes and

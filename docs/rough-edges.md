@@ -255,7 +255,7 @@ belongs to a suite instantiated with that family alone (no in-test
 `GTEST_SKIP` for the other), and a summary with skips is read with `-V` or
 `--output-on-failure` before it is believed.
 
-## RE-052: The serving start's memory guard fails when the GB10's unified memory is full of other work's page cache  (2026-10-09, status: open)
+## RE-052: The serving start's memory guard fails when the GB10's unified memory is full of other work's page cache  (2026-10-09, status: fixed 2026-10-26; the cause was RE-024's per-CPU lists, not page cache)
 
 Environment: `spark-b` (GB10, 128 GB unified memory), a `spark-native`
 build, `plain_tokens_serving_gpu_test`'s
@@ -286,6 +286,25 @@ count reclaimable file pages the way the paged node's own reclaim sees
 them, or retry the guard after asking the kernel to reclaim; neither is
 built.
 
+**Measured and fixed (2026-10-26, M3.5 F13, `spark`, kernel
+7.0.0-1019-nvidia).** Page cache was not the cause. Reading the 86.7 GB
+DeepSeek GGUF (85 GB of clean cache, MemFree 38.5 GB) moved MemAvailable
+from 122.47 to 122.51 GB: the kernel's estimate counts the file LRU's pages
+(active and inactive) less only min(cache / 2, the low watermarks), 177 MB
+here. A serving start with that cache in place passed its guard (122.6 GB
+available after the fixed mappings) and the Gemma 3 near-8K swap table
+passed while the kernel gave the cache back. What does lower MemAvailable
+is RE-024: twenty processes that each wrote and freed 3 GB left 12.4 GB on
+the per-CPU free lists, and MemAvailable read 110.35 GB until they drained
+(12.0 GB still after 5 s), which is the importer's model tests' pattern
+before the observed refusal. `platform::AvailableMemoryBytes` now adds
+those lists' free pages (every pageset's `count:` in `/proc/zoneinfo`,
+readable by any user) to MemAvailable, so the guard, the startup budget,
+metadata admission and the pressure trims read memory the kernel would
+give a new allocation. Another process's own memory still counts, as it
+should (D-102: a real resource). Test: `Meminfo.PerCpuListPages`
+(`platform_test.cc`).
+
 ## RE-051: ASan dies at the exit of every thread that installed llmpalooza's signal stack  (2026-10-09, status: worked-around)
 
 Environment: `spark` (GB10, kernel 7.0.0-1019-nvidia), the SDK's Clang
@@ -310,7 +329,7 @@ Until then an ASan run of any test that ends such a thread fails this way
 (observed with the GPU serving tests; the `check:spark` and `check:full`
 ASan tiers were not run to see which of theirs do).
 
-## RE-050: Qwen3.8's output head is wider than its tokenizer.json  (2026-10-08, status: open)
+## RE-050: Qwen3.8's output head is wider than its tokenizer.json  (2026-10-08, status: fixed 2026-10-26)
 
 Environment: Qwen3.8 Flash Next NVFP4/MXFP8 (`c4fb47a9…`, the
 `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` checkpoint's
@@ -334,7 +353,29 @@ probability that matters, is not measured. Expected: rows past the
 tokenizer masked before choice and scoring, as M3.6's heads component
 should do for every family whose head outgrows its tokenizer.
 
-## RE-049: Successful VMM creation can emit recovered memdesc out-of-memory diagnostics  (2026-10-07, status: open)
+**Fixed (2026-10-26, M3.5 F13), for every family:** every choice and score
+reads a head row cut at the tokenizer's size
+(`execution::VocabularyRow`), which is exactly a mask of negative infinity
+over the padding rows without writing one: host greedy and sampled choice
+and speculative verdicts (`Llm::Choose`, `Llm::Keep`) and literal scores
+(`api::LiteralRows`), so the padding rows are never picked, never listed
+in `top_logprobs`, and take no probability from any score's
+normalization. The device's greedy argmax still reads the whole head (its
+graph is built before the tokenizer is read, and narrowing it would cost
+the head's packed operands), so a device choice past the tokenizer is
+refused like a tool constraint's refusal: the host chooses from the
+read-back row where the plan retains head rows; where it retains none
+(`Llm::DeviceChooses`), and in a joined prompt-and-decode wave (which
+reads no row back), the host chooses every token, so no step fails or
+emits one. Logit rows keep the head's width
+(`Llm::logit_width()`), so no frozen logit or greedy digest changes; a
+score's log probability over such a head changes by the padding rows'
+share (no frozen digest records one). Whether a padding row ever wins
+remains unmeasured. Tests: `VocabularyRow.*` (`sampling_test.cc`),
+`LiteralTokens.ScoresIgnoreHeadRowsPastTheTokenizer` (`api_test.cc`),
+`RetainedRows/LlmPaddedHead.*` (`llm_scores_test.cc`).
+
+## RE-049: Successful VMM creation can emit recovered memdesc out-of-memory diagnostics  (2026-10-07, status: open upstream; the driver's, not our call pattern, checked 2026-10-26)
 
 Environment: `spark` (`spark-c4e2`), GB10, driver580.178.04,
 DGX OS7.6.0/kernel7.0.0-1019-nvidia, pinned CUDA13.4.2 and
@@ -369,6 +410,24 @@ the final joined teardown. Neither physical guards nor the handle reserve
 were changed to hide warnings. See the [comparison, exact message and
 attribution limits](experiments/partial-weight-eviction/README.md#rejected-first-control-and-attribution)
 and [CUDA upstream note](upstream/cuda.md#recovered-memdesc-allocation-diagnostics-during-successful-vmm-creation-re-049).
+
+**Our call pattern, checked against HEAD (2026-10-26, M3.5 F13).** It does
+not cause them: the provider makes one 2 MiB `cuMemCreate` per handle with
+no retry and no oversized probe (`providers/cuda/cuda_device_memory.cc`), a
+load's creates stop at the first failure (`scheduler/services.cc`), and a
+pool refill stops after a known failure and lowers the pool's ceiling. A
+message logged inside a call that returns success is the driver's own
+recovery, so the entry stays the driver's (the upstream note). Two things
+have changed since it was written. The dedicated pool (D-124) is now the
+GB10's default, so a start creates its handles in one tight loop up to the
+budget's headroom (`PagedNode` `Preallocate`): the burst of creates this
+entry associates the messages with, at every start; a fill that the device
+cannot complete ends on a real failure, logged as the pool's shortfall
+(`memory: the node pool started smaller`), which a run that refuses any
+unrecovered driver error must expect. And two GPU tests ask for 1 TiB on
+purpose (`cuda_pagein_test.cc`, `cuda_graph_test.cc`), leaving genuine
+`NV_ERR_NO_MEMORY` messages in the kernel log of any Spark that ran the GPU
+suite, so a comparison that scans `dmesg` must bracket its own window.
 
 ## RE-048: Early final-row gathering changes Gemma4 quantized arithmetic  (2026-10-07, status: worked-around)
 
@@ -792,7 +851,7 @@ their outputs (the others are the same bit for bit); the fused test builds
 its unfused reference the same way, with no slack. Fix upstream: bound the
 load by the window's columns.
 
-## RE-031: GGML's radix top-k picks among tied values nondeterministically, so Qwen3.8's QSA selection varies run to run past 2,051 cells, and DeepSeek V4's indexer past 4,096 positions  (2026-09-28, status: worked-around in both models' fast plans at any depth (Qwen3.8's since its long-context phase 2); open for both reference (and unfused) graphs)
+## RE-031: GGML's radix top-k picks among tied values nondeterministically, so Qwen3.8's QSA selection varies run to run past 2,051 cells, and DeepSeek V4's indexer past 4,096 positions  (2026-09-28, status: worked-around in both models' fast plans at any depth (Qwen3.8's since its long-context phase 2); fixed for the unfused graphs 2026-10-26 by `llmp.top_k.stable`; GGML's own select is unchanged)
 
 `spark-b`, GB10, driver 580.178.04, the pinned llama.cpp `b29c606e2`'s
 `top-k.cu` as llmpalooza builds it (no CUB). For rows over 1,024 columns
@@ -871,6 +930,25 @@ radix select that keeps the lower row among equals, and two runs of the
 bit (`judge.py repeat`: 0 of 512 steps differ), where before they differed
 from the first step. The reference mode (`--exact on`) keeps GGML's top-k,
 as llama.cpp runs it, and does not repeat.
+
+**Fixed for every unfused selection (2026-10-26, M3.5 F13).** The M3.6
+engine has no `--exact` mode: what this entry calls the reference and
+unfused graphs are now the IR's `kTopK` wherever no fused selection
+(`llmp.qsa.topk`, `llmp.dsv4.lid_topk`, `llmp.visible_top_k`) takes it:
+QSA's and the indexer's unfused selection, the block-sparse attention's
+decomposition, and `kVisibleTopK`'s primitive decomposition (whose NaN
+tail relies on ties going to the lower cell). `llmp.top_k.stable`
+(`dsv4_sparse.cu` `RunStableTopK`, the visible-prefix radix select with
+every cell visible) now computes `kTopK`, ranked above
+`ggml.top_k.radix`: the same k highest when values differ, the lower
+index among equal values (signed zeros equal, NaN below every number), in
+ascending index order (`kTopK`'s consumers take the set), for k up to
+65,536; GGML's select stays the candidate past that and is not patched.
+The CPU reference (`kernels/reference` `Order`, a stable sort) already
+kept the lower index (`ExecTest.ReductionsAndSelectionsTakeTheLowerIndexAmongEquals`).
+A served plan that took GGML's select changes bits only where its k-th
+value was tied, which GGML decided by timing (by the bitonic network at
+1,024 columns or fewer). Test: `GgmlExtOpsTest.StableTopKKeepsTheLowerIndexAmongTiesAndRepeats`.
 
 ## RE-030: GGML's tensor-core flash attention reads attention sinks past the last head when query heads per KV head are not a multiple of 8  (2026-09-28, status: worked-around)
 
@@ -1099,7 +1177,7 @@ L2 reuse, and 2.6 GB/s random reads with 4 KiB pages. Net: no route lands a
 direct read in L2-cacheable memory on the Spark. Evidence:
 [dmabuf-direct](experiments/dmabuf-direct/README.md).
 
-## RE-024: MemAvailable misses host memory held on the per-CPU page lists  (2026-09-27, status: worked-around)
+## RE-024: MemAvailable misses host memory held on the per-CPU page lists  (2026-09-27, status: worked-around; the runtime counts them since 2026-10-26)
 
 Environment: `spark-b` (kernel 7.0.0-1019-nvidia, 4 KiB pages, 20 CPUs,
 driver 580.178.04), an otherwise idle host.
@@ -1121,7 +1199,8 @@ host control. Adding the lists' pages (each zone's pagesets `count:` in
 `/proc/zoneinfo`, readable by any user) to `MemAvailable` brings the host
 control within 0.4 MiB of 64 MiB; the census reads that sum. Root can
 drain the lists instead (`vm.percpu_pagelist_high_fraction`, compaction),
-which an unprivileged harness cannot.
+which an unprivileged harness cannot. The runtime's own reading (`platform::AvailableMemoryBytes`) adds them
+too since 2026-10-26 (RE-052: 12.4 GB of them refused a serving start).
 
 ## RE-023: ext4 reuses inode numbers at once, and coarse timestamps hide the swap  (2026-09-27, status: worked-around)
 

@@ -21,13 +21,11 @@ std::uint64_t ExecutionMetadataAllowance::OverheadBytes() {
 }
 
 std::expected<std::shared_ptr<ExecutionMetadataAllowance>, std::string>
-ExecutionMetadataAllowance::Admit(catalog::Catalog& catalog, catalog::DomainId domain,
-                                  std::uint64_t bytes, std::uint64_t available,
-                                  std::uint64_t margin) {
+ExecutionMetadataAllowance::CatalogOwner(catalog::Catalog& catalog, catalog::DomainId domain,
+                                         std::uint64_t bytes) {
   // Includes this owner/control block and the pinned catalog extent's metadata.
-  const auto overhead = OverheadBytes();
-  if (bytes <= overhead || margin == 0 || bytes > available || margin > available - bytes)
-    return std::unexpected("execution metadata allowance lacks paid physical headroom");
+  if (bytes <= OverheadBytes())
+    return std::unexpected("execution metadata allowance omits its owner overhead");
   auto extent = catalog.AddExtent({.domain = domain,
                                    .memory_class = catalog::MemoryClass::kRuntime,
                                    .recovery = catalog::Recovery::kPinned,
@@ -36,7 +34,32 @@ ExecutionMetadataAllowance::Admit(catalog::Catalog& catalog, catalog::DomainId d
                                   true);
   if (!extent) return std::unexpected("execution metadata allowance could not be cataloged");
   return std::shared_ptr<ExecutionMetadataAllowance>(
-      new ExecutionMetadataAllowance(catalog, domain, *extent, bytes - overhead));
+      new ExecutionMetadataAllowance(catalog, domain, *extent, bytes - OverheadBytes()));
+}
+
+std::expected<std::shared_ptr<ExecutionMetadataAllowance>, std::string>
+ExecutionMetadataAllowance::Admit(catalog::Catalog& catalog, catalog::DomainId domain,
+                                  std::uint64_t bytes, std::uint64_t available,
+                                  std::uint64_t margin) {
+  if (bytes <= OverheadBytes() || margin == 0 || bytes > available || margin > available - bytes)
+    return std::unexpected("execution metadata allowance lacks paid physical headroom");
+  return CatalogOwner(catalog, domain, bytes);
+}
+
+std::expected<std::shared_ptr<ExecutionMetadataAllowance>, std::string>
+ExecutionMetadataAllowance::AdmitInBudget(catalog::Catalog& catalog, catalog::DomainId domain,
+                                          std::uint64_t bytes, std::uint64_t budget,
+                                          std::uint64_t* shortfall) {
+  if (shortfall != nullptr) *shortfall = 0;
+  const auto occupied = catalog.OccupancyOf(domain).Total().value();
+  if (occupied > budget || bytes > budget - occupied) {
+    if (shortfall != nullptr && bytes <= UINT64_MAX - occupied)
+      *shortfall = occupied + bytes - budget;
+    return std::unexpected(
+        std::format("initial execution metadata of {} B exceeds the budget ({} B, {} B occupied)",
+                    bytes, budget, occupied));
+  }
+  return CatalogOwner(catalog, domain, bytes);
 }
 
 bool ExecutionMetadataAllowance::HeldBy(const catalog::Catalog& catalog,
@@ -63,13 +86,31 @@ ExecutionMetadataAllowance::AdmitWithin(catalog::Catalog& catalog, catalog::Doma
 std::expected<void, std::string> ExecutionMetadataAllowance::Grow(
     catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t capacity,
     std::uint64_t budget, std::uint64_t available, std::uint64_t margin) {
+  return GrowTo(catalog, domain, capacity, budget, true, available, margin, nullptr);
+}
+
+std::expected<void, std::string> ExecutionMetadataAllowance::GrowTo(
+    catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t capacity,
+    std::uint64_t budget, bool physical, std::uint64_t available, std::uint64_t margin,
+    std::uint64_t* shortfall) {
+  if (shortfall != nullptr) *shortfall = 0;
   if (!HeldBy(catalog, domain)) return std::unexpected("metadata growth lost its held payment");
   if (capacity <= capacity_) return {};
   const auto delta = capacity - capacity_;
   const auto occupied = catalog.OccupancyOf(domain).Total().value();
-  if (capacity > UINT64_MAX - OverheadBytes() || occupied > budget || delta > budget - occupied ||
-      margin == 0 || delta > available || margin > available - delta)
-    return std::unexpected("metadata growth exceeds admitted physical headroom");
+  if (capacity > UINT64_MAX - OverheadBytes()) return std::unexpected("metadata growth overflows");
+  if (occupied > budget || delta > budget - occupied) {
+    if (shortfall != nullptr && delta <= UINT64_MAX - occupied)
+      *shortfall = occupied + delta - budget;
+    return std::unexpected(
+        std::format("metadata growth of {} B exceeds the budget ({} B, {} B occupied)", delta,
+                    budget, occupied));
+  }
+  if (physical && (margin == 0 || delta > available || margin > available - delta))
+    return std::unexpected(std::format(
+        "metadata growth of {} B exceeds admitted physical headroom ({} B available, a {} B "
+        "margin)",
+        delta, available, margin));
   if (!catalog.GrowRuntimeCharge(extent_, base::Bytes(capacity + OverheadBytes())))
     return std::unexpected("metadata growth could not retain its catalog charge");
   capacity_ = capacity;
@@ -94,8 +135,22 @@ std::expected<void, std::string> ExecutionMetadataAllowance::ChargeOrGrow(
   std::uint64_t needed = 0;
   if (__builtin_add_overflow(used(), bytes, &needed))
     return std::unexpected("metadata live charge overflows");
-  if (!HeldBy(catalog, domain)) return std::unexpected("metadata charge lost its held payment");
-  if (auto grown = Grow(catalog, domain, needed, budget, available, margin); !grown) return grown;
+  if (auto grown = GrowTo(catalog, domain, needed, budget, true, available, margin, nullptr);
+      !grown)
+    return grown;
+  if (!Charge(bytes)) return std::unexpected("metadata charge exceeds its grown payment");
+  return {};
+}
+
+std::expected<void, std::string> ExecutionMetadataAllowance::ChargeOrGrowInBudget(
+    catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t bytes, std::uint64_t budget,
+    std::uint64_t* shortfall) {
+  if (shortfall != nullptr) *shortfall = 0;
+  std::uint64_t needed = 0;
+  if (__builtin_add_overflow(used(), bytes, &needed))
+    return std::unexpected("metadata live charge overflows");
+  if (auto grown = GrowTo(catalog, domain, needed, budget, false, 0, 0, shortfall); !grown)
+    return grown;
   if (!Charge(bytes)) return std::unexpected("metadata charge exceeds its grown payment");
   return {};
 }

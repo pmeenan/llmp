@@ -110,6 +110,17 @@ struct LlmTestAccess {
     return model.UseChatAssets(artifact, entry, cap);
   }
   static bool HasChat(const Llm& model) { return model.tokenizer_ && model.template_; }
+  // The drafter taps' bookkeeping of the branch's slot now, and what its
+  // `index`th turn checkpoint recorded.
+  static engine::SlotTapRows Taps(const Llm& model, const Llm::Branch& branch) {
+    return model.runner().SaveTapRows(model.Slot(branch));
+  }
+  static Status SetTaps(Llm& model, const Llm::Branch& branch, const engine::SlotTapRows& rows) {
+    return model.runner().RestoreTapRows(model.Slot(branch), rows);
+  }
+  static engine::SlotTapRows CheckpointTaps(const Llm::Branch& branch, std::size_t index) {
+    return branch.turn_checkpoints_.at(index).taps;
+  }
   static auto ChatPool(const Llm& model) { return model.chat_startup_; }
   static const chat::ChatTemplate& ChatTemplate(const Llm& model) { return *model.template_; }
   static std::size_t LongestToken(const Llm& model) { return model.longest_token_; }
@@ -165,6 +176,18 @@ struct LlmTestAccess {
                                                          std::span<const float> row,
                                                          std::uint64_t position) {
     return model.Choose(branch, row, position);
+  }
+  // A speculative verdict on `draft` (Llm::Keep): accepted, and the token
+  // kept in `next`.
+  static std::expected<bool, std::string> Keep(Llm& model, Llm::Branch& branch,
+                                               std::span<const float> row, std::int32_t draft,
+                                               std::uint64_t position, std::int32_t& next) {
+    return model.Keep(branch, row, draft, position, next);
+  }
+  // How many logits the branch's last constrained choice held: the whole
+  // row once masked, the kept tokens alone when chosen lazily.
+  static std::size_t ConstrainedLogits(const Llm::Branch& branch) {
+    return branch.constrained_logits_.size();
   }
   static bool Ready(const Llm& model, const Llm::Branch& branch) {
     return model.GenerationReadyFor(branch);

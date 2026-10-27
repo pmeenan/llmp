@@ -168,6 +168,52 @@ std::uint8_t KeyTypes(const spec::Mapping& m, std::string_view key, bool allow_u
   return types;
 }
 
+// Whether a selected key stated as JSON null reads as absent: only when no
+// value can stand in for it, so a null can only leave a gated slot out or
+// refuse as missing, never select a value in its place. Each parameter rule
+// reading it must be required and the only rule of its parameter (no
+// default, other key or component default a null would silently select:
+// `rope_theta: null` is not the mapping's default base, nor
+// `partial_rotary_factor: null` a full rotation); a requirement reading it
+// (absence passes as the required value), a list, a count or a layer table
+// keeps a null refused. A gate's key (a slot's, a policy's or a rule's
+// `when_key`), the layer count (required) and the softcap key read null as
+// absent. A null with a reviewed meaning beyond this is the mapping's
+// `null_semantics`.
+bool NullMeansAbsent(const spec::Mapping& m, std::string_view key, bool allow_unprefixed) {
+  const auto matches = [&](std::string_view rule_key) {
+    return !rule_key.empty() && (allow_unprefixed ? spec::MatchesCanonicalKey(m, rule_key, key)
+                                                  : spec::IsCanonicalKey(m, rule_key, key));
+  };
+  if ((m.draft && (matches(m.draft->depth_key) || matches(m.draft->fill_key))) ||
+      matches(m.context_key) || matches(m.layer_type_key) || matches(m.layer_type_interval_key) ||
+      matches(m.layer_flags_key))
+    return false;
+  const auto overlap = [](std::string_view a, std::string_view b) {
+    return a.empty() || b.empty() ||
+           std::ranges::any_of(a, [&](char c) { return b.find(c) != std::string_view::npos; });
+  };
+  for (const auto& rule : m.params) {
+    if (!matches(rule.key) && !matches(rule.numerator_key) && !matches(rule.divisor_key)) continue;
+    if (rule.slot.empty() || rule.optional) return false;
+    for (const auto& other : m.params)
+      if (&other != &rule && other.slot == rule.slot && other.param == rule.param &&
+          overlap(other.layer_types, rule.layer_types))
+        return false;
+  }
+  for (const auto& slot : m.slots)
+    if (matches(slot.layers_key) || matches(slot.layers_alias) || matches(slot.count_key))
+      return false;
+  for (const auto& read : m.reads)
+    if (matches(read.layers_key)) return false;
+  for (const auto& requirement : m.requirements)
+    if (matches(requirement.key)) return false;
+  for (const auto& list : m.lists)
+    if (matches(list.key) || matches(list.sections_of) || matches(list.sections_multiplier_key))
+      return false;
+  return true;
+}
+
 bool Pattern(std::string_view pattern) {
   if (pattern.empty() || pattern.size() > spec::kMaxText - 4) return false;
   const auto at_layer = pattern.find(spec::kLayerField);

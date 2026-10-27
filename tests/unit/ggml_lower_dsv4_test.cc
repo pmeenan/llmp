@@ -2075,6 +2075,26 @@ TEST(GgmlLowerDsv4Test, PrimitivePredicatesRejectUnsupportedTypesAndBounds) {
   p.k = 256;
   operands[0].ne[1] = std::numeric_limits<std::uint32_t>::max();
   EXPECT_FALSE(top->accepts(q));
+  // The stable select (RE-031) takes the same rows, ranked above GGML's.
+  const auto* stable = kg::CapabilityOf(kg::kStableTopKName);
+  ASSERT_NE(stable, nullptr);
+  EXPECT_EQ(stable->op, top->op);
+  EXPECT_GT(stable->priority, top->priority);
+  EXPECT_EQ(stable->rung, top->rung);
+  q.op = stable->op;
+  EXPECT_FALSE(stable->accepts(q));
+  operands[0].ne[1] = 7;
+  EXPECT_TRUE(stable->accepts(q));
+  p.k = 257;
+  EXPECT_FALSE(stable->accepts(q));
+  operands[0].ne[0] = 70000;
+  p.k = 65536;
+  EXPECT_TRUE(stable->accepts(q));
+  EXPECT_TRUE(top->accepts(q));
+  p.k = 65537;
+  EXPECT_FALSE(stable->accepts(q));
+  EXPECT_TRUE(top->accepts(q));  // GGML's select remains the candidate there
+  p.k = 256;
   operands[0].ne = {128, 32, 7, 1};
   operands[1] = {.operand = 3, .encoding = Encoding::kF16, .ne = {256, 7, 1, 1}};
   const auto* indexer = kg::CapabilityOf(kg::kLightningIndexerName);

@@ -461,6 +461,13 @@ LLMP_GGML_RECIPE(
     1, ([](ConstNodes n) { return CheckTopK(n[0]); }),
     ([](LaunchContext& launch, Nodes n) { return TopK(launch, n[0]); }))
 
+LLMP_GGML_RECIPE(kStableTopKName, llmp::ir::Primitive(llmp::ir::Op::kTopK),
+                 "VisibleTopKKernel with every cell visible (a 512-thread block a row, or "
+                 "two stages for up to 8 rows past 2,048 cells): four-pass radix select over "
+                 "per-warp histograms, ties to the lower index, ascending IDs",
+                 1, ([](ConstNodes n) { return CheckStableTopK(n[0]); }),
+                 ([](LaunchContext& launch, Nodes n) { return RunStableTopK(launch, n[0]); }))
+
 LLMP_GGML_RECIPE("ggml.swiglu_clamp", llmp::ir::Primitive(llmp::ir::Op::kGlu),
                  "ggml_cuda_op_swiglu_clamp: swiglu_clamp_kernel<float>; upstream launch "
                  "configuration",

@@ -83,6 +83,9 @@ if(LLMP_CUDA)
   target_compile_definitions(cuda_contract_test PRIVATE "LLMP_CUDA_SASS=\"/${sass}/\"")
   llmp_toolchain_test(cuda_contract_test)
   set_property(TEST toolchain.cuda_contract_test APPEND PROPERTY LABELS gpu)
+  # It makes a CUDA context on device 0: serialized with every other GPU
+  # test, as llmp_gpu_gtest's are.
+  set_property(TEST toolchain.cuda_contract_test PROPERTY RESOURCE_LOCK llmp_gpu)
   if(LLMP_CUDA_DISCRETE_SASS)
     set_property(TEST toolchain.cuda_contract_test APPEND PROPERTY LABELS gpu-discrete)
   endif()

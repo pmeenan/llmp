@@ -113,7 +113,7 @@ std::unexpected<KernelFailure> InvalidGemmaChain() {
 #define LLMP_GGML_NORM_RECIPE(NAME, VARIANT, CHECK, RUN)
 #define LLMP_GGML_RECIPE(NAME, KEY, VARIANT, ARITY, CHECK, RUN) \
   {.name = NAME, .operation = KEY, .variant = VARIANT, .arity = ARITY, .check = CHECK, .run = RUN},
-constexpr std::array<Kernel::Entry, 156> kKernels = {{
+constexpr std::array<Kernel::Entry, 157> kKernels = {{
 #include "kernels/ggml/recipe_entries.inc"
 }};
 #undef LLMP_GGML_RECIPE

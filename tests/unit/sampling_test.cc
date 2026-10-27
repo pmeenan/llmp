@@ -69,6 +69,62 @@ TEST(Greedy, RefusesBadLogits) {
             ex::SamplingError::kInvalidLogits);
 }
 
+// RE-050: a head wider than its tokenizer. Its padding rows, past the
+// vocabulary, are left out of every choice and score exactly as if they
+// were negative infinity, even where one holds the row's highest logit.
+TEST(VocabularyRow, PaddingRowsPastTheTokenizerAreNeverChosenNorScored) {
+  const std::vector<float> head = {1.0F, 3.0F, -2.0F, 2.5F, 0.5F, 9.0F, 4.0F, 9.0F};
+  constexpr std::size_t kVocabulary = 5;
+  std::vector<float> masked = head;
+  std::fill(masked.begin() + static_cast<std::ptrdiff_t>(kVocabulary), masked.end(), -INFINITY);
+  const auto row = ex::VocabularyRow(head, kVocabulary);
+  EXPECT_EQ(row.size(), kVocabulary);
+  EXPECT_EQ(row.data(), head.data());
+  EXPECT_EQ(ex::VocabularyRow(head, 0).size(), head.size());
+  EXPECT_EQ(ex::VocabularyRow(head, head.size() + 3).size(), head.size());
+  EXPECT_EQ(ex::Greedy(head), 5);  // what an unbounded choice would emit
+  EXPECT_EQ(ex::Greedy(row), 1);
+  EXPECT_EQ(ex::Greedy(row), ex::Greedy(masked));
+  for (std::int32_t token = 0; token < static_cast<std::int32_t>(kVocabulary); ++token) {
+    const auto bounded = ex::ScoreToken(row, token, static_cast<std::uint32_t>(kVocabulary));
+    const auto reference = ex::ScoreToken(masked, token, static_cast<std::uint32_t>(head.size()));
+    ASSERT_TRUE(bounded.has_value());
+    ASSERT_TRUE(reference.has_value());
+    EXPECT_DOUBLE_EQ(bounded->logprob, reference->logprob) << token;
+    ASSERT_EQ(bounded->top.size(), reference->top.size());
+    for (std::size_t i = 0; i < bounded->top.size(); ++i) {
+      EXPECT_LT(bounded->top[i].id, static_cast<std::int32_t>(kVocabulary));
+      EXPECT_EQ(bounded->top[i].id, reference->top[i].id);
+      EXPECT_DOUBLE_EQ(bounded->top[i].logprob, reference->top[i].logprob);
+    }
+  }
+  // The unbounded score gives the padding rows most of the probability.
+  const auto unbounded = ex::ScoreToken(head, 1, 0);
+  const auto in_vocabulary = ex::ScoreToken(row, 1, 0);
+  ASSERT_TRUE(unbounded.has_value());
+  ASSERT_TRUE(in_vocabulary.has_value());
+  EXPECT_LT(unbounded->logprob, in_vocabulary->logprob);
+  std::vector<ex::SamplingCandidate> scratch;
+  for (const ex::SamplingParams params : {ex::SamplingParams{}, ex::SamplingParams{.top_k = 3},
+                                          ex::SamplingParams{.temperature = 0.7F, .top_p = 0.9F}}) {
+    for (std::uint64_t p = 0; p < 64; ++p) {
+      const auto drawn = ex::Sample(row, params, {7, 0, p}, scratch);
+      ASSERT_TRUE(drawn.has_value());
+      EXPECT_LT(*drawn, static_cast<std::int32_t>(kVocabulary));
+      EXPECT_EQ(drawn, ex::Sample(masked, params, {7, 0, p}, scratch)) << p;
+      // A draft past the vocabulary has no probability: always replaced.
+      const auto verdict = ex::VerifyDraft(row, 5, params, {7, 0, p}, scratch);
+      ASSERT_TRUE(verdict.has_value());
+      EXPECT_FALSE(verdict->accepted);
+      EXPECT_LT(verdict->token, static_cast<std::int32_t>(kVocabulary));
+    }
+  }
+  EXPECT_TRUE(ex::InVocabulary(4, kVocabulary));
+  EXPECT_FALSE(ex::InVocabulary(5, kVocabulary));
+  EXPECT_FALSE(ex::InVocabulary(-1, kVocabulary));
+  EXPECT_TRUE(ex::InVocabulary(1 << 20, 0));
+}
+
 TEST(TokenScores, ScoresTheSuppliedTokenOutsideTopOneWithoutSamplingBias) {
   const std::vector<float> row = {0, 2, -3, -INFINITY};
   const auto score = ex::ScoreToken(row, 2, 0);

@@ -303,6 +303,7 @@ inline constexpr std::string_view kDsv4HcPreName = "llmp.dsv4.hc_pre";
 inline constexpr std::string_view kDsv4HcPrePackedName = "llmp.dsv4.hc_pre_packed";
 inline constexpr std::string_view kDsv4CompressName = "llmp.dsv4.compress";
 inline constexpr std::string_view kVisibleTopKName = "llmp.visible_top_k";
+inline constexpr std::string_view kStableTopKName = "llmp.top_k.stable";
 inline constexpr std::string_view kSelectedMaskName = "llmp.selected_mask";
 inline constexpr std::string_view kPrefixOverwriteName = "llmp.prefix_overwrite";
 inline constexpr const char* kRoundedIndexScoreName = "llmp.rounded_index_score";

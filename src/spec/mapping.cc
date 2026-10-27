@@ -1352,6 +1352,13 @@ constexpr std::array kDiffusersProvenance{
 bool ProvenanceMatch(std::string_view key, std::string_view entry) {
   return entry.ends_with('.') ? key.starts_with(entry) : key == entry;
 }
+// The sub-configs a composite transformers config nests whole model configs
+// under (the text model's, and its media components'), whose leaves are
+// read as the same keys at the top level. Any other "<name>_config." (a
+// router's, a quantizer's) is its own namespace: a leaf there such as
+// `top_k` is not the generation default of that name.
+constexpr std::array<std::string_view, 3> kModelSubConfigs{"text_config", "vision_config",
+                                                           "audio_config"};
 }  // namespace
 
 std::span<const AuxiliaryNamespace> HfProvenanceKeys() { return kHfProvenance; }
@@ -1364,7 +1371,9 @@ std::optional<std::size_t> ProvenanceIndex(std::span<const AuxiliaryNamespace> k
     for (std::size_t i = 0; i < keys.size(); ++i)
       if (ProvenanceMatch(key, keys[i].prefix)) return i;
     const auto dot = key.find('.');
-    if (dot == std::string_view::npos || !key.substr(0, dot).ends_with("_config")) break;
+    if (dot == std::string_view::npos ||
+        !std::ranges::contains(kModelSubConfigs, key.substr(0, dot)))
+      break;
     key.remove_prefix(dot + 1);
   }
   return std::nullopt;

@@ -2371,6 +2371,62 @@ TEST_F(GgmlExtOpsTest, ArgsortAndTopKFindTheLargestValues) {
       KernelError::kRejected);
 }
 
+// RE-031: llmp.top_k.stable selects ir::kTopK as GGML's radix select does
+// but keeps the lower index among equal values, so a selection repeats
+// exactly. Scores as QSA's are: each value four times (a block's), ReLU's
+// many zeros and causal -inf padding, so the k-th value is tied. One block
+// a row, and the two stages of a few long rows.
+TEST_F(GgmlExtOpsTest, StableTopKKeepsTheLowerIndexAmongTiesAndRepeats) {
+  struct Case {
+    std::int64_t rows, cells, k;
+  };
+  for (const Case& t : {Case{3, 600, 64}, Case{12, 20000, 512}, Case{4, 9000, 2051},
+                        Case{2, 70000, 512}, Case{5, 1500, 1500}}) {
+    SCOPED_TRACE(std::format("rows {} cells {} k {}", t.rows, t.cells, t.k));
+    const auto width = static_cast<std::size_t>(t.cells);
+    std::vector<float> scores(width * static_cast<std::size_t>(t.rows));
+    std::mt19937 random(83);  // NOLINT(bugprone-random-generator-seed): reproducible
+    std::uniform_int_distribution<int> level(-6, 9);
+    for (std::size_t r = 0; r < static_cast<std::size_t>(t.rows); ++r) {
+      for (std::size_t i = 0; i < width; i += 4) {
+        const float v = static_cast<float>(std::max(level(random), 0)) * 0.25F;
+        for (std::size_t j = i; j < std::min(width, i + 4); ++j) scores[(r * width) + j] = v;
+      }
+      // The causal tail of the row, and a -0 that ties +0.
+      for (std::size_t j = width - (width / 8); j < width; ++j)
+        scores[(r * width) + j] = -std::numeric_limits<float>::infinity();
+      scores[(r * width) + 1] = -0.0F;
+    }
+    // The reference: a stable descending order's first k, ascending.
+    std::vector<std::int32_t> want;
+    for (std::size_t r = 0; r < static_cast<std::size_t>(t.rows); ++r) {
+      std::vector<std::int32_t> order(width);
+      std::iota(order.begin(), order.end(), 0);  // NOLINT(modernize-use-ranges)
+      const float* row = &scores[r * width];
+      std::ranges::stable_sort(order, [row](std::int32_t a, std::int32_t b) {
+        return row[static_cast<std::size_t>(a)] > row[static_cast<std::size_t>(b)];
+      });
+      order.resize(static_cast<std::size_t>(t.k));
+      std::ranges::sort(order);
+      want.insert(want.end(), order.begin(), order.end());
+    }
+    ggml_tensor* in = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, t.cells, t.rows), scores);
+    ggml_tensor* top = Place(ggml_top_k(c(), in, static_cast<int>(t.k)));
+    ASSERT_TRUE(kg::CheckStableTopK(top));
+    const auto scratch = kg::PlanStableTopK(launch(), top);
+    ASSERT_TRUE(scratch.has_value());
+    for (int run = 0; run < 3; ++run) {
+      launch().ResetScratchPeak();
+      Launched(kg::RunStableTopK(launch(), top), "stable top_k");
+      EXPECT_LE(launch().scratch_peak().value(), (*scratch + 255) / 256 * 256);
+      EXPECT_EQ(Download<std::int32_t>(top), want) << "run " << run;
+    }
+  }
+  // Beyond its k bound the incumbent's GGML select remains the candidate.
+  ggml_tensor* wide = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 70000, 1));
+  EXPECT_FALSE(kg::CheckStableTopK(Place(ggml_top_k(c(), wide, 65537))));
+}
+
 TEST_F(GgmlExtOpsTest, ClampedSwiGluMatchesTheReference) {
   // DeepSeek V4's experts and shared expert: swiglu_clamp at 10, split.
   constexpr std::int64_t kFfn = 2048;

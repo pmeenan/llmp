@@ -18,6 +18,7 @@
 // speculative judge's cursor copy.
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <concepts>
 #include <cstdint>
@@ -127,11 +128,32 @@ concept Lazy = requires(const T& t) {
   { t.Allowed(std::int32_t{}) } -> std::same_as<bool>;
 };
 
+// A refused argmax's masked argmax from the row's leading tokens (F13,
+// runtime/llm.cc LazyChoice): the first allowed in rank order.
+template <class T>
+concept LeadingLazy = Lazy<T> && requires(const T& t) {
+  {
+    t.AllowedOf(std::span<const std::int32_t>{}, std::span<std::int32_t>{})
+  } -> std::same_as<std::size_t>;
+};
+
 template <class Sampling>
 std::int32_t LazyGreedy(const Sampling& sampling, std::span<const float> row,
                         std::vector<float>& scratch) {
   if constexpr (Lazy<Sampling>) {
     if (const auto first = ex::Greedy(row); first && sampling.Allowed(*first)) return *first;
+  }
+  if constexpr (LeadingLazy<Sampling>) {
+    std::vector<ex::SamplingCandidate> ranked;
+    std::vector<std::int32_t> ids;
+    std::array<std::int32_t, 1> found{};
+    for (std::size_t want = 64;; want = std::min<std::size_t>(1024, 4 * want)) {
+      ex::Ranked(row, want, ranked);
+      ids.clear();
+      for (const auto& candidate : ranked) ids.push_back(candidate.id);
+      if (sampling.AllowedOf(ids, found) == 1) return found[0];
+      if (ranked.size() < want || want == 1024) break;
+    }
   }
   return ex::Greedy(sampling.Mask(row, scratch)).value_or(-1);
 }
@@ -228,6 +250,10 @@ void Run(const Family& family, const Mode& mode, const State& state, int reps) {
   auto reject_row = row;
   const auto terminal = family.terminals.front();
   reject_row[static_cast<std::size_t>(terminal)] = 20.0F;
+  // The allowed continuation next: the masked argmax a refused terminal
+  // leaves (without it, the first allowed token may rank past 1,024 of a
+  // random row and the leading search falls back to the full mask).
+  reject_row[static_cast<std::size_t>(next.front())] = 19.0F;
 
   std::vector<float> scratch;
   std::int32_t full_choice = -1, lazy_choice = -1, reject_choice = -1, full_reject = -1;

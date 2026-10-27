@@ -3435,6 +3435,15 @@ std::expected<void, KernelFailure> CheckVisibleTopK(const ggml_tensor* node) {
   return {};
 }
 
+std::expected<void, KernelFailure> CheckStableTopK(const ggml_tensor* node) {
+  if (auto checked = CheckTopK(node); !checked) return checked;
+  const ggml_tensor* x = node->src[0];
+  if (node->ne[0] > 65536 || x->ne[0] > std::int64_t{INT32_MAX} / 4 ||
+      ggml_nrows(x) > std::int64_t{INT32_MAX} / node->ne[0])
+    return Rejected("top_k of at most 65,536 a row within the radix select's extents");
+  return {};
+}
+
 std::expected<void, KernelFailure> CheckSelectedMask(const ggml_tensor* node) {
   if (auto checked = CheckCustom(node, LlmpOp::kSelectedMask, 2); !checked) return checked;
   const ggml_tensor* raw = node->src[0];

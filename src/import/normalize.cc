@@ -72,6 +72,10 @@ constexpr std::string_view kUnclassifiedConfig =
 bool HfConfigSource(std::string_view container) {
   return container == "safetensors" || container == "mlx" || container == "exl3";
 }
+// A source value stated as JSON null: what the source states as "no value".
+bool IsNull(const MetaValue* value) {
+  return value != nullptr && std::holds_alternative<std::nullptr_t>(*value);
+}
 std::expected<Key, std::string_view> Classify(const spec::Mapping& t, std::string_view container,
                                               std::string_view key, bool is_null = false,
                                               const Checkpoint* source = nullptr) {
@@ -100,8 +104,10 @@ std::expected<Key, std::string_view> Classify(const spec::Mapping& t, std::strin
          (key == alias.source ||
           (nested != key && alias.unless_present.empty() && nested == alias.source))) ||
         (has_key_prefix && stripped == alias.source)) {
-      if (!alias.unless_present.empty() && source && source->FindValue(alias.unless_present))
-        continue;
+      if (!alias.unless_present.empty() && source) {
+        const auto* present = source->FindValue(alias.unless_present);
+        if (present && !IsNull(present)) continue;
+      }
       canonical = alias.canonical;
       aliased = true;
       break;
@@ -126,8 +132,14 @@ std::expected<Key, std::string_view> Classify(const spec::Mapping& t, std::strin
                  .canonical = unprefixed,
                  .types = static_cast<std::uint8_t>(kt != 0 ? kt : nd::kInteger)};
     }
-  if (const auto types = nd::KeyTypes(m, canonical, aliased); types != 0)
+  if (const auto types = nd::KeyTypes(m, canonical, aliased); types != 0) {
+    // Stated as null where its absence leaves what it sets unset: absent,
+    // kept as unread source provenance (a dense Gemma 4 release's
+    // `num_experts: null`). Any other null stays refused as mistyped.
+    if (is_null && nd::NullMeansAbsent(m, canonical, aliased))
+      return Key{.auxiliary = static_cast<std::uint32_t>(t.auxiliary.size())};
     return Key{.kind = MetadataClass::kSelected, .canonical = unprefixed, .types = types};
+  }
   for (const auto& list : t.lists)
     if (match_key(list.key))
       return Key{.kind = MetadataClass::kSelected, .canonical = unprefixed, .types = nd::kIntegers};
@@ -871,10 +883,12 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const spec::M
           return Bad("component choices exceed normalization budget");
     }
   }
+  // A null source value is absent here too (Classify).
   const auto raw_value_for = [&](std::string_view rule_key) -> const MetaValue* {
-    if (const auto* v = s.FindValue(rule_key)) return v;
+    if (const auto* v = s.FindValue(rule_key); v && !IsNull(v)) return v;
     for (const auto& entry : s.metadata)
-      if (spec::IsCanonicalKey(m, rule_key, entry.key)) return &entry.value;
+      if (spec::IsCanonicalKey(m, rule_key, entry.key) && !IsNull(&entry.value))
+        return &entry.value;
     return nullptr;
   };
   Arithmetic a;

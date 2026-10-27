@@ -48,6 +48,7 @@
 #include "engine/batch_inventory.h"
 #include "engine/component_source.h"
 #include "engine/copy_sink.h"
+#include "engine/execution_contract.h"
 #include "engine/graph_plan.h"
 #include "engine/paged_node.h"
 #include "engine/ple_rows.h"
@@ -211,6 +212,80 @@ TEST(PagedNodeWorkspaceTest,
         "retiring foreign domain control"));
     ASSERT_TRUE(node.TearDown({}));
   }
+}
+
+// Execution metadata on a started node is judged against its budget alone,
+// and what does not fit asks the node's reclaim order first (as a plan's
+// charge does), before it is refused (F13: a fresh plan's report inventory
+// was refused while the physical availability read low beside a dedicated
+// pool, and its growth never asked the reclaim order).
+TEST(PagedNodeMetadataTest, GrowthPastTheBudgetAsksTheReclaimOrderBeforeRefusing) {
+  en::PagedNode node(
+      {.compute_streams = 1, .slots = 1, .inline_lanes = true, .slot_bytes = kExtent});
+  ASSERT_TRUE(node.Open());
+  ASSERT_TRUE(node.MapWorkspace(kExtent, kExtent));
+  const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.Start(Bytes(fixed + 8 * kExtent)));
+  node.Run();
+  // Plans and graphs past a zero floor fill six of the eight extents; the
+  // reclaimer gives them back as the reclaim order would.
+  node.SetHostFloor(0);
+  ASSERT_TRUE(node.ChargeHost(6 * kExtent, false));
+  std::vector<std::pair<std::uint64_t, en::PagedNode::ReclaimFor>> asked;
+  std::uint64_t reclaimable = 6 * kExtent;
+  node.SetReclaimer([&](std::uint64_t needed, en::PagedNode::ReclaimFor what,
+                        std::span<const llmp::catalog::ExtentId>) {
+    asked.emplace_back(needed, what);
+    const std::uint64_t freed = std::min(reclaimable, (needed + kExtent - 1) / kExtent * kExtent);
+    node.UnchargeHost(freed);
+    reclaimable -= freed;
+    return freed;
+  });
+  // Admission fits beside them (the seventh extent) and asks nothing.
+  auto allowance = node.AdmitMetadata(kExtent, std::numeric_limits<std::uint64_t>::max());
+  ASSERT_TRUE(allowance) << allowance.error();
+  EXPECT_TRUE(asked.empty());
+  const auto capacity = (*allowance)->capacity();
+  // Growth to two extents of live charge passes the budget: the order is
+  // asked for what it lacks (a plan's kind of need), frees it, and the
+  // growth is then charged.
+  ASSERT_TRUE(
+      node.ChargeMetadata(**allowance, 2 * kExtent, std::numeric_limits<std::uint64_t>::max()));
+  ASSERT_EQ(asked.size(), 1U);
+  EXPECT_EQ(asked[0].second, en::PagedNode::ReclaimFor::kPlan);
+  EXPECT_GT(asked[0].first, 0U);
+  EXPECT_EQ((*allowance)->used(), 2 * kExtent);
+  EXPECT_GE((*allowance)->capacity(), 2 * kExtent);
+  EXPECT_LE(node.catalog().OccupancyOf(node.domain()).Total().value(), fixed + 8 * kExtent);
+  // What the order cannot cover is refused, the allowance unchanged.
+  asked.clear();
+  const auto grown = (*allowance)->capacity();
+  const auto occupancy = node.catalog().OccupancyOf(node.domain()).Total();
+  const auto refused =
+      node.ChargeMetadata(**allowance, 64 * kExtent, std::numeric_limits<std::uint64_t>::max());
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().find("exceeds the budget"), std::string::npos) << refused.error();
+  ASSERT_FALSE(asked.empty());
+  EXPECT_EQ(asked.back().second, en::PagedNode::ReclaimFor::kPlan);
+  EXPECT_EQ((*allowance)->used(), 2 * kExtent);
+  EXPECT_EQ((*allowance)->capacity(), grown);
+  EXPECT_GT(grown, capacity);
+  // A cap below the budget bounds growth as well.
+  asked.clear();
+  EXPECT_FALSE(node.ChargeMetadata(**allowance, kExtent, fixed));
+  EXPECT_EQ((*allowance)->used(), 2 * kExtent);
+  EXPECT_LE(node.catalog().OccupancyOf(node.domain()).Total().value(), occupancy.value());
+  // Admission past the budget asks the order too, and is refused only when
+  // it still does not fit.
+  asked.clear();
+  EXPECT_FALSE(node.AdmitMetadata(64 * kExtent, std::numeric_limits<std::uint64_t>::max()));
+  ASSERT_FALSE(asked.empty());
+  EXPECT_EQ(asked.back().second, en::PagedNode::ReclaimFor::kPlan);
+  (*allowance)->Release(2 * kExtent);
+  node.SetReclaimer({});
+  node.UnchargeHost(reclaimable);
+  allowance->reset();
+  ASSERT_TRUE(node.TearDown({}));
 }
 
 // Exercise the exact pre-allocation source gate for stored v1 table resources.

@@ -10,6 +10,7 @@
 
 #include "base/check.h"
 #include "engine/prompt_wave.h"
+#include "execution/sampling.h"
 #include "model/state_contract.h"
 #include "runtime/model_settings.h"
 #include "runtime/serving.h"
@@ -594,13 +595,22 @@ en::DecodingPolicy Llm::Policy() {
   policy.readback = [this](std::uint32_t slot, std::span<const std::int32_t> tokens,
                            std::span<const std::byte> outputs) -> std::optional<std::uint32_t> {
     auto branch = this->branch(slot);
-    if (!head_rows_ || !branch || (*branch)->tool_sampling_ == nullptr || tokens.empty() ||
-        outputs.size() != tokens.size() * sizeof(std::int32_t))
+    // A device choice is refused by the tool constraint, or when it is a
+    // padding row past the tokenizer's vocabulary (RE-050), which the
+    // device's argmax over the whole head can pick and the host never does.
+    const auto vocabulary = tokenizer_ ? tokenizer_->size() : 0;
+    if (!head_rows_ || !branch || ((*branch)->tool_sampling_ == nullptr && !PaddedHead()) ||
+        tokens.empty() || outputs.size() != tokens.size() * sizeof(std::int32_t))
       return std::nullopt;
     std::vector<std::int32_t> chosen(tokens.size());
     std::memcpy(chosen.data(), outputs.data(), outputs.size());
     for (const auto token : chosen)
       if (token < 0 || std::cmp_greater_equal(token, logit_width_)) return std::nullopt;
+    if ((*branch)->tool_sampling_ == nullptr &&
+        std::ranges::all_of(chosen, [vocabulary](std::int32_t token) {
+          return execution::InVocabulary(token, vocabulary);
+        }))
+      return std::nullopt;
     std::optional<std::uint32_t> refused;
     (void)DeviceVerdict(**branch, tokens, chosen, nullptr, &refused);
     return refused;
@@ -661,8 +671,13 @@ std::expected<en::Verdict, std::string> Llm::DeviceVerdict(Branch& branch,
     if (last) out.tokens.push_back(*last);
     return out;
   };
+  // A device choice past the tokenizer's vocabulary (a wider head's padding
+  // row, RE-050) is refused as the constraint's are: the host chooses from
+  // the row's logits, where it never picks one.
+  const auto vocabulary = tokenizer_ ? tokenizer_->size() : 0;
   for (std::size_t m = 0;; ++m) {
-    if (tentative && !tentative->Allowed(tokens[m])) {
+    if (!execution::InVocabulary(tokens[m], vocabulary) ||
+        (tentative && !tentative->Allowed(tokens[m]))) {
       if (refused != nullptr) {
         *refused = static_cast<std::uint32_t>(m);
         return verdict(m, std::nullopt);
@@ -671,11 +686,13 @@ std::expected<en::Verdict, std::string> Llm::DeviceVerdict(Branch& branch,
         if (!row->logits) return Error(row->logits.error());
         const std::uint64_t position =
             std::uint64_t{runner_->slots().positions(Slot(branch))} + m + 1;
-        auto chosen = Choose(branch, *row->logits, position, &*tentative);
+        auto chosen = Choose(branch, *row->logits, position, tentative ? &*tentative : nullptr);
         if (!chosen) return std::unexpected(chosen.error());
         return verdict(m, *chosen);
       }
-      if (m == 0) return Error("a device verify chose a token its tool constraint refuses");
+      if (m == 0)
+        return Error(
+            "a device verify chose a token its tool constraint or tokenizer vocabulary refuses");
       return verdict(m, std::nullopt);
     }
     if (m + 1 >= verified.size() || tokens[m] != verified[m + 1]) return verdict(m, tokens[m]);
@@ -760,8 +777,9 @@ void Llm::RunPlain(std::span<PreparedGeneration> units) {
         continue;
       }
       if (auto& read = read_rows_.at(Slot(*unit.branch)); read) {
-        // The tool constraint refused the device's choice: the host
-        // chooses from the row it was made from (ApplyPlain).
+        // The tool constraint or the tokenizer's vocabulary refused the
+        // device's choice: the host chooses from the row it was made from
+        // (ApplyPlain).
         auto logits = std::move(read->logits);
         read.reset();
         if (!logits) {
@@ -771,6 +789,16 @@ void Llm::RunPlain(std::span<PreparedGeneration> units) {
         }
         unit.row = std::move(*logits);
         unit.result = {};
+        continue;
+      }
+      if (!execution::InVocabulary(token, tokenizer_ ? tokenizer_->size() : 0)) {
+        // A padding row past the tokenizer won on the device and no row was
+        // read back to choose from (RE-050; DeviceChooses leaves a padded
+        // head without retained rows no device choice, so a defect):
+        // refused, never emitted.
+        unit.result = Error(std::format("{}'s greedy step chose token {}, past its tokenizer's {}",
+                                        name_, token, tokenizer_->size()));
+        unit.anchor_processed = true;
         continue;
       }
       unit.chosen = token;
@@ -1143,7 +1171,8 @@ Status Llm::RunPrefill(std::span<PreparedPrefill> prepared) {
         continue;
       }
       std::memcpy(&token, outcome.outputs.data(), sizeof(token));
-      if (token < 0 || std::cmp_greater_equal(token, logit_width_)) {
+      if (!execution::InVocabulary(token, tokenizer_ ? tokenizer_->size() : 0) ||
+          std::cmp_greater_equal(token, logit_width_)) {
         unit.result = Error("mixed decode returned an invalid device token");
         continue;
       }
@@ -1236,7 +1265,11 @@ Status Llm::RunPreparedCausalWave(std::span<PreparedPrefill> prompts,
                       .logits = &unit.row,
                       .result = {},
                       .generation = unit.session,
-                      .chosen = device_greedy_ && GreedyWithoutRows(unit) ? &unit.chosen : nullptr};
+                      // A padded head's joined decode returns its row: no head row
+                      // is read back here to choose again from (RE-050).
+                      .chosen = device_greedy_ && !PaddedHead() && GreedyWithoutRows(unit)
+                                    ? &unit.chosen
+                                    : nullptr};
     source[count++] = prompts.size() + i;
   }
   // Both maps are caller-bounded by the existing slot representation; all

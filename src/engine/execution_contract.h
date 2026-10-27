@@ -59,6 +59,22 @@ class ExecutionMetadataAllowance {
   std::expected<void, std::string> ChargeOrGrow(catalog::Catalog& catalog, catalog::DomainId domain,
                                                 std::uint64_t bytes, std::uint64_t budget,
                                                 std::uint64_t available, std::uint64_t margin);
+  // A running node's admission and growth (PagedNode::AdmitMetadata and
+  // ChargeMetadata), under the same serialized catalog ownership: the
+  // execution budget alone judges them. The budget was set from the memory
+  // measured at the start less the uncounted margin, and a dedicated pool's
+  // empty handles fill the budget's headroom (shed as the occupancy grows),
+  // so the physical availability then reads low by design; judging it again
+  // against the margin would refuse every growth. Refused, `*shortfall`
+  // holds what the domain's occupancy lacks of the budget for it (0 for any
+  // other refusal), which the caller asks the reclaim order for.
+  static std::expected<std::shared_ptr<ExecutionMetadataAllowance>, std::string> AdmitInBudget(
+      catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t bytes,
+      std::uint64_t budget, std::uint64_t* shortfall);
+  std::expected<void, std::string> ChargeOrGrowInBudget(catalog::Catalog& catalog,
+                                                        catalog::DomainId domain,
+                                                        std::uint64_t bytes, std::uint64_t budget,
+                                                        std::uint64_t* shortfall);
   // One catalog/driver owner charges/grows capacity. Consumer threads may
   // release retained allocations concurrently, without touching the catalog.
   bool Charge(std::uint64_t bytes);
@@ -72,6 +88,14 @@ class ExecutionMetadataAllowance {
   bool HeldBy(const catalog::Catalog& catalog, catalog::DomainId domain) const;
 
  private:
+  // Grow's and ChargeOrGrow's arithmetic; `physical` false judges the
+  // budget alone (the InBudget forms).
+  std::expected<void, std::string> GrowTo(catalog::Catalog& catalog, catalog::DomainId domain,
+                                          std::uint64_t capacity, std::uint64_t budget,
+                                          bool physical, std::uint64_t available,
+                                          std::uint64_t margin, std::uint64_t* shortfall);
+  static std::expected<std::shared_ptr<ExecutionMetadataAllowance>, std::string> CatalogOwner(
+      catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t bytes);
   ExecutionMetadataAllowance(const catalog::Catalog& catalog, catalog::DomainId domain,
                              catalog::ExtentId extent, std::uint64_t capacity)
       : catalog_(&catalog), domain_(domain), extent_(extent), capacity_(capacity) {}

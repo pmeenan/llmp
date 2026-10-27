@@ -280,6 +280,41 @@ TEST(MemoryPressure, ParsesTheStallLines) {
   }
 }
 
+// The per-CPU lists' free pages MemAvailable misses (RE-024, RE-052): every
+// pageset's count, summed; nothing else in /proc/zoneinfo is named so.
+TEST(Meminfo, PerCpuListPages) {
+  constexpr std::string_view kZoneinfo =
+      "Node 0, zone   Normal\n"
+      "  pages free     27598201\n"
+      "        min      11063\n"
+      "  pagesets\n"
+      "    cpu: 0\n"
+      "              count:    41210\n"
+      "              high:     198125\n"
+      "              batch:    63\n"
+      "  vm stats threshold: 125\n"
+      "    cpu: 1\n"
+      "              count: 7\n"
+      "Node 0, zone      DMA\n"
+      "  pagesets\n"
+      "    cpu: 0\n"
+      "              count:    0\n";
+  using llmp::platform::PerCpuListPages;
+  EXPECT_EQ(PerCpuListPages(kZoneinfo), std::uint64_t{41217});
+  EXPECT_EQ(PerCpuListPages("Node 0, zone DMA\n  pages free 3\n"), std::nullopt);
+  EXPECT_EQ(PerCpuListPages("  count: x\n"), std::nullopt);
+  EXPECT_EQ(PerCpuListPages("  count: 18446744073709551615\n  count: 1\n"), std::nullopt);
+  EXPECT_EQ(PerCpuListPages(""), std::nullopt);
+  // This host's reading, when it has one, is at least MemAvailable's.
+  const auto meminfo = llmp::platform::ReadSmallFile("/proc/meminfo");
+  const auto available = llmp::platform::AvailableMemoryBytes();
+  if (meminfo && available) {
+    const auto plain = llmp::platform::MeminfoBytes(*meminfo, "MemAvailable");
+    ASSERT_TRUE(plain);
+    EXPECT_GT(*available + (std::uint64_t{1} << 30U), *plain);
+  }
+}
+
 TEST(Meminfo, Values) {
   constexpr std::string_view kMeminfo =
       "MemTotal:       127598832 kB\n"

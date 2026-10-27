@@ -133,8 +133,12 @@ restrict, it judges lazily: greedy takes the row's argmax when
 `Allowed` passes it; top-k sampling judges the row's leading tokens until it
 has the k best allowed ones, all the masked distribution keeps; temperature
 alone keeps an allowed draw and redraws a refused one from the masked row by
-an independent stream (rejection sampling). Only top-p or min-p without top-k,
-and a greedy argmax the constraint refuses, mask the whole row. A full mask
+an independent stream (rejection sampling). A greedy argmax the constraint
+refuses takes the first allowed token among the row's leading ones (64, then
+256, then 1,024, ranked by logit then the lower ID: exactly the masked row's
+argmax), in a plain choice and a speculative verdict alike. Only top-p or
+min-p without top-k, and a refused argmax with no allowed token among the
+leading 1,024, mask the whole row. A full mask
 judges every plain token of a state at once: where the grammar's state treats
 all bytes it does not attend to alike (answer text, reasoning, a raw or string
 value: `ToolInterpreter::PlainVerdict`), a token made only of such bytes takes

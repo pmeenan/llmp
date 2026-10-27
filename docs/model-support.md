@@ -1124,7 +1124,11 @@ checks passed, with the coverage accounting described there.
   bindings, retired in slice 4b, are recorded in [gemma4.md](gemma4.md)).
 - **Checkpoints:** `unsloth/gemma-4-26B-A4B-it-GGUF@c099eb48`
   `gemma-4-26B-A4B-it-UD-Q4_K_M.gguf`; `unsloth/gemma-4-31B-it-GGUF@c1ac76e9`
-  `gemma-4-31B-it-UD-Q4_K_XL.gguf`.
+  `gemma-4-31B-it-UD-Q4_K_XL.gguf`. The dense transformers release
+  (`google/gemma-4-31B-it@842da379`, BF16 safetensors, which states
+  `text_config.num_experts: null`) imports since 2026-10-26 (v1
+  `38f44321…` on `spark`, a scratch store; the nulls are read as absent);
+  not served or verified.
 - **Artifacts:** v0 `4ddb360c…` (26B-A4B) and `32c92e07…` (31B)
   ([gemma31-serving](experiments/gemma31-serving/README.md#identities-and-memory));
   v1 `23f6b7c1…` (26B-A4B) and `91580585…` (31B) by `llmp import`, each

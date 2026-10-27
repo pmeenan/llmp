@@ -35,8 +35,15 @@ KernelModule FindKernelModule(const std::filesystem::path& root, std::string_vie
 // A /proc/meminfo value in bytes, such as MemTotal's.
 std::optional<std::uint64_t> MeminfoBytes(std::string_view meminfo, std::string_view key);
 
+// The pages Linux's per-CPU free lists hold (the sum of every zone's
+// pagesets' `count:` in /proc/zoneinfo text), or none if it lists none.
+std::optional<std::uint64_t> PerCpuListPages(std::string_view zoneinfo);
+
 // The memory this host could give a new allocation without swapping, in
-// bytes, now (Linux: MemAvailable; macOS would count free, inactive and
+// bytes, now (Linux: MemAvailable plus the free pages its per-CPU lists
+// hold, which MemAvailable does not count (RE-024): after tens of GB were
+// allocated and freed they reached 12.4 GB on a GB10, which refused a
+// serving start (RE-052); macOS would count free, inactive and
 // purgeable pages from host_statistics64; Windows, GlobalMemoryStatusEx's
 // ullAvailPhys). Unknown if the system does not say.
 std::optional<std::uint64_t> AvailableMemoryBytes();

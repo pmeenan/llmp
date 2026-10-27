@@ -188,7 +188,10 @@ std::expected<TokenLogprob, Error> LiteralRows::Add(std::int32_t id, std::span<c
                    .top = {},
                    .text_offset = offset_};
   if (!first) {
-    auto scored = execution::ScoreToken(logits, id, top);
+    // Scored over the tokenizer's tokens alone: a wider head's padding rows
+    // are never ranked and carry no probability (RE-050).
+    auto scored =
+        execution::ScoreToken(execution::VocabularyRow(logits, tokenizer_.size()), id, top);
     if (!scored) {
       return std::unexpected(Error{.status = 500,
                                    .type = "server_error",

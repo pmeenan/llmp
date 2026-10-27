@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <expected>
 #include <memory>
 #include <new>
 #include <optional>
@@ -250,6 +251,46 @@ TEST_P(GgmlConstructionGpu, LibraryLoanReturnsBeforeOwnerDestructionAndCanBeRele
   }
 }
 
+// A launch queues on its backend's stream (the runner's job stream) and no
+// other: a capture named for another stream is refused before its body runs,
+// since the job fencing that stream would not fence the work.
+TEST_P(GgmlConstructionGpu, CaptureOnAnotherStreamIsRefusedBeforeItsBodyRuns) {
+  ASSERT_NO_FATAL_FAILURE(Fund(GetParam()));
+  if (!GetParam()) ASSERT_TRUE(life->resources.OpenLibrary("stream binding library"));
+  ASSERT_TRUE(life->resources.OpenSelectedWorkspace("stream binding source state",
+                                                    life->backend->persistent_bytes()));
+  ASSERT_TRUE(life->backend->LendLibrary(&life->resources.library()));
+  {
+    const auto& state = life->resources.selected_workspace();
+    auto launch =
+        life->backend->Launch({.base = 0, .size = llmp::base::Bytes(0)},
+                              {.base = state.base, .bytes = life->backend->persistent_bytes()});
+    ASSERT_TRUE(launch) << (launch ? "" : launch.error());
+    // The node's other stream (its copy stream), not the backend's.
+    auto other = life->node.execution().Submission(life->node.stream(1));
+    ASSERT_TRUE(other) << (other ? "" : other.error().detail);
+    auto own = life->node.execution().Submission(life->node.stream(0));
+    ASSERT_TRUE(own) << (own ? "" : own.error().detail);
+    ASSERT_NE(other->handle, own->handle);
+    bool ran = false;
+    auto captured = (*launch)->Capture(*other, [&]() -> std::expected<void, kn::StepFailure> {
+      ran = true;
+      return {};
+    });
+    ASSERT_FALSE(captured);
+    EXPECT_EQ(captured.error().error, kn::StepError::kRejected);
+    EXPECT_NE(captured.error().detail.find("is not its backend's"), std::string::npos)
+        << captured.error().detail;
+    EXPECT_FALSE(ran);
+    EXPECT_FALSE((*launch)->faulted());
+    launch->reset();
+  }
+  life->backend->LaunchReleased();
+  std::vector<std::string> problems;
+  life->resources.Release(problems);
+  ASSERT_TRUE(problems.empty());
+}
+
 TEST_P(GgmlConstructionGpu, ReportsUseTheSamePayerWithoutRequiringADeclaration) {
   // Image construction declares first, then installs its independent payer.
   ASSERT_NO_FATAL_FAILURE(Fund(GetParam(), true));
@@ -413,11 +454,13 @@ TEST_P(GgmlConstructionGpu, PostLowerScratchRefusalDestroysArenaBeforeRefund) {
   // Descriptor-only geometry: every row and column is individually valid,
   // while their product exceeds the real bitonic scratch planner's int index.
   // No payload or device backing for these dimensions is ever allocated.
+  // k is the whole row, so rows times k passes llmp.top_k.stable's extents
+  // and GGML's select (with its bitonic scratch) is the one planned.
   constexpr std::uint32_t rows = 1U << 24U;
   ir::Builder b;
   b.SetOwner(0);
   const auto x = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({128, rows})));
-  b.Output(b.TopK(x, 8));
+  b.Output(b.TopK(x, 128));
   auto graph = std::move(b).Finish();
   ASSERT_TRUE(graph);
   co::StepGraph step{.graph = std::move(*graph),

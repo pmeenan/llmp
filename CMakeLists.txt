@@ -135,6 +135,14 @@ endfunction()
 # above, so they build under the same toolchain and without exceptions.
 include(cmake/LlmpSources.cmake)
 llmp_sources_add()
+# GGML's type traits store each row decoder, declared with its block type
+# (`const block_q4_0 *`), as a ggml_to_float_t taking `const void *`, so
+# UBSan's -fsanitize=function refuses every call through them (ours in
+# kernels/reference and the tests). Its C files carry no function-type
+# prefix then, and the calls go unchecked (docs/upstream/ggml.md).
+if("undefined" IN_LIST LLMP_SANITIZE AND TARGET llmp_ggml_base)
+  target_compile_options(llmp_ggml_base PRIVATE "$<$<COMPILE_LANGUAGE:C>:-fno-sanitize=function>")
+endif()
 
 # A GoogleTest (with gMock) test executable (D-059), with the safe reading of
 # a std::expected's error (tests/support/expected_error.h). CTest lists its tests
@@ -147,14 +155,21 @@ function(llmp_gtest target)
   gtest_discover_tests(${target} DISCOVERY_MODE PRE_TEST ${ARGN})
 endfunction()
 
+# A CUDA profile's executable that links cuBLAS (D-076) finds the SDK's in
+# build/<preset>/cublas (src/kernels/ggml/CMakeLists.txt) through a RUNPATH
+# relative to itself, which a deployed copy of the build tree keeps.
+function(llmp_cublas_runpath target)
+  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
+  target_link_options(${target} PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
+endfunction()
+
 # A GoogleTest executable that needs a GPU (label `gpu`): a GB10, and for
 # the tests DISCRETE names (Suite.Name, or ALL) also the discrete GPUs a
 # build targets (label `gpu-discrete` as well, where the build has any;
 # D-082). It may load cuBLAS (D-076). Where GPU tests are skipped it may
 # not even load (qemu-user has no libgcc_s for cuBLAS), so CTest never runs
 # it to list its tests: they are read from its sources (gtest_add_tests).
-# It finds the SDK's cuBLAS in build/<preset>/cublas through a RUNPATH
-# relative to itself, which a deployed copy of the build tree keeps.
+# It finds the SDK's cuBLAS through llmp_cublas_runpath.
 # ENVIRONMENT sets its tests' environment; MODELS marks model-file tests;
 # TIMING names the tests (as DISCRETE does) that assert wall-clock or CPU
 # bounds, label `timing`: they run only in exclusive Spark jobs
@@ -166,8 +181,7 @@ function(llmp_gpu_gtest target)
   endif()
   target_link_libraries(${target} PRIVATE GTest::gmock_main llmp_test_expected llmp_warnings)
   llmp_test_executable(${target})
-  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
-  target_link_options(${target} PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
+  llmp_cublas_runpath(${target})
   gtest_add_tests(TARGET ${target} TEST_PREFIX unit. TEST_LIST tests)
   set(labels gpu)
   if(arg_MODELS)

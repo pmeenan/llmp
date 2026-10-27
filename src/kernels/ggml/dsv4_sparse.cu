@@ -490,8 +490,9 @@ __global__ void __launch_bounds__(kTopKThreads) TopKMergeKernel(const TopKArgs a
       a.out + (static_cast<std::int64_t>(row) * a.k), sh);
 }
 
-// Standalone selection reads materialized arbitrary scores and a strided count.
-// The radix body is shared; legacy callers retain their unit score stride.
+// Standalone selection reads materialized arbitrary scores and a strided count
+// (none: every cell of a row, ir::kTopK's llmp.top_k.stable). The radix body is
+// shared; legacy callers retain their unit score stride.
 struct VisibleTopKArgs {
   const float* scores = nullptr;
   std::uint64_t score_col = 0;
@@ -511,7 +512,8 @@ __global__ void __launch_bounds__(kTopKThreads) VisibleTopKKernel(VisibleTopKArg
   ggml_cuda_pdl_sync();
   const auto row = a.slices > 0 ? blockIdx.y : blockIdx.x;
   const float* scores = a.scores + row * a.score_row;
-  const int visible = min(max(a.counts[row * a.count_stride], 0), a.cells);
+  const int visible =
+      a.counts == nullptr ? a.cells : min(max(a.counts[row * a.count_stride], 0), a.cells);
   const int first = a.slices > 0 ? static_cast<int>(blockIdx.x) * a.slice : 0;
   const int count = max(0, min(visible - first, a.slices > 0 ? a.slice : a.cells));
   std::int32_t* out =
@@ -866,6 +868,56 @@ std::expected<void, KernelFailure> RunVisibleTopK(LaunchContext& launch, ggml_te
       ggml_cuda_kernel_launch(
           VisibleTopKMergeKernel,
           ggml_cuda_kernel_launch_params(dim3(rows), dim3(kTopKThreads), 0, context.stream()), a);
+    }
+  });
+}
+
+std::expected<std::uint64_t, KernelFailure> PlanStableTopK(const LaunchContext& /*launch*/,
+                                                           const ggml_tensor* node) {
+  if (auto checked = CheckStableTopK(node); !checked) return std::unexpected(checked.error());
+  const auto rows = ggml_nrows(node->src[0]);
+  const auto slices = Slices(rows, node->src[0]->ne[0]);
+  const auto bytes = static_cast<std::uint64_t>(rows * slices * node->ne[0]) * 4;
+  return (bytes + 255) / 256 * 256;
+}
+
+// ir::kTopK as VisibleTopKKernel selects with every cell visible: each
+// packed F32 row's k highest, ties to the lower index (RE-031: GGML's radix
+// select compacts the tied candidates by atomics, in timing order), written
+// in ascending index order.
+std::expected<void, KernelFailure> RunStableTopK(LaunchContext& launch, ggml_tensor* node) {
+  const auto scratch = PlanStableTopK(launch, node);
+  if (!scratch) return std::unexpected(scratch.error());
+  return launch.Run(base::Bytes(*scratch), [node](ggml_backend_cuda_context& context) {
+    const auto* scores = node->src[0];
+    const auto rows = ggml_nrows(scores);
+    VisibleTopKArgs a;
+    a.scores = static_cast<const float*>(scores->data);
+    a.score_col = 1;  // packed rows (CheckTopK)
+    a.score_row = static_cast<std::uint64_t>(scores->ne[0]);
+    a.out = static_cast<std::int32_t*>(node->data);
+    a.cells = static_cast<int>(scores->ne[0]);
+    a.top = static_cast<int>(node->ne[0]);
+    a.slices = static_cast<int>(Slices(rows, scores->ne[0]));
+    a.slice = static_cast<int>(SliceKeys(scores->ne[0]));
+    ggml_cuda_pool_alloc<std::int32_t> candidates;
+    if (a.slices > 0) {
+      candidates.alloc(context.pool(), static_cast<std::size_t>(rows * a.slices * a.top));
+      a.candidates = candidates.get();
+    }
+    ggml_cuda_kernel_launch(
+        VisibleTopKKernel,
+        ggml_cuda_kernel_launch_params(
+            a.slices > 0 ? dim3(static_cast<unsigned>(a.slices), static_cast<unsigned>(rows))
+                         : dim3(static_cast<unsigned>(rows)),
+            dim3(kTopKThreads), 0, context.stream()),
+        a);
+    if (a.slices > 0) {
+      ggml_cuda_kernel_launch(
+          VisibleTopKMergeKernel,
+          ggml_cuda_kernel_launch_params(dim3(static_cast<unsigned>(rows)), dim3(kTopKThreads), 0,
+                                         context.stream()),
+          a);
     }
   });
 }

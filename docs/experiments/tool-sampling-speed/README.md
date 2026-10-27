@@ -45,9 +45,21 @@ Milliseconds a token:
 | Gemma 4 | required or named | in a value | all but 2 | 28.9 | 6.5 | 0.36 |
 
 When the argmax is refused (a terminal inside a call or before a required
-call) the lazy choice costs a full mask (after: 0.69 ms unconstrained, 6–17 ms
-constrained). Name positions keep probing every token (no plain verdict
-there); they last a few tokens a call. The speculative judge's copy of the
+call) the lazy choice cost a full mask (after: 0.69 ms unconstrained, 6–17 ms
+constrained), and name positions probed every token (no plain verdict
+there). *Since 2026-10-26 (M3.5 F13)* a refused argmax takes the first
+allowed token among the row's leading ones (64, then 256, then 1,024, by
+logit then the lower ID: the masked argmax itself), so the full mask is built
+only when none of those is allowed. The bench's refused row now puts the
+allowed continuation second (19.0 under the terminal's 20.0), as a model's
+row does; `spark`, the same bench, 10 repetitions, milliseconds a token
+refused (full mask, then lazy): Qwen3.8 required name (609 allowed) 15.72 →
+0.47, required or named waiting 6.33–6.41 → 0.47, required value 5.94 →
+0.46; Gemma 4 required name (70) 16.53 → 0.44, required or named value
+6.66–6.68 → 0.44; auto inside a call (only the terminals restricted) 0.69
+(the argmax, then the mask: the column above is the mask alone, 0.35–0.37)
+→ 0.46–0.47. Every row's choice equals the full mask's (`same=yes`). Gating
+the search to constrained requests, tried, kept auto at 0.69: not adopted. The speculative judge's copy of the
 cursor costs 0.07 µs, and 0.12 µs with a 4 KiB argument open, so it is kept.
 The bench's named Qwen in-value state is not reached by its fixed text (both
 builds): not measured.
@@ -76,8 +88,16 @@ Decode tokens a second, C1 (first streamed delta to the end):
 | Gemma 4 before → after | 55.9 → 56.9 | 57.8 → 57.6 | (one event) | (1 token) |
 
 With tools present and a text answer Qwen still decodes 9% under the
-no-tools reference (Gemma 1%); its tool prompt is 578 tokens against 161,
-and the rest of the gap was not investigated.
+no-tools reference (Gemma 1%); its tool prompt is 578 tokens against 161.
+*Explained (2026-10-26, M3.5 F13, `spark`, the same harness, C1, three
+repetitions, one process a cell):* the gap is the MTP drafter's acceptance
+on a different reply, not tool code. With speculation, `text/none` decoded
+42.8 tokens a second (warm repetitions) at 2.52 tokens a speculative unit
+(459 of 846 drafts accepted) and `text/auto` 39.1 at 2.20 (417 of 867): 13%
+fewer tokens a unit for 9% fewer a second. With speculation off (the same
+artifact, no drafter) both decoded 27.47 tokens a second, equal to the
+hundredth: a step restricted by nothing costs nothing measurable, and the
+578-token context costs Qwen's decode nothing. Nothing to fix.
 
 Forced choices, C1, one request each (seconds a request; Qwen's decode
 tokens a second in parentheses):

@@ -370,6 +370,11 @@ TEST(ArtifactV1Test, AcceptsWhatIsDescribedCorrectly) {
   ASSERT_TRUE(opened.has_value()) << Describe(opened);
   EXPECT_FALSE(opened->spec_json().has_value());
   EXPECT_TRUE(opened->folds().empty());
+  EXPECT_EQ(opened->converter().name, "llmp-import-test");
+  EXPECT_EQ(opened->converter().version, "1");
+  EXPECT_EQ(opened->converter().build, "test");
+  EXPECT_TRUE(opened->converter().mapping_architecture.empty());
+  EXPECT_EQ(opened->converter().mapping_version, 0U);
 
   V1Files with_mapping = Render(p);
   with_mapping.manifest["importer"]["mapping_architecture"] = "qwen2";
@@ -982,6 +987,18 @@ TEST(CompositionV1Test, Refusals) {
         f.manifest.Erase("importer");
       },
       Rule::kSchema, "composition keys");
+  // The importer member is an artifact's (the shared reader), without the
+  // architecture mapping an artifact may name.
+  refused(
+      [](auto& f, auto&) {
+        f.manifest["importer"]["mapping_architecture"] = "gemma4";
+        f.manifest["importer"]["mapping_version"] = 1;
+      },
+      Rule::kSchema, "importer keys");
+  refused([](auto& f, auto&) { f.manifest["importer"]["options_sha256"] = "00"; }, Rule::kSchema,
+          "importer.options_sha256");
+  refused([](auto& f, auto&) { f.manifest["importer"].Erase("build"); }, Rule::kSchema,
+          "importer keys");
   refused([](auto&, auto&) {}, Rule::kHash, "spec.json differs from its manifest digest", true);
   refused([](auto& f, auto&) { f.spec = "[]\n"; }, Rule::kSchema, "spec.json is not an object");
   refused(

@@ -136,6 +136,48 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- A running node no longer refuses a fresh plan's execution metadata
+  (its report inventory, a source's construction) because the physical
+  availability reads low: once the node has started, that growth is judged
+  against the execution budget like a plan, and what does not fit asks the
+  reclaim order first. The budget already sets the 6 GiB margin apart and
+  the dedicated pool fills its headroom, so the old physical check refused
+  Gemma 3's near-8K swap beside Qwen3.8 with 35 GB of the budget free.
+- The serving start's memory guard, its budget and the pressure trims no
+  longer read memory freed by other work as taken: availability counts the
+  free pages the kernel keeps on its per-CPU lists, which MemAvailable
+  omits (12.4 GB of them after a burst of large allocations refused a
+  DeepSeek V4 start, RE-052); page cache was measured not to lower it.
+- A turn checkpoint keeps the drafter taps' bookkeeping beside its state,
+  so a conversation continued from one drafts from the same features as
+  before (acceptance only; tokens were already exact).
+- A required or named tool call's name no longer judges the whole
+  vocabulary when the greedy argmax is refused: the masked argmax is the
+  first allowed token among the row's leading ones (the same token; about
+  16 ms a step less on Qwen3.8's vocabulary).
+- A model whose output head has more rows than its tokenizer has tokens
+  (Qwen3.8's NVFP4/MXFP8 checkpoints: 248,320 rows, 248,077 tokens) no
+  longer lets the padding rows win a choice or take probability: host
+  greedy and sampled choice, speculative verdicts and `logprobs`/
+  `top_logprobs` read only the tokenizer's tokens, and a device choice of
+  a padding row is made again on the host from the read-back row; where
+  the plan retains no head rows, and in joined prompt-and-decode waves,
+  the host chooses (RE-050).
+- The IR's unfused top-k selection is repeatable: `llmp.top_k.stable`
+  keeps the lower index among tied values where GGML's radix select chose
+  by thread timing, so Qwen3.8's and DeepSeek V4's selections outside
+  their fused plans repeat run to run (RE-031).
+- `llmp import` accepts a dense Gemma 4 transformers checkpoint: a key the
+  mapping reads that a config states as `null` (`text_config.num_experts`,
+  `top_k_experts`) is read as absent rather than refused as mistyped where
+  no value can stand in for it (a required key, or a gate's); a null whose
+  absence would select a default, another key or a component's default
+  (`max_position_embeddings`, `partial_rotary_factor`) is still refused.
+- `llmp import` reads only a model sub-config's leaves (`text_config.`,
+  `vision_config.`, `audio_config.`) as the shared provenance keys of the
+  same name; a leaf of any other `<name>_config` (a router's `top_k`) that
+  the mapping does not read is refused instead of passing as a generation
+  default.
 - `llmp import` publishes faster: one parallel read of each written shard
   computes its file and chunk digests (the four read-backs and five hash
   passes of the output are now one read and the source stream), and

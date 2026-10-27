@@ -505,6 +505,31 @@ and current upstream master has not been checked.
 - **Proposed action:** none. At the next pin bump, mark RE-021 fixed.
 - **Links:** RE-021 in [rough-edges.md](../rough-edges.md).
 
+## Type traits call row decoders through a mismatched function type
+
+- **Status:** not reported; upstream's pattern since the type traits began.
+- **Found:** M3.6 (G3a review), pin `d81235049`, the `cpu-asan` build: Clang's
+  `-fsanitize=function` (part of `-fsanitize=undefined`) ended every test
+  that decodes a quantized row through the traits.
+- **Problem:** `ggml/src/ggml.c`'s `type_traits` table casts each decoder to
+  `ggml_to_float_t`, which takes `const void *`, while the decoder is declared
+  with its block type, for example
+  `.to_float = (ggml_to_float_t) dequantize_row_q4_0` with
+  `dequantize_row_q4_0(const block_q4_0 *, float *, int64_t)`
+  (`ggml-quants.h`); `ggml_fp16_to_fp32_row` likewise. Calling a function
+  through a pointer to a different function type is undefined behaviour in C,
+  and the sanitizer checks the call against the callee's own type.
+  `from_float_ref` entries have the same shape.
+- **Llmpalooza's workaround:** the sanitized builds compile
+  `llmp_ggml_base`'s C files with `-fno-sanitize=function` (root
+  `CMakeLists.txt`, after `llmp_sources_add()`), so the decoders carry no
+  type prefix and the calls (`src/kernels/reference/decode.cc` and the
+  tests) go unchecked. Nothing else changes; no GGML source is patched.
+- **Proposed action:** none required. An upstream fix would declare each
+  decoder with `const void *` and cast inside, or give the table typed
+  wrappers; worth an issue only if upstream runs UBSan with
+  `-fsanitize=function`.
+
 ## Broadcast ops abort on strides above 2^32 elements (RE-011)
 
 - **Status:** won't fix (the 32-bit limit is deliberate).

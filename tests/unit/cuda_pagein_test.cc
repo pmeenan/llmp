@@ -96,11 +96,29 @@ std::byte* At(std::uint64_t address) {
 
 std::uint64_t LengthOf(std::size_t i) { return i + 1 == kExtents ? kTail : kExtent; }
 
+// What a program reports to the test. Copies share one state, and each
+// program keeps its own copy: a test that stops waiting (a timeout, a failed
+// assertion) leaves the state alive for the program still running, rather
+// than a reference into its finished frame.
 struct Signals {
-  std::atomic<int> outcome{-1};
-  std::atomic<bool> retired{false};
-  std::atomic<bool> waiting{false};
-  std::atomic<int> mismatches{0};
+  struct State {
+    std::atomic<int> outcome{-1};
+    std::atomic<bool> retired{false};
+    std::atomic<bool> waiting{false};
+    std::atomic<int> mismatches{0};
+  };
+  std::shared_ptr<State> state = std::make_shared<State>();
+  std::atomic<int>& outcome = state->outcome;
+  std::atomic<bool>& retired = state->retired;
+  std::atomic<bool>& waiting = state->waiting;
+  std::atomic<int>& mismatches = state->mismatches;
+};
+
+// Whether an owner probe may still run. Its probe refers to the frame that
+// posted it, so once that frame stops waiting it is never run again.
+struct ProbeGate {
+  std::mutex mutex;
+  bool abandoned = false;
 };
 
 // Materializes the extents; with `check`, copies each back to the host
@@ -166,7 +184,7 @@ class LoadAndCheck final : public TaskProgram {
   void Retired() override { signals_.retired.store(true); }
 
  private:
-  Signals& signals_;
+  Signals signals_;  // shares the test's state
   const llmp::catalog::Catalog& catalog_;
   std::vector<ExtentId> extents_;
   std::vector<std::uint64_t> addresses_;
@@ -206,7 +224,7 @@ class EvictAll final : public TaskProgram {
   void Retired() override { signals_.retired.store(true); }
 
  private:
-  Signals& signals_;
+  Signals signals_;  // shares the test's state
   std::vector<ExtentId> extents_;
   std::size_t next_ = 0;
 };
@@ -217,16 +235,21 @@ class EvictAll final : public TaskProgram {
 // change has retired.
 class OnOwner final : public TaskProgram {
  public:
-  OnOwner(Signals& signals, std::function<bool()> probe)
-      : signals_(signals), probe_(std::move(probe)) {}
+  OnOwner(Signals& signals, std::shared_ptr<ProbeGate> gate, std::function<bool()> probe)
+      : signals_(signals), gate_(std::move(gate)), probe_(std::move(probe)) {}
   Step Advance(TaskContext& /*context*/) override {
+    const std::lock_guard lock(gate_->mutex);
+    if (gate_->abandoned) {
+      return Step::Finish(TaskOutcome::kFailed);
+    }
     return probe_() ? Step::Finish(TaskOutcome::kSucceeded) : Step::Yield();
   }
   void Finished(TaskOutcome outcome) override { signals_.outcome.store(static_cast<int>(outcome)); }
   void Retired() override { signals_.retired.store(true); }
 
  private:
-  Signals& signals_;
+  Signals signals_;  // shares the test's state
+  std::shared_ptr<ProbeGate> gate_;
   std::function<bool()> probe_;
 };
 
@@ -452,10 +475,16 @@ class CudaPageIn : public ::testing::TestWithParam<bool> {
   // Runs `probe` on the scheduler thread until it returns true.
   void Owner(std::uint64_t request, std::function<bool()> probe) {
     Signals signals;
+    auto gate = std::make_shared<ProbeGate>();
     Post(StartRequest{.request = request,
                       .priority = 1,
-                      .program = std::make_unique<OnOwner>(signals, std::move(probe))});
-    ASSERT_TRUE(WaitFor(signals.retired));
+                      .program = std::make_unique<OnOwner>(signals, gate, std::move(probe))});
+    if (!WaitFor(signals.retired)) {
+      // The probe refers to the caller's frame: it never runs again.
+      const std::lock_guard lock(gate->mutex);
+      gate->abandoned = true;
+      FAIL() << "owner probe " << request << " did not finish";
+    }
   }
   int Evict(std::uint64_t request) {
     Signals signals;

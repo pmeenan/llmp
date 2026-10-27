@@ -154,8 +154,9 @@ transformers-style config (safetensors, MLX, EXL3) has no default
 classification: a key its mapping neither reads nor lists in its auxiliary
 namespaces is refused, unless it is one of one shared list of provenance keys
 (`spec::HfProvenanceKeys`: framework and output options, tokenizer and media
-token ids, generation defaults, training-only options), a sub-config's
-(`text_config.` and the like) included, so a math-bearing key a new dialect
+token ids, generation defaults, training-only options), a model sub-config's
+(`text_config.`, `vision_config.` or `audio_config.`; another
+`<name>_config.` is its own namespace) included, so a math-bearing key a new dialect
 adds is refused instead of dropped. GGUF keeps its rule: its own namespace
 refuses, other unread keys are provenance with a warning. An image
 component's `config.json` (a safetensors component's) is classified too: read

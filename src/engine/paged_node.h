@@ -740,6 +740,20 @@ class PagedNode {
   // which is always taken: the excess then refuses later growth until a
   // reclaim gives it back.
   bool ChargeHost(std::uint64_t bytes, bool required);
+  // Execution metadata once the node has started (on the driver's thread,
+  // outside a job): an allowance admitted, or grown to fund `bytes` more
+  // of its live charge, in this node's domain, judged against the execution
+  // budget (at most `cap`) alone (ExecutionMetadataAllowance's InBudget
+  // forms: the budget already sets the uncounted margin apart, and a
+  // dedicated pool fills its headroom, so the physical availability is not
+  // judged again). What does not fit has the reclaim order free it first,
+  // as a plan's charge does (ReclaimFor::kPlan: what costs least to restore
+  // first, inactive weights among it, never conversation state), and is
+  // refused only when it still does not.
+  std::expected<std::shared_ptr<ExecutionMetadataAllowance>, std::string> AdmitMetadata(
+      std::uint64_t bytes, std::uint64_t cap);
+  Status ChargeMetadata(ExecutionMetadataAllowance& allowance, std::uint64_t bytes,
+                        std::uint64_t cap);
   // Optional state-preparation descriptors: headroom only, never AskReclaim
   // or a forced charge. Called before submitting preparation, outside Job.
   bool TryChargeHost(std::uint64_t bytes);

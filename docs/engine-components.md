@@ -2664,7 +2664,16 @@ keys nothing by default (D-125 as amended 2026-10-26): a key its mapping
 neither reads nor classifies (its auxiliary list) is refused unless it is one
 of the shared provenance keys (`spec::HfProvenanceKeys`: framework options,
 tokenizer and media token ids, generation defaults, training-only options),
-a sub-config's included; a new math-bearing key cannot be dropped silently.
+a model sub-config's (`text_config.`, `vision_config.`, `audio_config.`)
+included, while a leaf of any other `<name>_config.` must be read or
+classified; a new math-bearing key cannot be dropped silently. A key the
+mapping reads whose value is JSON null is absent only where no value can
+stand in for it (`import::normalization_detail::NullMeansAbsent`: its
+parameter rules required and alone, or a gate's key), so a null leaves a
+gated slot out or refuses as missing: a dense Gemma 4 release states
+`num_experts: null`. A null whose absence would select a default, another
+key or a component's default stays refused unless the mapping's
+`null_semantics` names it.
 An image component's `config.json` is classified the same way
 (`ImageComponentRule::auxiliary` and `null_keys`, a configured spatial
 mapping's `auxiliary` and `null_semantics`, with the diffusers provenance

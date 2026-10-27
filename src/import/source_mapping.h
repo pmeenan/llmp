@@ -56,6 +56,8 @@ struct NameMatch {
   bool is_shard = false;
 };
 std::uint8_t KeyTypes(const spec::Mapping& m, std::string_view key, bool allow_unprefixed = false);
+// A selected key stated as JSON null reads as absent (source_mapping.cc).
+bool NullMeansAbsent(const spec::Mapping& m, std::string_view key, bool allow_unprefixed = false);
 bool Pattern(std::string_view pattern);
 std::optional<NameMatch> Match(std::string_view pattern, std::string_view name,
                                std::uint32_t layers);

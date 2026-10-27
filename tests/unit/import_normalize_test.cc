@@ -2248,6 +2248,43 @@ TEST(ImportNormalizeSafetensorsTest, UnclassifiedConfigKeysRefuseAndSharedProven
   }
 }
 
+// Only a model sub-config's leaves (text_config, vision_config,
+// audio_config) are read as the top-level key of that name: a leaf such as
+// `top_k` under any other "<name>_config" (a router's, say) is not the
+// generation default and is refused unread.
+TEST(ImportNormalizeSafetensorsTest, OnlyModelSubConfigLeavesMatchSharedProvenance) {
+  const auto entries = fixtures::TinyQwen2HfEntries();
+  const auto with = [](std::string_view extra) {
+    auto config = fixtures::TinyQwen2HfConfig();
+    config.insert(config.rfind('}'), std::string(",") + std::string(extra));
+    return config;
+  };
+  for (const std::string_view extra :
+       {R"("text_config":{"top_k":4})", R"("text_config":{"initializer_range":0.02})"}) {
+    auto known = ParseSafetensors(fixtures::Shard(entries), with(extra));
+    ASSERT_TRUE(known) << extra;
+    EXPECT_TRUE(NormalizationBound(*known))
+        << extra << ": "
+        << test_support::Failed(NormalizationBound(*known), &Error::ToString).value_or("");
+  }
+  EXPECT_TRUE(spec::ProvenanceIndex(spec::HfProvenanceKeys(), "vision_config.use_cache"));
+  EXPECT_TRUE(spec::ProvenanceIndex(spec::HfProvenanceKeys(), "audio_config.dropout"));
+  EXPECT_FALSE(spec::ProvenanceIndex(spec::HfProvenanceKeys(), "router_config.top_k"));
+  EXPECT_FALSE(spec::ProvenanceIndex(spec::HfProvenanceKeys(), "config.top_k"));
+  for (const std::string_view extra :
+       {R"("router_config":{"top_k":2})", R"("moe_config":{"dropout":0.0})"}) {
+    auto unclaimed = ParseSafetensors(fixtures::Shard(entries), with(extra));
+    ASSERT_TRUE(unclaimed) << extra;
+    const auto refused = NormalizationBound(*unclaimed);
+    ASSERT_FALSE(refused) << extra;
+    EXPECT_EQ(refused.error().kind, ItemKind::kKey) << extra;
+    EXPECT_EQ(refused.error().reason,
+              "a configuration key its mapping neither reads nor classifies, and not known "
+              "provenance")
+        << extra;
+  }
+}
+
 TEST(ImportNormalizeSafetensorsTest, ModelOptMxfp4SafetensorsNormalizesAndRoutesEveryPart) {
   auto entries = fixtures::TinyQwen2HfEntries();
   for (auto& entry : entries) {
@@ -2718,6 +2755,75 @@ TEST(ImportNormalizeSafetensorsTest, Gemma4NativeDirectGammaPreservesEveryNormRo
         EXPECT_EQ(norms, moe ? 55U : 37U);  // 9/6 norms per block plus final norm.
       }
     }
+  }
+}
+
+// A key the mapping reads whose value is JSON null is absent: a dense Gemma 4
+// release states `num_experts`, `top_k_experts` and `moe_intermediate_size`
+// as null, which imports as
+// if they were not given; a required key given as null still refuses, as
+// missing.
+TEST(ImportNormalizeSafetensorsTest, NullSelectedKeysAreAbsent) {
+  const auto fixture = TinyGemma4(false);
+  std::vector<fixtures::Entry> entries;
+  for (const auto& tensor : fixture.tensors) {
+    auto shape = tensor.dims;
+    std::ranges::reverse(shape);
+    entries.push_back(fixtures::E(tensor.name, "F32", std::move(shape)));
+  }
+  const std::string base = R"({"model_type":"gemma4","text_config":{
+    "model_type":"gemma4_text","num_hidden_layers":6,"hidden_size":8,
+    "intermediate_size":16,"num_attention_heads":2,"num_key_value_heads":1,
+    "num_global_key_value_heads":1,"head_dim":4,"global_head_dim":4,
+    "max_position_embeddings":128,"rms_norm_eps":0.000001,"sliding_window":64,
+    "vocab_size":10,"layer_types":["sliding_attention","sliding_attention",
+    "sliding_attention","sliding_attention","sliding_attention","full_attention"],
+    "rope_parameters":{"full_attention":{"rope_type":"proportional",
+    "rope_theta":1000000,"partial_rotary_factor":1.0},
+    "sliding_attention":{"rope_type":"default","rope_theta":10000}},
+    "enable_moe_block":false,"expert_intermediate_size":null)";
+  const auto bytes = fixtures::Shard(entries);
+  auto absent = ParseSafetensors(bytes, base + "}}");
+  ASSERT_TRUE(absent) << test_support::Failed(absent, &Error::ToString).value_or("");
+  // As google/gemma-4-31B-it states them.
+  auto nulls = ParseSafetensors(
+      bytes, base + R"(,"num_experts":null,"top_k_experts":null,"moe_intermediate_size":null}})");
+  ASSERT_TRUE(nulls) << test_support::Failed(nulls, &Error::ToString).value_or("");
+  const auto absent_plan = Normalize(std::move(*absent), kFunded);
+  ASSERT_TRUE(absent_plan) << test_support::Failed(absent_plan, &Error::ToString).value_or("");
+  const auto null_plan = Normalize(std::move(*nulls), kFunded);
+  ASSERT_TRUE(null_plan) << test_support::Failed(null_plan, &Error::ToString).value_or("");
+  EXPECT_EQ(null_plan->spec(), absent_plan->spec());
+  for (const std::string_view key : {"text_config.moe_intermediate_size", "text_config.num_experts",
+                                     "text_config.top_k_experts"}) {
+    const auto at = std::ranges::find(null_plan->source().metadata, key, &MetaEntry::key);
+    ASSERT_NE(at, null_plan->source().metadata.end()) << key;
+    const auto use =
+        null_plan->metadata()[static_cast<std::size_t>(at - null_plan->source().metadata.begin())];
+    EXPECT_EQ(use.classification, MetadataClass::kAuxiliary) << key;
+  }
+  // A required key (the layer count) given as null is missing, not mistyped.
+  auto required = base + "}}";
+  required.replace(required.find(R"("num_hidden_layers":6)"), 21, R"("num_hidden_layers":null)");
+  auto missing = ParseSafetensors(bytes, required);
+  ASSERT_TRUE(missing);
+  const auto refused = NormalizationBound(*missing);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().reason, "selected metadata has the wrong type");
+  // A null where a value would stand in for its absence stays refused, never
+  // read as absent: the context (the mapping's default of 131072 follows
+  // it) and the full layers' partial rotation (optional: the component's
+  // full rotation would follow it).
+  for (const auto& [from, to] : std::array<std::pair<std::string_view, std::string_view>, 2>{
+           {{R"("max_position_embeddings":128)", R"("max_position_embeddings":null)"},
+            {R"("partial_rotary_factor":1.0)", R"("partial_rotary_factor":null)"}}}) {
+    auto stated = base + "}}";
+    stated.replace(stated.find(from), from.size(), to);
+    auto parsed = ParseSafetensors(bytes, stated);
+    ASSERT_TRUE(parsed) << to;
+    const auto mistyped = NormalizationBound(*parsed);
+    ASSERT_FALSE(mistyped) << to;
+    EXPECT_EQ(mistyped.error().reason, "selected metadata has the wrong type") << to;
   }
 }
 

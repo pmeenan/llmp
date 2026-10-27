@@ -592,7 +592,9 @@ follow-up slices (`R1`–`R19`, `aba73a61`–`fa1d9073`). Remaining open items a
     `CheckReads` stage taps, borrowed-state store refusals and committed-position
     clamping (`fa1f7cad`; `aba73a61`, R1; `fe17e4ae`, R4; `0d28a553`, R9);
     `ffn.moe` `gemma_route_reduce`, `kView` of expert-local values and MTP
-    catch-up rows (`fa1f7cad`; `40bf23e3`, R2; `80ede618`, R5; `e6c3617a`, R10);
+    catch-up rows (`fa1f7cad`; `40bf23e3`, R2; `80ede618`, R5; `e6c3617a`, R10;
+    the oldest held tap feature and saved tap rows across restores, `e0aa811c`
+    and `49b2f0af`);
     builder evaluation-order independence and unified `attention.dense` v1 with
     merged fused kinds and format-independent specs (`40bf23e3`, R2; `0d28a553`,
     R9).
@@ -623,18 +625,30 @@ follow-up slices (`R1`–`R19`, `aba73a61`–`fa1d9073`). Remaining open items a
     CUTLASS BSD-3-Clause headers, `validate.cc`/`validate_ext.cc`,
     `decode_exl3.cc` and YaRN/component sources; REUSE and header gates clean.
 - Test infrastructure:
-  - *Closed in R3 (`f5ebd16a`) and R12 (`aa92bd1f`):* `CheckImporter` deduplicated into shared bounded
-    validation in `src/artifact/` (`f5ebd16a`, R3); `RESOURCE_LOCK llmp_gpu`
-    applied to all `gpu`-labeled CTest targets to prevent concurrent GPU context
-    exhaustion under `--parallel` (`aa92bd1f`, R12); all 19 Qwen2/EXL3/FP16 fixture tests,
+  - *Closed in R3 (`f5ebd16a`), R12 (`aa92bd1f`) and F13 (uncommitted):* the
+    artifact and composition readers' shared bounded validation in
+    `src/artifact/` (`f5ebd16a`, R3), and their one `importer` reader
+    (`artifact/importer_schema.h`; R3 had left `CheckImporter` duplicated in
+    `artifact.cc` and `composition.cc`, F13); `RESOURCE_LOCK llmp_gpu` on every
+    `llmp_gpu_gtest` target to prevent concurrent GPU context exhaustion under
+    `--parallel` (`aa92bd1f`, R12) and on `toolchain.cuda_contract_test`, the
+    one `gpu`-labeled test outside it (F13); the `native` preset's CUDA-linked
+    CPU tests' cuBLAS `RUNPATH` (five targets named `$ORIGIN/${runtime}` with
+    `runtime` unset, so `$ORIGIN/`; now `llmp_cublas_runpath`, F13);
+    `cpu-asan`'s `-fsanitize=function` on GGML's type-trait calls (its C files
+    build with `-fno-sanitize=function`, docs/upstream/ggml.md, F13); the
+    `CudaPageIn` harness, whose programs held the test frame's signals by
+    reference, so a timeout could become a use-after-free (shared state and
+    gated owner probes, F13); all 19 Qwen2/EXL3/FP16 fixture tests,
     importer model tests, tokenizer/chat model tests, and `gemma_engine_greedy`
     wired to published v1 artifacts and `LLMP_TEST_V1_STORE` with `0` skips in
     the shared 3,373-test suite (`aa92bd1f`, R12).
   - *Still open ([plan.md](plan.md)):* `CudaPageIn.RepeatedCancellationsNeverCorruptAReassignedSlot`
-    (monitor if the one-off `5b21fe48` segfault recurs); `native` preset test
-    binaries' cuBLAS `RUNPATH`; `cpu-asan` `-fsanitize=function` on GGML
-    `to_float` calls and running the importer mutation test under ASan (`check:full`
-    / `check:spark` shipment tiers); M5's standalone artifact verifier.
+    (watch for a repeat of the one-off `5b21fe48` segfault; a timeout now fails
+    the test instead of corrupting memory, F13); running the importer mutation
+    test (`ArtifactV1Test.MutatedDocumentsFailClosed`) under ASan in the
+    `check:full` / `check:spark` shipment tiers; M5's standalone artifact
+    verifier.
 
 **Carried to M4** (two Sparks)
 
@@ -650,9 +664,13 @@ follow-up slices (`R1`–`R19`, `aba73a61`–`fa1d9073`). Remaining open items a
   vocabulary-split embeddings; EP all-to-all / DP-attention mode, single-expert-per-device
   device-graph verification, and `select` in place of mask-by-zero for
   non-finite other-device products.
-- Lowering with several devices: `GgmlStepLaunch` stream binding, one backend
-  per runner across swaps, `MmvqRouted`'s 3-D count, and any remaining
-  multi-device lowering checks remain M4's ([plan.md](plan.md)).
+- Lowering: on one node, `GgmlStepLaunch` stream binding (a capture or replay
+  on any stream but its backend's is refused, `4a6710ce`), one backend per
+  runner across swaps (the runner's retire releases its launch and a later
+  launch takes a new generation that retired programs refuse, `4a6710ce`,
+  `f0ca7ef4`) and `MmvqRouted`'s 3-D count (a product's rows are its input's
+  ne1, as upstream's routing counts them, `43f2f50a`, R6) are closed; F13 adds
+  their tests. Multi-device lowering checks remain M4's ([plan.md](plan.md)).
 
 **Carried to M9** (the full-engine optimization pass)
 
@@ -719,8 +737,8 @@ follow-up slices (`R1`–`R19`, `aba73a61`–`fa1d9073`). Remaining open items a
   the artifact stores' page cache before timing); the heat-soak note above.
   (The dedicated physical handle pool is M3.5's physical-memory-modes item,
   not M9's; RE-058 is fixed.)
-- **Tooling and environment:** the `native` preset's test binaries lack the
-  cuBLAS RUNPATH (they run only with `LD_LIBRARY_PATH` set); the
+- **Tooling and environment:** the `native` preset's cuBLAS RUNPATH
+  (fixed in F13, above); the
   workstation's NVIDIA driver is mismatched, kernel 595.91.07 against
   userspace 595.99.02 (the owner's to fix; the sm_86 proof ran through it).
 - **Skipped tests (resolved in R12, `aa92bd1f`):** the 19 Qwen2/EXL3/FP16 fixture tests,

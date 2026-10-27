@@ -210,12 +210,46 @@ std::optional<std::uint64_t> MeminfoBytes(std::string_view meminfo, std::string_
   return std::nullopt;
 }
 
+std::optional<std::uint64_t> PerCpuListPages(std::string_view zoneinfo) {
+  // `count:` appears only in a pageset (one per CPU and zone); every other
+  // field is named otherwise.
+  std::optional<std::uint64_t> pages;
+  while (!zoneinfo.empty()) {
+    const std::size_t end = zoneinfo.find('\n');
+    std::string_view line = zoneinfo.substr(0, end);
+    zoneinfo = end == std::string_view::npos ? std::string_view() : zoneinfo.substr(end + 1);
+    line.remove_prefix(std::min(line.find_first_not_of(" \t"), line.size()));
+    if (!line.starts_with("count:")) continue;
+    line.remove_prefix(6);
+    line.remove_prefix(std::min(line.find_first_not_of(" \t"), line.size()));
+    std::uint64_t value = 0;
+    const auto [rest, error] = std::from_chars(line.data(), line.data() + line.size(), value);
+    if (error != std::errc() || rest == line.data()) return std::nullopt;
+    const std::uint64_t sum = pages.value_or(0);
+    if (value > std::numeric_limits<std::uint64_t>::max() - sum) return std::nullopt;
+    pages = sum + value;
+  }
+  return pages;
+}
+
 std::optional<std::uint64_t> AvailableMemoryBytes() {
   const auto meminfo = ReadSmallFile("/proc/meminfo");
   if (!meminfo) {
     return std::nullopt;
   }
-  return MeminfoBytes(*meminfo, "MemAvailable");
+  const auto available = MeminfoBytes(*meminfo, "MemAvailable");
+  if (!available) return std::nullopt;
+  // The per-CPU lists' free pages (RE-024), when the kernel lists them;
+  // MemAvailable alone otherwise. Its size grows with the CPUs (11 KiB for
+  // a GB10's 20).
+  const auto zoneinfo = ReadSmallFile("/proc/zoneinfo", std::size_t{1} << 20U);
+  const long page = sysconf(_SC_PAGESIZE);
+  const auto pages = zoneinfo ? PerCpuListPages(*zoneinfo) : std::nullopt;
+  if (!pages || page <= 0 ||
+      *pages > (std::numeric_limits<std::uint64_t>::max() - *available) /
+                   static_cast<std::uint64_t>(page))
+    return available;
+  return *available + (*pages * static_cast<std::uint64_t>(page));
 }
 
 void DescribeHost(const std::filesystem::path& root, base::Report& report) {

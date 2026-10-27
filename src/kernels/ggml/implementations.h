@@ -51,6 +51,8 @@
 //   ggml.sum_rows                {sum_rows}              ops_ext.h SumRows
 //   ggml.argsort.bitonic         {argsort}               ops_ext.h Argsort
 //   ggml.top_k.radix             {top_k}                 ops_ext.h TopK
+//   llmp.top_k.stable            {top_k}                 llmp_ops.h RunStableTopK
+//                                (preferred: ties to the lower index, RE-031)
 //   ggml.swiglu_clamp            {glu}                   ops_ext.h SwiGluClamp
 //   ggml.rope.ext                {rope or rope_back}     ops_ext.h RopeExt
 //   ggml.get_rows.ext            {get_rows}              ops_ext.h GetRowsExt

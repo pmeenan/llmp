@@ -199,6 +199,14 @@ std::expected<void, KernelFailure> CheckSelectedMask(const ggml_tensor* node);
 std::expected<std::uint64_t, KernelFailure> PlanVisibleTopK(const LaunchContext& launch,
                                                             const ggml_tensor* node);
 std::expected<void, KernelFailure> RunVisibleTopK(LaunchContext& launch, ggml_tensor* node);
+// llmp.top_k.stable: ir::kTopK (a GGML_OP_TOP_K node of packed F32 rows) by the
+// same radix selection with every cell visible, so ties go to the lower
+// index (RE-031) and the selection is repeatable; the IDs are written in
+// ascending order (kTopK's consumers take the set). k at most 65,536.
+std::expected<void, KernelFailure> CheckStableTopK(const ggml_tensor* node);
+std::expected<std::uint64_t, KernelFailure> PlanStableTopK(const LaunchContext& launch,
+                                                           const ggml_tensor* node);
+std::expected<void, KernelFailure> RunStableTopK(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunSelectedMask(LaunchContext& launch, ggml_tensor* node);
 
 // Explicit owner attention only. Fixed ten-source layout: Q, mask, four K

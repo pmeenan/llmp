@@ -32,6 +32,7 @@
 #define LLMP_EXECUTION_SAMPLING_H_
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <span>
@@ -65,6 +66,16 @@ std::string_view SamplingErrorName(SamplingError e);
 // Validate the original native row before a caller transforms it. Negative
 // infinity is legal padding; empty/all-padding rows, NaN and +infinity fail.
 std::expected<void, SamplingError> ValidateLogits(std::span<const float> logits);
+
+// A head row as every choice and score reads it: its first `vocabulary`
+// logits (the tokenizer's tokens) where the head is wider, the whole row
+// otherwise or with `vocabulary` 0. The rows past the vocabulary are
+// padding that names no token (RE-050: Qwen3.8's head has 243 more rows
+// than its tokenizer.json): never chosen and carrying no probability,
+// exactly as if they were negative infinity, without writing the row.
+std::span<const float> VocabularyRow(std::span<const float> logits, std::size_t vocabulary);
+// Whether a head row's index names a token of the vocabulary (0: any).
+bool InVocabulary(std::int32_t token, std::size_t vocabulary);
 
 // The greedy choice.
 std::expected<std::int32_t, SamplingError> Greedy(std::span<const float> logits);

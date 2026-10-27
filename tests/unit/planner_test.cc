@@ -962,6 +962,26 @@ TEST(PlannerPatternTest, GroupedOutputShapeComesFromItsWeightRatherThanACheckpoi
   EXPECT_EQ(shape.n, 768U);
 }
 
+// A product's rows are its input's second dimension alone (ne11), the count
+// upstream's MMVQ routing compares with its batch bound (kernels/ggml
+// capabilities.cc MmvqRouted), not every dimension past the first: a 3-D
+// input of 4 rows in 3 batches routes as 4 rows.
+TEST(PlannerPatternTest, ProductRowsAreTheInputsSecondDimensionOnly) {
+  ir::TensorDesc weight, input;
+  weight.format = F32({64, 32});
+  input.format = F32({64, 4, 3});
+  const std::array<const ir::TensorDesc*, 2> sources{&weight, &input};
+  const auto shape = ShapeOfNode(ir::Primitive(Op::kMatMul), sources, {});
+  EXPECT_EQ(shape.rows, 4U);
+  EXPECT_EQ(shape.k, 64U);
+  EXPECT_EQ(shape.n, 32U);
+  // The fused GLU product reads its input as operand 2, the same way.
+  const std::array<const ir::TensorDesc*, 3> glu{&weight, &weight, &input};
+  const auto fused = ShapeOfNode(ir::Fused(FusedKind::kMatMulGlu), glu, {});
+  EXPECT_EQ(fused.rows, 4U);
+  EXPECT_EQ(fused.n, 32U);
+}
+
 TEST(PlannerPatternTest, GroupedOutputMatcherDelegatesSpecializedDimensionsToTheCandidate) {
   auto implementations = Everything();
   implementations.push_back(Fake("t.outa", Any(ir::Fused(FusedKind::kInverseRopeGroupedMatMul))));

@@ -1037,12 +1037,12 @@ if(LLMP_CUDA)
   add_executable(decode_selected_grouped_test decode_selected_grouped_test.cc)
   target_link_libraries(decode_selected_grouped_test PRIVATE llmp_decode_selected llmp_planner
                                                            llmp_ggml_kernels)
-  target_link_options(decode_selected_grouped_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
+  llmp_cublas_runpath(decode_selected_grouped_test)
   llmp_gtest(decode_selected_grouped_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
   add_executable(decode_selected_products_test decode_selected_products_test.cc)
   target_link_libraries(decode_selected_products_test PRIVATE llmp_decode_selected llmp_fake_providers)
-  target_link_options(decode_selected_products_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
+  llmp_cublas_runpath(decode_selected_products_test)
   llmp_gtest(decode_selected_products_test TEST_PREFIX unit. PROPERTIES LABELS unit)
   add_executable(routed_component_gpu_test routed_component_gpu_test.cc)
   target_link_libraries(routed_component_gpu_test PRIVATE llmp_decode_selected llmp_engine
@@ -1137,7 +1137,7 @@ target_link_libraries(component_bindings_test PRIVATE llmp_runtime_llm llmp_comp
 if(LLMP_CUDA)
   target_compile_definitions(component_bindings_test PRIVATE LLMP_BINDING_CUDA=1)
   target_link_libraries(component_bindings_test PRIVATE llmp_ggml_kernels)
-  target_link_options(component_bindings_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
+  llmp_cublas_runpath(component_bindings_test)
 endif()
 llmp_gtest(component_bindings_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
@@ -1382,7 +1382,7 @@ llmp_gtest(components_state_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
 if(LLMP_CUDA)
   add_executable(expert_slab_test expert_slab_test.cc)
   target_link_libraries(expert_slab_test PRIVATE llmp_engine llmp_test_artifact_writer)
-  target_link_options(expert_slab_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
+  llmp_cublas_runpath(expert_slab_test)
   llmp_gtest(expert_slab_test TEST_PREFIX unit. PROPERTIES LABELS unit
                ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 endif()
@@ -1496,10 +1496,7 @@ if(LLMP_CUDA)
   target_link_libraries(qwen38_joined_score_gpu_test PRIVATE
     GTest::gmock_main llmp_test_expected llmp_warnings)
   llmp_test_executable(qwen38_joined_score_gpu_test)
-  file(RELATIVE_PATH qwen_corpus_runtime "${CMAKE_CURRENT_BINARY_DIR}"
-    "${PROJECT_BINARY_DIR}/cublas")
-  target_link_options(qwen38_joined_score_gpu_test PRIVATE
-    "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${qwen_corpus_runtime}")
+  llmp_cublas_runpath(qwen38_joined_score_gpu_test)
 
   # Owned joined target/MTP state and changed-input capture qualification.
   add_executable(qwen38_joined_mtp_gpu_test qwen38_joined_mtp_gpu_test.cc)
@@ -1545,7 +1542,7 @@ target_link_libraries(import_mlx_normalize_test PRIVATE llmp_import llmp_compone
 if(LLMP_CUDA)
   target_link_libraries(import_mlx_normalize_test PRIVATE llmp_decode_selected)
   target_compile_definitions(import_mlx_normalize_test PRIVATE LLMP_HAS_CUDA=1)
-  target_link_options(import_mlx_normalize_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
+  llmp_cublas_runpath(import_mlx_normalize_test)
 endif()
 llmp_gtest(import_mlx_normalize_test TEST_PREFIX unit. TEST_FILTER "-*ModelsTest.*"
              PROPERTIES LABELS unit)

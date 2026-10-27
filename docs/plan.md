@@ -919,6 +919,13 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       another test) merged or removed and input variants made table tests,
       with per-file line and branch coverage of `src/` measured before and
       after and not reduced.
+- [ ] **F13 follow-ups:** mask padding head rows on the device in the heads
+      component (keeps device greedy for padded heads such as Qwen3.8 and
+      Qwen2.5 in joined waves); confirm the cuBLAS RUNPATH and
+      `-fno-sanitize=function` fixes in the `native` and `cpu-asan` tiers and
+      run the importer mutation test under ASan; optionally a `llmp doctor`
+      warning for storage roles on btrfs (RE-018) and pacing the dedicated
+      pool's start-up fill (RE-049).
 - [ ] **F10 Hygiene, docs and final checks:** raw experiment dumps and unused
       scripts removed, one test-store resolver, `m35-record.md`, doc drift, then
       the full Spark check set and a speed confirmation of every family.
@@ -930,7 +937,7 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       default or is justified,
       and the DeepSeek-to-Qwen3.8 8K continuation that differs (15 of 16
       logits) is bisected and fixed.
-- [ ] **F13 Known open defects:** RE-050 (head wider than the tokenizer),
+- [x] **F13 Known open defects:** RE-050 (head wider than the tokenizer),
       RE-052 (start-up guard against page cache), RE-031 (reference top-k
       ties), the M3.6 record's carried lifecycle, planner and test-infra
       defects verified and fixed or scheduled, and the tool-path speed

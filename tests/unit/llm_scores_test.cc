@@ -1824,6 +1824,39 @@ class LlmToolDevice : public LlmTools {
 TEST_F(LlmToolDevice, UnrestrictedAutoStepsKeepTheDeviceGreedyChoice) { Run(false); }
 TEST_F(LlmToolDevice, ANamedChoiceForcesItsOpenerOnTheHost) { Run(true); }
 
+// RE-050: a head wider than the tokenizer (six padding rows past the byte
+// tokenizer's 259 tokens) whose device argmax picks a padding row never
+// emits it nor fails the step: the host chooses again from the read-back
+// row where the plan retains head rows, and without them chooses every
+// token itself.
+class LlmPaddedHead : public LlmTools, public ::testing::WithParamInterface<bool> {};
+TEST_P(LlmPaddedHead, APaddingRowTheDeviceChoosesIsChosenAgainOnTheHost) {
+  retained_rows_ = GetParam();
+  score_width_ = 265;
+  StartScores(false, 1, 128, 32);
+  ASSERT_TRUE(rt::LlmTestAccess::UseChat(*llm_, ByteTokenizer(), "{{ messages[0].content }}"));
+  ASSERT_EQ(llm_->tokenizer().size(), 259U);
+  source_->options().transform_logits = [](pl::Phase, std::int32_t, std::int32_t,
+                                           std::span<float> row) {
+    std::ranges::fill(row, 0.0F);
+    row['a'] = 9;
+    row[262] = 20;  // a padding row wins the whole head
+  };
+  source_->options().transform_native_token = [](pl::Phase, std::int32_t, std::int32_t,
+                                                 std::int32_t) { return std::int32_t{262}; };
+  std::vector<float> last;
+  ASSERT_TRUE(BranchAt(0).Prefill(std::array<std::int32_t, 1>{'x'}, last));
+  rt::GenerateOptions options;
+  options.max_tokens = 4;
+  options.stop = false;
+  const auto before = llm_->counts().greedy_tokens;
+  rt::Generation output;
+  ASSERT_TRUE(BranchAt(0).Generate(last, options, output));
+  EXPECT_EQ(output.tokens, (std::vector<std::int32_t>(4, 'a')));
+  EXPECT_EQ(llm_->counts().greedy_tokens, before);  // no device choice kept
+}
+INSTANTIATE_TEST_SUITE_P(RetainedRows, LlmPaddedHead, ::testing::Bool());
+
 // A device verify's verdict holds while the constraint allows each row's
 // device choice; the first refused one ends it before that row (B3).
 TEST_F(LlmTools, DeviceVerifyEndsBeforeTheFirstRowTheConstraintRefuses) {
@@ -2036,6 +2069,39 @@ TEST_F(LlmTools, LazyChoicesMatchTheMaskedRow) {
   greedy = rt::LlmTestAccess::Choose(*llm_, branch, refused, 1);
   ASSERT_TRUE(greedy) << greedy.error();
   EXPECT_EQ(*greedy, ranked.front());
+  // From the row's leading tokens, with no mask of the whole row built.
+  EXPECT_LT(rt::LlmTestAccess::ConstrainedLogits(branch), row.size());
+  std::int32_t next = -1;
+  auto kept = rt::LlmTestAccess::Keep(*llm_, branch, refused, ranked.front(), 1, next);
+  ASSERT_TRUE(kept) << kept.error();
+  EXPECT_TRUE(*kept);
+  EXPECT_EQ(next, ranked.front());
+  kept =
+      rt::LlmTestAccess::Keep(*llm_, branch, refused, static_cast<std::int32_t>(outside), 1, next);
+  ASSERT_TRUE(kept) << kept.error();
+  EXPECT_FALSE(*kept);
+  EXPECT_EQ(next, ranked.front());
+  // Allowed tokens tied below the refused argmax: the lower ID, as the
+  // masked row's Greedy; and the same when every allowed token ranks last,
+  // past the leading tokens first judged.
+  if (allowed.size() >= 2) {
+    auto tied = refused;
+    tied[static_cast<std::size_t>(allowed[1])] = 50.0F;
+    tied[static_cast<std::size_t>(allowed[0])] = 50.0F;
+    greedy = rt::LlmTestAccess::Choose(*llm_, branch, tied, 1);
+    ASSERT_TRUE(greedy) << greedy.error();
+    EXPECT_EQ(*greedy, allowed[0]);
+    kept = rt::LlmTestAccess::Keep(*llm_, branch, tied, allowed[1], 1, next);
+    ASSERT_TRUE(kept) << kept.error();
+    EXPECT_FALSE(*kept);
+    EXPECT_EQ(next, allowed[0]);
+  }
+  auto last = refused;
+  for (const auto token : allowed) last[static_cast<std::size_t>(token)] = -50.0F;
+  last[static_cast<std::size_t>(allowed.back())] = -40.0F;
+  greedy = rt::LlmTestAccess::Choose(*llm_, branch, last, 1);
+  ASSERT_TRUE(greedy) << greedy.error();
+  EXPECT_EQ(*greedy, allowed.back());
   // Sampled (top-k, then temperature alone): always an allowed token.
   for (const auto params :
        {llmp::execution::SamplingParams{.temperature = 1, .top_k = 3, .top_p = 1, .min_p = 0},

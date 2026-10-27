@@ -596,8 +596,10 @@ or environment). Before any artifact is opened, a parser loan
 one workspace the artifact fact passes and then each alias's chat readers
 take in turn, so the larger of the two phases, about 9.4 GiB, rather than
 their 17.8 GiB sum, beside what every alias retains)
-is cataloged against the node's measured headroom, MemAvailable less the
-6 GiB margin in whole 2 MiB extents (`MeasuredStartupCeiling`); unknown
+is cataloged against the node's measured headroom, MemAvailable (with the
+free pages the kernel's per-CPU lists hold, which it omits: RE-024,
+RE-052; `platform::AvailableMemoryBytes`, as every reading of availability
+here) less the 6 GiB margin in whole 2 MiB extents (`MeasuredStartupCeiling`); unknown
 availability refuses the start. Each model's build then pays its
 construction before any graph is built: an LLM one compiler payment
 shared by every alias (a step's construction at the IR's maxima, about
@@ -663,8 +665,8 @@ again for the next 1, 2, 4 … 256 uses of its plan. Conversation state is
 displaced only for state (a growth, a restore, pinned staging), a swap,
 or pressure from outside. The order runs when a growth or restore is
 refused for capacity (below; each refused member's need on its own),
-when a plan, a graph or pinned staging does not fit (from inside its
-step, which it spares), before a swap whose incoming model would not
+when a plan, a graph, a plan's execution metadata or pinned staging does
+not fit (from inside its step, which it spares), before a swap whose incoming model would not
 fit, and under pressure from outside. A swap's room is checked against
 the catalog again after each reclaim, and a swap it cannot make room
 for is refused before anything moves. One that fails partway (a read
@@ -682,6 +684,17 @@ faulted node ends the process, by abort (signal 6) rather than an
 orderly stop, for its supervisor to restart. The turn checkpoints' staging is set apart at
 start, so a full budget never refuses one; a checkpoint that is not
 saved or restored is logged.
+
+Execution metadata (a backend's declarations, a source's construction, a
+plan's report inventory) is paid as a pinned runtime extent of the domain.
+Before the node starts it is judged against the measured availability less
+the 6 GiB margin; once it has started, against the budget alone
+(`PagedNode::AdmitMetadata`, `ChargeMetadata`), like a plan, asking the
+order for what does not fit before refusing. The budget already set the
+margin apart, and the dedicated pool fills the budget's headroom, so the
+availability then reads a few GiB by design: judging it against the margin
+again refused a fresh Gemma 3 plan in the near-8K swap beside Qwen3.8
+(3.7 GB available, 35 GB of the budget free).
 
 **Spill writes only what changed** (D-055 as amended). Each runner
 records what was written to a slot's state since its spill file last held

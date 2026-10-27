@@ -1287,6 +1287,49 @@ TEST_F(EngineLlmTest, ATurnCheckpointRestoresItsPrefix) {
   EXPECT_EQ(second.out.tokens, Chain(diverged, 10));
 }
 
+// A turn checkpoint records the drafter taps' bookkeeping beside the state
+// it saves (the taps' cells are state it holds), and its restore puts it
+// back, so the next draft catches up from the captured features rather than
+// starting without them (only acceptance, never tokens, would differ).
+TEST_F(EngineLlmTest, ATurnCheckpointRestoresItsDrafterTapRows) {
+  Start(true, true);
+  const auto prompt = Prompt(300, 4);
+  const Turned first = Turn(0, prompt, 8, false, /*boundary=*/200);
+  EXPECT_EQ(first.out.tokens, Chain(prompt, 8));
+  rt::Llm::Branch& branch = BranchAt(0);
+  ASSERT_EQ(branch.turn_checkpoints(), 1U);
+  const auto captured = rt::LlmTestAccess::CheckpointTaps(branch, 0);
+  ASSERT_NE(captured.stages, 0U);
+  EXPECT_EQ(captured.positions, 200U);
+  // This fixture's taps are position rings, which keep no per-row
+  // bookkeeping: what a per-row tap would hold by now (a later chunk's rows)
+  // stands in for the taps having moved on (the engine's own restore of
+  // them: ChunkFeatureTest.CheckpointRestoreWithItsTapRowsReadsTheCapturedFeatures).
+  auto moved = rt::LlmTestAccess::Taps(*llm_, branch);
+  ASSERT_EQ(moved.positions, branch.history().size());
+  moved.held[kMtp] = {.first = 290, .count = 18, .preceding = 4};
+  ASSERT_TRUE(rt::LlmTestAccess::SetTaps(*llm_, branch, moved));
+  ASSERT_NE(rt::LlmTestAccess::Taps(*llm_, branch), captured);
+  std::vector<std::int32_t> diverged(prompt.begin(), prompt.begin() + 250);
+  const auto tail = Prompt(30, 11);
+  diverged.insert(diverged.end(), tail.begin(), tail.end());
+  Open({&branch});
+  auto session = branch.BeginPrompt(diverged);
+  ASSERT_TRUE(session) << session.error();
+  // The first unit is the reuse: the checkpoint's restore.
+  ASSERT_TRUE((*session)->Advance());
+  EXPECT_EQ((*session)->reused(), 200U);
+  EXPECT_EQ(rt::LlmTestAccess::Taps(*llm_, branch), captured);
+  if (!(*session)->done()) (*session)->Cancel();
+  auto finished = (*session)->Finish();
+  ASSERT_TRUE(finished) << Why(finished);
+  session->reset();
+  Close();
+  // The continuation from the restored checkpoint is the chain.
+  const Turned second = Turn(0, diverged, 10);
+  EXPECT_EQ(second.out.tokens, Chain(diverged, 10));
+}
+
 // Turn checkpoints are bounded by real resources (retention, the spill
 // budget's disk, the kept record's format), not a count: a conversation
 // keeps one a turn, and the spill budget's trim drops the oldest first.

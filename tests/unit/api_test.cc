@@ -29,6 +29,7 @@
 #include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -993,6 +994,40 @@ TEST(LiteralTokens, ByteTokensShareOffsetsAndFlushAtThePromptBoundary) {
   EXPECT_EQ(all->top.size(), tokenizer->size());  // every finite logit, the actual among them
   EXPECT_GT(fresh, 1024U + (tokenizer->size() * api::kTopScoreBytes));
   EXPECT_FALSE(wide.Add(65, logits, static_cast<std::uint32_t>(tokenizer->size() + 1)).has_value());
+}
+
+// RE-050: a head wider than the tokenizer scores its tokens alone. Padding
+// rows past the vocabulary (here holding the row's highest logits) are never
+// ranked and take no probability: the scores are those of the row cut at
+// the tokenizer's size.
+TEST(LiteralTokens, ScoresIgnoreHeadRowsPastTheTokenizer) {
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(LiteralVocabulary(false));
+  ASSERT_TRUE(tokenizer.has_value());
+  const std::size_t vocabulary = tokenizer->size();
+  std::vector<float> head(vocabulary + 64, 0.0F);
+  head[65] = 2.0F;
+  for (std::size_t i = vocabulary; i < head.size(); ++i) head[i] = 30.0F;
+  const std::vector<float> cut(head.begin(),
+                               head.begin() + static_cast<std::ptrdiff_t>(vocabulary));
+  std::size_t wide_budget = 1024, cut_budget = 1024;
+  api::LiteralRows wide(*tokenizer, true, false, 0, wide_budget, kResponse);
+  api::LiteralRows reference(*tokenizer, true, false, 0, cut_budget, kResponse);
+  auto scored = wide.Add(66, head, 4);
+  auto expected = reference.Add(66, cut, 4);
+  ASSERT_TRUE(scored.has_value());
+  ASSERT_TRUE(expected.has_value());
+  ASSERT_TRUE(scored->logprob.has_value());
+  ASSERT_TRUE(expected->logprob.has_value());
+  EXPECT_DOUBLE_EQ(*scored->logprob, *expected->logprob);
+  ASSERT_GE(scored->top.size(), 4U);  // and the actual token, outside the top four
+  ASSERT_EQ(scored->top.size(), expected->top.size());
+  EXPECT_EQ(scored->top.front().id, 65);
+  for (std::size_t i = 0; i < scored->top.size(); ++i) {
+    EXPECT_LT(scored->top[i].id, static_cast<std::int32_t>(vocabulary));
+    EXPECT_EQ(scored->top[i].id, expected->top[i].id);
+    EXPECT_EQ(scored->top[i].token, expected->top[i].token);
+    EXPECT_DOUBLE_EQ(scored->top[i].logprob, expected->top[i].logprob);
+  }
 }
 
 TEST(LiteralTokens, RefusesScoreCountBeforeDecodingAndPreservesBpeIds) {

@@ -514,6 +514,14 @@ std::expected<std::optional<std::int32_t>, std::string> Llm::LazyChoice(Branch& 
     auto chosen = execution::Greedy(row);
     if (!chosen) return Error(std::string(execution::SamplingErrorName(chosen.error())));
     if (mask.Allowed(*chosen)) return *chosen;
+    // Refused: the masked argmax is the first allowed token in rank order
+    // (by logit, then the lower ID, Greedy's tie-break), found among the
+    // row's leading tokens rather than by judging every token of the
+    // vocabulary (a required call's name: 16 ms on Qwen3.8's). None among
+    // them: the whole masked row decides, as before.
+    if (auto prepared = PrepareSamplingScratchFor(branch, row.size()); !prepared)
+      return std::unexpected(prepared.error());
+    if (LeadingAllowed(branch, row, mask, 1)) return branch.lazy_ids_.front();
     return std::nullopt;
   }
   const auto& params = *branch.sampling_;
@@ -549,6 +557,9 @@ std::expected<std::int32_t, std::string> Llm::Choose(Branch& branch, std::span<c
                                                      std::uint64_t position,
                                                      chat::ToolSampling* constraint) {
   CheckBranch(branch);
+  // Only the tokenizer's tokens: a wider head's padding rows are never
+  // chosen and carry no probability (RE-050).
+  row = execution::VocabularyRow(row, tokenizer_ ? tokenizer_->size() : 0);
   if (auto* mask = constraint ? constraint : branch.tool_sampling_; mask && !mask->Identity()) {
     auto lazy = LazyChoice(branch, row, *mask, position);
     if (!lazy) return std::unexpected(lazy.error());
@@ -577,6 +588,9 @@ std::expected<bool, std::string> Llm::Keep(Branch& branch, std::span<const float
                                            std::int32_t draft, std::uint64_t position,
                                            std::int32_t& next, chat::ToolSampling* constraint) {
   CheckBranch(branch);
+  // As Choose: the tokenizer's tokens alone (a draft past them has no
+  // probability, so it is refused and replaced).
+  row = execution::VocabularyRow(row, tokenizer_ ? tokenizer_->size() : 0);
   if (auto* mask = constraint ? constraint : branch.tool_sampling_; mask && !mask->Identity()) {
     if (auto valid = execution::ValidateLogits(row); !valid)
       return Error(std::string(execution::SamplingErrorName(valid.error())));
@@ -585,6 +599,13 @@ std::expected<bool, std::string> Llm::Keep(Branch& branch, std::span<const float
       if (!chosen) return Error(std::string(execution::SamplingErrorName(chosen.error())));
       if (mask->Allowed(*chosen)) {
         next = *chosen;
+        return next == draft;
+      }
+      // As LazyChoice: the masked argmax from the row's leading tokens.
+      if (auto prepared = PrepareSamplingScratchFor(branch, row.size()); !prepared)
+        return std::unexpected(prepared.error());
+      if (LeadingAllowed(branch, row, *mask, 1)) {
+        next = branch.lazy_ids_.front();
         return next == draft;
       }
     } else if (branch.sampling_->top_k != 0) {
@@ -1135,7 +1156,8 @@ Status Llm::Adopt(Branch& branch, kept::Record& record, MemoryCharge& token_char
          .footprint = LiveRanges(c.footprint),
          .cursor = c.cursor,
          .decoding = depth->WithCost(cost),
-         .layout = record.identity.layout});
+         .layout = record.identity.layout,
+         .taps = {}});  // a kept record holds none
     if (const auto named = kept::ParseFileName(c.file); named) {
       checkpoint_serial_ = std::max(checkpoint_serial_, named->serial + 1);
     }
@@ -1455,7 +1477,8 @@ Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool
                             .footprint = UsedStateRangesFor(branch),
                             .cursor = CursorFor(branch),
                             .decoding = TurnDecodingStateFor(branch),
-                            .layout = KeptLayout()};
+                            .layout = KeptLayout(),
+                            .taps = runner_->SaveTapRows(Slot(branch))};
   branch.turn_checkpoints_.push_back(std::move(checkpoint));
   capacity.bytes = 0;  // its retained file now carries the charge
   // The kept record's format bound; the disk's is the spill budget's
@@ -1559,6 +1582,7 @@ Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, st
   const auto position = static_cast<std::uint32_t>(checkpoint.boundary.position);
   const auto restored_cursor = checkpoint.cursor;
   const auto restored_decoding = checkpoint.decoding;
+  const auto restored_taps = checkpoint.taps;
   if (auto settled = SettleFor(branch); !settled) {
     Forget(branch, prompt);
     return settled;
@@ -1598,6 +1622,9 @@ Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, st
   }
   branch.history_.resize(position);
   RestoreTurnDecodingStateFor(branch, restored_decoding);
+  // The saved tap cells, described (refused, harmlessly, unless the state
+  // is exactly the one captured: the same committed positions).
+  if (restored_taps.stages != 0) std::ignore = runner_->RestoreTapRows(Slot(branch), restored_taps);
   std::erase_if(branch.turn_checkpoints_,
                 [&](const TurnCheckpoint& c) { return c.boundary.position > position; });
   reused = static_cast<std::uint32_t>(position);
