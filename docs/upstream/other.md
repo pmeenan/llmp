@@ -3,8 +3,8 @@
 
 # Other projects
 
-Projects with a single finding each. None has been reported, and none of
-their current versions was checked.
+Projects with a small number of findings each. Reporting and version-check
+status are recorded per entry below.
 
 ## Linux CIFS / Synology SMB: archive lock exclusion is inconsistent (RE-054)
 
@@ -118,6 +118,36 @@ their current versions was checked.
 - **Proposed action:** an issue or small PR: carry the import error into the
   "not registered" message, or add `torchcodec` to the image. Small.
 - **Links:** RE-012 in [rough-edges.md](../rough-edges.md).
+
+## Emulated ASan death tests spin during fatal-signal collection (RE-062)
+
+- **Status:** unlocalized; no upstream report until QEMU guest-core handling
+  and host Apport collection have been separated.
+- **Projects:** [QEMU](https://gitlab.com/qemu-project/qemu), LLVM
+  compiler-rt and Ubuntu Apport. Workstation Ubuntu 26.04.1,
+  kernel 7.0.0-42-generic, qemu-user 1:10.2.1+ds-1ubuntu3.3,
+  LLVM 22.1.8 / GCC 16.2 static runtime, GoogleTest 1.18.0.
+- **Reproduction:** build the `cross-asan` preset's `gtest_contract_test`
+  with the pinned SDK; run its `DeathTest.*` cases through qemu-aarch64
+  with `ASAN_OPTIONS=detect_leaks=0`, without the non-dumpable test main.
+  Ordinary cases and sanitizer controls pass; death-test children reach
+  `tgkill(SIGABRT)` and QEMU's fatal-signal message, then spin for over
+  90 s. The host has Apport's piped `core_pattern`. Neither forcing GTest
+  to fork nor toggling ASan's `disable_coredump` option fixed it.
+- **Source checks:** [QEMU 10.2.1 fatal-signal handling](https://raw.githubusercontent.com/qemu/qemu/v10.2.1/linux-user/signal.c)
+  distinguishes guest dumping and raising a host fatal signal. Its
+  diagnostic does not prove a guest core was written. Linux documents
+  [piped core-handler behavior](https://docs.kernel.org/admin-guide/sysctl/kernel.html#core-pattern),
+  including the different handling of core-size limits.
+- **Llmpalooza's fix:** its test main marks every test process
+  non-dumpable after initialization, including threadsafe re-executed
+  children. All three death cases then pass in about 0.35 s each; assertions
+  and restarts are retained. Startup-failure controls cover death and
+  successful-exit predicates. No upstream source patch or version change.
+- **Next investigation:** reduce to a standalone ASan AArch64 abort under
+  the same QEMU/kernel/Apport setup, inspect host fatal-signal collection,
+  then check upstream trackers before assigning blame or reporting.
+- **Links:** [RE-062](../rough-edges.md#re-062-qemuasan-death-tests-spin-during-fatal-signal-collection-after-the-ubuntu-26-upgrade--2026-10-28-status-worked-around).
 
 ## LeakSanitizer aborts AArch64 programs under qemu-user (RE-014)
 

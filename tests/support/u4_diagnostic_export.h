@@ -187,7 +187,8 @@ class U4DiagnosticExport {
 
 inline bool U4WriteJsonString(U4JsonlFile& out, std::string_view value) {
   if (!out.Write("\"")) return false;
-  for (unsigned char c : value) {
+  for (const char byte : value) {
+    const auto c = static_cast<unsigned char>(byte);
     switch (c) {
       case '"':
         if (!out.Write("\\\"")) return false;

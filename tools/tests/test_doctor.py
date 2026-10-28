@@ -23,6 +23,55 @@ check = importlib.util.module_from_spec(spec)
 loader.exec_module(check)
 
 
+class HostFacts(unittest.TestCase):
+    def test_supervised_job_finds_provisioned_mise_without_login_path(self):
+        found = "/home/test/.local/bin/mise"
+        report = check.Report()
+        with (mock.patch.object(check.pathlib.Path, "home", return_value=pathlib.Path("/home/test")),
+              mock.patch.object(check.shutil, "which", side_effect=[None, found]) as which,
+              mock.patch.object(check, "capture", return_value=mock.Mock(stdout="2026.9.12\n")) as capture):
+            check.host_facts(report)
+        self.assertEqual(report.problems, [])
+        self.assertEqual(report.sections["host"]["mise"], "2026.9.12")
+        self.assertEqual(which.call_args_list, [mock.call("mise"), mock.call("mise", path="/home/test/.local/bin")])
+        capture.assert_called_once_with([found, "--version"])
+
+    def test_missing_mise_is_reported(self):
+        report = check.Report()
+        with mock.patch.object(check.shutil, "which", return_value=None):
+            check.host_facts(report)
+        self.assertEqual(len(report.problems), 1)
+
+
+class DriverFacts(unittest.TestCase):
+    def test_no_driver_is_valid_for_cpu_only_host(self):
+        report = check.Report()
+        with (mock.patch.object(check.pathlib.Path, "exists", return_value=False),
+              mock.patch.object(check.shutil, "which", return_value=None)):
+            check.driver_facts(report)
+        self.assertEqual(report.problems, [])
+        self.assertEqual(report.sections["gpu"]["devices"], "no NVIDIA driver found")
+
+    def test_loaded_module_without_user_tools_is_reported(self):
+        report = check.Report()
+        with (mock.patch.object(check.pathlib.Path, "exists", return_value=True),
+              mock.patch.object(check.pathlib.Path, "read_text", return_value="NVRM 595.99.02\n"),
+              mock.patch.object(check.shutil, "which", return_value=None)):
+            check.driver_facts(report)
+        self.assertEqual(len(report.problems), 1)
+        self.assertIn("nvidia-smi is missing", report.problems[0])
+
+    def test_failed_nvidia_smi_is_reported(self):
+        report = check.Report()
+        with (mock.patch.object(check.pathlib.Path, "exists", return_value=False),
+              mock.patch.object(check.shutil, "which", return_value="/usr/bin/nvidia-smi"),
+              mock.patch.object(check, "capture", return_value=mock.Mock(
+                  returncode=1, stdout="", stderr="Driver/library version mismatch"))):
+            check.driver_facts(report)
+        self.assertEqual(len(report.problems), 1)
+        self.assertIn("Driver/library version mismatch", report.problems[0])
+
+
 class ToolLibraryChecks(unittest.TestCase):
     def setUp(self):
         tmp = self.enterContext(tempfile.TemporaryDirectory())

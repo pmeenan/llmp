@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 #
-# Ubuntu 24.04 packages an x86-64 build host needs for the llmpalooza SDK
+# Ubuntu 24.04/26.04 packages an x86-64 build host needs for the llmpalooza SDK
 # (D-049). tools/check-toolchain checks them; setup never installs them.
 # Format: `package`, `package >= version` or `package = version`.
 
@@ -23,7 +23,7 @@ binutils
 binutils-aarch64-linux-gnu
 
 # Native x86-64 builds use the host's glibc headers and start files, at the
-# Sparks' glibc (D-032).
+# original Sparks' glibc floor (D-032); Ubuntu 26.04 supplies newer headers.
 libc6-dev >= 2.39
 
 # Shared libraries of the apt.llvm.org tools in the SDK's bin/ (their
@@ -41,6 +41,8 @@ libzstd1
 zlib1g
 
 # AArch64 CPU tests under qemu-user; binfmt registration is checked too (D-061).
+# On Ubuntu 26.04 install qemu-user and qemu-user-binfmt, which Provides
+# qemu-user-static. The prerequisite checker accepts installed providers.
 qemu-user-static
 
 # The check gate: REUSE lint's python-magic loads libmagic, and the gate and

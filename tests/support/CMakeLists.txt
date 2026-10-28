@@ -108,7 +108,7 @@ function(llmp_check_no_test_support)
   while(pending)
     list(POP_FRONT pending target)
     # Anywhere in the item, so that a generator expression cannot hide it.
-    if(target MATCHES "(^|[^A-Za-z0-9_])llmp_(test_expected|plan_record|plan_record_sample|launch_recorder|paged_programs|paged_node|paged_runners|fake_step_source|test_artifact_writer|corpus_score|runner_kernels)([^A-Za-z0-9_]|$)")
+    if(target MATCHES "(^|[^A-Za-z0-9_])llmp_(test_expected|test_main|plan_record|plan_record_sample|launch_recorder|paged_programs|paged_node|paged_runners|fake_step_source|test_artifact_writer|corpus_score|runner_kernels)([^A-Za-z0-9_]|$)")
       message(FATAL_ERROR "A production binary links the test support library: ${target}.")
     endif()
     if(target IN_LIST seen OR NOT TARGET "${target}")

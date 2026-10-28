@@ -10,6 +10,105 @@ llmpalooza (D-023). [architecture.md](architecture.md) relies on the measured
 results through the decisions they informed (D-032–D-034, D-054, D-065);
 the linked experiment reports hold methods, pins and limitations.
 
+## OS update (2026-10-28)
+
+The owner upgraded the workstation from Ubuntu 24 to 26 and updated both
+Sparks. Read-only inventory on 2026-10-28 found the versions below; the
+earlier snapshots and experiment numbers in this document remain historical.
+
+| Item | Workstation | `spark` and `spark-b` |
+| --- | --- | --- |
+| OS | Ubuntu 26.04.1 LTS, x86-64 | Ubuntu 24.04.5 LTS, aarch64 |
+| Running kernel | 7.0.0-42-generic | 7.0.0-1019-nvidia |
+| glibc | 2.43 (`libc6` 2.43-2ubuntu2.4) | 2.39 (`libc6` 2.39-0ubuntu8.9) |
+| GPU / loaded driver | RTX 3080 Ti / 595.99.02 | GB10 / 580.178.04 |
+| Host GCC / binutils | GCC 15.2 / binutils 2.46 | GCC 13.3 / binutils 2.42 |
+| Project Python / mise | 3.14.7 / 2026.9.12 | 3.14.7 / 2026.9.12 |
+| Docker | 29.9.2 | 29.6.2 |
+| Project SDK | LLVM 22.1.8, NVCC 13.4.92, cuBLAS 13.8.0.4, GCC runtime 16.2.0, CMake 4.4.3, Ninja 1.13.2 | Same pins |
+
+Both Sparks still report the original OS, kernel, driver and system CUDA
+13.0.3 versions. An update does not imply those components changed. The
+project uses its extracted CUDA 13.4.2 SDK rather than the system toolkit;
+the cross sysroot retains glibc 2.39 so binaries still run on the Sparks.
+The Ubuntu 24.04 reference container remains a reproducibility baseline.
+No compiler, CUDA, third-party source or reference-engine pin is advanced
+merely to follow the host upgrade.
+
+The workstation upgrade left the NVIDIA kernel module loaded but removed
+`nvidia-smi`, NVML and `libcuda.so.1`. The audit restored
+`nvidia-utils-595` and `libnvidia-compute-595`, both
+595.99.02-0ubuntu0.26.04.1, matching the running module. AArch64 emulation
+was also absent: Ubuntu 26.04 supplies static emulators in `qemu-user` and
+registration in `qemu-user-binfmt` (installed 1:10.2.1+ds-1ubuntu3.3),
+which declares `Provides: qemu-user-static`. The SDK prerequisite checker
+now accepts installed native/all providers for unversioned requirements,
+and still verifies the enabled `qemu-aarch64` handler's `F` flag and actual
+cross-binary execution. `doctor` finds the provisioned `~/.local/bin/mise`
+under the job supervisor's non-login PATH and reports missing or broken
+NVIDIA user-space tools when a kernel driver is present.
+The cross-test runner accepts both `qemu-aarch64-static` and the renamed
+`qemu-aarch64`, so existing configured builds continue to work.
+
+The pinned noble LLVM binaries still need `libxml2.so.2` and its ICU 74
+dependency. The upgrade retained `libxml2` 2.9.14+dfsg-1.3ubuntu3.10 and
+`libicu74` 74.2-1ubuntu3.1; resolute's `libxml2-16`/ICU 78 are different
+ABIs. The audit marked the declared `libxml2` prerequisite manually installed
+so autoremove keeps it and its ICU dependency. These compatibility packages
+are required on this upgraded workstation; the audit does not establish
+fresh Ubuntu 26.04 provisioning without them.
+
+The CPU audit also caught implicit signed-char conversions in tool-call
+fixtures and diagnostic JSON escaping, accepted on ARM's unsigned-char default but rejected on x86
+by `-Wsign-conversion`. Explicit byte conversions preserve the fixtures'
+meaning on both architectures. The supervisor's queue/timeout regression
+now releases its holder explicitly instead of assuming its status checks
+finish before a four-second sleep expires.
+
+QEMU 10.2.1 plus ASan exposed a fatal-signal collection hang in threadsafe
+death tests ([RE-062](rough-edges.md#re-062-qemuasan-death-tests-spin-during-fatal-signal-collection-after-the-ubuntu-26-upgrade--2026-10-28-status-worked-around)).
+The shared GoogleTest main now applies the platform's non-dumpable policy
+(including clearing the core filter) to ordinary and re-executed children.
+Death assertions and sanitizer negative controls remain enabled; explicit
+startup-failure controls prevent setup errors from satisfying death assertions.
+The audit also found CTest ANDs preset and caller `-LE` filters, which could
+admit GPU or timing tests that the preset excluded. The build driver now
+resolves caller label exclusions through CTest and applies them as exact
+test-name exclusions, preserving the preset's safeguards.
+
+Historical timings are evidence for their recorded environment, not a
+current calibration. Re-run matched reference/candidate comparisons on the
+same updated host before interpreting timing changes as code effects.
+This audit checks harness functionality; it does not rebaseline model
+throughput, paging latency or interconnect bandwidth.
+
+Validation uses `b5b1143d`'s production sources plus these harness/test fixes.
+The new SDK identity is `<arch>-8486b6bf58a61039`: the prerequisite checker
+is an identity input, even though no version pin or locked download changed.
+Workstation provisioning rebuilt both GCC runtimes against the updated host
+compiler/binutils; Spark provisioning reused their verified native runtime
+cache. Checks use `hostlock shared` on the workstation and the installed
+`spark-job` (`--shared`, or `--gpu` for model tests) on the Sparks.
+
+| Check | Host / result |
+| --- | --- |
+| Full native build and shared `-LE 'models\|timing'` suite | `spark-b`: 3,940 passed, no skips, with the warm pre-audit SDK (`aarch64-2c4eb5b2f68f3fa5`, same version pins) |
+| Fresh SDK provisioning, `doctor`, native toolchain/CUDA contracts | Both Sparks: passed, including all 23 final contracts on each with the new SDK |
+| Fresh native CLI, version and doctor checks | `spark`: 6 passed, including GB10 capability probing |
+| Tooling regressions | `spark`: 677 tests, two inspected skips: absent UCD 15.1.0 inputs and the x86-only SDK notice-extraction check (native ARM SDK has no cross sysroot); all 22 package-tool tests including notice extraction passed on x86 |
+| Tool-call fixtures after the signed-char fix | `spark`: all 53 tests passed on the new SDK |
+| Real-model serving/state smoke | `spark-b`: 3 passed: frozen Gemma2 heads/tokens/spill continuation, dense-decoder scoring/waves/spill/restore, Qwen2 checkpoint/spill/eviction |
+| Workstation SDK `doctor --deep` | Passed, including native C++/CUDA compilation and cross C++ execution under QEMU |
+| Workstation CPU suite | 3,403 selected, zero failures; two inspected skips for absent published Qwen-Image artifacts (`QwenImage.InstalledComponentsBind`, `ImageFamily.ThePublishedPipelineIsAdmitted`) |
+| x86 native toolchain, CLI and version smoke | Passed; final 21 non-GPU toolchain contracts and two explicit discrete-GPU tests passed on RTX 3080 Ti |
+| Native ASan/UBSan and emulated cross contracts | Native sanitizer: 23 passed; cross: 20 passed; cross-ASan: 22 passed, including all three death cases and sanitizer controls |
+| Cross deployment and SSH runner | C++/CUDA/doctor on `spark`, ASan/UBSan/LSan controls on `spark-b`, TSan/race controls on `spark`: passed |
+| CTest selection | Actual preset runs exclude native GPU tests and CPU timing tests as intended; synthetic CTest fixture covers combined filters and fixture helpers |
+| Confined-job proof | Workstation: passed under the updated systemd/kernel |
+| Reference container and NVIDIA container runtime | Existing pinned image starts, runs project Python 3.14.7, and queries RTX 3080 Ti / driver 595.99.02 |
+| Source lock, REUSE and embedded headers | Passed; all 2,690 files have license/copyright information, zero header problems |
+| Direct links | Both 9,000-byte-MTU paths pass full-size, nonfragmenting packet checks in both directions; bandwidth was not retimed |
+
 ## Development host baseline
 
 Captured 2026-09-20 on the reference workstation, read-only. The brief asked

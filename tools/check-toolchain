@@ -116,10 +116,11 @@ def host_facts(r: Report) -> None:
     r.add("host", "kernel", platform.release())
     r.add("host", "glibc", os.confstr("CS_GNU_LIBC_VERSION"))
     r.add("host", "python", platform.python_version())
-    mise = shutil.which("mise")
+    # spark-job has no login PATH. The project's provisioned mise lives here.
+    mise = shutil.which("mise") or shutil.which("mise", path=str(pathlib.Path.home() / ".local/bin"))
     r.add("host", "mise", first_line(capture([mise, "--version"]).stdout) if mise else None)
     if not mise:
-        r.problem("mise is not on PATH (declared prerequisite, D-012)")
+        r.problem("mise is not on PATH or in ~/.local/bin (declared prerequisite, D-012)")
 
 
 def driver_facts(r: Report) -> None:
@@ -131,8 +132,13 @@ def driver_facts(r: Report) -> None:
         out = capture([smi, "--query-gpu=name,driver_version,compute_cap", "--format=csv,noheader"])
         gpus = [line.strip() for line in out.stdout.splitlines() if line.strip()]
         r.add("gpu", "devices", gpus if out.returncode == 0 else f"nvidia-smi failed: {out.stderr.strip()}")
+        if out.returncode != 0:
+            r.problem(f"nvidia-smi failed: {out.stderr.strip()}")
     if not version.exists() and not smi:
         r.add("gpu", "devices", "no NVIDIA driver found")
+    elif version.exists() and not smi:
+        r.add("gpu", "devices", "kernel module loaded; nvidia-smi missing")
+        r.problem("NVIDIA kernel module is loaded but nvidia-smi is missing; install matching NVIDIA user-space tools")
 
 
 def check_prerequisites(sdk: sdklib.Sdk, r: Report) -> None:
@@ -151,7 +157,7 @@ def check_prerequisites(sdk: sdklib.Sdk, r: Report) -> None:
             # probe below fails loudly if it can't.
             r.add("prerequisites", "qemu_binfmt", "binfmt_misc not mounted here; the cross probe checks execution")
         elif not binfmt.exists():
-            r.problem("qemu-aarch64 binfmt is not registered (qemu-user-static, D-061)")
+            r.problem("qemu-aarch64 binfmt is not registered (qemu-user-static, or qemu-user-binfmt on Ubuntu 26.04; D-061)")
             r.add("prerequisites", "qemu_binfmt", None)
         else:
             lines = binfmt.read_text().splitlines()

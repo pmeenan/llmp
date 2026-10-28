@@ -729,7 +729,7 @@ llmp_gtest(release_mapped_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 add_executable(weights_ordinal_screen release_mapped_test.cc)
 target_compile_definitions(weights_ordinal_screen PRIVATE LLMP_WEIGHT_ORDINAL_SCREEN=1)
 target_link_libraries(weights_ordinal_screen PRIVATE llmp_engine_core llmp_fake_device_backend
-                      llmp_test_artifact_writer GTest::gmock_main llmp_test_expected llmp_warnings)
+                      llmp_test_artifact_writer llmp_test_main llmp_test_expected llmp_warnings)
 llmp_test_executable(weights_ordinal_screen)
 
 
@@ -1502,7 +1502,7 @@ if(LLMP_CUDA)
   # Captured-corpus diagnostic: invoke only with authenticated IDs and a paid
   # supervised owner, never automatically through all-model CTest discovery.
   target_link_libraries(qwen38_joined_score_gpu_test PRIVATE
-    GTest::gmock_main llmp_test_expected llmp_warnings)
+    llmp_test_main llmp_test_expected llmp_warnings)
   llmp_test_executable(qwen38_joined_score_gpu_test)
   llmp_cublas_runpath(qwen38_joined_score_gpu_test)
 

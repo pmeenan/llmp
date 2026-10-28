@@ -48,6 +48,7 @@ import pathlib
 import shlex
 import shutil
 import subprocess
+import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import llmp_package as packagelib  # noqa: E402
@@ -206,6 +207,84 @@ def split_ctest_args(argv: list[str]) -> tuple[list[str], list[str]]:
     return argv, []
 
 
+def run_ctest(sdk: sdklib.Sdk, preset: str, parallel: int, args: list[str], env: dict) -> None:
+    """Caller label exclusions narrow the preset's selection, never weaken it.
+
+    CTest ANDs preset and command-line exclusion-label expressions. Thus
+    native's gpu|models plus -LE models|timing can admit GPU-only tests.
+    Resolve caller exclusions with CTest itself, then exclude those names
+    separately while leaving the preset's original restrictions intact.
+    """
+    ctest = sdk.root / "bin" / "ctest"
+    labels, files, remaining, selection = [], [], [], []
+    tail = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            tail = args[index:]
+            break
+        if arg in ("--test-dir", "--preset", "--presets-file", "-C", "--build-config"):
+            if index + 1 == len(args):
+                raise SdkError(f"{arg} needs an argument")
+            selection.extend(args[index:index + 2])
+            remaining.extend(args[index:index + 2])
+            index += 1
+        elif arg.startswith(("--test-dir=", "--preset=", "--presets-file=", "--build-config=")) or (
+                arg.startswith("-C") and len(arg) > 2):
+            selection.append(arg)
+            remaining.append(arg)
+        elif arg in ("-LE", "--label-exclude", "--exclude-from-file"):
+            if index + 1 == len(args):
+                raise SdkError(f"{arg} needs an argument")
+            index += 1
+            (files if arg == "--exclude-from-file" else labels).append(args[index])
+        elif arg.startswith("--label-exclude="):
+            labels.append(arg.split("=", 1)[1])
+        elif arg.startswith("-LE") and len(arg) > 3:
+            labels.append(arg[3:])
+        elif arg.startswith("--exclude-from-file="):
+            files.append(arg.split("=", 1)[1])
+        else:
+            remaining.append(arg)
+        index += 1
+    # CTest explicitly ignores selection filters with --rerun-failed.
+    if not labels or "--rerun-failed" in remaining:
+        run([ctest, "--preset", preset, "--parallel", parallel, *args], env)
+        return
+    # Do not materialize fixture helpers auto-added for selected tests.
+    discovery = [ctest, "--preset", preset, *selection, "--show-only=json-v1", "-FA", ".*"]
+
+    def discover(options: list[str]) -> list[str]:
+        result = subprocess.run([str(c) for c in [*discovery, *options]], cwd=sdklib.REPO, env=env,
+                                capture_output=True, text=True)
+        if result.returncode:
+            detail = result.stderr.strip() or result.stdout.strip()
+            raise SdkError(f"cannot resolve CTest exclusions: {detail}")
+        try:
+            names = [test["name"] for test in json.loads(result.stdout)["tests"]]
+            if any(not isinstance(name, str) or "\n" in name or "\r" in name for name in names):
+                raise ValueError("invalid test name")
+            return names
+        except (ValueError, KeyError, TypeError) as error:
+            raise SdkError(f"invalid CTest discovery report: {error}") from error
+
+    names = discover([option for label in labels for option in ("--label-regex", label)])
+    if files:
+        # Let CTest resolve paths relative to its effective test directory.
+        # Like CTest, the last --exclude-from-file wins. Materialize its
+        # effect so the generated file can compose with it.
+        baseline = discover([])
+        retained = set(discover(["--exclude-from-file", files[-1]]))
+        names.extend(name for name in baseline if name not in retained)
+    with tempfile.NamedTemporaryFile(mode="w", prefix="llmp-ctest-exclude-", suffix=".txt") as excluded:
+        for name in names:
+            excluded.write(name + "\n")
+        excluded.flush()
+        run([ctest, "--preset", preset, "--parallel", parallel,
+             *remaining, "--exclude-from-file", excluded.name, *tail], env)
+
+
 def main() -> int:
     argv, ctest_args = split_ctest_args(sys.argv[1:])
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -266,18 +345,16 @@ def main() -> int:
         if args.command == "deploy":
             deploy(sdk, preset, args.host, control)
         elif args.command == "test":
-            ctest = sdk.root / "bin" / "ctest"
             if args.host:
                 remote_dir = deploy(sdk, preset, args.host, control)
                 env = sdk_env(sdk) | {"LLMP_TARGET_HOST": args.host, "LLMP_TARGET_DIR": remote_dir}
                 if control:
                     env["LLMP_TARGET_SSH_CONTROL"] = control
-                run([ctest, "--preset", REMOTE_TEST_PRESET[preset], "--parallel", REMOTE_TEST_JOBS,
-                     *ctest_args], env)
+                run_ctest(sdk, REMOTE_TEST_PRESET[preset], REMOTE_TEST_JOBS, ctest_args, env)
             elif args.gpu:
-                run([ctest, "--preset", f"{preset}-gpu", "--parallel", 1, *ctest_args], sdk_env(sdk))
+                run_ctest(sdk, f"{preset}-gpu", 1, ctest_args, sdk_env(sdk))
             else:
-                run([ctest, "--preset", preset, "--parallel", os.cpu_count() or 1, *ctest_args], sdk_env(sdk))
+                run_ctest(sdk, preset, os.cpu_count() or 1, ctest_args, sdk_env(sdk))
     return 0
 
 

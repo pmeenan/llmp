@@ -162,6 +162,83 @@ class CtestArgs(unittest.TestCase):
         self.assertEqual(build.split_ctest_args(["test"]), (["test"], []))
 
 
+class CtestExclusions(unittest.TestCase):
+    SDK = types.SimpleNamespace(root=pathlib.Path("/sdk"))
+
+    def invoke(self, args, names=(), *, code=0, report=None, reports=None):
+        result = subprocess.CompletedProcess([], code, report if report is not None else
+                                             json.dumps({"tests": [{"name": n} for n in names]}),
+                                             "discovery failed" if code else "")
+        captured = {}
+
+        def run(command, env):
+            captured.update(command=command, env=env)
+            if "--exclude-from-file" in command:
+                path = pathlib.Path(command[command.index("--exclude-from-file") + 1])
+                captured.update(excluded=path.read_text(), path=path)
+
+        results = ([subprocess.CompletedProcess([], 0, json.dumps({"tests": [{"name": n} for n in ns]}), "")
+                    for ns in reports] if reports is not None else None)
+        with mock.patch.object(build.subprocess, "run", return_value=result, side_effect=results) as discover, \
+                mock.patch.object(build, "run", side_effect=run):
+            build.run_ctest(self.SDK, "native", 8, args, {"LLMP_SDK": "/sdk"})
+        return captured, discover
+
+    def test_materializes_caller_exclusions_preserving_the_preset_and_environment(self):
+        captured, discovery = self.invoke(["-LE", "models|timing", "-R", "unit"], ["unit.timed"])
+        self.assertEqual(captured["excluded"], "unit.timed\n")
+        self.assertEqual(captured["command"][:7],
+                         [self.SDK.root / "bin/ctest", "--preset", "native", "--parallel", 8, "-R", "unit"])
+        command = discovery.call_args.args[0]
+        self.assertIn("--label-regex", command)
+        self.assertIn("models|timing", command)
+        self.assertIn("-FA", command)
+        self.assertEqual(discovery.call_args.kwargs["env"], captured["env"])
+        self.assertEqual(discovery.call_args.kwargs["cwd"], REPO)
+        self.assertFalse(captured["path"].exists())
+
+    def test_delegates_file_paths_and_last_file_semantics_and_repeated_labels_to_ctest(self):
+        captured, discovery = self.invoke(
+            ["--exclude-from-file", "first", "--exclude-from-file=last", "--label-exclude=timing", "-LEmodels"],
+            reports=[["both.labels"], ["both.labels", "plain", "file.excluded"], ["both.labels", "plain"]])
+        self.assertEqual(captured["excluded"], "both.labels\nfile.excluded\n")
+        self.assertEqual(discovery.call_args_list[0].args[0][-4:],
+                         ["--label-regex", "timing", "--label-regex", "models"])
+        self.assertEqual(discovery.call_args_list[-1].args[0][-2:], ["--exclude-from-file", "last"])
+
+    def test_preserves_tree_and_configuration_and_arguments_after_separator(self):
+        args = ["--test-dir", "/other", "--preset=cpu", "-CDebug", "--build-config", "Release",
+                "--presets-file=custom.json", "-LE", "timing", "--", "--label-exclude", "test-argument"]
+        captured, discovery = self.invoke(args)
+        command = discovery.call_args.args[0]
+        self.assertEqual(command[3:10], args[:7])
+        self.assertNotIn("test-argument", command)
+        self.assertEqual(captured["command"][-3:], args[-3:])
+
+    def test_no_label_exclusion_and_explicit_rerun_keep_ctest_semantics(self):
+        for args in (["-R", "unit", "--", "-LE", "test-argument"],
+                     ["--rerun-failed", "-LE", "timing"]):
+            captured, discovery = self.invoke(args)
+            discovery.assert_not_called()
+            self.assertEqual(captured["command"][5:], args)
+
+    def test_unmatched_labels_still_preserve_preset(self):
+        captured, _ = self.invoke(["-LE", "nothing"])
+        self.assertEqual(captured["excluded"], "")
+        self.assertEqual(captured["command"][1:3], ["--preset", "native"])
+
+    def test_discovery_errors_and_malformed_reports_fail(self):
+        for kwargs in ({"code": 1}, {"report": "bad json"}, {"report": "{}"},
+                       {"names": ["bad\nname"]}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(build.SdkError):
+                self.invoke(["-LE", "timing"], **kwargs)
+
+    def test_missing_arguments_fail(self):
+        for args in (["-LE"], ["--label-exclude"], ["--test-dir"], ["--exclude-from-file"]):
+            with self.subTest(args=args), self.assertRaises(build.SdkError):
+                self.invoke(args)
+
+
 class ConfigureArgs(unittest.TestCase):
     SDK = types.SimpleNamespace(root=pathlib.Path("/sdk"))
 
@@ -299,10 +376,10 @@ class RunTargetProcess(unittest.TestCase):
         self.build_dir = self.tmp / "build"
         (self.build_dir / "tests").mkdir(parents=True)
 
-    def run_target(self, env: dict, *argv: str) -> subprocess.CompletedProcess:
+    def run_target(self, env: dict, *argv: str, qemu: str = "fake-qemu") -> subprocess.CompletedProcess:
         env = {"PATH": f"{self.bin}:{os.environ['PATH']}", **env}
         return subprocess.run([sys.executable, TOOLS / "run-target", "--build-dir", self.build_dir, "--sysroot",
-                               "/sys/root", "--qemu", "fake-qemu", "--", *argv],
+                               "/sys/root", "--qemu", qemu, "--", *argv],
                               env=env, cwd=self.build_dir / "tests", capture_output=True, text=True)
 
     def test_local_runs_under_qemu_with_the_sysroot_loader(self):
@@ -310,6 +387,25 @@ class RunTargetProcess(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(self.log.read_text()),
                          {"argv": [str(self.build_dir / "tests" / "t"), "-a"], "ld": "/sys/root"})
+
+    def test_ubuntu_26_emulator_name_runs_an_older_configured_tree(self):
+        (self.bin / "fake-qemu").rename(self.bin / "qemu-aarch64")
+        result = self.run_target({"PATH": str(self.bin)}, "t", "-a", qemu="qemu-aarch64-static")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.log.read_text()), {"argv": ["t", "-a"], "ld": "/sys/root"})
+
+    def test_original_emulator_is_preferred_when_both_names_exist(self):
+        (self.bin / "fake-qemu").rename(self.bin / "qemu-aarch64-static")
+        (self.bin / "qemu-aarch64").write_text("#!/bin/sh\nexit 99\n")
+        (self.bin / "qemu-aarch64").chmod(0o755)
+        result = self.run_target({"PATH": str(self.bin)}, "t", qemu="qemu-aarch64-static")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_missing_explicit_emulator_path_does_not_select_another(self):
+        (self.bin / "fake-qemu").rename(self.bin / "qemu-aarch64")
+        result = self.run_target({"PATH": str(self.bin)}, "t", qemu=str(self.bin / "qemu-aarch64-static"))
+        self.assertEqual(result.returncode, 127, result.stderr)
+        self.assertFalse(self.log.exists())
 
     def test_remote_needs_the_deployed_directory(self):
         result = self.run_target({"LLMP_TARGET_HOST": "spark"}, "t")

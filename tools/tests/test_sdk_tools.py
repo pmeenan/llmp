@@ -165,6 +165,9 @@ class Provenance(unittest.TestCase):
         tools = {"mise", *tomllib.loads((sdklib.REPO / "mise.toml").read_text())["tools"]}
         self.assertEqual(self.recorded("artifacts"), artifacts)
         self.assertEqual(self.recorded("packages"), packages)
+        # Alternate host packages are recorded separately from requirements:
+        # noble's qemu-user-static and resolute's provider are not co-installable.
+        self.assertEqual(self.recorded("provider_packages"), {"qemu-user", "qemu-user-binfmt"})
         self.assertEqual(self.recorded("tools"), tools)
 
     def test_records_are_complete(self):
@@ -232,6 +235,37 @@ class Prerequisites(unittest.TestCase):
         with mock.patch.object(sdklib.subprocess, "run", fake_run):
             versions = sdklib.installed_versions(["held", "removed", "foreign", "arch-all"])
         self.assertEqual(versions, {"held": "1.0", "arch-all": "2.0"})
+
+    def test_only_installed_native_or_all_providers_count(self):
+        out = ("amd64\tii \tqemu-user-static, versioned (= 1.0)\n"
+               "all\thi \tarch-independent\n"
+               "arm64\tii \tforeign\n"
+               "amd64\trc \tremoved\n"
+               "amd64\tii \t\n")
+        def fake_run(cmd, **kwargs):
+            return mock.Mock(stdout="amd64\n" if cmd[:2] == ["dpkg", "--print-architecture"] else out,
+                             returncode=0)
+        with mock.patch.object(sdklib.subprocess, "run", fake_run):
+            self.assertEqual(sdklib.installed_provides(),
+                             {"qemu-user-static", "versioned", "arch-independent"})
+
+    def test_virtual_provider_satisfies_only_unversioned_prerequisites(self):
+        reqs = [("qemu-user-static", None, None), ("versioned", ">=", "2.0"),
+                ("exact", "=", "1.0"), ("missing", None, None)]
+        with (mock.patch.object(sdklib, "prerequisites", return_value=reqs),
+              mock.patch.object(sdklib, "installed_versions", return_value={}),
+              mock.patch.object(sdklib, "installed_provides",
+                                return_value={"qemu-user-static", "versioned", "exact"})):
+            self.assertEqual(sdklib.check_prerequisites(sdklib.load("x86_64")),
+                             ["versioned: not installed", "exact: not installed", "missing: not installed"])
+
+    def test_real_packages_do_not_query_providers(self):
+        with (mock.patch.object(sdklib, "prerequisites", return_value=[("libc6", ">=", "2.39")]),
+              mock.patch.object(sdklib, "installed_versions", return_value={"libc6": "2.43"}),
+              mock.patch.object(sdklib, "version_at_least", return_value=True),
+              mock.patch.object(sdklib, "installed_provides") as provides):
+            self.assertEqual(sdklib.check_prerequisites(sdklib.load("x86_64")), [])
+            provides.assert_not_called()
 
 
 class Trees(unittest.TestCase):

@@ -874,8 +874,8 @@ TEST(ToolSampling, OnlyActualTerminalsAreBlockedUntilAnOpenCallCompletes) {
     std::vector<float> row(tokenizer->size(), 0), scratch;
     EXPECT_EQ(std::isfinite(sampling.Mask(row, scratch)[static_cast<std::size_t>(eos)]),
               choice.kind == c::ToolChoiceKind::kAuto);
-    for (const unsigned char ch : std::string("<tool_call><function=lookup><parameter=s>cut"))
-      ASSERT_TRUE(sampling.Accept(ch));
+    for (const char ch : std::string("<tool_call><function=lookup><parameter=s>cut"))
+      ASSERT_TRUE(sampling.Accept(static_cast<unsigned char>(ch)));
     const auto masked = sampling.Mask(row, scratch);
     EXPECT_FALSE(std::isfinite(masked[static_cast<std::size_t>(eos)]));
     EXPECT_TRUE(std::isfinite(masked[static_cast<std::size_t>(other)]));
@@ -885,8 +885,8 @@ TEST(ToolSampling, OnlyActualTerminalsAreBlockedUntilAnOpenCallCompletes) {
     auto rejected = sampling;
     EXPECT_EQ(rejected.Accept(eos).has_value(), !refuses);
     EXPECT_EQ(rejected.refused(), refuses);
-    for (const unsigned char ch : std::string("</parameter></invoke>"))
-      ASSERT_TRUE(sampling.Accept(ch));
+    for (const char ch : std::string("</parameter></invoke>"))
+      ASSERT_TRUE(sampling.Accept(static_cast<unsigned char>(ch)));
     EXPECT_TRUE(std::isfinite(sampling.Mask(row, scratch)[static_cast<std::size_t>(eos)]));
     EXPECT_TRUE(sampling.Plan(eos));
     EXPECT_TRUE(sampling.Accept(eos));
@@ -940,10 +940,9 @@ TEST(ToolSampling, DeclaredAliasControlTokensReachBothSamplingAndOutputParsers) 
   c::ToolInterpreter parser(c::QwenToolCalls(), request, Limits());
   sampling.Budget(256, 256);
   Output output;
-  for (const unsigned char ch : std::string("<tool_call><function=lookup>")) {
-    ASSERT_TRUE(sampling.Accept(ch));
-    const char byte = static_cast<char>(ch);
-    ASSERT_TRUE(parser.Push(std::string_view(&byte, 1), output.Sink()));
+  for (const char ch : std::string("<tool_call><function=lookup>")) {
+    ASSERT_TRUE(sampling.Accept(static_cast<unsigned char>(ch)));
+    ASSERT_TRUE(parser.Push(std::string_view(&ch, 1), output.Sink()));
   }
   const std::array<std::int32_t, 6> suffix{header, 's', name_end, 'x', parameter_end, call_end};
   std::vector<float> row(tokenizer->size(), 0), scratch;
@@ -975,7 +974,8 @@ TEST(ToolSampling, BareJsonAutoOrdinaryOpenBraceCanEndButRecognizedPartialCallCa
     sampling.Budget(256, 256);
     c::ToolInterpreter parser(c::JsonToolCalls(), Request(), Limits());
     Output output;
-    for (const unsigned char ch : std::string(text)) ASSERT_TRUE(sampling.Accept(ch));
+    for (const char ch : std::string(text))
+      ASSERT_TRUE(sampling.Accept(static_cast<unsigned char>(ch)));
     ASSERT_TRUE(parser.Push(text, output.Sink()));
     EXPECT_EQ(parser.CanStop(), ordinary);
     std::vector<float> row(tokenizer->size(), 0), scratch;
@@ -1458,8 +1458,8 @@ TEST(ToolCalls, ObjectNotationAllowsValidPrefixesAndRejectsMalformedArgumentsDur
   c::ToolSampling sampling(*tokenizer, c::GemmaToolCalls(),
                            Request({c::ToolChoiceKind::kRequired, {}}), Limits(), false, {});
   sampling.Budget(128, 128);
-  for (const unsigned char ch : std::string("<|tool_call>call:lookup{"))
-    ASSERT_TRUE(sampling.Accept(ch));
+  for (const char ch : std::string("<|tool_call>call:lookup{"))
+    ASSERT_TRUE(sampling.Accept(static_cast<unsigned char>(ch)));
   std::vector<float> row(tokenizer->size(), 0), scratch;
   const auto at_key = sampling.Mask(row, scratch);
   const auto colon = static_cast<std::size_t>(*tokenizer->Find(":"));

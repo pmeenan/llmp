@@ -23,6 +23,7 @@ sys.dont_write_bytecode = True
 import argparse
 import os
 import shlex
+import shutil
 
 # Test-control variables that go with a remote run; the remote host's own
 # environment supplies everything else.
@@ -77,10 +78,17 @@ def main() -> int:
     host = os.environ.get("LLMP_TARGET_HOST")
     if not host:
         env = dict(os.environ, QEMU_LD_PREFIX=args.sysroot)
+        qemu = args.qemu
+        # Since QEMU 9.1 (Ubuntu 26.04), qemu-user contains static binaries
+        # without the -static suffix. Preserve explicit paths and prefer the
+        # original name when it exists, including in older configured trees.
+        if "/" not in qemu and qemu.startswith("qemu-") and qemu.endswith("-static") and not shutil.which(qemu):
+            qemu = shutil.which(qemu.removesuffix("-static")) or qemu
         try:
-            os.execvpe(args.qemu, [args.qemu, *command], env)
+            os.execvpe(qemu, [qemu, *command], env)
         except OSError as e:
-            print(f"run-target: cannot run {args.qemu} ({e}); install qemu-user-static (D-061)", file=sys.stderr)
+            print(f"run-target: cannot run {args.qemu} ({e}); install qemu-user-static "
+                  "(qemu-user and qemu-user-binfmt on Ubuntu 26.04; D-061)", file=sys.stderr)
             return 127
     remote_dir = os.environ.get("LLMP_TARGET_DIR")
     if not remote_dir or not remote_dir.startswith("/"):

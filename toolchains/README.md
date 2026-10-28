@@ -12,12 +12,21 @@ REUSE lint tool 6.2.0 that the check gate runs (D-071). System
 packages supply only the declared host prerequisites; setup never installs
 packages or changes system defaults.
 
+The upgraded workstation runs Ubuntu 26.04. Its `qemu-user-binfmt` package
+provides the older `qemu-user-static` requirement; install `qemu-user` and
+`qemu-user-binfmt` there. `doctor` checks the registered emulator and runs
+a cross-built probe, in addition to checking installed packages. Keep the
+declared noble `libxml2` compatibility package and its ICU 74 dependency:
+the pinned LLVM binaries need their ABIs. The
+glibc 2.39 cross sysroot and Ubuntu 24.04 reference container stay pinned
+for the Spark target. See the [2026-10-28 environment update](../docs/environment.md#os-update-2026-10-28).
+
 | File | Holds |
 | --- | --- |
 | [manifest.toml](manifest.toml) | What each build host's SDK contains: components, the GCC configure flags and used outputs, and the tools linked into `bin/` |
 | [artifacts.lock.json](artifacts.lock.json) | Every downloaded byte: URLs, SHA-256 and size, and under `sources` how each was verified when pinned |
-| [prerequisites/](prerequisites/) | The Ubuntu 24.04 packages each build host needs, checked by `mise run doctor` |
-| [provenance.toml](provenance.toml) | The D-017 provenance record of every locked artifact, prerequisite and mise tool: category, license, what enters a llmpalooza binary and the notices that follow (D-071; [licensing.md](../docs/licensing.md#what-builds-llmpalooza)). Not an identity input |
+| [prerequisites/](prerequisites/) | The Ubuntu 24.04/26.04 packages each build host needs, checked by `mise run doctor`; installed native/all providers satisfy unversioned requirements |
+| [provenance.toml](provenance.toml) | The D-017 provenance record of every locked artifact, prerequisite, alternate provider package (`provider_packages`) and mise tool: category, license, what enters a llmpalooza binary and the notices that follow (D-071; [licensing.md](../docs/licensing.md#what-builds-llmpalooza)). Not an identity input |
 
 `mise run setup` provisions the SDK with
 [tools/setup-toolchain](../tools/setup-toolchain), then prepares the locked

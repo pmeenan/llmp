@@ -136,6 +136,16 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Build diagnostics accept Ubuntu 26.04's QEMU package provider and renamed
+  emulator, find mise in supervised Spark jobs, and report missing NVIDIA
+  user-space tools beside a loaded kernel driver. The environment inventory
+  records the 2026-10-28 OS update and its measurement caveat.
+- CPU-only x86 builds compile the tool-call test fixtures with explicit byte
+  conversions, matching ARM's unsigned-char behavior.
+- Test processes suppress core collection, preserving death-test checks under
+  QEMU/ASan after the Ubuntu 26 upgrade. Caller label exclusions also preserve
+  the test preset's GPU and model exclusions.
+
 - A running node no longer refuses a fresh plan's execution metadata
   (its report inventory, a source's construction) because the physical
   availability reads low: once the node has started, that growth is judged

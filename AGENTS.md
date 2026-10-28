@@ -24,6 +24,13 @@ human.
 read everything up front.** This file is long-term project memory and the
 rulebook for agents.
 
+**Environment update (2026-10-28):** the workstation now runs Ubuntu 26.04.1,
+glibc 2.43 and NVIDIA 595.99.02. Both updated Sparks still report Ubuntu
+24.04.5 / NVIDIA 580.178.04. See [environment.md](docs/environment.md#os-update-2026-10-28)
+for the verified inventory and harness checks. Historical performance numbers
+retain their original environment; repeat matched comparisons on the current
+stack before attributing a change in numbers to code.
+
 ## Load-bearing constraints (change deliberately, never silently)
 
 Constraints evolve as we learn, but never by silent drift: changing one means

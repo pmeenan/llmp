@@ -209,10 +209,13 @@ notices = []
 
 [units.host-emulation]
 packages = ["qemu-user-static"]
+# Ubuntu 26.04's installed provider and its emulator dependency. These are
+# alternatives to the named prerequisite, not additional required packages.
+provider_packages = ["qemu-user", "qemu-user-binfmt"]
 category = "tool"
 license = "GPL-2.0-only"
 ships = false
-enters = "Nothing: runs cross-built tests under qemu-user (D-061)."
+enters = "Nothing: runs cross-built tests under qemu-user (D-061). On Ubuntu 26.04 qemu-user-binfmt Provides qemu-user-static and depends on qemu-user, which carries the static emulators."
 notices = []
 
 [units.host-vcs]

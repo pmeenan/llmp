@@ -40,6 +40,18 @@ llmp_toolchain_test(toolchain_contract_test)
 # GoogleTest and gMock from the source lock, without exceptions (D-057,
 # D-059, D-066), plus a negative control that must fail the run.
 add_executable(gtest_contract_test gtest_contract_test.cc)
+add_executable(gtest_main_failure_control gtest_main_failure.cc)
+target_link_libraries(gtest_main_failure_control PRIVATE llmp_test_main llmp_warnings)
+target_link_options(gtest_main_failure_control PRIVATE "LINKER:--wrap=prctl")
+llmp_test_executable(gtest_main_failure_control)
+add_dependencies(gtest_contract_test gtest_main_failure_control)
+foreach(case CannotSatisfyDeath CannotSatisfySuccessfulExit)
+  add_test(NAME toolchain.main_failure.${case}
+           COMMAND ${CMAKE_COMMAND} -DBINARY=$<TARGET_FILE:gtest_main_failure_control> -DCASE=${case}
+                   "-DEMULATOR=$<JOIN:$<TARGET_PROPERTY:gtest_main_failure_control,CROSSCOMPILING_EMULATOR>,|>"
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/check_main_failure.cmake)
+  set_tests_properties(toolchain.main_failure.${case} PROPERTIES LABELS toolchain)
+endforeach()
 llmp_gtest(gtest_contract_test TEST_PREFIX toolchain.gtest. TEST_FILTER -NegativeControl.*
              PROPERTIES LABELS toolchain)
 add_test(NAME toolchain.gtest_contract_test.binary

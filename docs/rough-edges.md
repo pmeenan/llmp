@@ -28,6 +28,28 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-062: QEMU/ASan death tests spin during fatal-signal collection after the Ubuntu 26 upgrade  (2026-10-28, status: worked-around)
+
+Workstation Ubuntu 26.04.1, kernel 7.0.0-42-generic, qemu-user
+1:10.2.1+ds-1ubuntu3.3, the LLVM 22.1.8 / GCC 16.2 SDK and GoogleTest
+1.18.0. `cross-asan` toolchain checks passed 17/20 cases, including the
+sanitizer controls, but all three threadsafe death tests left children
+spinning at a core each for over 90 s. Guest syscall tracing reached the
+intended `tgkill(SIGABRT)` and QEMU's fatal-signal message. The host uses
+Apport's piped `core_pattern`; a zero shell core limit and GTest's fork
+flag did not fix the hang. Native x86 sanitizer tests and Spark sanitizer
+controls passed. This narrows the problem to emulated fatal-signal/core
+handling; it does not identify a particular upstream defect.
+
+The shared test main now applies `platform::MarkNonDumpable()` after
+runtime/framework initialization, clearing the core filter and setting
+`PR_SET_DUMPABLE=0`, including in re-executed death-test children. All three
+death assertions then pass in about 0.35 s each. It keeps the assertions,
+signals and threadsafe restarts intact. Setup failures use the pinned
+GTest internal-error pipe record, since an ordinary exit code could itself
+satisfy a death/exit assertion; two wrapped-syscall controls verify this.
+See [the upstream handoff](upstream/other.md#emulated-asan-death-tests-spin-during-fatal-signal-collection-re-062).
+
 ## RE-061: Permission-only source sync can invalidate compiler receipts without scheduling a rebuild  (2026-10-22, status: obsolete 2026-10-26)
 
 *Obsolete:* the compiler-identity launcher and its receipts were removed with

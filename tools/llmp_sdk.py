@@ -178,7 +178,7 @@ def prerequisites(sdk: Sdk) -> list[tuple[str, str | None, str | None]]:
 def installed_versions(packages: list[str]) -> dict[str, str]:
     """Versions of installed Debian packages; missing packages are absent."""
     if shutil.which("dpkg-query") is None:
-        raise SdkError("dpkg-query not found; the SDK supports Ubuntu 24.04 build hosts")
+        raise SdkError("dpkg-query not found; the SDK requires an Ubuntu build host")
     arch = subprocess.run(["dpkg", "--print-architecture"], capture_output=True, text=True,
                           check=True).stdout.strip()
     proc = subprocess.run(["dpkg-query", "-W", "-f", "${Package}\t${Architecture}\t${db:Status-Abbrev}\t${Version}\n",
@@ -198,15 +198,38 @@ def version_at_least(installed: str, wanted: str) -> bool:
     return subprocess.run(["dpkg", "--compare-versions", installed, "ge", wanted]).returncode == 0
 
 
+def installed_provides() -> set[str]:
+    """Unversioned capabilities provided by installed native/all Debian packages.
+
+    Ubuntu 26.04's qemu-user-binfmt Provides qemu-user-static. Query the
+    installed database, not apt's candidates; a foreign or removed provider
+    cannot satisfy a host prerequisite. Provider versions are deliberately
+    not used to satisfy version constraints on a virtual package.
+    """
+    arch = subprocess.run(["dpkg", "--print-architecture"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    proc = subprocess.run(["dpkg-query", "-W", "-f",
+                           "${Architecture}\t${db:Status-Abbrev}\t${Provides}\n"],
+                          capture_output=True, text=True, check=True)
+    provides = set()
+    for line in proc.stdout.splitlines():
+        pkg_arch, status, names = line.split("\t")
+        if status[1:2] == "i" and pkg_arch in (arch, "all"):
+            provides.update(name.strip().split()[0] for name in names.split(",") if name.strip())
+    return provides
+
+
 def check_prerequisites(sdk: Sdk) -> list[str]:
     """Returns one problem per unmet prerequisite (empty when all are met)."""
     reqs = prerequisites(sdk)
     versions = installed_versions([name for name, _, _ in reqs])
+    provides = installed_provides() if any(n not in versions and op is None for n, op, _ in reqs) else set()
     problems = []
     for name, op, wanted in reqs:
         have = versions.get(name)
         if have is None:
-            problems.append(f"{name}: not installed")
+            if op is not None or name not in provides:
+                problems.append(f"{name}: not installed")
         elif op == ">=" and not version_at_least(have, wanted):
             problems.append(f"{name}: {have} installed, need >= {wanted}")
         elif op == "=" and have != wanted:

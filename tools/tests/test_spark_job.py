@@ -234,16 +234,21 @@ class SparkJobTest(unittest.TestCase):
         self.assertEqual(refused.returncode, 1, refused.stdout)
 
     def test_kill_ends_a_wait_and_timeout_counts_from_the_gpu(self):
-        self.start("long", "--gpu", "--", "sleep", "4")
+        self.start("long", "--gpu", "--", "sleep", "60")
         self.wait_for(lambda: (self.tmp / "jobs" / "long" / "gpu.json").exists())
         self.start("queued", "--gpu", "--", "true")
         self.start("patient", "--gpu", "--timeout", "3", "--", "sleep", "1")
+        queued_at = time.monotonic()
         self.wait_for(lambda: self.state("queued").get("gpu_waiting"))
         killed = self.run_tool("kill", "queued")
         self.assertEqual(killed.returncode, 0, killed.stdout)
         self.assertEqual(self.state("queued")["state"], "killed")
         self.assertEqual(self.state("long")["state"], "running")
-        result, _ = self.wait("patient")  # waited ~4 s for the GPU, longer than its --timeout of 3
+        # Hold admission longer than patient's timeout, independently of how
+        # long the status/kill subprocesses take on a busy build host.
+        time.sleep(max(0, 4 - (time.monotonic() - queued_at)))
+        self.assertEqual(self.run_tool("kill", "long").returncode, 0)
+        result, _ = self.wait("patient")  # waited >=4 s for the GPU, longer than its --timeout of 3
         self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_gpu_lock_outlives_a_lost_supervisor_until_its_child_exits(self):
