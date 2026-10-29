@@ -726,7 +726,11 @@ Status Llm::UseChatAssets(const ja::Artifact& artifact, const config::ModelEntry
       reader = std::move(*paid);
     }
   }
-  auto assets = ReadChatAssets(artifact, entry);
+  return AdoptChatAssets(ReadChatAssets(artifact, entry), entry, startup_cap);
+}
+
+Status Llm::AdoptChatAssets(std::expected<ChatAssets, std::string> assets,
+                            const config::ModelEntry& entry, std::uint64_t startup_cap) {
   if (!assets) return Error(assets.error());
   struct ChatCandidate {
     // Declared first: every candidate/old payload dies before its live charge.

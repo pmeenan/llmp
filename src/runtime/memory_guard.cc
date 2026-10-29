@@ -101,11 +101,12 @@ std::expected<std::uint64_t, std::string> StartupBootstrapBytes(std::uint64_t al
   // The loan is one workspace that startup's phases take in turn, on the
   // serialized construction owner: the fact passes (every alias's artifacts
   // opened, each pass's retained owners moved to their own payments before
-  // the next), then each alias's chat readers (Llm::UseChatAssets, on the
-  // loan the Server lends), after every fact pass's parser has died. So it
-  // holds the larger phase, not their sum (which was 17.8 GiB, past a 16 GiB
-  // cap, for nothing that coexists); what every alias retains throughout
-  // (settings, configured text) is beside either.
+  // the next), then each alias's chat readers (its build's, or
+  // Llm::UseChatAssets', on the loan the Server lends; one alias's assets
+  // live until its Setup adopts them), after every fact pass's parser has
+  // died. So it holds the larger phase, not their sum (which was 17.8 GiB,
+  // past a 16 GiB cap, for nothing that coexists); what every alias retains
+  // throughout (settings, configured text) is beside either.
   auto chat = ChatReaderBytes();
   if (!chat) return std::unexpected(chat.error());
   std::uint64_t bytes = 0, configured = 0;

@@ -1537,6 +1537,81 @@ TEST(ComponentsTest, ChannelNormBuildsInACompleteStatelessSpec) {
   EXPECT_FALSE(ValidateSpec(model_spec, tables));
 }
 
+// RE-050: a head bounded at its tokenizer's vocabulary (StepOptions::
+// vocabulary) never chooses a row past it, though a padding row wins the
+// whole head, and its logits are still every row's: one owner's argmax
+// reads its row's first logits where they lie, several owners' a copy of
+// them.
+TEST(ComponentsTest, AHeadBoundAtItsVocabularyNeverChoosesAPaddingRow) {
+  constexpr std::uint64_t kRows = 8, kVocabulary = 5;
+  constexpr std::int64_t kBest = 3, kPadding = 6;
+  // Each row's logit for the stream [1, 0] every token embeds to.
+  constexpr std::array<float, kRows> kLogits{0.5F, 1.0F, 1.5F, 4.0F, 2.0F, 0.25F, 8.0F, 0.75F};
+  spec::Stage stage{.name = "target", .context = 256};
+  stage.stream.width = 2;
+  stage.embedding = C("embedding.token", {});
+  stage.embedding->weights = {{.role = "table", .tensor = "embed"}};
+  stage.heads.output = C("head.linear", {});
+  stage.heads.output->weights = {{.role = "weight", .tensor = "head"}};
+  spec::ModelSpec model_spec{.stages = {stage}};
+  const std::vector<spec::SourceTensor> tensors{
+      {.name = "embed", .format = Matrix(Encoding::kF32, 2, kRows)},
+      {.name = "head", .format = Matrix(Encoding::kF32, 2, kRows)}};
+  const std::array<std::span<const spec::SourceTensor>, 1> tables{tensors};
+  ASSERT_TRUE(ValidateSpec(model_spec, tables));
+  const auto layout = StageLayoutUniform(model_spec, 0, 256, 2, kExtent);
+  ASSERT_TRUE(layout.has_value()) << layout.error();
+  for (const std::uint64_t owners : {std::uint64_t{1}, std::uint64_t{2}}) {
+    planner::StepShape shape{.segments = {Seg(0, 1, 0, 256, 1, true)}};
+    if (owners == 2) shape.segments.push_back(Seg(1, 1, 0, 256, 1, true));
+    const std::vector<std::int32_t> tokens{2, 7};
+    for (const std::uint64_t vocabulary : {std::uint64_t{0}, kVocabulary}) {
+      SCOPED_TRACE(std::format("{} owners, vocabulary {}", owners, vocabulary));
+      auto step = BuildStep(model_spec, 0, shape, {.tensors = tensors, .state = &*layout},
+                            {.vocabulary = vocabulary});
+      ASSERT_TRUE(step.has_value()) << step.error();
+      ASSERT_TRUE(step->logits.valid() && step->greedy.valid());
+      EXPECT_EQ(step->graph.tensor(step->logits).shape().ne[0], kRows);
+      // The choices read the head's rows in place, however many: no copy,
+      // and a bounded argmax's rows a view at the logits' own row stride.
+      const auto copies = std::ranges::count_if(
+          step->graph.nodes(), [](const ir::Node& n) { return n.key.op == ir::Op::kCont; });
+      EXPECT_EQ(copies, 0);
+      const auto argmax = std::ranges::find_if(
+          step->graph.nodes(), [](const ir::Node& n) { return n.key.op == ir::Op::kArgmax; });
+      ASSERT_NE(argmax, step->graph.nodes().end());
+      const ir::TensorDesc& choices = step->graph.tensor(argmax->src[0]);
+      EXPECT_EQ(choices.shape().ne[0], vocabulary != 0 ? kVocabulary : kRows);
+      EXPECT_EQ(choices.shape().ne[1], owners);
+      EXPECT_EQ(choices.nb[1], kRows * sizeof(float));
+      auto exec = ref::Executor::Create(step->graph);
+      ASSERT_TRUE(exec.has_value()) << exec.error().detail;
+      for (const StepWeight& sw : step->weights) {
+        std::vector<float> rows(2 * kRows, 0.0F);
+        const bool embed = sw.parts.front().first == "embed";
+        for (std::uint64_t r = 0; r < kRows; ++r) rows[2 * r] = embed ? 1.0F : kLogits[r];
+        ASSERT_TRUE(exec->BindValues(sw.tensor, rows));
+      }
+      for (const StepInput& in : step->inputs) {
+        auto values = InputValues(in, shape, std::span(tokens).first(owners));
+        ASSERT_TRUE(values.has_value()) << values.error();
+        ASSERT_TRUE(exec->BindInts(in.tensor, *values));
+      }
+      auto ran = exec->Run();
+      ASSERT_TRUE(ran.has_value()) << ran.error().detail;
+      auto chosen = exec->Ints(step->greedy);
+      ASSERT_TRUE(chosen.has_value());
+      EXPECT_EQ(*chosen, (std::vector<std::int64_t>(owners, vocabulary != 0 ? kBest : kPadding)));
+      auto logits = exec->Values(step->logits);
+      ASSERT_TRUE(logits.has_value());
+      ASSERT_EQ(logits->size(), owners * kRows);
+      for (std::uint64_t o = 0; o < owners; ++o)
+        for (std::uint64_t r = 0; r < kRows; ++r)
+          EXPECT_FLOAT_EQ((*logits)[(o * kRows) + r], kLogits[r]) << o << " " << r;
+    }
+  }
+}
+
 // Alias-wide conversion is paid and validated before changing any component.
 TEST(ComponentsTest, Q8CacheOverrideIsPaidAtomicAndChangesStateIdentity) {
   for (auto model_spec : {Gemma2Spec(), Gemma3Spec()}) {

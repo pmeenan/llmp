@@ -328,6 +328,8 @@ class LlmFixture : public ::testing::Test {
       }
       parts.wave_mode = wave_mode_;
       parts.logit_width = score_width_;
+      if (chat_assets_) parts.chat_assets = *chat_assets_;
+      parts.choice_vocabulary = choice_vocabulary_;
       parts.device_greedy = device_greedy_;
       parts.prefill = {.chunk_rows = chunk_rows_,
                        .lookahead = prefill_lookahead_,
@@ -558,6 +560,11 @@ class LlmFixture : public ::testing::Test {
   std::optional<std::uint32_t> wave_capacity_;
   bool private_score_ = false, score_workspace_ = false, mixed_outputs_ = false;
   std::uint32_t score_width_ = kWidth;
+  // The chat assets a build read and the bound of its device's choices it
+  // chose by them (LlmBuildParts::chat_assets, choice_vocabulary), for
+  // Setup to adopt.
+  std::optional<rt::ChatAssets> chat_assets_;
+  std::uint32_t choice_vocabulary_ = 0;
   bool equal_prefill_ = false, mixed_prefill_heads_ = false;
   bool save_checkpoints_ = true;  // Llm::set_turn_checkpoints at Start
 };

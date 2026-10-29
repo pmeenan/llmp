@@ -21,7 +21,10 @@
 // logit (the host-greedy flavor); a drafter's head reads every row
 // (`gather` false: nothing to gather or narrow) and projects its rows back
 // to its target's width (`features`: its next feature); it splits by the
-// vocabulary. A block drafter's head (`markov`: DSpark's, llama.cpp's
+// vocabulary. A step bounded at its tokenizer's vocabulary
+// (StepOptions::vocabulary, RE-050) never chooses a row past it: its greedy
+// tokens are the highest logit of each row's first rows (its logits keep
+// every row). A block drafter's head (`markov`: DSpark's, llama.cpp's
 // dflash.cpp build_dspark_markov_head) biases each of a segment's rows'
 // logits by markov_w2 · markov_w1[previous] (the previous row's highest
 // biased logit's token, the segment's first token for its first row), and
@@ -400,6 +403,17 @@ std::expected<FragmentOut, std::string> HeadEmit(Fragment& f) {
     const format::Shape shape = Shape({wd.ne(0), prefix});
     weight = b.View(weight, shape, ViewStrides(wd.nb[0], wd.nb[1], 0, shape), 0);
   }
+  // Of a head wider than its tokenizer, the rows a greedy choice reads: none
+  // past the tokenizer's vocabulary (f.vocabulary, RE-050), so a padding row
+  // never wins on the device. A selected head's rows are mapped IDs, and a
+  // drafter's Markov head proposes over its whole vocabulary (its target
+  // verifies every proposal).
+  const std::uint64_t kept = prefix != 0 ? prefix : wd.ne(1);
+  const std::uint64_t bound = f.vocabulary != 0 && f.vocabulary < kept &&
+                                      !f.instance.params.Flag("selected") &&
+                                      !f.instance.params.Flag("markov")
+                                  ? f.vocabulary
+                                  : 0;
   ir::TensorId logits = b.MatMul(weight, rows);
   if (f.instance.stage.softcap.has_value()) {
     const float cap = F32(*f.instance.stage.softcap);
@@ -422,7 +436,17 @@ std::expected<FragmentOut, std::string> HeadEmit(Fragment& f) {
     const bool native =
         f.instance.params.Flag("native_argmax") &&
         (f.step.phase() == planner::Phase::kVerify || f.step.phase() == planner::Phase::kDraft);
-    out.greedy = b.Argmax(logits, native ? ir::ArgmaxNan::kIgnore : ir::ArgmaxNan::kFirstColumn);
+    // A bounded head's choices read each row's first `bound` logits in
+    // place: a view of the head's rows at their own stride, which the argmax
+    // reads row-strided (no copy, however many rows). The product and its
+    // logits are the whole head's, unchanged.
+    ir::TensorId choices = logits;
+    if (bound != 0) {
+      const ir::TensorDesc ld = Desc(b, logits);
+      const format::Shape shape = Shape({bound, ld.ne(1)});
+      choices = b.View(logits, shape, ViewStrides(ld.nb[0], ld.nb[1], 0, shape), 0);
+    }
+    out.greedy = b.Argmax(choices, native ? ir::ArgmaxNan::kIgnore : ir::ArgmaxNan::kFirstColumn);
     // A selected head's rows to their tokens.
     if (f.instance.params.Flag("selected")) {
       out.greedy =

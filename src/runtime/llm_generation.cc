@@ -290,13 +290,17 @@ bool Llm::GreedyWithoutRows(const PreparedGeneration& unit) {
          ToolsUnrestricted(*unit.branch);
 }
 
-bool Llm::PaddedHead() const { return tokenizer_ && tokenizer_->size() < logit_width_; }
+bool Llm::PaddedHead() const {
+  return tokenizer_ && tokenizer_->size() < logit_width_ &&
+         choice_vocabulary_ != tokenizer_->size();
+}
 
 bool Llm::DeviceChooses(const Branch& branch) const {
-  // A head wider than the tokenizer's vocabulary (RE-050), whose device
-  // argmax reads every row, may pick a padding row: the host then chooses
-  // again from that row's read-back logits, so without retained head rows
-  // the host chooses every token.
+  // A served head's device argmax chooses within its tokenizer's
+  // vocabulary (RE-050), never a padding row. Only an unbounded head wider
+  // than the tokenizer may pick one: the host then chooses again from that
+  // row's read-back logits, so without retained head rows the host chooses
+  // every token.
   if (!head_rows_ && PaddedHead()) return false;
   const auto* mask = branch.tool_sampling_;
   return mask == nullptr || (mask->certain().empty() && (head_rows_ || mask->Identity()));

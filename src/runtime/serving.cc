@@ -249,6 +249,8 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
                                   .prepare_state = options_.prepare_state,
                                   .state_only_prefill = options_.state_only_prefill,
                                   .prepared = std::move(opened),
+                                  .chat_assets = true,
+                                  .chat_reader = startup_reader_,
                               }),
             startup_reader_);
         if (options_.diagnostic_capture_first_verify)
@@ -623,6 +625,9 @@ Status Server::Start(bool snapshot) {
             "whole 8-row tiles)",
             *l.configured_rows(), l.context());
       }
+      if (l.choice_vocabulary() != 0)
+        chunks += std::format("; greedy choices among its tokenizer's {} of {} head rows (RE-050)",
+                              l.choice_vocabulary(), l.logit_width());
     }
     Log(std::format(
         "model {}: set up in {:.2f} s, {} weight extents ({:.2f} GB read a load){}; workspace "

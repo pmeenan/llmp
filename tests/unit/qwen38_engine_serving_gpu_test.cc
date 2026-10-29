@@ -178,6 +178,9 @@ static_assert(sizeof(JsonNodeAbi) <= 24 && sizeof(RankedAbi) <= 64 &&
               sizeof(RootIdentityAbi) <= 160);
 static_assert(sizeof(std::pair<llmp::ir::TensorDesc, std::uint64_t>) <= 176);
 constexpr std::uint32_t kVocab = 248320;
+// The ModelOpt target's device choices read its tokenizer.json's 248,077 of
+// those rows (RE-050); the GGUF's tokenizer lists every row.
+constexpr std::uint32_t kModelOptTokens = 248077;
 constexpr std::uint64_t kRetainedRows = 2 * (2 + 8 + 8);
 static_assert(2 * kRetainedRows * kVocab * sizeof(float) + 18 * kMiB <= kResults);
 
@@ -432,7 +435,8 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
     model = dynamic_cast<rt::Llm*>(life->server->Find("qwen"));
     if (!model || (dynamic_cast<rt::Llm*>(model) != nullptr) != component)
       return std::unexpected("wrong serving pipeline selected");
-    if (model->generation_wave_capacity() != 1 || model->logit_width() != kVocab)
+    if (model->generation_wave_capacity() != 1 || model->logit_width() != kVocab ||
+        model->choice_vocabulary() != (id == kGguf ? 0 : kModelOptTokens))
       return std::unexpected("wrong serving envelope");
     rt::SwapParts parts;
     if (auto s = life->server->Activate(*model, parts); !s) return s;
@@ -1177,7 +1181,8 @@ class Qwen38GgufKeptGpu : public testing::Test {
     if (model == nullptr) return std::unexpected("configured Qwen3.8 model missing");
     if (dynamic_cast<rt::Llm*>(model) == nullptr)
       return std::unexpected("Qwen3.8 is not on the component engine");
-    if (model->logit_width() != kVocab || model->generation_wave_capacity() != 2)
+    if (model->logit_width() != kVocab || model->generation_wave_capacity() != 2 ||
+        model->choice_vocabulary() != (mtp ? kModelOptTokens : 0))
       return std::unexpected("wrong serving envelope");
     rt::SwapParts parts;
     if (auto r = life->server->Activate(*model, parts); !r) return r;

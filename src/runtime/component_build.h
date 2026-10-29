@@ -88,6 +88,15 @@ struct ComponentBuildOptions {
   // that width requires a separately prepared alias/factory. Equal effective
   // widths (including zero meaning all available rows) can reuse it.
   std::shared_ptr<const OpenedModelArtifacts> prepared{};
+  // Read the model's tokenizer and chat template with its parts
+  // (LlmBuildParts::chat_assets, which Llm::Setup adopts) and bound its
+  // stages' greedy choices at the tokenizer's vocabulary where the head is
+  // wider (RE-050), so the device never chooses a padding row: the
+  // Server's builds. A harness that drives the parts without an Llm leaves
+  // it off. `chat_reader`: the Server's reader loan, as
+  // Llm::UseChatAssets uses it.
+  bool chat_assets = false;
+  StartupReaderLoan chat_reader{};
 };
 
 // The parts of `entry`'s model (its artifact and drafter in `store`), made

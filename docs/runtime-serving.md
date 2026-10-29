@@ -590,6 +590,15 @@ loan. The bound includes HF/GGUF/SentencePiece output vectors and config maps,
 not only serialized JSON. Explicit diagnostic `startup_cap == 0` keeps its
 caller-funded mode. This transaction covers chat startup and retries before
 runner adoption; later `Setup` failure ownership remains a separate contract.
+A Server's build reads the chat assets itself, under the same reader
+payment or loan, before any step is built, and hands them to `Setup`, which
+adopts them rather than reading them again (`ComponentBuildOptions::
+chat_assets`). Where the head has more rows than the tokenizer has tokens
+(Qwen3.8's ModelOpt import and its MLX import, which name the same
+248,077-token `tokenizer.json`; Qwen2.5's EXL3 fixtures), every
+stage's device greedy argmax then reads only the tokenizer's rows
+(RE-050), while the logits keep the head's width; the start's set-up line
+names the bound.
 
 **Startup's construction payment** (`Server::Start`, `ComponentLlmBuild`,
 `ComponentImageServingBuild`; the default for every model, with no setting

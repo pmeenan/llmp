@@ -80,9 +80,16 @@ Status Llm::Setup() {
   auto parts = build_(settings_);
   if (!parts) return Error(std::format("model {}: {}", name_, parts.error()));
   if (parts->logit_width == 0) return Error(std::format("model {}: its head has no logits", name_));
-  // Its tokenizer and chat template, from its artifact (D-067); a model
-  // without one (the tests') has no chat turns.
-  if (entry_.artifact) {
+  // Its tokenizer and chat template, from its artifact (D-067): as its build
+  // read them, which then bounded its device's greedy choices at the
+  // tokenizer's vocabulary (RE-050), else read here; a model without one
+  // (the tests') has no chat turns.
+  if (parts->chat_assets) {
+    auto used = AdoptChatAssets(std::move(*parts->chat_assets), entry_, parts->startup_cap);
+    parts->chat_assets.reset();
+    parts->chat_reader.reset();
+    if (!used) return used;
+  } else if (entry_.artifact) {
     std::shared_ptr<const artifact::Artifact> artifact;
     if (parts->target_artifact && parts->target_artifact->id() == *entry_.artifact) {
       artifact = std::move(parts->target_artifact);
@@ -94,7 +101,15 @@ Status Llm::Setup() {
     if (auto used = UseChatAssets(*artifact, entry_, parts->startup_cap); !used) return used;
   }
   parts->target_artifact.reset();
+  if (parts->choice_vocabulary != 0 &&
+      (parts->choice_vocabulary >= parts->logit_width || tokenizer_ == nullptr ||
+       tokenizer_->size() != parts->choice_vocabulary))
+    return Error(std::format(
+        "model {}: its head of {} rows chooses among {}, not among its "
+        "tokenizer's {} tokens",
+        name_, parts->logit_width, parts->choice_vocabulary, tokenizer_ ? tokenizer_->size() : 0));
   logit_width_ = parts->logit_width;
+  choice_vocabulary_ = parts->choice_vocabulary;
   caps_ = parts->caps;
   prefill_ = parts->prefill;
   device_greedy_ = parts->device_greedy;
@@ -496,10 +511,15 @@ en::DecodingPolicy Llm::Policy() {
       return Error(std::format("{}'s draft returned {} output bytes, no row of {} logits", name_,
                                outputs.size(), logit_width_));
     }
+    // A head's rows that are its tokens (no selected-ID map): only the
+    // tokenizer's, as a bounded device argmax proposes (RE-050). A padding
+    // row's proposal would only be refused by every verdict.
+    const bool identity = !drafter_spec.head_ids || drafter_spec.head_ids->empty();
+    const std::size_t vocabulary = tokenizer_ ? tokenizer_->size() : 0;
     std::vector<std::int32_t> proposed;
     for (std::size_t i = 0; i < rows; ++i) {
-      const auto row =
-          std::span(reinterpret_cast<const float*>(outputs.data() + (i * row_bytes)), width);
+      auto row = std::span(reinterpret_cast<const float*>(outputs.data() + (i * row_bytes)), width);
+      if (identity) row = execution::VocabularyRow(row, vocabulary);
       auto token =
           en::DrafterHeadToken(drafter_spec, static_cast<std::uint32_t>(Argmax(row)), logit_width_);
       if (!token) return Error(token.error());
@@ -793,9 +813,9 @@ void Llm::RunPlain(std::span<PreparedGeneration> units) {
       }
       if (!execution::InVocabulary(token, tokenizer_ ? tokenizer_->size() : 0)) {
         // A padding row past the tokenizer won on the device and no row was
-        // read back to choose from (RE-050; DeviceChooses leaves a padded
-        // head without retained rows no device choice, so a defect):
-        // refused, never emitted.
+        // read back to choose from (RE-050; a bounded head has none, and
+        // DeviceChooses leaves an unbounded one without retained rows no
+        // device choice, so a defect): refused, never emitted.
         unit.result = Error(std::format("{}'s greedy step chose token {}, past its tokenizer's {}",
                                         name_, token, tokenizer_->size()));
         unit.anchor_processed = true;
@@ -1265,8 +1285,9 @@ Status Llm::RunPreparedCausalWave(std::span<PreparedPrefill> prompts,
                       .logits = &unit.row,
                       .result = {},
                       .generation = unit.session,
-                      // A padded head's joined decode returns its row: no head row
-                      // is read back here to choose again from (RE-050).
+                      // An unbounded padded head's joined decode returns its row:
+                      // no head row is read back here to choose again from
+                      // (RE-050; a served head is bounded, so this is defensive).
                       .chosen = device_greedy_ && !PaddedHead() && GreedyWithoutRows(unit)
                                     ? &unit.chosen
                                     : nullptr};

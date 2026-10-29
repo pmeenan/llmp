@@ -170,6 +170,9 @@ struct ComponentHold {
   std::vector<spec::SourceValue> drafter_values;
   std::shared_ptr<const std::vector<std::int32_t>> draft_head_ids;
   std::uint32_t draft_head_rows = 0;
+  // The tokenizer's vocabulary where the target's head is wider (RE-050):
+  // no stage's greedy choice reads a row past it. 0: the heads' own rows.
+  std::uint32_t choice_vocabulary = 0;
   // Each weight's place: its holding stage's artifact, whether it is
   // an expert array, and its resource's or array's index.
   using Place = ComponentWeightPlace;
@@ -376,6 +379,7 @@ std::expected<std::unique_ptr<engine::StepSource>, std::string> SealComponentSou
                       .stages = hold.stages,
                       .artifacts = hold.tables},
          .bound_digest = bound,
+         .vocabulary = hold.choice_vocabulary,
          .mapping = stage == 0 ? nullptr : drafter_mapping,
          .policy_context = {hold.sources.at(artifact_index).architecture,
                             hold.sources.at(artifact_index).container},
@@ -727,6 +731,32 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
     }
     const auto target_vocabulary = stored_bindings->logit_width;
     if (!target_vocabulary) return Error("target stored head has no vocabulary rows");
+    // The tokenizer and chat template, for Llm::Setup to adopt (funded as
+    // Llm::UseChatAssets funds its own read), read before any step is built
+    // so that a head wider than the tokenizer chooses within its vocabulary
+    // (RE-050): no padding row is then a device's choice. A failed read is
+    // Setup's to report, as when it reads them itself.
+    std::unique_ptr<StartupArtifactPayment> chat_reader;
+    std::optional<std::expected<ChatAssets, std::string>> chat_assets;
+    if (options.chat_assets) {
+      if (options.automatic_startup_cap != 0) {
+        auto bytes = ChatReaderBytes();
+        if (!bytes) return Error(bytes.error());
+        if (!options.chat_reader.Covers(node.catalog(), node.domain(), *bytes)) {
+          auto paid = StartupArtifactPayment::AdmitReader(
+              node.catalog(), node.domain(), *bytes, options.automatic_startup_cap,
+              platform::AvailableMemoryBytes().value_or(0));
+          if (!paid) return Error(paid.error());
+          chat_reader = std::move(*paid);
+        }
+      }
+      chat_assets = ReadChatAssets(*artifact, entry);
+      if (*chat_assets) {
+        const auto tokens = (*chat_assets)->spec.tokens.size();
+        if (tokens != 0 && tokens < target_vocabulary)
+          hold->choice_vocabulary = static_cast<std::uint32_t>(tokens);
+      }
+    }
     // The drafter, a stage of its own, when the model speculates.
     const bool speculate = !drafter_id.empty() && settings.speculation.value;
     const ja::Artifact* drafter = nullptr;
@@ -1049,20 +1079,26 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
                                        *artifact, drafter ? &*drafter : nullptr);
     if (!sealed) return Error(sealed.error());
     auto step_source = std::move(*sealed);
-    return AssembleComponentParts(node, store, id, drafter_id, index, settings, recipe, options,
-                                  metadata,
-                                  {.hold = std::move(hold),
-                                   .source = std::move(step_source),
-                                   .placements = std::move(placements),
-                                   .rows = std::move(stored_bindings->rows),
-                                   .setup = std::move(setup),
-                                   .mode = std::move(mode),
-                                   .policy = *serving_policy,
-                                   .bound = *bound,
-                                   .logit_width = logit_width,
-                                   .verify_rows = verify_rows,
-                                   .branch_depth = mtp ? depth : 0,
-                                   .target_artifact = artifact});
+    const auto choice_vocabulary = hold->choice_vocabulary;
+    auto parts = AssembleComponentParts(node, store, id, drafter_id, index, settings, recipe,
+                                        options, metadata,
+                                        {.hold = std::move(hold),
+                                         .source = std::move(step_source),
+                                         .placements = std::move(placements),
+                                         .rows = std::move(stored_bindings->rows),
+                                         .setup = std::move(setup),
+                                         .mode = std::move(mode),
+                                         .policy = *serving_policy,
+                                         .bound = *bound,
+                                         .logit_width = logit_width,
+                                         .verify_rows = verify_rows,
+                                         .branch_depth = mtp ? depth : 0,
+                                         .target_artifact = artifact});
+    if (!parts) return parts;
+    parts->chat_reader = std::move(chat_reader);
+    parts->chat_assets = std::move(chat_assets);
+    parts->choice_vocabulary = choice_vocabulary;
+    return parts;
   };
 }
 

@@ -87,6 +87,11 @@ struct ComponentSourceOptions {
   components::Bindings bindings{};
   // The spec bound to its artifacts (spec.h BoundDigest).
   base::Sha256Digest bound_digest{};
+  // The model's tokenizer vocabulary where its head is wider (RE-050): the
+  // stage's greedy choices read no row past it (components::StepOptions::
+  // vocabulary), and its plans' key and execution identity name it. 0: the
+  // head's own rows.
+  std::uint32_t vocabulary = 0;
   // The architecture's mapping, whose default policy for the source's
   // `values` (spec/mapping.h DefaultPolicy; read only by Create) plans the
   // steps, and a policy that replaces it (an alias's); one of the two.

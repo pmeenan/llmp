@@ -57,13 +57,15 @@ struct Profile {
   std::uint32_t vocab;
   std::uint32_t slots;
   bool joined_decode;
+  // The rows device choices read below a wider head: its tokenizer's (RE-050).
+  std::uint32_t choices = 0;
 };
 
 constexpr std::array<Profile, 4> kProfiles{{
-    {"Llama32_1B_Q8_0", "llama32-1b-q8_0", 128256, 2, true},
-    {"Llama32_1B_Q4_K_M", "llama32-1b-q4_k_m", 128256, 2, true},
-    {"Qwen2_FP16", "qwen2-fp16", 151936, 1, false},
-    {"Qwen2_EXL3_4_0", "qwen2-exl3-4.0", 151936, 1, false},
+    {"Llama32_1B_Q8_0", "llama32-1b-q8_0", 128256, 2, true, 0},
+    {"Llama32_1B_Q4_K_M", "llama32-1b-q4_k_m", 128256, 2, true, 0},
+    {"Qwen2_FP16", "qwen2-fp16", 151936, 1, false, 0},
+    {"Qwen2_EXL3_4_0", "qwen2-exl3-4.0", 151936, 1, false, 151665},
 }};
 
 bool Finite(std::span<const float> row, std::size_t width) {
@@ -218,7 +220,9 @@ class DenseDecoderServingGpu : public ::testing::TestWithParam<std::size_t> {
     model = dynamic_cast<rt::Llm*>(life->server->Find("dense"));
     if (model == nullptr || dynamic_cast<rt::Llm*>(model) == nullptr)
       return std::unexpected("published artifact did not use the common Llm");
-    if (model->logit_width() != profile().vocab || model->settings().prefill_chunk.value != 4096U ||
+    if (model->logit_width() != profile().vocab ||
+        model->choice_vocabulary() != profile().choices ||
+        model->settings().prefill_chunk.value != 4096U ||
         model->settings().context.value != 4096U ||
         model->settings().max_slots.value != profile().slots)
       return std::unexpected("published artifact did not receive kDefaultServingRecipe settings");

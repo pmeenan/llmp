@@ -351,7 +351,7 @@ Until then an ASan run of any test that ends such a thread fails this way
 (observed with the GPU serving tests; the `check:spark` and `check:full`
 ASan tiers were not run to see which of theirs do).
 
-## RE-050: Qwen3.8's output head is wider than its tokenizer.json  (2026-10-08, status: fixed 2026-10-26)
+## RE-050: Qwen3.8's output head is wider than its tokenizer.json  (2026-10-08, status: fixed 2026-10-26, on the device 2026-10-28)
 
 Environment: Qwen3.8 Flash Next NVFP4/MXFP8 (`c4fb47a9…`, the
 `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` checkpoint's
@@ -382,20 +382,37 @@ over the padding rows without writing one: host greedy and sampled choice
 and speculative verdicts (`Llm::Choose`, `Llm::Keep`) and literal scores
 (`api::LiteralRows`), so the padding rows are never picked, never listed
 in `top_logprobs`, and take no probability from any score's
-normalization. The device's greedy argmax still reads the whole head (its
-graph is built before the tokenizer is read, and narrowing it would cost
-the head's packed operands), so a device choice past the tokenizer is
-refused like a tool constraint's refusal: the host chooses from the
-read-back row where the plan retains head rows; where it retains none
-(`Llm::DeviceChooses`), and in a joined prompt-and-decode wave (which
-reads no row back), the host chooses every token, so no step fails or
-emits one. Logit rows keep the head's width
-(`Llm::logit_width()`), so no frozen logit or greedy digest changes; a
-score's log probability over such a head changes by the padding rows'
-share (no frozen digest records one). Whether a padding row ever wins
-remains unmeasured. Tests: `VocabularyRow.*` (`sampling_test.cc`),
+normalization. Logit rows keep the head's width (`Llm::logit_width()`),
+so no frozen logit or greedy digest changes; a score's log probability
+over such a head changes by the padding rows' share (no frozen digest
+records one). Whether a padding row ever wins remains unmeasured. Tests:
+`VocabularyRow.*` (`sampling_test.cc`),
 `LiteralTokens.ScoresIgnoreHeadRowsPastTheTokenizer` (`api_test.cc`),
 `RetainedRows/LlmPaddedHead.*` (`llm_scores_test.cc`).
+
+**On the device too (2026-10-28, M3.5 F13 follow-up):** the Server's build
+reads the tokenizer before any step is built (`ComponentBuildOptions::
+chat_assets`; `Llm::Setup` adopts what it read), and where the head is
+wider every stage's greedy argmax (decode, verify, a drafter's proposals;
+not a selected head's or a Markov head's) reads only each row's first
+`tokenizer.size()` logits (`components::StepOptions::vocabulary`,
+`head.linear`), in place: a view of the head's rows at their own stride,
+which `llmp.argmax` reads row-strided, with no copy however many rows (C2/C4
+decode, verify); the host's proposals from a
+drafter's F32 rows (no native draft tokens) read the same rows. The
+product and its logits are unchanged. Narrowing the product itself was
+tried and refused by the lowering: 248,077 F32 rows make an output stride
+(992,308 bytes) that MMVF's 8-byte alignment does not take. A served padded head
+(`Llm::choice_vocabulary()`, named on the start's set-up line) therefore
+keeps device greedy everywhere, joined waves and plans without retained
+rows included; `Llm::PaddedHead`'s veto and the device-choice refusals
+remain only for a head whose build did not bound it. Tests:
+`ComponentsTest.AHeadBoundAtItsVocabularyNeverChoosesAPaddingRow`,
+`LlmTools.ABoundHeadKeepsTheDeviceGreedyChoiceWithoutRetainedRows`,
+`LlmTools.HostDraftsOfABoundHeadProposeNoPaddingRow`,
+`LlmRender.AHeadBoundAtAnotherVocabularyThanItsTokenizerIsRefused`; the
+Qwen3.8 and dense serving model tests check the bound (248,077 on the
+ModelOpt target, 151,665 on Qwen2.5 EXL3, none on the GGUFs).
 
 ## RE-049: Successful VMM creation can emit recovered memdesc out-of-memory diagnostics  (2026-10-07, status: open upstream; the driver's, not our call pattern, checked 2026-10-26)
 

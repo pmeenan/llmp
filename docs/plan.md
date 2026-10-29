@@ -923,15 +923,16 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       another test) merged or removed and input variants made table tests,
       with per-file line and branch coverage of `src/` measured before and
       after and not reduced.
-- [ ] **F13 follow-ups:** mask padding head rows on the device in the heads
-      component (keeps device greedy for padded heads such as Qwen3.8 and
-      Qwen2.5 in joined waves); confirm the cuBLAS RUNPATH and
-      `-fno-sanitize=function` fixes in the `native` and `cpu-asan` tiers and
-      run the importer mutation test under ASan; optionally a `llmp doctor`
-      warning for storage roles on btrfs (RE-018) and pacing the dedicated
-      pool's start-up fill (RE-049).
+- [x] **F13 follow-ups:** padding head rows bounded on the device in the heads
+      component: every greedy argmax reads each row's first tokenizer-size
+      logits in place, so padded heads (Qwen3.8, Qwen2.5) keep device greedy
+      in joined waves (RE-050).
 - [ ] **F10 Hygiene, docs and final checks:** raw experiment dumps and unused
-      scripts removed, one test-store resolver, `m35-record.md`, doc drift, then
+      scripts removed, one test-store resolver, `m35-record.md`, doc drift;
+      the cuBLAS RUNPATH and `-fno-sanitize=function` fixes confirmed in the
+      `native` and `cpu-asan` tiers with the importer mutation test under
+      ASan; optionally a `llmp doctor` warning for storage roles on btrfs
+      (RE-018) and pacing the dedicated pool's start-up fill (RE-049); then
       the full Spark check set and a speed confirmation of every family.
 - [x] **F12 Known model-test failures and swap continuation:** every model
       test that already failed at `265c821a` (stale frozen digests, a Gemma Q8

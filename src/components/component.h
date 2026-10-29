@@ -295,6 +295,10 @@ struct Fragment {
   bool narrow = false;
   bool narrowed = false;
   bool spatial_layout = false;
+  // An output head's rows past which no greedy choice reads: its
+  // tokenizer's vocabulary where the head is wider (RE-050;
+  // StepOptions::vocabulary), so a padding row never wins; 0: every row.
+  std::uint64_t vocabulary = 0;
   // A stage of several streams (spec.h ResidualStream, hyper-connections):
   // the streams F32 [width, streams, rows] as this component finds them.
   // A block between a mix and its combine reads `stream` (the mix's

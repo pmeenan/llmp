@@ -138,6 +138,13 @@ std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSo
   auto source = std::unique_ptr<ComponentStepSource>(
       new ComponentStepSource(std::move(options), std::move(policy)));
   auto key = planner::KeyOf(source->o_.bound_digest, {}, source->policy_);
+  if (source->o_.vocabulary != 0) {
+    // Choices bounded at the tokenizer's vocabulary plan other graphs.
+    base::Sha256 patterns;
+    patterns.Update(std::as_bytes(std::span(key.patterns)));
+    patterns.Update(std::format("vocabulary:{};", source->o_.vocabulary));
+    key.patterns = patterns.Finish();
+  }
   const auto& source_backend =
       source->o_.backend.owner ? source->o_.backend.owner->backend() : source->o_.backend;
   key.registry = source_backend.registry->Digest();
@@ -282,6 +289,7 @@ ComponentStepSource::SealExecution(std::span<ComponentStepSource* const> stages)
     hash.Update(std::as_bytes(std::span(stage->layout_identity_)));
     hash.Update(
         std::format("{}:{}:{};", stage->o_.stage, stage->o_.slots, stage->o_.require_capture));
+    if (stage->o_.vocabulary != 0) hash.Update(std::format("vocabulary:{};", stage->o_.vocabulary));
   }
   state->identity = hash.Finish();
   return state;
@@ -487,7 +495,8 @@ std::expected<std::vector<CommitBuffer>, std::string> ComponentStepSource::Commi
       .stage = stage,
       .phase = planner::Phase::kVerify,
       .segments = {{.rows = rows, .read_cells = o_.bindings.state->context, .outputs = rows}}};
-  auto step = components::BuildStep(*o_.spec, stage, shape, o_.bindings);
+  auto step =
+      components::BuildStep(*o_.spec, stage, shape, o_.bindings, {.vocabulary = o_.vocabulary});
   if (!step) return std::unexpected(step.error());
   std::vector<CommitBuffer> buffers;
   for (const components::CommitSave& save : step->saves) {
@@ -535,6 +544,7 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
                   : components::BuildStep(
                         *o_.spec, o_.stage, shape, o_.bindings,
                         {.narrow = !planner::Disabled(policy_, "narrow_final"),
+                         .vocabulary = o_.vocabulary,
                          .rounded_indexer = !planner::Disabled(policy_, "rounded_indexer"),
                          .rounded_index_mask = !planner::Disabled(policy_, "rounded_index_mask")});
   if (!step) return std::unexpected(std::move(step.error()));

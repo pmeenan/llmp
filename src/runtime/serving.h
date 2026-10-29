@@ -912,6 +912,9 @@ class Llm final : public Served {
   // than its tokenizer (Qwen3.8's 248,320 rows over tokenizer.json's 248,077
   // tokens).
   std::uint32_t logit_width() const { return logit_width_; }
+  // The rows its device's greedy choices read where its head is wider than
+  // its tokenizer: the tokenizer's vocabulary (RE-050); 0: every row.
+  std::uint32_t choice_vocabulary() const { return choice_vocabulary_; }
   std::span<const std::int32_t> ChatStops() const { return chat_stops_; }
   std::span<const std::int32_t> StopTokens() const { return stops_; }
   const chat::ToolCallFormat* tool_format() const {
@@ -1286,10 +1289,14 @@ class Llm final : public Served {
   // choices: its constraint restricts nothing, or (no forced span pending)
   // the runner reads back the head row of a choice the constraint refuses,
   // which the host then makes from that row (HeadRows). Never without
-  // retained head rows where the head is wider than the tokenizer (RE-050).
+  // retained head rows where the head is still wider than the tokenizer
+  // (RE-050: a build that did not bound it at the tokenizer's vocabulary).
   bool DeviceChooses(const Branch& branch) const;
-  // The head has rows past the tokenizer's vocabulary (RE-050): padding a
-  // device's argmax over the whole head may pick, which the host never does.
+  // The head has rows past the tokenizer's vocabulary (RE-050) that a
+  // device's argmax over the whole head may pick, which the host never
+  // does. False for a served model, whose build bounds its device's
+  // choices at the tokenizer (LlmBuildParts::choice_vocabulary); the guards
+  // stay for any other.
   bool PaddedHead() const;
   // GreedyWithoutRows with DeviceChooses for its constraint: a decode or
   // plain-form wave, whose head rows the policy reads back.
@@ -1515,6 +1522,10 @@ class Llm final : public Served {
   // (model_settings.h ReadChatAssets); then UseTemplate.
   Status UseChatAssets(const artifact::Artifact& artifact, const config::ModelEntry& entry,
                        std::uint64_t startup_cap = 0);
+  // The same from assets already read (its build's, LlmBuildParts::
+  // chat_assets), under the payment or loan their read had.
+  Status AdoptChatAssets(std::expected<ChatAssets, std::string> assets,
+                         const config::ModelEntry& entry, std::uint64_t startup_cap);
   // Chooses how the model's chat template renders (chat::ChatTemplate) and
   // its stop tokens (after the tokenizer); an error refuses the model.
   Status UseTemplate(std::string_view text);
@@ -1670,6 +1681,10 @@ class Llm final : public Served {
   model::Batching caps_;
   engine::PrefillOptions prefill_;
   std::uint32_t logit_width_ = 0;
+  // The rows its device's greedy choices read (LlmBuildParts::
+  // choice_vocabulary): the tokenizer's vocabulary below a wider head; 0:
+  // every row.
+  std::uint32_t choice_vocabulary_ = 0;
   bool device_greedy_ = false;
   bool device_verify_ = false;
   std::uint32_t branch_depth_ = 0;

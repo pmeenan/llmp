@@ -1857,6 +1857,91 @@ TEST_P(LlmPaddedHead, APaddingRowTheDeviceChoosesIsChosenAgainOnTheHost) {
 }
 INSTANTIATE_TEST_SUITE_P(RetainedRows, LlmPaddedHead, ::testing::Bool());
 
+// RE-050's fix: a build that read the chat assets bounds the device's greedy
+// choices at the tokenizer's vocabulary and hands Setup the assets, which
+// adopts them. The device never picks a padding row of the 265-row head, so
+// its greedy choices stand without retained head rows; a bound that is not
+// the tokenizer's is refused.
+TEST_F(LlmTools, ABoundHeadKeepsTheDeviceGreedyChoiceWithoutRetainedRows) {
+  score_width_ = 265;
+  choice_vocabulary_ = 259;
+  chat_assets_ = rt::ChatAssets{
+      .spec = ByteTokenizerSpec(), .chat_template = "{{ messages[0].content }}", .from = "test"};
+  StartScores(false, 1, 128, 32);
+  ASSERT_EQ(llm_->tokenizer().size(), 259U);
+  EXPECT_EQ(llm_->logit_width(), 265U);
+  source_->options().transform_logits = [](pl::Phase, std::int32_t, std::int32_t,
+                                           std::span<float> row) {
+    std::ranges::fill(row, 0.0F);
+    row['a'] = 9;
+  };
+  // The bounded device argmax: the best of the tokenizer's rows, never a
+  // padding one.
+  source_->options().transform_native_token = [](pl::Phase, std::int32_t, std::int32_t,
+                                                 std::int32_t) { return std::int32_t{'a'}; };
+  std::vector<float> last;
+  ASSERT_TRUE(BranchAt(0).Prefill(std::array<std::int32_t, 1>{'x'}, last));
+  rt::GenerateOptions options;
+  options.max_tokens = 4;
+  options.stop = false;
+  const auto before = llm_->counts().greedy_tokens;
+  rt::Generation output;
+  ASSERT_TRUE(BranchAt(0).Generate(last, options, output));
+  EXPECT_EQ(output.tokens, (std::vector<std::int32_t>(4, 'a')));
+  // The first token comes from the prompt's own row; the rest are the
+  // device's choices.
+  EXPECT_EQ(llm_->counts().greedy_tokens - before, 3U);
+}
+
+// The host's proposals from drafters' head rows (no native draft tokens)
+// read only the tokenizer's rows, as a bounded device argmax does: though a
+// padding row wins every draft row, each proposal is the target's choice
+// and is kept, where a padding proposal would be refused by every verdict.
+TEST_F(LlmTools, HostDraftsOfABoundHeadProposeNoPaddingRow) {
+  score_width_ = 265;
+  choice_vocabulary_ = 259;
+  chat_assets_ = rt::ChatAssets{
+      .spec = ByteTokenizerSpec(), .chat_template = "{{ messages[0].content }}", .from = "test"};
+  context_rows_ = 128;
+  chunk_rows_ = 32;
+  slot_count_ = 1;
+  Start(true, true);  // host proposals from F32 draft rows, host verdicts
+  ASSERT_NE(llm_, nullptr);
+  Open({&BranchAt(0)});
+  ASSERT_EQ(llm_->tokenizer().size(), 259U);
+  source_->options().transform_logits = [](pl::Phase phase, std::int32_t, std::int32_t,
+                                           std::span<float> row) {
+    std::ranges::fill(row, 0.0F);
+    row['a'] = 9;
+    if (phase == pl::Phase::kDraft) row[262] = 20;  // a padding row wins every draft
+  };
+  std::vector<float> last;
+  ASSERT_TRUE(BranchAt(0).Prefill(std::array<std::int32_t, 1>{'x'}, last));
+  rt::GenerateOptions options;
+  options.max_tokens = 8;
+  options.stop = false;
+  rt::Generation output;
+  ASSERT_TRUE(BranchAt(0).Generate(last, options, output));
+  EXPECT_EQ(output.tokens, (std::vector<std::int32_t>(8, 'a')));
+  EXPECT_GT(output.drafted, 0U);
+  EXPECT_GT(output.accepted, 0U);
+}
+
+TEST_F(LlmRender, AHeadBoundAtAnotherVocabularyThanItsTokenizerIsRefused) {
+  score_width_ = 265;
+  choice_vocabulary_ = 258;
+  chat_assets_ = rt::ChatAssets{
+      .spec = ByteTokenizerSpec(), .chat_template = "{{ messages[0].content }}", .from = "test"};
+  node_ = std::make_unique<en::PagedNode>(
+      en::NodeSettings{.compute_streams = 1, .slots = 2, .copy_lane = true, .slot_bytes = kExtent});
+  ASSERT_TRUE(node_->Open());
+  llm_ = std::make_unique<rt::Llm>(*node_, entry_, Settings(false), roles_, 0, Build(false));
+  const auto set = llm_->Setup();
+  ASSERT_FALSE(set);
+  EXPECT_NE(set.error().find("tokenizer's 259 tokens"), std::string::npos) << set.error();
+  llm_.reset();  // never set up: no runner for the node's teardown
+}
+
 // A device verify's verdict holds while the constraint allows each row's
 // device choice; the first refused one ends it before that row (B3).
 TEST_F(LlmTools, DeviceVerifyEndsBeforeTheFirstRowTheConstraintRefuses) {

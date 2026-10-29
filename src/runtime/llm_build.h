@@ -40,6 +40,16 @@ struct LlmBuildParts {
   // recipe: every speculative session uses its declared drafter schedule.
   std::optional<execution::AdaptiveWaveMode> wave_mode{};
   std::uint32_t logit_width = 0;  // a head row's F32 logits
+  // The model's tokenizer and chat template where the build read them (its
+  // reader payment first: it outlives the assets it funds), for Llm::Setup
+  // to adopt instead of reading them again; unset: Setup reads them itself.
+  // A build that read them bounds its device's greedy choices at the
+  // tokenizer's vocabulary where the head is wider (RE-050), its logits
+  // keeping the head's width: `choice_vocabulary` is then that bound, the
+  // size Setup's tokenizer must have; 0: the head's own rows.
+  std::unique_ptr<StartupArtifactPayment> chat_reader{};
+  std::optional<std::expected<ChatAssets, std::string>> chat_assets{};
+  std::uint32_t choice_vocabulary = 0;
   // A plain greedy step returns its tokens chosen on the device.
   bool device_greedy = false;
   // A greedy verify may return one native I32 token per output row.

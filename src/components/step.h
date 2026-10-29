@@ -625,8 +625,13 @@ std::expected<void, std::string> CheckMappedStateAccess(
 // planner/pattern.h), a step with a head does not narrow: every row runs
 // to the final norm and the head gathers its rows there (today's Gemma 4
 // recipe without frontier_head).
+// With `vocabulary` set (a tokenizer narrower than its head: RE-050), the
+// stage's output head chooses only among that many rows, so a padding row
+// is never a greedy choice; its logits keep every row (head.linear; a head
+// of selected rows and a drafter's Markov head are unaffected).
 struct StepOptions {
   bool narrow = true;
+  std::uint64_t vocabulary = 0;  // 0: every row of the head
   // Internal compiler experiment, not execution qualification.
   bool owner_products = false;
   bool rounded_indexer = false;

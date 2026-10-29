@@ -197,13 +197,15 @@ The entries below record each change; the record of the milestone is
   first allowed token among the row's leading ones (the same token; about
   16 ms a step less on Qwen3.8's vocabulary).
 - A model whose output head has more rows than its tokenizer has tokens
-  (Qwen3.8's NVFP4/MXFP8 checkpoints: 248,320 rows, 248,077 tokens) no
-  longer lets the padding rows win a choice or take probability: host
-  greedy and sampled choice, speculative verdicts and `logprobs`/
-  `top_logprobs` read only the tokenizer's tokens, and a device choice of
-  a padding row is made again on the host from the read-back row; where
-  the plan retains no head rows, and in joined prompt-and-decode waves,
-  the host chooses (RE-050).
+  (Qwen3.8's NVFP4/MXFP8 checkpoints: 248,320 rows, 248,077 tokens;
+  Qwen2.5's EXL3 fixtures: 151,936 and 151,665) no longer lets the padding
+  rows win a choice or take probability: host greedy and sampled choice,
+  speculative verdicts and `logprobs`/`top_logprobs` read only the
+  tokenizer's tokens, and the device's greedy argmax (decode, verify and
+  drafts) reads only the tokenizer's rows, so such a model keeps device
+  greedy choices everywhere, joined prompt-and-decode waves and plans
+  without retained head rows included. Logit rows keep the head's width;
+  the start logs the bound (RE-050).
 - The IR's unfused top-k selection is repeatable: `llmp.top_k.stable`
   keeps the lower index among tied values where GGML's radix select chose
   by thread timing, so Qwen3.8's and DeepSeek V4's selections outside

@@ -1917,6 +1917,9 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
       owners[role] = *ref;
     }
     sb.Begin(in);
+    // The output head's bound (StepOptions::vocabulary), the stage's own.
+    const std::uint64_t vocabulary =
+        instances->output && &in == &*instances->output ? options.vocabulary : 0;
     Fragment f{.b = sb.b(),
                .instance = in,
                .step = ctx,
@@ -1935,6 +1938,7 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
                .stream_needed = needed,
                .narrow = narrow,
                .narrowed = narrowed,
+               .vocabulary = vocabulary,
                .residual = flow.residual,
                .carry = flow.carry,
                .carry2 = flow.carry2,
