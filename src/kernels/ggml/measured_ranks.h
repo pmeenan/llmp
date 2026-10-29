@@ -30,9 +30,16 @@ namespace llmp::kernels::ggml {
 // (execution::ClassifyFusionLatency's band) on both shapes, and its times
 // are the band's narrowest gap's. Every other encoding and column count
 // keeps the fusion (faster, or within 5% on a shape).
+//
+// The decomposition wins earlier where the GLU's outputs are wide (its n,
+// the FFN width): the rows from 8,192 outputs come first, by the same rule
+// over four such shapes (K x N 2048 x 8192, 2304 x 9216, 2560 x 10240 and
+// 5376 x 21504: "Wide outputs" in the report), and narrower GLUs (a shared
+// expert's) keep the rows after them.
 inline execution::FusionRank VecQGluRow(format::Encoding encoding, std::uint64_t rows_min,
                                         std::uint64_t rows_max, std::uint64_t fused_ns,
-                                        std::uint64_t decomposition_ns) {
+                                        std::uint64_t decomposition_ns,
+                                        std::uint64_t outputs_min = 0) {
   return {.device_class = "sm_121",
           .op = ir::Fused(ir::FusedKind::kMatMulGlu),
           .implementation = "llmp.vecq.glu",
@@ -41,6 +48,7 @@ inline execution::FusionRank VecQGluRow(format::Encoding encoding, std::uint64_t
           .layout = format::Layout::kGgmlBlocks,
           .rows_min = rows_min,
           .rows_max = rows_max,
+          .outputs_min = outputs_min,
           .fused_ns = fused_ns,
           .decomposition_ns = decomposition_ns,
           .samples = 8,
@@ -48,7 +56,11 @@ inline execution::FusionRank VecQGluRow(format::Encoding encoding, std::uint64_t
 }
 inline std::vector<execution::FusionRank> MeasuredFusionRanks() {
   using format::Encoding;
+  constexpr std::uint64_t kWide = 8192;
   return {
+      VecQGluRow(Encoding::kQ4_K, 3, 8, 93040, 83370, kWide),
+      VecQGluRow(Encoding::kQ5_K, 4, 8, 133920, 107850, kWide),
+      VecQGluRow(Encoding::kQ6_K, 3, 8, 148290, 134110, kWide),
       VecQGluRow(Encoding::kQ4_0, 6, 8, 95120, 89980),
       VecQGluRow(Encoding::kQ4_1, 7, 8, 101830, 92560),
       VecQGluRow(Encoding::kQ5_0, 6, 8, 115500, 105280),

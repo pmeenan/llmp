@@ -42,9 +42,10 @@ struct DeviceMeasuredRank {
 // class that survives unrelated code changes: the device class, the fused
 // operation, the implementation and the kernel version it was measured at
 // (Implementation::version), operand 0's encoding and layout, and inclusive
-// bands of the query's rows and width (its k: a row's elements). A row whose
-// implementation has another version is stale and decides nothing; a lookup
-// never extrapolates past its bands. Timings are medians in nanoseconds.
+// bands of the query's rows, width (its k: a row's elements) and outputs (its
+// n: a product's outputs a row). A row whose implementation has another
+// version is stale and decides nothing; a lookup never extrapolates past its
+// bands. Timings are medians in nanoseconds.
 struct FusionRank {
   std::string device_class;
   ir::OpKey op{};
@@ -54,6 +55,8 @@ struct FusionRank {
   format::Layout layout = format::Layout::kDense;
   std::uint64_t rows_min = 1, rows_max = ~std::uint64_t{0};
   std::uint64_t width_min = 1, width_max = ~std::uint64_t{0};
+  // Outputs: a product's n; 0 for an operation that has none (a norm's).
+  std::uint64_t outputs_min = 0, outputs_max = ~std::uint64_t{0};
   std::uint64_t fused_ns = 0, decomposition_ns = 0;
   std::uint32_t samples = 0;
   std::string provenance;  // the checked-in aggregate report

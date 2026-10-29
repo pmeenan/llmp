@@ -2443,7 +2443,10 @@ reasoning split or prefix reuse. Each request starts from its own cleared
 branch, under the same bounded queue, browser guards, swap and request
 lease as chat. Each model's literal requests share native cohorts with
 its chat requests. Scored prompts advance in completed
-one-row teacher-forcing units, interleaved with peer work; generated rows
+teacher-forcing chunks of up to the model's prefill rows (`prefill_chunk`,
+every row's head kept), interleaved with peer work; a score depends on that
+geometry at the arithmetic's noise, so compare scores at one `prefill_chunk`
+(RE-063). Generated rows
 join the ordinary plain or speculative decode waves. Idle chat branches'
 retained state gives way to it when the state's
 capacity refuses it; one that cannot fit alone fails with a 500

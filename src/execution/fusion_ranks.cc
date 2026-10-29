@@ -29,7 +29,8 @@ bool ValidFusionRank(const FusionRank& r) {
          static_cast<std::size_t>(r.encoding) < format::Encodings().size() &&
          static_cast<std::size_t>(r.layout) < format::Layouts().size() && r.rows_min != 0 &&
          r.rows_min <= r.rows_max && r.width_min != 0 && r.width_min <= r.width_max &&
-         r.fused_ns != 0 && r.decomposition_ns != 0 && r.samples != 0 && !r.provenance.empty();
+         r.outputs_min <= r.outputs_max && r.fused_ns != 0 && r.decomposition_ns != 0 &&
+         r.samples != 0 && !r.provenance.empty();
 }
 
 FusionPreference FusionPreferenceFor(const Registry& registry, const CapabilityQuery& query,
@@ -43,7 +44,8 @@ FusionPreference FusionPreferenceFor(const Registry& registry, const CapabilityQ
     if (r.op != query.op || r.implementation != implementation ||
         r.device_class != query.device_class || r.encoding != operand->encoding ||
         r.layout != operand->layout || query.rows < r.rows_min || query.rows > r.rows_max ||
-        query.k < r.width_min || query.k > r.width_max)
+        query.k < r.width_min || query.k > r.width_max || query.n < r.outputs_min ||
+        query.n > r.outputs_max)
       continue;
     const auto index = registry.Find(implementation);
     if (!index || registry.at(*index).version != r.version) return FusionPreference::kStale;

@@ -162,6 +162,87 @@ faster; bold: separate):
   rows elsewhere (speculative verify, short prompt tails), not on its timed
   decode.
 
+## Wide outputs (2026-10-29)
+
+The Gemma 4 31B assistant screen ran 3.6% slower than M3.6 on the final
+M3.5 tree (F15). Bisected on `spark` to `3cf3118c` ("Bind numerical evidence
+to component sites and devices": `a666deb0` 1.266 s, `3cf3118c` 1.342 s for 32
+committed tokens): binding the Q8 vector-reduction evidence to every
+component site of its encodings on the GB10 (Q4_K, Q5_K, Q6_K and Q8_0 at one
+to five rows, `runtime/numerical_evidence.cc`) gave Gemma 4 31B's dense
+products `llmp.vecq`, where before they had GGML's MMVQ. One row gained (the
+plain gate's C1 decode); the screen's four-row verifies lost, as the sweep
+above predicts. The rows of the previous section took MMVQ back for most
+dense products, but kept `llmp.vecq`'s fused GLU at two to four rows, where
+the 31B's FFN (K x N 5376 x 21504, Q4_K and Q5_K) runs its verify.
+
+Those rows decide from 4096 x 4096 and 2560 x 10240 together, and the two
+disagree for GLUs at three and four rows. The disagreement is the outputs:
+the decomposition wins early where `n` (the FFN width) is wide and late where
+it is narrow (a shared expert's 2,048). `execution::FusionRank` therefore has
+an output band too (its `n`; every `n` unless a row names one), and the GLU
+rows from 8,192 outputs come before the others, chosen by the same rule over
+four FFN shapes of served models: Llama 3.2 1B's 2048 x 8192, Gemma 2's
+2304 x 9216, Gemma 3's 2560 x 10240 and Gemma 4 31B's 5376 x 21504.
+
+- **Data.** `llmp_vecq_bench --sweep 1 --launches 256 --types
+  q4_0,q4_1,q5_0,q5_1,q8_0,q4_K,q5_K,q6_K,iq4_nl --shapes
+  2048x8192,2304x9216,2560x10240,5376x21504` (the sweep's new `--shapes` and
+  `--types`), eight runs as two exclusive jobs on `spark`, each arm's fastest
+  run; the decomposition as the planner plans it (each product by the dense
+  rows above, plus the SwiGLU).
+- **Rows.** A band from the first column count from which the decomposition
+  is more than 5% faster on all four shapes, through 8; times the band's
+  narrowest gap (all at 2048 x 8192).
+
+The decomposition's time over the fused GLU's at c1 … c8 (bold: separate):
+
+| Encoding | 2048 x 8192 | 2304 x 9216 | 2560 x 10240 | 5376 x 21504 | Separate at |
+| --- | --- | --- | --- | --- | --- |
+| Q4_K | 1.74 / 1.40 / **0.90** / **0.76** / **0.78** / **0.70** / **0.62** / **0.58** | 1.59 / 1.13 / **0.76** / **0.69** / **0.68** / **0.60** / **0.55** / **0.54** | 1.29 / 1.03 / **0.76** / **0.68** / **0.69** / **0.62** / **0.57** / **0.54** | 1.00 / 0.94 / **0.86** / **0.79** / **0.69** / **0.65** / **0.60** / **0.55** | 3 to 8 (was 5) |
+| Q5_K | 1.45 / 1.33 / 1.22 / **0.80** / **0.81** / **0.72** / **0.65** / **0.58** | 1.14 / 1.06 / 1.00 / **0.71** / **0.69** / **0.62** / **0.56** / **0.52** | 1.01 / 0.96 / 0.94 / **0.67** / **0.70** / **0.63** / **0.60** / **0.56** | 1.01 / 0.94 / 0.92 / **0.80** / **0.71** / **0.68** / **0.62** / **0.57** | 4 to 8 (was 5) |
+| Q6_K | 1.33 / 0.99 / **0.90** / **0.81** / **0.70** / **0.63** / **0.58** / **0.53** | 1.09 / 0.87 / **0.81** / **0.71** / **0.65** / **0.60** / **0.55** / **0.51** | 1.02 / 0.86 / **0.77** / **0.75** / **0.66** / **0.61** / **0.57** / **0.53** | 1.00 / 0.95 / **0.90** / **0.85** / **0.77** / **0.66** / **0.60** / **0.55** | 3 to 8 (was 4) |
+| Q8_0 | 1.07 / 1.06 / 1.07 / 1.06 / 0.85 / 0.80 / 0.77 / 0.73 | 1.03 / 1.02 / 1.02 / 1.02 / 0.87 / 0.83 / 0.79 / 0.75 | 1.01 / 1.01 / 1.03 / 1.00 / 0.91 / 0.88 / 0.83 / 0.80 | 1.00 / 1.00 / 1.00 / 0.99 / 1.00 / 1.00 / 0.99 / 0.97 | never: the general row (5 to 8) stays |
+| Q4_0 | 1.74 / 1.60 / 1.42 / 1.17 / 1.03 / **0.95** / **0.85** / **0.77** | 1.65 / 1.32 / 1.17 / 0.96 / 0.86 / **0.78** / **0.71** / **0.65** | 1.28 / 1.09 / 1.08 / 0.86 / 0.81 / **0.77** / **0.69** / **0.63** | 1.02 / 1.02 / 0.94 / 0.85 / 0.92 / **0.88** / **0.80** / **0.73** | 6 to 8 (unchanged) |
+| IQ4_NL | 1.78 / 1.55 / 1.35 / 1.13 / 1.02 / **0.89** / **0.81** / **0.74** | 1.39 / 1.34 / 1.19 / 0.95 / 0.81 / **0.77** / **0.69** / **0.64** | 1.17 / 1.14 / 1.13 / 0.87 / 0.79 / **0.74** / **0.68** / **0.63** | 1.02 / 1.01 / 0.95 / 0.84 / 0.89 / **0.84** / **0.77** / **0.71** | 6 to 8 (unchanged) |
+
+Q4_1, Q5_0 and Q5_1 also keep their general rows (7, 6 and 7 to 8 by the
+same rule). Only Q4_K, Q5_K and Q6_K GLUs of at least 8,192 outputs change:
+among served models, Gemma 4 31B's FFN (Q4_K, Q5_K) and Llama 3.2 1B Q4_K_M's
+(Q4_K); a shared expert's narrow GLU (DeepSeek's and Qwen3.8's) and Q4_0,
+Q8_0 FFNs (Gemma 3, Gemma 2, Llama Q8_0) select as before.
+
+**End to end** (`spark`, 2026-10-29, GB10, driver 580.178.04; the old arm
+M3.6's `53c2610b` rebuilt from Git with M3.6's store and IDs, as in
+[the final verification](../../m35-record.md#campaign-final-verification-f10b-2026-10-29),
+except Llama 3.2, which has no M3.6 arm and is compared with `79c6586a`):
+
+| Check | Before (`79c6586a`) | With these rows |
+| --- | --- | --- |
+| Gemma 4 31B assistant screen, `assistant_gate.py`, 8 blocks | +3.58%, bound [+3.12%, +4.05%] (F10b) | **PASS: −2.01%, bound [−2.28%, −1.74%]**, every block −1.5% to −2.5% (1.2790 s against 1.3050 s for 32 committed tokens; 46 verified, 34 drafted) |
+| Gemma 4 31B, `speed_gate.py` tier 1, 2 blocks | C4 decode +0.55% (F10b, 9 blocks) | PASS, every metric faster: C1 decode −4.85%, C4 decode **−6.00%**, C1/C4 prefill −0.13%/−1.51%, C1/C4 wall −2.87%/−2.43% |
+| Llama 3.2 1B Q4_K_M, `speed_gate.py`, 6 blocks (the protocol's maximum) | — | C4 decode **−8.63%**, C4 wall −2.31%, C1 within +0.26%; **C4 prefill +0.89%, upper +2.13%: NOT PASSED** (below) |
+
+The bisection (each point's harness built from Git, the store its IDs name,
+two processes in an interleaved block): `aa92bd1f` 1.270 s, `87e8fb3b`
+1.264, `3bc9a041` 1.267, `a666deb0` 1.266, `3cf3118c` 1.342, `fa2a8388`
+1.341, `d53347d9` 1.332, `03655eaf` 1.329, `381eec18` 1.336, `79c6586a`
+1.346; M3.6 `53c2610b` 1.304. The harness's plans at `a666deb0` ran the
+verify's products on MMVQ with separate GLUs (the Q8 vector reduction
+unqualified for the 31B), at `3cf3118c` on `llmp.vecq` with fused GLUs, at
+`79c6586a` on MMVQ but with `llmp.vecq`'s fused GLU at two and four rows.
+
+Llama's C4 prefill (release to the last request's first token) is
+bimodal in both arms: the first measured pass's last first token arrives at
+1.94–1.98 s or 2.01–2.04 s, 7 of 12 new runs in the slower mode against 1 of
+12 old; the second pass and the warm-up do not differ, and both arms emit
+the same 38 decode tokens before the last first token. The new arm holds
+93 plans against 89 (planned in 0.597 s against 0.562 s a process). The
+intermittent 60 ms looks like a plan built inside the window rather than
+the products' speed, which every decode metric shows faster; it is not
+resolved here.
+
+
 ## End-to-end
 
 Tier-1 two-block ABBA confirmations (`tools/speed_gate.py plan --blocks 2`,

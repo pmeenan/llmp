@@ -20,9 +20,9 @@ FusionPreference ClassifyFusionLatency(std::uint64_t fused_ns, std::uint64_t dec
 // The backend's coarse measured preference (rank_data.h FusionRank) for this
 // fused implementation computing this query: the first row whose device
 // class, operation, implementation, operand 0 encoding and layout match and
-// whose row and width bands hold the query's rows and k. A coarse decision:
-// within 5% keeps the incumbent; a >5% loss excludes the fusion, so the
-// planner falls back to its own decomposition; a >5% win qualifies a
+// whose row, width and output bands hold the query's rows, k and n. A coarse
+// decision: within 5% keeps the incumbent; a >5% loss excludes the fusion, so
+// the planner falls back to its own decomposition; a >5% win qualifies a
 // fusion that needs measurement. It never grants numerical eligibility. A
 // matching row measured at another kernel version is kStale and decides
 // nothing.

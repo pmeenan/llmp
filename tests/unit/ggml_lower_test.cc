@@ -132,15 +132,17 @@ bool MmvqBand(llmp::format::Encoding e, std::uint64_t rows) {
       return false;
   }
 }
-bool SplitGluBand(llmp::format::Encoding e, std::uint64_t rows) {
+// A GLU of 8,192 outputs or more (an FFN's) has its own, earlier rows.
+bool SplitGluBand(llmp::format::Encoding e, std::uint64_t rows, std::uint64_t outputs = 64) {
   using llmp::format::Encoding;
+  const bool wide = outputs >= 8192;
   switch (e) {
     case Encoding::kQ6_K:
-      return rows >= 4 && rows <= 8;
+      return rows >= (wide ? 3U : 4U) && rows <= 8;
     case Encoding::kQ8_0:
       return rows >= 5 && rows <= 8;
     case Encoding::kQ4_K:
-      return rows >= 5 && rows <= 8;
+      return rows >= (wide ? 3U : 5U) && rows <= 8;
     default:
       return false;
   }
@@ -942,6 +944,13 @@ TEST(GgmlLowerTest, MeasuredRanksChooseBetweenVecQAndMmvq) {
         for (const bool automatic : {true, false}) {
           query.automatic_fusion = automatic;
           EXPECT_EQ(has("llmp.vecq.glu"), !(gb10 && SplitGluBand(encoding, rows)));
+        }
+        // The same GLU with an FFN's outputs.
+        glu_operands[0].ne[1] = glu_operands[1].ne[1] = glu_operands[3].ne[0] = 8192;
+        query.n = 8192;
+        for (const bool automatic : {true, false}) {
+          query.automatic_fusion = automatic;
+          EXPECT_EQ(has("llmp.vecq.glu"), !(gb10 && SplitGluBand(encoding, rows, 8192)));
         }
       }
     }

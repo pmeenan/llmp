@@ -484,16 +484,16 @@ base::Sha256Digest RankDataDigest(const RankData& data) {
   std::ranges::sort(records);
   // Fusion rows in order: the first matching row decides (fusion_ranks.h).
   base::Sha256 fusions;
-  Field(fusions, "llmp-fusion-ranks-v4");
+  Field(fusions, "llmp-fusion-ranks-v5");
   for (const auto& r : data.fusions) {
     Field(fusions, r.device_class);
     Field(fusions, r.implementation);
     Field(fusions, r.provenance);
     Field(fusions, ir::OpKeyName(r.op));
-    Field(fusions,
-          std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}", r.version, static_cast<unsigned>(r.encoding),
-                      static_cast<unsigned>(r.layout), r.rows_min, r.rows_max, r.width_min,
-                      r.width_max, r.fused_ns, r.decomposition_ns, r.samples));
+    Field(fusions, std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}", r.version,
+                               static_cast<unsigned>(r.encoding), static_cast<unsigned>(r.layout),
+                               r.rows_min, r.rows_max, r.width_min, r.width_max, r.outputs_min,
+                               r.outputs_max, r.fused_ns, r.decomposition_ns, r.samples));
   }
   const auto fusion_digest = fusions.Finish();
   base::Sha256 hash;

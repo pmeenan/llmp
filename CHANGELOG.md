@@ -135,6 +135,13 @@ The entries below record each change; the record of the milestone is
   `llmp.vecq`'s GB10 L2 prefetch list matches the pinned MMVQ's, and its
   prefetches compile for the GB10 only
   ([vecq-columns](docs/experiments/vecq-columns/README.md)).
+- On the GB10, a GLU of 8,192 outputs or more (an FFN's) runs as two MMVQ
+  products and the GLU from three rows for Q4_K and Q6_K and from four for
+  Q5_K, where `llmp.vecq`'s fused GLU measured slower; fusion rank rows now
+  have an output (`n`) band. The Gemma 4 31B assistant's speculative verifies
+  are 2.0% faster than M3.6's again (they were 3.6% slower since
+  numerical evidence was bound to component sites, `3cf3118c`)
+  ([wide outputs](docs/experiments/vecq-columns/README.md#wide-outputs-2026-10-29)).
 - Planning is cheaper: fused-node inference is memoized, a built graph is not
   re-inferred when it is finished, graph digests are computed on first use and
   the registry is indexed by operation (the served plans build 17% to 36%

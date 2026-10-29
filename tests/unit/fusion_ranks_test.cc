@@ -151,6 +151,13 @@ TEST(FusionRanksTest, ARowDecidesOnlyInsideItsClass) {
   misses([](auto& q, auto&) { q.rows = 9; });
   misses([](auto& q, auto&) { q.k = 127; });
   misses([](auto& q, auto&) { q.k = 513; });
+  // A row without an output band holds every n, a norm's none (0) included.
+  for (const std::uint64_t n : {0U, 1U, 1U << 20U}) {
+    auto query = f.query;
+    query.n = n;
+    EXPECT_EQ(ex::FusionPreferenceFor(f.registry, query, "test.fusion"),
+              ex::FusionPreference::kDecomposition);
+  }
   // The bands' ends are inclusive.
   for (const auto& [rows, k] : std::array{std::pair{1U, 128U}, std::pair{8U, 512U}}) {
     auto query = f.query;
@@ -159,6 +166,27 @@ TEST(FusionRanksTest, ARowDecidesOnlyInsideItsClass) {
     EXPECT_EQ(ex::FusionPreferenceFor(f.registry, query, "test.fusion"),
               ex::FusionPreference::kDecomposition);
   }
+}
+
+// Rows of one class split by the query's outputs (a product's n): the first
+// row whose bands hold it decides, past every band nothing does.
+TEST(FusionRanksTest, AnOutputBandSplitsOneClassByTheQuerysN) {
+  auto wide = Row(200, 100);
+  wide.outputs_min = 8192;
+  auto narrow = Row(100, 200);
+  narrow.outputs_max = 4096;
+  const Fixture f(Graph(), {wide, narrow});
+  const auto at = [&](std::uint64_t n) {
+    auto query = f.query;
+    query.n = n;
+    return ex::FusionPreferenceFor(f.registry, query, "test.fusion");
+  };
+  EXPECT_EQ(at(8192), ex::FusionPreference::kDecomposition);
+  EXPECT_EQ(at(21504), ex::FusionPreference::kDecomposition);
+  EXPECT_EQ(at(4096), ex::FusionPreference::kFusion);
+  EXPECT_EQ(at(0), ex::FusionPreference::kFusion);
+  EXPECT_EQ(at(4097), ex::FusionPreference::kUnmeasured);
+  EXPECT_EQ(at(8191), ex::FusionPreference::kUnmeasured);
 }
 
 TEST(FusionRanksTest, ARowOfAnotherKernelVersionIsStaleAndDecidesNothing) {
@@ -223,6 +251,10 @@ TEST(FusionRanksTest, MalformedRowsAreRefusedAndRowsChangeTheRankDigest) {
   refused([](auto& r) { r.rows_min = 0; });
   refused([](auto& r) { r.rows_min = 9; });
   refused([](auto& r) { r.width_min = 600; });
+  refused([](auto& r) {
+    r.outputs_min = 9;
+    r.outputs_max = 8;
+  });
   refused([](auto& r) { r.fused_ns = 0; });
   refused([](auto& r) { r.decomposition_ns = 0; });
   refused([](auto& r) { r.samples = 0; });
@@ -233,8 +265,12 @@ TEST(FusionRanksTest, MalformedRowsAreRefusedAndRowsChangeTheRankDigest) {
   auto other = Row(200, 100);
   other.width_max = 1024;
   const auto widened = create(other).value();
+  auto banded = Row(200, 100);
+  banded.outputs_min = 8192;
+  const auto outputs = create(banded).value();
   EXPECT_NE(plain.RankDigest(), ranked.RankDigest());
   EXPECT_NE(ranked.RankDigest(), widened.RankDigest());
+  EXPECT_NE(ranked.RankDigest(), outputs.RankDigest());
   EXPECT_NE(ranked.Digest(), widened.Digest());
 }
 

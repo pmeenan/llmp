@@ -10,7 +10,7 @@
 // Needs a CUDA device and about 6 GB.
 //
 //   llmp_vecq_bench [--launches N] [--overlap F] [--vmm on|off] [--only TEXT]
-//   llmp_vecq_bench --sweep 1 [--launches N]
+//   llmp_vecq_bench --sweep 1 [--launches N] [--shapes KxN,...] [--types NAME,...]
 //
 // --overlap: in a multi-token routed case, the fraction of each later
 // token's experts taken from the token before it (a verify's neighbouring
@@ -23,7 +23,8 @@
 // product `sweepglu TYPE KxN cols default_us 2x_upstream_us` (GGML's two
 // products; its GLU kernel not counted, but timed apart once a shape and
 // column count: `sweepswiglu KxN cols upstream_us`, GGML's SwiGLU of two
-// F32 [N, cols] products).
+// F32 [N, cols] products). --shapes: the sweep's K x N shapes (default
+// 4096x4096,2560x10240); --types: only these GGML type names (default all).
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -40,6 +41,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -124,13 +126,24 @@ std::int64_t RowBytes(ggml_type type, int k) {
   return static_cast<std::int64_t>(ggml_row_size(type, k));
 }
 
-bool Sweep(int launches, cudaStream_t stream, cudaEvent_t start, cudaEvent_t stop) {
-  const ggml_type types[] = {
+bool Sweep(int launches, std::span<const std::pair<int, int>> shapes, std::string_view only_types,
+           cudaStream_t stream, cudaEvent_t start, cudaEvent_t stop) {
+  const ggml_type all_types[] = {
       GGML_TYPE_Q4_0,    GGML_TYPE_Q4_1,   GGML_TYPE_Q5_0,  GGML_TYPE_Q5_1,    GGML_TYPE_Q8_0,
       GGML_TYPE_Q2_K,    GGML_TYPE_Q3_K,   GGML_TYPE_Q4_K,  GGML_TYPE_Q5_K,    GGML_TYPE_Q6_K,
       GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S,
       GGML_TYPE_IQ4_NL,  GGML_TYPE_IQ4_XS, GGML_TYPE_MXFP4};
-  const std::pair<int, int> shapes[] = {{4096, 4096}, {2560, 10240}};
+  std::vector<ggml_type> types;
+  for (const ggml_type type : all_types) {
+    const std::string_view name = ggml_type_name(type);
+    bool listed = only_types.empty();
+    for (std::string_view rest = only_types; !listed && !rest.empty();) {
+      const auto comma = rest.find(',');
+      listed = rest.substr(0, comma) == name;
+      rest = comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
+    }
+    if (listed) types.push_back(type);
+  }
   std::mt19937 rng(7);  // NOLINT(bugprone-random-generator-seed): reproducible
   std::uniform_int_distribution<int> byte(0, 255);
   for (const auto [k, n] : shapes) {
@@ -267,6 +280,8 @@ int main(int argc, char** argv) {
   std::string only;
   int spin = 0;
   bool sweep = false;
+  std::vector<std::pair<int, int>> shapes = {{4096, 4096}, {2560, 10240}};
+  std::string types;
   const std::span args(argv, static_cast<std::size_t>(argc));
   for (std::size_t i = 1; i + 1 < args.size(); i += 2) {
     const std::string_view a = args[i];
@@ -283,6 +298,26 @@ int main(int argc, char** argv) {
       std::from_chars(v.data(), v.data() + v.size(), spin);
     } else if (a == "--sweep") {
       sweep = v != "0";
+    } else if (a == "--types") {
+      types = v;
+    } else if (a == "--shapes") {
+      shapes.clear();
+      for (std::string_view rest = v; !rest.empty();) {
+        const auto comma = rest.find(',');
+        const std::string_view shape = rest.substr(0, comma);
+        const auto x = shape.find('x');
+        int k = 0, n = 0;
+        if (x == std::string_view::npos ||
+            std::from_chars(shape.data(), shape.data() + x, k).ec != std::errc{} ||
+            std::from_chars(shape.data() + x + 1, shape.data() + shape.size(), n).ec !=
+                std::errc{} ||
+            k <= 0 || n <= 0) {
+          std::println(stderr, "--shapes: KxN[,KxN...]");
+          return 2;
+        }
+        shapes.emplace_back(k, n);
+        rest = comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
+      }
     }
   }
   // CPU threads spinning meanwhile, as the paged node's lanes poll through
@@ -386,7 +421,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   if (sweep) {
-    return Sweep(launches, stream, start, stop) ? 0 : 1;
+    return Sweep(launches, shapes, types, stream, start, stop) ? 0 : 1;
   }
   std::println("launches {}, routed overlap {:.2f}", launches, overlap);
   if (vmm && (!Ok(cudaFree(nullptr), "context") || !Ok(cuInit(0), "driver"))) {

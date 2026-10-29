@@ -7440,7 +7440,7 @@ whole identity above, which every edit to a module, preset or toolchain
 changes: they name an implementation and its kernel version
 (`Implementation::version`), which the implementation's author bumps when a
 change could move its speed, plus device class, operation, operand encodings
-and layouts and row and width bands. A row of another version is inert, and a
+and layouts and row, width and output bands. A row of another version is inert, and a
 unit test fails on any shipped row naming a missing or other-version
 implementation. Exact-site recipe comparison (U6) is gone from production
 planning; see [fusion ranks](experiments/fusion-ranks/README.md).

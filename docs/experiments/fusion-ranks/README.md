@@ -9,8 +9,11 @@ consulted at selection (`execution::FusionPreferenceFor`, a 5% band):
 
 - **Key.** The device class, the fused operation, the implementation and
   its kernel version (`Implementation::version`), operand 0's encoding and
-  layout, and inclusive bands of the selection query's rows and width (its
-  `k`: a row's elements). Nothing else: no build identity, source closure,
+  layout, and inclusive bands of the selection query's rows, width (its
+  `k`: a row's elements) and outputs (its `n`, a product's outputs; every
+  `n` unless a row names a band, as the wide-output GLU rows do since
+  2026-10-29, [vecq-columns](../vecq-columns/README.md#wide-outputs-2026-10-29)).
+  The first matching row decides. Nothing else: no build identity, source closure,
   graph, layer, weight name, address or policy digest, so a row survives
   unrelated code changes and stops deciding when its kernel changes.
 - **Decision.** Within 5% of the decomposition keeps the incumbent; a fusion

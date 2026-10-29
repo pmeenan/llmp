@@ -28,6 +28,37 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-063: Prompt scores depend on the scoring geometry, by up to 13% PPL  (2026-10-29, status: wontfix)
+
+`spark` (GB10, driver 580.178.04), `c36589b2`'s runtime and the gate
+passage (`speed_gate.py quality`). M3.6 scored literal prompts one row a
+step (the decode path); since `e6c3617a` the shared route scores them in
+prefill chunks of the configured `prefill_chunk` (every row's head). Gemma 4
+31B's PPL went up 13.4%, 26B-A4B's 13.8% and Qwen3.8 native's 4.8% while
+greedy replies stayed byte-identical, which looked like a scoring bug.
+
+It is not one. Each arm equals llama.cpp at the same geometry, bit for bit
+on all 1,070 targets: Gemma 4 31B at 256-row chunks gives NLL 9.7004038387 in
+both engines (b11254 and v0.6.0 `d812350`), one row a decode 9.5749963928
+(M3.6's value, b11254); 26B-A4B at 1,024 rows 9.9205757226 (v0.6.0; b11254
+departs from row 416 on, 9.8809), one row 9.7916674254 (b11254). Serving the
+current runtime with `prefill_chunk = 1` reproduces M3.6's score digests
+exactly (Gemma 2/3/4, Qwen3.8 native). On this raw-text passage (RE-056's
+degenerate regime) llama.cpp's own 256-row and one-row runs differ by PPL
++13.4% and 0.72 nats a target, and llmpalooza's 64-, 256- and 1-row Gemma 4
+31B scores give 9.811, 9.700 and 9.575. In the turn format the geometries
+agree within about 1% (31B 256-row +1.08%, 64-row -0.09%; 26B-A4B -0.57%;
+about 0.11 nats a target). Qwen3.8 native NVFP4 moves by -6.4% to +6.0%
+a passage between geometries (about 0.5 nats a target, the size of its
+spread against Mia's vLLM), pooled +0.87% for one-shot and -1.21% for 256-row
+chunks over eight passages (8,683 targets); the gate passage's +4.78% is the
+largest of the eight. Against Mia's vLLM (one-shot, FP8 KV) on the gate
+passage the one-shot score is +0.86% (M3.6's one-row -3.74%).
+
+Compare scores only at the same `prefill_chunk` (and the same reference
+geometry, for example llama.cpp's `n_ubatch`); a digest change across a
+geometry change is not a quality change. See RE-056.
+
 ## RE-062: QEMU/ASan death tests spin during fatal-signal collection after the Ubuntu 26 upgrade  (2026-10-28, status: worked-around)
 
 Workstation Ubuntu 26.04.1, kernel 7.0.0-42-generic, qemu-user
