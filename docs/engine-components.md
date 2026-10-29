@@ -648,7 +648,8 @@ through 8 columns for Gemma's Q4_0 and Q8_0, and `MulMatVecQGluFusible`'s
 fused GeGLU at one), the planned steps' fusions (by kind and node set,
 each node paired with the builders' by operation, and each product's and
 weight multiply's by weight resource) and shared Q8 groups (by weight)
-equal `PlanGraph`'s for the recipe, and the activation extent is no more
+equal those of `PlanGraph` (GGML's native planning pass, removed with
+M3.5's U2) for the recipe, and the activation extent is no more
 than `PlaceActivations`' over the builders' graphs (54% to 100% of it), with
 the owner-attention forms or without, with no two live tensors sharing
 bytes. (Those comparisons were made before the M3 builders and runners were
@@ -718,7 +719,7 @@ and the head gather its rows there.
 **The GGML lowering, as built** (`kernels/ggml/lower.h`,
 `capabilities.h`, `step_program.h`; 2026-10-09). The GGML module declares
 a capability for every implementation the Gemma 2 and Gemma 3 recipes
-select and the other one-node operations PlanGraph names
+select and the other one-node operations the lowering launches
 (`capabilities.h`, a table every profile builds, so a CPU build plans for
 the module; `implementations.cc` attaches it to the declarations). Each
 carries its kernel's conditions: operand encodings and layouts, the build's
@@ -732,16 +733,18 @@ group, and the lowering resolves it by upstream's routing. The grouped KV
 store declares its batch (16). `LowerStep` makes the planned graph's
 tensors in a `TensorArena` in node order, expanding a fused node into the
 primitive nodes its rewrite replaced (GGML's fused implementations run
-over those, as PlanGraph groups them), makes each mask on the device
+over those, in the selected recipe), makes each mask on the device
 (`llmp.gemma4.mask`) or, by option, as a host-built input, binds the
 activations at the IR placement and the intermediates a fused kernel
 never writes at its result's place (so it refuses a fused RoPE store,
 whose result is a view of the cache and leaves its rotation no place: the
 Gemma 2 and 3 recipes disable `rope_store`, and Gemma 4's migration owes
-it one), derives `DeviceChoices`' fusion flags
-from the selection, runs `PlanGraph` without upstream's fusion and refuses
-the step unless its steps are the selection's, in order (a group's member
-for a group). One placement input is the module's: MMVQ's prepared Q8_1
+it one), emits the selected implementations' explicit
+launch recipes, resolving only declared groups (a group's member by
+upstream's routing). It runs no independent native planning pass: until
+M3.5's U2 it also ran GGML's `PlanGraph` without upstream's fusion and
+refused a step whose steps were not the selection's, a check that went with
+that pass. One placement input is the module's: MMVQ's prepared Q8_1
 input is written with each row padded to 512 values (`Q8Bytes`), more than
 the tensor's own bytes, so a kernel source gives the planner what its
 implementations write (`PlanOptions::written`, `WrittenBytes`) and the
@@ -761,7 +764,7 @@ than the mask. A fused node GGML runs over its primitive nodes makes each
 of them at its own place in the primitive graph where its sources are
 made, else at the fused node's: the builders' order, with the narrowed
 final layer's residual gather between the norm-add's mul and its add,
-where PlanGraph defers the fused norm-add. A view's offset, which the IR
+where the fused norm-add is deferred. A view's offset, which the IR
 counts from the root, is passed to GGML from the viewed tensor.
 
 Checked: at every Gemma 2 and Gemma 3 setup shape above, and Gemma 3's
@@ -773,8 +776,8 @@ and lowered is `BuildGemma2Graph`'s or `BuildGemma3Graph`'s under the
 serving recipe (owner decode with bounded roots, owner and flexible owner
 prefill, `narrow_final`, and the fusions above), node for node
 (operation, type, extents, strides, view offset, operation parameters,
-flags, every source), and PlanGraph's steps over it are the builders'
-(`ggml_lower_test`, CPU; the comparison went with the builders in slice
+flags, every source), and `PlanGraph`'s steps over it were the builders'
+(`ggml_lower_test`, CPU; `PlanGraph` went in M3.5's U2; the comparison went with the builders in slice
 G1d, and the test now checks that every one of these shapes lowers to
 well-formed graphs with the plan covering each node that launches). On
 spark-b, the model runner over the component
@@ -808,9 +811,9 @@ llama.cpp's primitives. `fused.rms_norm_mul_rope`'s capability takes the
 rotation's frequency factors (upstream's fused launcher reads them:
 Gemma 4's global layers), and `rms_norm_mul_add` matches only a norm, its
 mul and its add one after another (leaves aside) or with the residual's
-gather between, as PlanGraph fuses them (where Gemma 4's routed and dense
-sums meet, the later one). Unfused, PlanGraph runs an RMS norm and the
-mul after it as one step of both launchers, which the lowering takes
+gather between, as upstream's graph evaluation fuses them (where Gemma 4's
+routed and dense sums meet, the later one). Unfused, upstream runs an RMS
+norm and the mul after it as one launch, which the lowering takes
 as the IR's two steps (the assistant's plain plans). A drafter's features
 are a features input (`InputKind::kFeatures`, never staged: the engine
 copies them in on the device from its stage's tap or its carry, slice
@@ -923,8 +926,8 @@ the 26B-A4B and 31B, 60 with owner attention), the step planned under the
 gemma4 mapping's policy for that envelope and lowered launches
 `BuildGemma4Graph`'s GGML nodes over the same operands (each view's
 extents, strides and offset of the same storage) with the same operation
-parameters and flags, and PlanGraph's steps over them are the builder's,
-in order (as multisets where the builder's owner transform reorders
+parameters and flags, and (until U2 removed it) `PlanGraph`'s steps over
+them were the builder's, in order (as multisets where the builder's owner transform reorders
 independent nodes); the assistant's draft steps lower to
 `BuildGemma4AssistantGraph`'s with its host masks (frozen), and with
 device masks to the frozen producer. On spark-b, the model runner over
@@ -2376,9 +2379,11 @@ declared with capabilities; the bounded dense Q8_0 opt-in below now consumes the
   `Layout` refuses a cell of partial blocks, so every used, chunk and
   checkpoint range starts at a block; `KeptLayoutId` already hashes each
   tensor's encoding, so kept state of another encoding is never adopted.
-- *Planning.* `PlanGraph` gives a quantized destination the quantizing
-  store (grouped, and fused with its RoPE, under the F16 forms' options)
-  and quantized K the vector attention named by its type.
+- *Planning.* The GGML module's capabilities (`kv_quant.h`, registered in
+  `capabilities.cc`) give a quantized destination the quantizing store
+  (grouped, and fused with its RoPE, under the F16 forms' options) and
+  quantized K the vector attention named by its type, and the planner
+  selects them (until U2 the native `PlanGraph` pass chose them).
 - *Evidence.* `kv_quant_gpu_test` on spark-b: the stores byte for byte
   against `EncodeRows` (decode, prefill and broadcast shapes, both index
   types, blocks at the quantizers' rounding boundaries), the RoPE store

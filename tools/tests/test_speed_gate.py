@@ -123,7 +123,7 @@ class ImagePins(unittest.TestCase):
     def test_bad_pins_refuse_before_runtime_access(self):
         for family, label, pin in (("image", "new", "x" * 64),
                                    ("image", "new", "a" * 63),
-                                   ("image", "old", self.CANDIDATE),
+                                   ("image", "old", "x" * 64),
                                    ("gemma2", "new", self.CANDIDATE)):
             with self.subTest(family=family, label=label, pin=pin), self.assertRaises(SystemExit):
                 gate.main(["run", "--family", family, "--label", label,
@@ -143,6 +143,27 @@ class ImagePins(unittest.TestCase):
         with self.assertRaises(SystemExit):
             gate.main(["plan", "--family", "gemma2", "--old", "/o", "--new", "/n",
                        "--out", "/out", "--new-image-pixels-sha256", self.CANDIDATE])
+
+    def test_plan_forwards_an_old_arm_pin_to_its_runs_and_priming_run(self):
+        text = io.StringIO()
+        with contextlib.redirect_stdout(text):
+            gate.main(["plan", "--family", "image", "--old", "/o", "--new", "/n",
+                       "--out", "/out", "--blocks", "1",
+                       "--old-image-pixels-sha256", "b" * 64,
+                       "--new-image-pixels-sha256", self.CANDIDATE])
+        prime, *runs = text.getvalue().splitlines()
+        self.assertIn(f"--image-pixels-sha256 {'b' * 64}", prime)
+        for line, label in zip(runs, gate.ORDER):
+            pin = "b" * 64 if label == "old" else self.CANDIDATE
+            self.assertIn(f"--image-pixels-sha256 {pin}", line)
+
+    def test_an_old_arm_with_its_own_pin_is_valid(self):
+        family, blocks, primes = self.records(self.CANDIDATE)
+        for r in [primes["image-s1"], blocks[0][0], blocks[0][3]]:
+            r["image_pixels_sha256"] = "b" * 64
+            r["turn"]["pixels_sha256"] = "b" * 64
+        self.assertEqual([], [reason for reason in gate.validity(family, blocks, primes)
+                              if "pixel" in reason or "image output" in reason])
 
 
 class WorkloadIdentity(unittest.TestCase):

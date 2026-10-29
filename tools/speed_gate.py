@@ -223,6 +223,9 @@ GEMMA26_ASSISTANT_V1 = _PUBLISHED["gemma26-assistant"]
 GEMMA31_V1 = _PUBLISHED["gemma31"]
 GEMMA31_ASSISTANT_V1 = _PUBLISHED["gemma31-assistant"]
 IMAGE_V1 = _PUBLISHED["qwen-image"]
+LLAMA32_Q8_V1 = _PUBLISHED["llama32-1b-q8_0"]
+LLAMA32_Q4_V1 = _PUBLISHED["llama32-1b-q4_k_m"]
+QWEN25_FP16_V1 = _PUBLISHED["qwen2-fp16"]
 V1_STORE = "artifacts"  # under the models directory: the one name every tool and test reads
 
 
@@ -251,6 +254,11 @@ def _qwen(artifact: str, drafter: str) -> str:
 def _qwen_gguf(artifact: str) -> str:
     return (f'[models."qwen3.8-gguf"]\nartifact = "{artifact}"\ncontext = 33792\n'
             "prefill_chunk = 4096\nmax_slots = 4\n" + _qwen_files())
+
+
+def _dense(name: str, artifact: str) -> str:
+    return (f'[models.{name}]\nartifact = "{artifact}"\ncontext = 8192\n'
+            "prefill_chunk = 4096\nmax_slots = 4\n")
 
 
 def _deepseek(artifact: str, drafter: str) -> str:
@@ -283,6 +291,13 @@ FAMILIES = {f.name: f for f in (
     Family("deepseek", "llm", "deepseek", V1_STORE, _deepseek(DSV4_V1, DSPARK_V1),
            prompt_chars=30000, cells=(1, 2, 4), repeats=1,
            min_blocks=3, max_blocks=6),
+    # The dense decoders (M3.5): no M3.6 baseline; min/max blocks are the protocol's
+    # defaults until a same-binary spread sets them. Other quantizations of the same
+    # model (Llama Q4_K_M, the Qwen2.5 EXL3 imports) run with --config-template.
+    Family("llama32", "llm", "llama32", V1_STORE, _dense("llama32", LLAMA32_Q8_V1),
+           prompt_chars=26000, cells=(1, 4)),
+    Family("qwen25", "llm", "qwen25", V1_STORE, _dense("qwen25", QWEN25_FP16_V1),
+           prompt_chars=26000, cells=(1, 4)),
     Family("image", "image", "image", V1_STORE,
            f'[models.image]\ncomposition = "{IMAGE_V1}"\n',
            min_blocks=6, max_blocks=12),
@@ -416,11 +431,13 @@ def image_pixels_pin(family: Family, label: str, value: str | None) -> str | Non
         if value is not None:
             raise SystemExit("an image output pin requires the image family")
         return None
+    # The default is the frozen 1facc957 baseline's pin; an arm that is another
+    # implementation (an old arm built from a later commit, a candidate) names its own,
+    # frozen before timing and kept in every record, so one arm cannot mix pins.
+    _ = label
     pin = IMAGE_PIXELS_SHA256 if value is None else value
     if len(pin) != 64 or any(c not in "0123456789abcdef" for c in pin):
         raise SystemExit("image output pin must be a lowercase SHA-256 digest")
-    if label == "old" and pin != IMAGE_PIXELS_SHA256:
-        raise SystemExit("the frozen old image arm must retain its baseline output pin")
     return pin
 
 
@@ -1019,7 +1036,9 @@ PRIME_ARM = "old"
 
 def cmd_plan(args: argparse.Namespace) -> int:
     family = FAMILIES[args.family]
-    pixels_pin = image_pixels_pin(family, "new", args.new_image_pixels_sha256)
+    pins = {"old": image_pixels_pin(family, "old", args.old_image_pixels_sha256),
+            "new": image_pixels_pin(family, "new", args.new_image_pixels_sha256)}
+    given = {"old": args.old_image_pixels_sha256, "new": args.new_image_pixels_sha256}
     me = pathlib.Path(__file__).resolve()
     blocks = args.blocks or family.min_blocks
     runs = [(block, position, label) for block in range(args.first, args.first + blocks)
@@ -1044,8 +1063,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
                 f"--label {label} --out {args.out} {which}"
                 + (f" --corpus {args.corpus}" if family.kind == "llm" else "")
                 + (f" --config-template {template}" if template else "")
-                + (f" --image-pixels-sha256 {pixels_pin}"
-                   if label == "new" and args.new_image_pixels_sha256 is not None else "")
+                + (f" --image-pixels-sha256 {pins[label]}" if given[label] is not None else "")
                 + "".join(f" --runtime-env {k}={v}" for k, v in env.items()))
 
     texts = []
@@ -1520,6 +1538,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--family", required=True, choices=sorted(FAMILIES))
     p.add_argument("--old", required=True)
     p.add_argument("--new", required=True)
+    p.add_argument("--old-image-pixels-sha256",
+                   help="the old image arm's output pin when it is not the frozen baseline "
+                   "(its priming runs get it too), frozen before timing")
     p.add_argument("--new-image-pixels-sha256",
                    help="qualified candidate image output pin, frozen before timing")
     p.add_argument("--out", required=True)

@@ -106,6 +106,9 @@ and before timing. Each arm must reproduce its own pin throughout the
 comparison; changing the pin within an arm invalidates the comparison.
 Direct `run` uses `--image-pixels-sha256`. Without these options both arms
 retain the historical pin, and old records retain their original meaning.
+An old arm that is not the frozen baseline (since the v0 stores were retired,
+a later commit built as the old arm) declares its own pin the same way,
+`plan --old-image-pixels-sha256 SHA256`, which its priming runs carry too.
 This checks repeatability within an implementation, not image quality or
 bit equality with another implementation. Workload, timing and stopping rules
 are unchanged.

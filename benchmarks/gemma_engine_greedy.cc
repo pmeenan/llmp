@@ -335,6 +335,9 @@ int main(int argc, char** argv) {
   settings.prefill_chunk.value = 128;
   settings.max_slots.value = 1;
   settings.speculation.value = speculate;
+  // The component build reads the drafter's depth from the settings (the
+  // stored drafting contract, 381eec18); the screen drafts at most three.
+  settings.draft_rows.value = speculate ? 3U : 0U;
   settings.wave_read_align.value = 256;
 
   en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};

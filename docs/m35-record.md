@@ -30,12 +30,14 @@ removed and that the files are in Git at `1564dcd6`).
 | `ca32156b` (2026-10-20) | The plan for U1–U10, written after the M3.6 review |
 | `ca32156b..265c821a` | U1–U10 and the memory modes; the first, reviewed fix pass `b7e6143b`, `f8f106a8`, `7c96e27b`, `265c821a` |
 | `265c821a..1564dcd6` (2026-10-28) | The foundation review's F1–F13 fixes, one reviewed commit each |
+| `1564dcd6..c36589b2` (2026-10-28) | F14 and F10a; F10b's final checks ran on `c36589b2` (2026-10-29) |
 
 Open at this record: U7 (fast paths by capability; only U7a's first GDN-gate
-spike is done) and U9 (M4 entry); F10b's closeout (the DeepSeek IQ2_XXS quality
-score, the full Spark check set and a speed confirmation of every family) and
-F14 (the test-suite audit); the families, formats and media items that M3.5 has
-always owned ([plan](plan.md)).
+spike is done) and U9 (M4 entry); the regressions F10b's final checks found
+([campaign final verification](#campaign-final-verification-f10b-2026-10-29):
+Qwen3.8 native decode, DeepSeek plain C2 decode, Qwen3.8 GGUF C1 prefill, the
+Gemma 4 31B assistant screen and the changed prompt scores); the families,
+formats and media items that M3.5 has always owned ([plan](plan.md)).
 
 ## Memory modes and U1–U10
 
@@ -88,8 +90,9 @@ fixed; each slice landed as one reviewed commit, with verification in batches
 | harness | `4a86b43f` | Harnesses restored after the Ubuntu 26.04.1 upgrade (glibc 2.43, NVIDIA 595.99.02 on the workstation). |
 | F7 | `3be174f0` | Measured rank rows instead of capability vetoes (GGML's MMVQ at 2-8 columns where faster, fused GLUs split where the decomposition is >5% faster; one-pass 8-column VecQ measured slower and dropped), upstream prefetch, a row-strided `llmp.argmax`, stable op identity in digests, cheaper inference and planning; geometric decode buckets built but off until attention skips masked tiles ([vecq-columns](experiments/vecq-columns/README.md)). |
 | F13 follow-up | `1564dcd6` | Padding head rows bounded on the device in the heads component: every greedy argmax reads each row's first tokenizer-size logits in place, so padded heads (Qwen3.8, Qwen2.5) keep device greedy in joined waves (RE-050). |
-| F10a | this commit | Hygiene and docs: see below. |
-| F14, F10b | open | The test-suite audit; the closeout (DeepSeek IQ2_XXS quality, full Spark check set, speed confirmation of every family). |
+| F10a | `c36589b2` | Hygiene and docs: see below. |
+| F14 | `faa99893` | The test-suite audit: dead helpers out, duplicated bodies shared. |
+| F10b | this commit | The closeout checks: [campaign final verification](#campaign-final-verification-f10b-2026-10-29); not passed. |
 
 ## F10a hygiene (2026-10-28)
 
@@ -126,6 +129,185 @@ fixed; each slice landed as one reviewed commit, with verification in batches
   current use ([upstream/ggml.md](upstream/ggml.md)), AGENTS.md "Current
   status" and the doc map.
 
+## Campaign final verification (F10b, 2026-10-29)
+
+**Not passed.** The final tree is faster than M3.6 for most families and every
+swap is exact, but two families regressed in speed, the Gemma 4 31B assistant
+screen fails, and literal-route prompt scores changed for Qwen3.8 native and
+Gemma 4 while greedy decoding stayed byte-identical. Each item below needs an
+owner decision or a fix slice; none is an accepted exception yet.
+
+**Arms.** M3.6 gated against each host's frozen `1facc957-fixed` install, and
+its final table ran `final-d373a1bf` (`53c2610b`). Neither can run any more:
+the v0 stores were retired on 2026-10-23 and both installs' executables were
+removed ([storage cleanup](environment.md#retired-spark-data-2026-10-23)). The
+old arm is therefore `53c2610b` rebuilt from Git on each host on 2026-10-28
+(`spark-native --locked`, the M3.6 SDK `aarch64-2c4eb5b2f68f3fa5`; runtime
+`94e88837…` on `spark`, `e9e79c11…` on `spark-b`), serving M3.6's own v1 store
+`m36-v1-artifacts` with M3.6's IDs. It reproduces every M3.6 quality value
+exactly (NLL and score digest for all eight LLM configurations, and the image
+pin `93356574…`), so it is the M3.6 final state. The new arm is `c36589b2`
+(this record's tree; SDK `aarch64-8486b6bf58a61039`; runtime `44620d94…` on
+`spark`, `c851db0b…` on `spark-b`), serving `artifacts` with the IDs in
+`tests/unit/data/v1_frozen/v1-ids.json`. Both arms got the same per-family
+settings (M3.6's gate templates, only IDs and store differ) and no diagnostic
+switch: neither arm has the baseline defect that `LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS`
+matched. The new arm runs in the default memory mode (`dedicated` on the GB10,
+D-124).
+
+**Protocol.** M3.6's tiered pass ([m36-record](m36-record.md#final-speed-verification),
+[m36-final](experiments/m36-final/README.md)): a 2-block ABBA per family, passing
+when every gated metric's mean slowdown is at most +0.5%; any metric above it
+runs the registered gate (`speed_gate.py` minimum blocks, extended while
+CONTINUE). Positive is slower. Each family ran wholly on one host, the clean
+page cache of build trees, SDKs and both stores was dropped before every session
+(RE-057) and the GPU temperature logged after every run.
+
+**Hosts.** `spark` (`spark-c4e2`) and `spark-b` (`spark-56f5`), both Ubuntu
+24.04.5, kernel 7.0.0-1019-nvidia, driver 580.178.04, unchanged by the
+2026-10-28 update ([environment](environment.md#os-update-2026-10-28)). GPU
+39–50 °C at each queue's start, 59–70 °C during the gates, SM clock 2398–2411 MHz.
+
+| Family (host) | Tier, blocks | Verdict | Speed against `53c2610b` (slowdown; mean, upper bound where gated) | Peak, new minus old | Quality against M3.6 (new arm; quality control passage) |
+| --- | --- | --- | --- | --- | --- |
+| Gemma 2 2B (spark) | 1, 2 | PASS | every metric faster: decode −4.3%/−5.5% (C2/C1), prefill −1.9%/−4.0%, wall −4.1%/−4.2% | +4.13 GiB | NLL 3.5649091 against 3.5635005 (PPL +0.14%); replies equal; per-target agreement 93.1% (tripwire 95%) |
+| Gemma 3 4B QAT (spark) | 1, 2 | PASS | every metric faster: decode −3.1%/−4.6%, prefill −1.0%/−3.5% | +3.09 GiB | NLL 3.6733320 against 3.6681064 (PPL +0.52%; M3.6's accepted exception, now +0.62% from its baseline); replies differ |
+| Gemma 4 26B-A4B (spark) | 1, 2 | PASS | every metric faster: C1 decode −5.7%, C4 decode −2.2%, C4 prefill −0.7% | +18.15 GiB | **NLL 9.9205757 against 9.7916674 (PPL +13.8%, mean abs. per-target 0.86)**; replies equal |
+| Gemma 4 31B (spark) | 2, 9 | **PASS** | C4 decode +0.55%, upper +0.94% (CONTINUE at 7 and 8 blocks: +0.60%/+1.12%, +0.58%/+1.02%); C1 decode −3.7%, prefill −0.3%, C4 prefill −1.1%, wall −1.1%/−2.3% | +22.79 GiB | **NLL 9.7004038 against 9.5749964 (PPL +13.4%, mean abs. 0.72)**; replies equal |
+| Gemma 4 31B assistant (spark, `assistant_gate.py`, 8 blocks) | — | **FAIL** | **+3.58%, bound [+3.12%, +4.05%]** (1.3507 s against 1.3045 s for 32 committed tokens; every block +3.0% to +4.5%; the same verified and drafted counts) | — | not scored |
+| Qwen3.8 native + MTP (spark-b) | 1, 2 | **FAIL** (not extended) | **decode +31.2%/+26.5%/+26.8% (C1/C2/C4; 49.36 → 37.62 tok/s at C1), wall +12.5%/+6.5%/+11.5%, C4 prefill +5.8%**; C1/C2 prefill −2.8%/−1.6% | +23.89 GiB | **NLL 2.8031018 against 2.7564455 (PPL +4.78%, mean abs. 0.50)**; replies equal |
+| Qwen3.8 GGUF (spark-b) | 2, 4 | **FAIL** | **C1 prefill +1.80%, upper +2.35%** (6.508 → 6.625 s; +1.3% to +2.0% in every run); decode −4.9%/−6.4%/−11.8%, C2/C4 prefill −1.2%/−0.2%, wall −0.8% to −2.8% | +47.74 GiB | NLL 2.8432115 against 2.8596571 (PPL −1.63%, mean abs. 0.32): M3.6's accepted exception, now on the other side of llama.cpp b11254 by about the size of llama.cpp's own fused/unfused spread (1.75%) |
+| DeepSeek V4 Flash, plain waves (spark-b) | 1, 2 | **FAIL** (not extended) | **C2 decode +10.1% (38.18 → 34.68 tok/s, every run)**; C1 decode −9.0%, C4 decode +0.04%, C2 prefill +0.50%, others at most +0.4% | +4.69 GiB | NLL 2.7937083 against 2.7939955 (PPL −0.03%, mean abs. 0.10); replies differ (U4's recorded scalar-schedule transfer) |
+| DeepSeek V4 Flash, DSpark waves (spark-b) | 2, 5 | **PASS** | C1/C2/C4 decode −10.0%/−10.9%/−17.6%; **C4 wall −3.95% (M3.6's accepted +0.94% exception is resolved, RE-059)**; C2 prefill +0.21%, upper +0.77% (CONTINUE at 3 and 4 blocks) | +4.83 GiB | as the plain waves |
+| Qwen-Image-2.1 (spark) | 2, 8 | **PASS** | `generation_s` +0.61%, upper +0.91% (34.13 → 34.34 s; CONTINUE at 6 blocks, +0.58%, upper +1.02%) | +37.11 GiB | pixels `93356574…` in every run of both arms (the M3.6 pin; its PSNR/SSIM carry over) |
+| Llama 3.2 1B Q8_0 (spark-b, new baseline) | — | baseline | C1 decode 149.4, C4 decode 383.5 tok/s; prefill 0.487/2.040 s; wall 95.7/153.3 tok/s | peak 6.15 GiB | not scored |
+| Llama 3.2 1B Q4_K_M (spark-b, new baseline) | — | baseline | C1 decode 208.5, C4 decode 453.0 tok/s; prefill 0.484/1.985 s; wall 117.0/166.5 tok/s | peak 5.23 GiB | not scored |
+| Qwen2.5 0.5B FP16 (spark-b, new baseline) | — | baseline | C1 decode 203.6, **C4 decode 203.8** tok/s; prefill 0.797/3.148 s; wall 90.1/93.4 tok/s | peak 4.35 GiB | not scored |
+| Qwen2.5 0.5B EXL3 4.0 (spark-b, new baseline) | — | baseline | C1 decode 251.4, **C4 decode 253.1** tok/s; prefill 2.242/8.662 s; wall 46.7/48.6 tok/s | peak 3.12 GiB | not scored |
+
+The dense-decoder rows are one block of four runs on the new arm (run-to-run
+sd at most 0.6% except C1 prefill 1.5%), through two gate families this slice
+added (`llama32`, `qwen25`: `[models]` context 8,192, chunk 4,096, four slots,
+26,000-character prompts, C1 and C4); they are the baseline a later gate
+compares with. Qwen2.5's approval admits one owner: four slots run "served,
+unqualified" and its C4 cells decode no faster than C1 (a C4 prefill is four
+C1 prefills), so Qwen2.5 does not batch.
+
+Peak memory is the whole-node `MemAvailable` drop. The new arm's dedicated
+pool fills the budget's headroom at start, so its peaks are larger by design;
+it leaves 2.3–3.2 GiB available beside Qwen3.8 and DeepSeek (old arm 7–51 GiB).
+That margin is what RE-057 warns about: block 3 of Qwen3.8 GGUF and of DSpark
+first ran right after a bisect build whose tree the sessions' cache drop did not
+cover; one GGUF new run prefilled 2.2× slower and one DSpark priming run lost its
+C4 decode window. Both blocks were set aside and rerun after the drop covered
+that tree.
+
+Qwen3.8 native and DeepSeek plain waves were not extended to the registered
+gate: their 2-block lower bounds already exceed +1% (C1 decode +28.4%; C2 decode
++5.8%), so more blocks could only confirm the failure.
+
+**IQ2_XXS.** `speed_gate quality` on DeepSeek V4 community IQ2_XXS (v1
+`a4fb10cc…`, plain decoding, context 262,144): NLL **2.8566161** (PPL 17.40,
+966 targets, scores `b6472f2e…`). The same checkpoint on `53c2610b` (M3.6's v1
+`e7c0d0e4…`) scores 2.8490313 (PPL 17.27): +0.76% PPL, mean absolute per-target
+difference 0.091 (DeepSeek's M3.6 tripwires, 0.5% and 0.05, fail; the UD-Q2_K_XL
+target's same comparison is −0.03% and 0.104). Against UD-Q2_K_XL on the new arm
+(2.7937083) it is +6.49% PPL, the expected cost of the lower-bit file. ds4, the
+pinned reference for this checkpoint, has only its recorded 32K War-and-Peace
+PPL (2.980670302, [ds4-study](experiments/ds4-study/README.md)); no ds4 build or
+retained losses exist for the gate passage, so no same-passage reference
+comparison was made. F12's re-recorded IQ2_XXS tokens therefore rest on a
++0.76% likelihood shift that matches the target's own U4 transfer in kind but
+is larger in aggregate.
+
+**Swap table** (`spark-b`, `swap_table.py`, the current v1 IDs, image pin
+`93356574…`, six jobs of one ordered pair): **PASS**, 32 of 32 rows exact and
+state-exact, every restored 8K hash and continuation equal, prepared returns kept
+and replayed their graphs, every image regeneration equal to the pin. Worst
+prepared LLM↔LLM row **8.749 s** (deepseek to qwen3.8, B→A, 0 context) against
+the 20 s bound (M3.6 8.505 s). Worst LLM↔LLM row 16.109 s, qwen3.8 to deepseek
+first use with 8K (M3.6 8.665 s): its eviction took 6.368 s; deepseek to image
+first use 8.913 s (evict 4.612 s; M3.6 4.124 s). Image to deepseek first use
+improved to 11.319 s (M3.6 27.354 s). Largest tracked peak 115.32 GiB (M3.6
+111.73), lowest MemAvailable 2.27 GiB (M3.6 4.69). The first-use rows stay
+within their 40 s target, but the slow first evictions beside the dedicated
+pool are new. The Gemma near-8K cases were not rerun.
+
+**Check set.**
+
+| Check | Host | Result |
+| --- | --- | --- |
+| `spark-native --locked` build of `c36589b2` | both | no-op (already built by F14+F10a's check) |
+| Shared set, `-LE 'models\|timing'` | spark | cited, not rerun: 3,965 of 3,965 (job `merge-shared`, the F14+F10a combined check on this tree; F10b changed only a benchmark harness, a gate tool and docs) |
+| CPU-only guardrail (`spark-native` with `LLMP_CUDA=OFF`, fresh `build/spark-cpu`, current SDK) | spark-b | 3,426 of 3,426 (a first run in the old cache's directory failed `sources.closure` on objects whose dependency files named the previous SDK; a fresh directory passed) |
+| `models\|timing`, Qwen3.8 | spark-b | 32 of 32 |
+| `models\|timing`, DeepSeek and DSpark | spark-b | 21 of 21 |
+| `models\|timing`, tokenizer, importer and dense decoders | spark-b | 128 of 128, 3 skipped (read below) |
+| `models\|timing`, image | spark | 15 of 15 |
+| `models\|timing`, everything outside the named areas | spark | 17 of 17 |
+| `models\|timing`, Gemma 2/3/4 and assistants | spark | 41 of 41 (one 600 s job reached 17, the other 24 ran in three jobs) |
+| All of `models\|timing` | both | 239 distinct tests (`ctest -N`), every one run: 236 passed, 3 skipped, 0 failed |
+
+Skipped, each read in its log: `ImportModelOptModelsTest.ClosedNativeTargetOwnsEverySourceAndPreservesFormats`,
+`ImportModelOptModelsTest.PublishesPinnedNativeTargetWithCompleteSourceAuthentication`
+(confined proofs: a delegated cgroup and the ModelOpt source and stores) and the
+publication half of `ImportMlxNormalizeModelsTest.RealStagedCheckpointNormalizesPublishesAdmitsAndPlansAffineSplitWeights`
+(`LLMP_TEST_MLX_PUBLICATION_STORE`): F12's three opt-in proofs
+([m35-f12-frozen](experiments/m35-f12-frozen/README.md#opt-in-tests)).
+
+**Where the regressions came from** (bisected on `spark-b` with `53c2610b`'s
+history built in a scratch tree; Qwen3.8 native quality control, the store each
+commit reads; the two Qwen3.8 v1 artifacts share their weight, index and spec
+files, and only the manifest's layout-profile name differs):
+
+- *Prompt scores.* Good at `d3374c67` (NLL 2.7564455, the M3.6 value), changed
+  at `e6c3617a` ("Serving: one LLM route, prefill policy in the engine": 2.8031020
+  with `b003c9a5`'s one-line scoring fix applied; unpatched, `e6c3617a` and
+  `0d28a553` answer every literal score request with HTTP 500 "literal prompt
+  rows arrived out of order", which `b003c9a5` fixed), unchanged since. The
+  greedy replies are byte-identical at every point, the scored token IDs and
+  counts are equal, and the differences start at the first scored row (position
+  1: −15.19 against −15.58 nats) and persist through the passage (mean absolute
+  difference 0.27 to 1.0 nats in each run of 100 positions). Qwen3.8 native
+  and Gemma 4 26B/31B move the most; Gemma 2 hardly. No served-output quality
+  claim was re-established for multi-row scoring after `e6c3617a`.
+- *Qwen3.8 MTP acceptance* (the decode regression). Still M3.6's at
+  `aa92bd1f` and `639583b9` (quality-control replies: 152 of 244 drafts
+  accepted; `aa92bd1f`'s speed run 1,655 of 2,088 and C1 decode 49.5 tok/s);
+  already changed at `381eec18` (151 of 274) and on `c36589b2` (speed runs 1,371
+  of 2,678, 51%). The 101 commits between include U2's re-import, U3 and U4;
+  U4's own record notes that "HC and NVFP4 expert fusions differ at stage 1,
+  rows 1–5" for the native MTP drafter and that target likelihood does not
+  measure the drafter ([U4 LLM results](experiments/m35-component-numerics/LLM-RESULTS.md)),
+  and no acceptance or decode-speed comparison against M3.6 followed. Commits
+  before `381eec18` cannot read the current drafter artifact (its stored spec
+  gained a `drafting` key), so the bisection stops there.
+- *DeepSeek plain C2 decode.* Matched `53c2610b` at `aa92bd1f` (R13's table);
+  at `381eec18` one speed run gives C2 decode 34.50 tok/s (the regressed value;
+  C1 33.69 and C4 50.24, before the later C1 gain). Window `aa92bd1f..381eec18`,
+  not narrowed further.
+- *Qwen3.8 GGUF C1 prefill* and the *31B assistant screen*: not bisected. At
+  `aa92bd1f` (R13) the GGUF C1 prefill was already +3.44% and the assistant
+  screen −3.15% against `53c2610b`.
+
+**Changes made by F10b** (in its commit):
+
+- `benchmarks/gemma_engine_greedy.cc`: the assistant screen's harness builds
+  its `ModelSettings` by hand and never set `draft_rows`, which the component
+  build reads since `381eec18`, so every speculative run refused ("draft depth
+  must leave room for its anchor"). It sets 3, the screen's depth. No test
+  covers the harness (it is a benchmark); the 8-block screen above is its check.
+- `tools/speed_gate.py`: `plan --old-image-pixels-sha256` (and `run
+  --image-pixels-sha256` for either arm), so an old image arm that is not the
+  frozen baseline names its own pin; the `llama32` and `qwen25` families. Tests
+  in `tools/tests/test_speed_gate.py`; protocol text in
+  [m36-baselines](experiments/m36-baselines/README.md).
+- `docs/engine-components.md`: the retired `PlanGraph` narrated as history.
+
+Raw records, logs, the frozen arms, the `53c2610b` build tree and the bisect
+tree were on the Sparks under `~/jobs/f10b` and `~/src` and are deleted
+(AGENTS.md, rule 8); this section is the aggregate.
+
 ## Owner decisions and standing rules so far
 
 - D-124 accepted 2026-10-25 as amended; D-121 (choose the better architecture,
@@ -139,9 +321,9 @@ fixed; each slice landed as one reviewed commit, with verification in batches
 ## Handed on
 
 Carried by the plan: U7 (b-e) and U9; the families, formats, media and
-tool-call qualification work; F10b's closeout. Candidates noted while writing
+tool-call qualification work; the regressions and score change F10b found
+(above). Candidates noted while writing
 this record: `docs/experiments/fusion-ranks/READY-MATRIX-RESULTS.md` (86 KB) and
 the other U6 reports repeat registration hashes and review wording and could be
 reduced to their tables; patch 0010 of GGML can be narrowed to the one dispatch
-split `benchmarks/vecq_upstream.cu` uses; `docs/engine-components.md` still
-narrates the retired `PlanGraph`.
+split `benchmarks/vecq_upstream.cu` uses.

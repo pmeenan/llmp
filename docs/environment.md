@@ -503,8 +503,11 @@ The models tests and the gate tools (`tools/speed_gate.py`,
 artifacts from one place: `LLMP_TEST_V1_STORE` if set, else
 `~/.local/share/llmp/artifacts` (`LLMP_TEST_MODELS` moves the base directory
 for the tests). On both Sparks `artifacts` is a link to the store the
-M3.5 work installed into (`u2-v1-artifacts`); the older `m36-v1-artifacts` is no
-longer read by anything. A new store generation is installed by pointing the
+M3.5 work installed into (`u2-v1-artifacts`). The older `m36-v1-artifacts` is
+read only by the M3.6 old arm (`53c2610b` built from Git) in the final speed
+checks ([m35-record](m35-record.md#campaign-final-verification-f10b-2026-10-29));
+the owner approved deleting it once the regressions they found are settled. A
+new store generation is installed by pointing the
 link, not by renaming files in tests or tools.
 
 ### Retired Spark data (2026-10-23)
@@ -545,8 +548,12 @@ outputs under `~/.local/share/llmp/m35-*` and `u3-*`), `~/scratch`'s `m35-*`
 directories, everything dated after 2026-10-17, every reference, oracle and
 comparator directory, every directory a document or script names as an input
 or a record of raw outputs, and the git checkouts under `~/scratch` and
-`~/src`. `~/scratch/m3-concurrent-source` on `spark-b` holds root-owned files
-from a container and needs `sudo rm -rf` from the owner. The workstation has
+`~/src`. Later the same day, with the owner's approval, `spark-b`'s
+`~/scratch/m3-concurrent-source` (root-owned TensorFold sources from a container,
+open in no process), `spark`'s `~/src/vllm-perf` (a fork checkout with a
+weight-loader experiment) and `spark-b`'s three `~/scratch/m36-*-recipe*`
+checkouts (each holding the `patch_ple_offload.py` change that
+`acceptance/mia-fast` keeps) were removed, uncommitted changes included. The workstation has
 no stale worktrees: `git worktree list` shows only the active slices'.
 
 ### Jumbo frames on the direct link (2026-09-28)

@@ -688,6 +688,18 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       ASan; optionally a `llmp doctor` warning for storage roles on btrfs
       (RE-018) and pacing the dedicated pool's start-up fill (RE-049); then
       the full Spark check set and a speed confirmation of every family.
+      Status (2026-10-29): hygiene, docs, the Spark check set, the IQ2_XXS
+      score and the swap table are done; the speed confirmation found the
+      regressions of F15 ([final verification](m35-record.md#campaign-final-verification-f10b-2026-10-29)),
+      and the workstation `native`/`cpu-asan` tier confirmations are still owed.
+- [ ] **F15 Regressions found by the final checks:** Qwen3.8 native + MTP
+      decode (drafts accepted 79% → 51%, in `639583b9..381eec18`), DeepSeek
+      plain-wave C2 decode (+10%, in `aa92bd1f..381eec18`), Qwen3.8 GGUF C1
+      prefill (+1.8%), the Gemma 4 31B assistant screen (+3.6%), and the
+      literal-route prompt scores of Qwen3.8 native (PPL +4.8%) and Gemma 4
+      (PPL +13–14%) that changed at `e6c3617a` while greedy replies stayed
+      byte-identical; each fixed against the `53c2610b` old arm, or accepted
+      by the owner as an exception.
 - [x] **F12 Known model-test failures and swap continuation:** every model
       test that already failed at `265c821a` (stale frozen digests, a Gemma Q8
       cache admission, Gemma 4 tool rendering, the gemma2 store artifact
