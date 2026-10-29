@@ -1482,6 +1482,98 @@ TEST_F(DecodingTest, AnAlternativeLeftBehindPastItsChunkCatchesUpItsLastChunk) {
   EXPECT_EQ(passes, (std::vector<std::uint32_t>{kChunk, 1}));
 }
 
+// F15a: the prompt's rows of a catch-up drafter's own cache are written as
+// the prompt commits (its attention reads the prompt as the target saw it),
+// not left stale while its first pass starts at the committed positions.
+TEST_F(DecodingTest, APromptCatchUpWritesTheDraftersPromptRowsBeforeItsFirstPass) {
+  auto o = Make({.kind = en::DecodingMode::Kind::kSpeculative,
+                 .drafters = {Mtp(2)},
+                 .combine = en::DecodingMode::Drafters::kCascade,
+                 .row_invariant = false});
+  const std::array<std::uint32_t, 2> prompts = {30, 40};
+  Prefill(prompts);
+  // Slot 1 as a reset leaves it: its state claimed through its positions.
+  o.Reset(1);
+  const std::size_t from = source_->built().size();
+  const std::array<en::PromptCatchUp, 1> work = {
+      {{.slot = 0, .first = 0, .history = history_[0], .restart = true}}};
+  EXPECT_EQ(o.CatchUpPrompt(work), 1U);
+  EXPECT_EQ(o.cursor(0, 0), 30U);
+  EXPECT_EQ(o.cursor(1, 0), 40U);
+  // One headless pass of the prompt's rows.
+  std::vector<std::uint32_t> passes;
+  for (std::size_t i = from; i < source_->built().size(); ++i) {
+    const auto& b = source_->built()[i];
+    if (!b.measuring && b.shape.phase == pl::Phase::kDraft && b.shape.stage == kMtp) {
+      passes.push_back(b.shape.segments.front().rows);
+      EXPECT_FALSE(b.shape.segments.front().want_head);
+    }
+  }
+  EXPECT_EQ(passes, (std::vector<std::uint32_t>{30}));
+  const auto caught = Read(0, kMtp, 0, 0, 30);
+  for (std::uint32_t q = 0; q < 30; ++q)
+    EXPECT_TRUE(Holds(caught[q], 0, q, Truth(q))) << "row " << q;
+  // The reset slot's prompt rows were never written: what the drafter's
+  // attention read before this fix.
+  for (const auto& cell : Read(1, kMtp, 0, 0, 40)) EXPECT_EQ(cell.magic, 0);
+  // Each first pass then starts at the committed positions: one row.
+  const auto report = Unit(o, {0});
+  ASSERT_FALSE(report.outcomes[0].refusal.has_value()) << report.outcomes[0].refusal->what;
+  EXPECT_EQ(report.outcomes[0].kept, 3U);
+  const auto& mtp = draft_rows_[{0, 0}];
+  ASSERT_FALSE(mtp.empty());
+  EXPECT_EQ(mtp.front().position, 30);
+  // A chunk that continues a prompt catches up from where the last stopped
+  // (the verify's anchor here), never before it.
+  history_[0].resize(slots().positions(0));
+  const std::uint32_t cursor = o.cursor(0, 0);
+  EXPECT_EQ(cursor, 30U);
+  const std::array<en::PromptCatchUp, 1> next = {
+      {{.slot = 0, .first = slots().positions(0), .history = history_[0], .restart = false}}};
+  EXPECT_EQ(o.CatchUpPrompt(next), 1U);
+  EXPECT_EQ(o.cursor(0, 0), slots().positions(0));
+  const auto rewritten = Read(0, kMtp, 0, cursor, slots().positions(0) - cursor);
+  for (std::uint32_t r = 0; r < rewritten.size(); ++r)
+    EXPECT_TRUE(Holds(rewritten[r], 0, cursor + r, history_[0][cursor + r])) << "row " << r;
+}
+
+// F15a: the prefill lookahead predicts the catch-up drafter's rows of this
+// chunk and of the next (all but each chunk's first) and builds them beside
+// the target's chunk, instead of planning them on use between chunks.
+TEST_F(DecodingTest, PrefillPredictsTheDraftersCatchUpOfThisChunkAndTheNext) {
+  en::PrefillOrchestrator prefill(*runner_, *composer_, {.chunk_rows = kChunk, .lookahead = 1});
+  const std::array<en::PrefillUnit, 1> units{{{.current = {.slot = 0,
+                                                           .stage = 0,
+                                                           .phase = pl::Phase::kPrefill,
+                                                           .past = 0,
+                                                           .rows = 40,
+                                                           .outputs = 0,
+                                                           .want_head = false},
+                                               .work = {},
+                                               .next = {.rows = 30}}}};
+  const en::PrefillContinuation continuation{.catch_up_stage = kMtp};
+  auto ahead = prefill.Predict(units, {}, continuation, std::array<std::size_t, 1>{0});
+  ASSERT_TRUE(ahead) << llmp::test_support::Failed(ahead).value_or("");
+  std::vector<std::pair<std::uint32_t, std::uint32_t>> drafted;
+  std::size_t last = 0;
+  for (std::size_t i = 0; i < ahead->shapes().size(); ++i) {
+    const auto& shape = *ahead->shapes()[i];
+    if (shape.stage != kMtp) continue;
+    EXPECT_EQ(shape.phase, pl::Phase::kDraft);
+    ASSERT_EQ(shape.segments.size(), 1U);
+    EXPECT_FALSE(shape.segments[0].want_head);
+    drafted.emplace_back(shape.segments[0].past, shape.segments[0].rows);
+    last = i + 1;
+  }
+  EXPECT_EQ(drafted, (std::vector<std::pair<std::uint32_t, std::uint32_t>>{{1, 39}, {41, 29}}));
+  // Built beside the chunk even past the lookahead's one future.
+  EXPECT_GE(ahead->build, last);
+  // Without a catch-up drafter, nothing of its stage is predicted.
+  auto plain = prefill.Predict(units, {}, {}, std::array<std::size_t, 1>{0});
+  ASSERT_TRUE(plain);
+  for (const auto& shape : plain->shapes()) EXPECT_EQ(shape->stage, 0U);
+}
+
 TEST_F(DecodingTest, ASegmentWiderThanItsStagesPerRowStateIsRefused) {
   const std::array<std::uint32_t, 1> prompts = {kChunk};
   Prefill(prompts);

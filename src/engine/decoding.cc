@@ -194,6 +194,83 @@ void DecodingOrchestrator::Reset(std::uint32_t slot) {
   for (std::size_t d = 0; d < mode_.drafters.size(); ++d) cursor_.at(At(slot, d)) = positions;
 }
 
+std::uint32_t DecodingOrchestrator::CatchUpPrompt(std::span<const PromptCatchUp> work) {
+  const SlotLifecycle& slots = runner_->slots();
+  std::uint32_t steps = 0;
+  for (std::size_t d = 0; d < mode_.drafters.size(); ++d) {
+    const DrafterSpec& spec = mode_.drafters[d];
+    // Only a drafter whose committed rows are rewritten from the target's
+    // features keeps prompt rows of its own; a borrowing one reads the
+    // target's state instead.
+    if (!spec.catch_up || spec.shape != DrafterSpec::Shape::kAutoregressive || spec.anchored ||
+        spec.borrows_target)
+      continue;
+    const std::uint32_t chunk = slots.layout(spec.stage).max_rows;
+    std::vector<PendingWork> pending;
+    std::vector<SegmentWork> segments;
+    std::vector<std::uint32_t> of;  // the slot of each pending row set
+    std::vector<std::uint32_t> ends;
+    for (const PromptCatchUp& w : work) {
+      if (w.slot >= slots.slots()) continue;
+      std::uint32_t& cursor = cursor_.at(At(w.slot, d));
+      const std::uint32_t positions = slots.positions(w.slot);
+      if (w.first > positions || w.history.size() < positions) continue;
+      std::uint32_t past = w.restart ? w.first : std::min(cursor, w.first);
+      // A row reads the target's feature before it: only those this chunk's
+      // own step tapped (none at position 0). The chunk's first row would
+      // read the previous step's carried feature, which a conversation
+      // restored after a restart does not hold, so it stays stale (one row
+      // a chunk) on every path alike and a restore continues exactly.
+      if (spec.features) {
+        const auto oldest = runner_->OldestTapFeature(w.slot, spec.stage);
+        if (!oldest) {
+          cursor = positions;  // nothing to read: its rows stay stale
+          continue;
+        }
+        past = std::max({past, *oldest + 1, w.first + 1});
+      }
+      if (past >= positions) {
+        cursor = positions;
+        continue;
+      }
+      if (positions - past > chunk) past = positions - chunk;
+      const std::uint32_t rows = positions - past;
+      pending.push_back({.slot = w.slot,
+                         .stage = spec.stage,
+                         .phase = pl::Phase::kDraft,
+                         .past = past,
+                         .rows = rows,
+                         .outputs = 0,
+                         .want_head = false,
+                         .greedy = false,
+                         .row_invariant = false,
+                         .alone = false});
+      segments.push_back(
+          {.tokens = w.history.subspan(past, rows),
+           .bytes = {},
+           .feature = spec.features
+                          ? FeatureFrom{.kind = FeatureFrom::Kind::kTap, .position = past - 1}
+                          : FeatureFrom{},
+           .history = runner_->ReadsHistory(spec.stage) ? w.history.first(positions)
+                                                        : std::span<const std::int32_t>{}});
+      of.push_back(w.slot);
+      ends.push_back(positions);
+      // Until it runs, the drafter's state stops where these rows start.
+      cursor = past;
+    }
+    if (pending.empty()) continue;
+    if (spec.draft_wave_max > 0 && pending.size() > spec.draft_wave_max) {
+      for (PendingWork& p : pending) p.alone = true;
+    }
+    const WaveReport wave = RunWave(*runner_, *composer_, pending, segments, /*advance=*/false);
+    steps += wave.steps;
+    for (std::size_t j = 0; j < pending.size(); ++j) {
+      if (!wave.outcomes[j].refusal) cursor_.at(At(of[j], d)) = ends[j];
+    }
+  }
+  return steps;
+}
+
 std::uint32_t DecodingOrchestrator::cursor(std::uint32_t slot, std::size_t drafter) const {
   return cursor_.at(At(slot, drafter));
 }

@@ -90,7 +90,7 @@ clock, per cell:
 | Metric | Definition |
 | --- | --- |
 | `prefill_s` | release to the last request's first streamed token |
-| `decode_tok_s` | the sum of the requests' rates in the window where every request decodes (after the last first token, before the first last token), each measured between its own streamed chunks inside the window (a chunk is a step, worth its request's mean tokens a chunk), so a chunk landing either side of the window's edge does not move it. With one request: (tokens − 1) over its first-to-last chunk span |
+| `decode_tok_s` | the sum of the requests' rates in the window where every request decodes (after the last first token, before the first last token), each measured between its own streamed chunks inside the window, so a chunk landing either side of the window's edge does not move it; a chunk carries its share of the reply's tokens after its first chunk in proportion to its text's length (since 2026-10-29, below). With one request: (tokens − 1) over its first-to-last chunk span |
 | `wall_tok_s` | all completed tokens over release to the last request's end |
 | `peak_gib` (a run) | the largest drop of whole-node `MemAvailable`, sampled every 20 ms from before the process starts until it has exited |
 
@@ -112,6 +112,24 @@ a later commit built as the old arm) declares its own pin the same way,
 This checks repeatability within an implementation, not image quality or
 bit equality with another implementation. Workload, timing and stopping rules
 are unchanged.
+
+**Chunk weights (amended 2026-10-29, F15a).** Until then a window's chunk
+counted at its reply's mean tokens a chunk, on the assumption that a chunk is a
+decode step. `53c2610b` breaks it: a request decoding beside another's prompt
+streams several tokens a chunk until that prompt ends (before the common window),
+then one a chunk. Its mean (about 1.10 tokens a chunk at DeepSeek C2) inflated
+its in-window rate by about 10%, although every in-window chunk carried one
+token; the current runtime streams a chunk a token throughout. F10b's DeepSeek
+C2 "+10.1%" was this, not a slower decode: the in-window step cadence was 1.2%
+faster on the current tree. Since then the client records each chunk's text
+length (`chunk_chars`, never the text), and `decode_rate` gives a chunk its
+share of the reply's tokens after the first chunk by that length. It is exact
+when the window holds the whole reply (C1) and when every chunk carries the
+same text a token, and a chunk coalesced outside the window weighs nothing
+inside it. A record without lengths keeps the earlier rule, and `verdict` refuses
+(INVALID) a family whose runs mix the two, so every comparison since applies one
+measure to both arms. Records before 2026-10-29 have no lengths and are judged
+by the earlier rule only among themselves.
 
 **Families** (`speed_gate.py families`):
 

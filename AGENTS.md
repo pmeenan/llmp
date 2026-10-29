@@ -438,8 +438,9 @@ reviewed ([M3.5 record](docs/m35-record.md)): the physical memory modes
 generic mapping-driven import route (D-125), numerics as per-device component
 data (D-126), the image pipeline as data, the IR trait table, bounded
 tool-call interpretation on the chat route ([tool-calls.md](docs/tool-calls.md)),
-and the 2026-10 foundation review's fixes F1–F13. Still open: the test-suite
-audit (F14), the closeout checks (F10b), U7 (fast paths by capability) and U9,
+and the 2026-10 foundation review's fixes F1–F15, with the final checks
+against M3.6 passing after F15. Still open: the workstation tier
+confirmations (F10), U7 (fast paths by capability) and U9,
 then M3.5's remaining families, formats, the importer's per-family
 normalizers, MLX serving qualification, batching gaps, media inputs, Clef/Jev
 and media generation routes (D-101), plus the items taken from

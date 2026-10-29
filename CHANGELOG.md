@@ -150,6 +150,20 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Qwen3.8's MTP drafter writes its own cache for every prompt row again, as
+  each prompt chunk commits, so its attention reads the prompt as the target
+  saw it. Since the repeat-pending ledger's removal those rows had stayed
+  stale, which cut drafts accepted on 8K prompts from 79% to 51% and native
+  decode by 21–31%. Acceptance now equals M3.6's, and decode is back at or
+  above M3.6 at C1, C2 and C4.
+- Prefill lookahead no longer records a prompt's remainder or tail chunk
+  ahead (it ran once, and recording it held the device about 110 ms before
+  Qwen3.8 GGUF's first token), and a speculative cohort's last prompt unit
+  builds ahead only the ready cohort's continuation instead of every later
+  exit's, joined with the decoding peers only when the verify width is fixed
+  (Qwen3.8 native C4 prefill built a hundred extra plans its adaptive-depth
+  waves never used). The MTP drafter's prompt catch-up is planned beside
+  each chunk.
 - A running node no longer refuses a fresh plan's execution metadata
   (its report inventory, a source's construction) because the physical
   availability reads low: once the node has started, that growth is judged

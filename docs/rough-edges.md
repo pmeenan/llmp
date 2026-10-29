@@ -225,7 +225,15 @@ clean cache without swapping. Workaround: start timing runs before a
 build's or import's cache builds up, or drop the clean cache of the files
 it read first (`POSIX_FADV_DONTNEED` on each regular file needs no root;
 skip FIFOs and sockets, which block an `open`). Related: RE-052, the same
-cache tripping the guard.
+cache tripping the guard. *Also (2026-10-29, F15a):* it slows more than the
+load. A Qwen3.8 native probe started on `spark-b` right after a
+`spark-native` build, without the drop, decoded its three 8K C1 requests
+at 9.0, 19.2 and 22.9 tok/s and prefilled them in 26.4, 21.3 and 12.4 s;
+the same binary and configuration after the drop gave 52.1, 53.2 and
+43.1 tok/s and 9.7, 3.6 and 3.8 s. An earlier run at `draft_rows = 2`
+(7.6–9.8 tok/s) first looked like a depth bug; the depth makes no
+difference (51.0 and 53.1 tok/s after the drop, M3.6 51.2 and 53.1). Drop
+the cache before any timing probe, not just before gates.
 
 ## RE-056: Gemma 4 instruct checkpoints are not raw-text language models  (2026-10-15, status: worked-around)
 

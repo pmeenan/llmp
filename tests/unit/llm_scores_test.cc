@@ -466,6 +466,41 @@ TEST_F(LlmScores, ResumableScoringMatchesSerialRowsInjectionAndLastHead) {
   EXPECT_EQ(State(0, 1), State(1, 1));
 }
 
+// F15a: a prompt that will generate writes its catch-up drafter's rows as
+// each chunk commits (CatchUpPrompt: every row but each chunk's first, which
+// would read a carried feature); a score that generates nothing leaves them.
+TEST_F(LlmScores, OnlyAPromptThatMayGenerateWritesItsDraftersPromptRows) {
+  StartScores(true, 4, 64, 8);
+  const auto prompt = Prompt(20, 9);
+  std::vector<float> last;
+  ASSERT_TRUE(BranchAt(0).ScorePrompt(prompt, last,
+                                      [](std::int32_t, std::span<const float>) { return true; }));
+  std::uint32_t reused = 0;
+  ASSERT_TRUE(BranchAt(1).PreparePrompt(prompt, 0, last, reused));
+  const auto& slots = llm_->runner().slots();
+  const auto& kv = slots.layout(1).items.at(0);
+  const auto cell = [&](std::uint32_t slot, std::uint32_t q) {
+    ts::FakeCell out;
+    std::memcpy(&out,
+                reinterpret_cast<const void*>(slots.live(slot, 1).base(0) + kv.offset +
+                                              q * kv.contract.cell_bytes),
+                sizeof(out));
+    return out;
+  };
+  for (std::uint32_t q = 0; q < prompt.size(); ++q) {
+    EXPECT_EQ(cell(0, q).magic, 0) << "scored row " << q;
+    const auto drafted = cell(1, q);
+    if (q % 8 == 0) {
+      EXPECT_EQ(drafted.magic, 0) << "chunk's first row " << q;
+      continue;
+    }
+    EXPECT_EQ(drafted.magic, ts::kFakeMagic) << "row " << q;
+    EXPECT_EQ(drafted.position, static_cast<std::int32_t>(q));
+    EXPECT_EQ(drafted.slot, 1);
+    EXPECT_EQ(drafted.token, prompt[q]);
+  }
+}
+
 TEST_F(LlmScores, PurePromptSessionsMayFillTheEntireContextButNeverExceedIt) {
   StartScores();
   for (const bool scoring : {false, true}) {

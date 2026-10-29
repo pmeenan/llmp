@@ -2948,14 +2948,40 @@ TEST_F(PrefillTest, ChunkedJoinedPromptsMatchOneUnchunkedRun) {
   ExpectPrompt(0, a);
   ExpectPrompt(1, b);
   // The lookahead: the first unit built the second's and the third's plans
-  // (both futures) while it ran; the second captured the third's recording
-  // beside its own run and prepared its fresh extent (positions past 512),
-  // so the third replayed on its first run.
+  // (both futures) while it ran; the second prepared the third's fresh
+  // extent (positions past 512). The third is the prompts' remainder (188
+  // and 88 rows), a shape that runs once, so nothing recorded it ahead
+  // (F15a: recording a remainder or tail ahead only delayed it).
   const auto& stats = runner_->lookahead_stats();
   EXPECT_EQ(stats.built, 2U);
   EXPECT_EQ(stats.cached, 2U);
-  EXPECT_GE(stats.captured_ahead, 1U);
+  EXPECT_EQ(stats.captured_ahead, 0U);
   EXPECT_GE(stats.prepared, 1U);
+}
+
+TEST_F(PrefillTest, AFullNextChunkIsRecordedBesideTheCurrentRunAndReplays) {
+  const auto a = Tokens(768, 1000);
+  const auto b = Tokens(768, 2000);
+  auto caps = Caps();
+  caps.join_prefill = true;
+  caps.max_step_rows = 0;
+  caps.joined_read_align = 0;
+  std::uint32_t units = 0;
+  const auto chunked = Prefill({{0, a}, {1, b}}, caps,
+                               {.chunk_rows = 256,
+                                .lookahead = 2,
+                                .capture_ahead = true,
+                                .prepare_ahead = true,
+                                .state_only = true},
+                               &units);
+  EXPECT_EQ(units, 3U);
+  ASSERT_EQ(chunked[0].size(), 1U);
+  EXPECT_EQ(chunked[0][0].hash, Hash(a));
+  EXPECT_EQ(chunked[1][0].hash, Hash(b));
+  // The second unit recorded the third's full chunk beside its own run, so
+  // the third replayed on its first run.
+  const auto& stats = runner_->lookahead_stats();
+  EXPECT_GE(stats.captured_ahead, 1U);
   EXPECT_GE(runner_->graph_stats().replayed, 1U);
 }
 
@@ -3618,6 +3644,64 @@ TEST_F(PrefillTest, SpeculativeMultiSlotContinuationPredictsJoinedVerifyAndExitS
   EXPECT_EQ(ahead->shapes()[3]->phase, pl::Phase::kDecode);
   ASSERT_EQ(ahead->shapes()[3]->segments.size(), 1U);
   EXPECT_EQ(ahead->shapes()[3]->segments[0].slot, 0U);
+}
+
+// F15a: a speculative cohort's last prompt unit builds ahead only the whole
+// ready cohort's continuation (each verify width), never every later exit's;
+// those plan on use, outside the measured prefill.
+TEST_F(PrefillTest, ASpeculativeCohortBuildsAheadOnlyItsOwnContinuation) {
+  auto composer = en::WaveComposer::Make(Caps(), kContext, 256);
+  ASSERT_TRUE(composer);
+  en::PrefillOrchestrator prefill(*runner_, *composer, {.lookahead = 1});
+  const std::array<en::PrefillUnit, 1> units{{{.current = ::Prefill(0, 60, 4),
+                                               .work = {},
+                                               .next = {},
+                                               .prompt_end = 64,
+                                               .remaining = 20,
+                                               .verify_greedy = true,
+                                               .generation_expected = true}}};
+  const std::array<en::PrefillPeer, 2> peers{
+      {{.next = Decode(1, 300), .ready = true, .verify_greedy = true, .remaining = 8},
+       {.next = Decode(2, 200), .ready = true, .verify_greedy = true, .remaining = 16}}};
+  const auto plain = [](std::uint32_t, bool) { return false; };
+  // A fixed verify width (a block drafter's): the joined cohort is predicted.
+  const en::PrefillContinuation fixed{
+      .speculate = true, .verify_rows = 4, .min_verify_rows = 4, .plain = plain};
+  auto ahead = prefill.Predict(units, peers, fixed, std::array<std::size_t, 1>{0});
+  ASSERT_TRUE(ahead) << ts::Failed(ahead).value_or("");
+  // Every exit is still predicted (a later unit's lookahead uses them) ...
+  ASSERT_GT(ahead->shapes().size(), 2U);
+  ASSERT_EQ(ahead->shapes()[0]->segments.size(), 3U);
+  // ... but only the three-owner cohort's continuation is built now.
+  EXPECT_EQ(ahead->build, 1U);
+  // Adaptive per-owner widths: no uniform-width joined shape would match a
+  // wave, so only the prompt's owner is predicted.
+  const en::PrefillContinuation adaptive{
+      .speculate = true, .verify_rows = 4, .min_verify_rows = 1, .plain = plain};
+  auto own = prefill.Predict(units, peers, adaptive, std::array<std::size_t, 1>{0});
+  ASSERT_TRUE(own) << ts::Failed(own).value_or("");
+  ASSERT_FALSE(own->shapes().empty());
+  for (const auto& shape : own->shapes()) {
+    ASSERT_EQ(shape->segments.size(), 1U);
+    EXPECT_EQ(shape->segments[0].slot, 0U);
+  }
+}
+
+// F15a: a prompt unit records the next unit's graph ahead only when that unit
+// is a full chunk (a shape that recurs), never a remainder or a few-row tail.
+TEST_F(PrefillTest, OnlyAFullNextChunkIsRecordedAhead) {
+  auto composer = en::WaveComposer::Make(Caps(), kContext, 256);
+  ASSERT_TRUE(composer);
+  en::PrefillOrchestrator prefill(*runner_, *composer, {.chunk_rows = 16});
+  for (const std::uint32_t next : {16U, 5U}) {
+    const std::array<en::PrefillUnit, 1> units{
+        {{.current = ::Prefill(0, 0, 16, false), .work = {}, .next = {.rows = next}}}};
+    auto ahead = prefill.Predict(units, {}, {}, std::array<std::size_t, 1>{0});
+    ASSERT_TRUE(ahead) << ts::Failed(ahead).value_or("");
+    ASSERT_FALSE(ahead->shapes().empty());
+    EXPECT_EQ(ahead->shapes()[0]->segments[0].rows, next);
+    EXPECT_EQ(ahead->capture_ahead, next == 16U) << next << " rows";
+  }
 }
 
 TEST_F(PrefillTest, CanonicalSourceBoundaryReplacesFamilySpecificOffsets) {

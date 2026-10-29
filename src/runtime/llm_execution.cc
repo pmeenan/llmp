@@ -188,6 +188,9 @@ Status Llm::Setup() {
   context_ = std::min(context_, layout.context);
   max_rows_ = std::max<std::uint32_t>(std::min(max_rows_, layout.max_rows), 1);
   if (caps_.max_segment_rows != 0) max_rows_ = std::min(max_rows_, caps_.max_segment_rows);
+  // A full chunk as the prompts cut it (tiled, PrefillRows): the prefill
+  // lookahead records ahead only a next chunk of these rows.
+  prefill_.chunk_rows = PrefillRows(max_rows_, max_rows_);
   auto composer = en::WaveComposer::For(caps_, runner_->slots());
   if (!composer) return Error(std::format("model {}: {}", name_, composer.error()));
   composer_.emplace(std::move(*composer));
@@ -1048,13 +1051,14 @@ Status Llm::RunPrefill(std::span<PreparedPrefill> prepared) {
   if (auto built = Built(); !built) return built;
   constexpr std::uint64_t kAllocatorMetadata = 64;
   std::uint64_t bytes = 0, peer_bytes = 0;
-  if (__builtin_mul_overflow(std::uint64_t{prepared.size()},
-                             std::uint64_t{sizeof(en::PrefillUnit) + sizeof(std::size_t)},
-                             &bytes) ||
+  if (__builtin_mul_overflow(
+          std::uint64_t{prepared.size()},
+          std::uint64_t{sizeof(en::PrefillUnit) + sizeof(std::size_t) + sizeof(en::PromptCatchUp)},
+          &bytes) ||
       __builtin_mul_overflow(std::uint64_t{active_branches_.size()},
                              std::uint64_t{sizeof(en::PrefillPeer)}, &peer_bytes) ||
       __builtin_add_overflow(bytes, peer_bytes, &bytes) ||
-      __builtin_add_overflow(bytes, 3 * kAllocatorMetadata, &bytes))
+      __builtin_add_overflow(bytes, 4 * kAllocatorMetadata, &bytes))
     return Error("prefill adapter metadata extent overflows");
   auto metadata_payment = node_ref_.PrepayHost(bytes);
   if (!metadata_payment) {
@@ -1152,15 +1156,28 @@ Status Llm::RunPrefill(std::span<PreparedPrefill> prepared) {
          .sampling = sampling(*branch),
          .remaining = RemainingGenerationRowsFor(*branch)});
   }
+  // The drafter whose prompt rows CatchUpPrompt writes after each chunk.
+  std::uint16_t catch_up_stage = 0;
+  if (speculative_) {
+    for (const auto& d : drafter_specs_) {
+      if (d.catch_up && d.features && d.shape == en::DrafterSpec::Shape::kAutoregressive &&
+          !d.anchored && !d.borrows_target) {
+        catch_up_stage = d.stage;
+        break;
+      }
+    }
+  }
   const en::PrefillContinuation continuation{
       .speculate = speculate_ && verify_rows_ > 1,
       .row_invariant = speculative_ && speculative_->mode().row_invariant,
       .verify_rows = verify_rows_,
       .min_verify_rows = branch_depth_ ? 1U : verify_rows_,
-      .plain = [&](std::uint32_t owners, bool sampled) {
-        return !speculate_ || (wave_mode_ && wave_mode_->Choose(owners, sampled) ==
-                                                 execution::AdaptiveWaveMode::Mode::kPlain);
-      }};
+      .plain =
+          [&](std::uint32_t owners, bool sampled) {
+            return !speculate_ || (wave_mode_ && wave_mode_->Choose(owners, sampled) ==
+                                                     execution::AdaptiveWaveMode::Mode::kPlain);
+          },
+      .catch_up_stage = catch_up_stage};
   en::PrefillOrchestrator prefill(*runner_, *composer_, prefill_);
   const auto report = prefill.StepPrepared(units, peers, continuation);
   if (report.refusal) {
@@ -1172,6 +1189,9 @@ Status Llm::RunPrefill(std::span<PreparedPrefill> prepared) {
     return Error(report.refusal->what);
   }
   std::size_t completed = 0;
+  // The prompt rows each committed chunk gives its drafters (CatchUpPrompt).
+  std::vector<en::PromptCatchUp> drafted_prompts;
+  drafted_prompts.reserve(units.size());
   for (std::size_t j = 0; j < units.size(); ++j) {
     auto& unit = prepared[of[j]];
     const auto& outcome = report.outcomes()[j];
@@ -1183,7 +1203,20 @@ Status Llm::RunPrefill(std::span<PreparedPrefill> prepared) {
     }
     ++completed;
     unit.retired = true;
-    if (!unit.generation) ResetDrafters(units[j].current.slot);
+    if (!unit.generation) {
+      const auto slot = units[j].current.slot;
+      // A score that generates nothing leaves its drafters' rows stale.
+      const bool generates =
+          !unit.session || !unit.session->scoring() || unit.session->has_continuation();
+      if (speculative_ && generates) {
+        const bool restart = unit.past == 0 || (slot < reset_.size() && reset_[slot]);
+        if (slot < reset_.size()) reset_[slot] = false;
+        drafted_prompts.push_back(
+            {.slot = slot, .first = unit.past, .history = unit.all, .restart = restart});
+      } else {
+        ResetDrafters(slot);
+      }
+    }
     if (unit.chosen) {
       std::int32_t token = 0;
       if (outcome.outputs.size() != sizeof(token)) {
@@ -1223,6 +1256,9 @@ Status Llm::RunPrefill(std::span<PreparedPrefill> prepared) {
     }
     unit.result = {};
   }
+  // Each drafter that keeps prompt rows of its own writes them now, while
+  // the target's tap still holds their features.
+  if (!drafted_prompts.empty()) speculative_->CatchUpPrompt(drafted_prompts);
   if (completed > 1 && report.steps < completed) {
     const bool mixed =
         std::ranges::any_of(prepared, [](const auto& unit) { return unit.generation != nullptr; });

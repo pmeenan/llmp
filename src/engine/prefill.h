@@ -104,6 +104,10 @@ struct PrefillContinuation {
   // Pure choice from the same configured adaptive policy used for decoding.
   // Empty means plain unless speculation is requested.
   std::function<bool(std::uint32_t, bool)> plain{};
+  // A drafter stage whose prompt rows are rewritten after each prompt chunk
+  // (DecodingOrchestrator::CatchUpPrompt: its rows after the chunk's first),
+  // whose plans are then predicted beside the chunk's (0: none).
+  std::uint16_t catch_up_stage = 0;
 };
 
 struct PrefillOutcome {

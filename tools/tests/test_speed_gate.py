@@ -697,10 +697,79 @@ class Cells(unittest.TestCase):
         b = self.request(0.0, [1.001 + 0.5 * i for i in range(9)], 5.2, 9)
         self.assertAlmostEqual(gate.cell_metrics([a, b])["decode_tok_s"], 4.0, places=2)
 
+    def test_chunk_lengths_keep_coalescing_outside_the_window_from_weighing_it(self):
+        # a's server coalesces three tokens a chunk while b prefills (1.5 and 2.0), then
+        # streams one token a chunk; b streams one a chunk. The window is [2, 4].
+        a = self.request(0.0, [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0], 4.1, 11)
+        a["chars"] = [5, 15, 15, 5, 5, 5, 5]
+        b = self.request(0.0, [2.0, 2.5, 3.0, 3.5, 4.0, 4.5], 4.6, 6)
+        b["chars"] = [5] * 6
+        # Inside the window each request decodes 4 tokens in 2 s.
+        self.assertAlmostEqual(gate.cell_metrics([a, b])["decode_tok_s"], 4 / 2.0 + 4 / 2.0)
+        # The reply's mean tokens a chunk (the earlier rule) counts a's window chunks at
+        # 10/6 tokens each, which the coalescing outside it inflated.
+        del a["chars"], b["chars"]
+        self.assertAlmostEqual(gate.cell_metrics([a, b])["decode_tok_s"],
+                               10 / 6 * 4 / 2.0 + 4 / 2.0)
+
+    def test_chunk_lengths_count_every_token_after_the_first_alone(self):
+        r = self.request(0.0, [1.0, 1.5, 2.0, 3.0], 3.1, 7)  # three steps of two tokens
+        r["chars"] = [4, 8, 8, 8]
+        self.assertAlmostEqual(gate.cell_metrics([r])["decode_tok_s"], 6 / 2.0)
+        # A step carrying more text carries proportionally more of the tokens.
+        a = self.request(0.0, [1.0, 2.0, 3.0, 4.0, 5.0], 5.1, 9)
+        a["chars"] = [3, 6, 6, 3, 3]  # 8 tokens after the first: 2.67, 2.67, 1.33, 1.33
+        b = self.request(0.0, [2.0, 3.0, 4.0, 5.0, 6.0], 6.1, 5)
+        b["chars"] = [1] * 5
+        # Window [2, 5]: a's chunks at 3, 4 and 5 carry 8 * 12 / 18 tokens in 3 s.
+        self.assertAlmostEqual(gate.cell_metrics([a, b])["decode_tok_s"],
+                               8 * 12 / 18 / 3.0 + 3 / 3.0)
+
     def test_no_shared_window_has_no_decode_rate(self):
         a = self.request(0.0, [1.0, 1.5], 1.6, 2)
         b = self.request(0.0, [2.0, 2.5], 2.6, 2)
         self.assertNotIn("decode_tok_s", gate.cell_metrics([a, b]))
+
+
+class DecodeMeasure(unittest.TestCase):
+    """Every run of a family has one decode-rate measure: chunk lengths recorded in all or
+    none (decode_rate)."""
+
+    def write(self, out, lengths_in):
+        family = gate.FAMILIES["gemma2"]
+        write_blocks(out, "gemma2", [({}, {})] * family.min_blocks)
+        for path in sorted((out / "runs").glob("*.json")):
+            r = json.loads(path.read_text())
+            request = {"error": None, "chunk_times": [1.0, 1.5], "end_time": 1.6,
+                       "send_offset": 0.0, "usage": {"completion_tokens": 2}}
+            if lengths_in(r):
+                request["chunk_chars"] = [3, 3]
+            r["passes"] = [{"warmup": False, "cells": {"C1": {"requests": [request]}}}]
+            r["memory"] = {"peak_gib": 1.0}
+            path.write_text(json.dumps(r))
+
+    def test_records_with_and_without_chunk_lengths_are_not_judged_together(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp)
+            self.write(out, lambda r: r["label"] == "new")
+            report = gate.verdicts(out, "gemma2")["gemma2"]
+            self.assertEqual(report["verdict"], "INVALID")
+            self.assertTrue(any("decode-rate measure" in x for x in report["invalid"]))
+        for every in (True, False):
+            with tempfile.TemporaryDirectory() as tmp:
+                out = pathlib.Path(tmp)
+                self.write(out, lambda r, every=every: every)
+                report = gate.verdicts(out, "gemma2")["gemma2"]
+                self.assertFalse(any("decode-rate measure" in x for x in report["invalid"]))
+
+    def test_a_stream_records_each_chunks_length(self):
+        self.assertEqual(gate.chars_recorded({"passes": []}), set())
+        cell = {"requests": [{"chunk_times": [0.1], "chunk_chars": [2]}]}
+        self.assertEqual(gate.chars_recorded({"passes": [{"cells": {"C1": cell}}]}), {True})
+        # One run whose requests mix the two measures shows both (validity refuses it).
+        cell["requests"].append({"chunk_times": [0.1]})
+        self.assertEqual(gate.chars_recorded({"passes": [{"cells": {"C1": cell}}]}),
+                         {True, False})
 
 
 class Inputs(unittest.TestCase):

@@ -73,7 +73,7 @@ std::expected<StepAhead, std::string> PrefillOrchestrator::Predict(
   };
   if (!mul(std::uint64_t{n} + 1, std::uint64_t{max_verify} - min_verify + 2, events) ||
       !mul(events, std::uint64_t{options_.specialization_lookahead} + 1, events) ||
-      !add(events, 2, events) || !mul(events, n, capacity) ||
+      !add(events, 4, events) || !mul(events, n, capacity) ||
       capacity > static_cast<std::uint64_t>(std::numeric_limits<std::ptrdiff_t>::max()))
     return std::unexpected("candidate extent");
   constexpr std::uint64_t kAllocatorMetadata = 64;
@@ -106,6 +106,7 @@ std::expected<StepAhead, std::string> PrefillOrchestrator::Predict(
     return result;
   };
   bool has_prompt_future = false;
+  bool next_full = false;
   for (std::size_t depth = 0; depth < 2; ++depth) {
     pending.clear();
     for (const auto owner : owners) {
@@ -128,8 +129,50 @@ std::expected<StepAhead, std::string> PrefillOrchestrator::Predict(
     }
     if (!pending.empty()) {
       has_prompt_future = true;
+      // Only a full chunk's shape recurs (the next prompt's same chunk, a
+      // small-chunk family's next one); a remainder or a prompt's few-row
+      // tail runs once, so recording it ahead only delays it (F15a).
+      if (depth == 0)
+        next_full = std::ranges::all_of(
+            pending, [&](const PendingWork& w) { return w.rows >= options_.chunk_rows; });
     }
     if (!compose()) return std::unexpected("prompt geometry");
+  }
+  // The drafter's catch-up after this unit's chunk and after the next
+  // (CatchUpPrompt's rows, the chunk's first excepted), planned ahead beside
+  // the target's chunk instead of on use between chunks (F15a).
+  std::size_t catch_up_end = 0;
+  if (continuation.catch_up_stage != 0 && continuation.catch_up_stage < composer_.stages()) {
+    for (std::size_t depth = 0; depth < 2; ++depth) {
+      pending.clear();
+      for (const auto owner : owners) {
+        const auto& unit = units[owner];
+        if (unit.current.stage != 0 || unit.current.phase != pl::Phase::kPrefill) continue;
+        const auto stages = PredictPrefill(
+            unit.current.past, unit.current.rows, composer_.context(),
+            composer_.caps().max_segment_rows == 0 ? composer_.context()
+                                                   : composer_.caps().max_segment_rows,
+            unit.next);
+        const PrefillStage chunk =
+            depth == 0 ? PrefillStage{.first = unit.current.past, .rows = unit.current.rows}
+                       : stages[0];
+        if (chunk.rows < 2 || chunk.first + 1 > composer_.context(continuation.catch_up_stage) ||
+            chunk.rows - 1 > composer_.context(continuation.catch_up_stage) - chunk.first - 1)
+          continue;
+        pending.push_back({.slot = unit.current.slot,
+                           .stage = continuation.catch_up_stage,
+                           .phase = pl::Phase::kDraft,
+                           .past = chunk.first + 1,
+                           .rows = chunk.rows - 1,
+                           .outputs = 0,
+                           .want_head = false,
+                           .greedy = false,
+                           .row_invariant = false,
+                           .alone = false});
+      }
+      if (!compose()) return std::unexpected("catch-up geometry");
+    }
+    catch_up_end = filled;
   }
   // Add exact ready peers, then owners whose session hints prove a prompt
   // frontier. Missing next geometry can name a checkpoint instead of the end;
@@ -200,14 +243,23 @@ std::expected<StepAhead, std::string> PrefillOrchestrator::Predict(
   // One scenario for the ready cohort, then each actual known peer exit.
   // Unknown generation budgets never become a guessed death at 128 tokens.
   const bool predict_continuation = any_owner_in_cohort;
-  if (predict_continuation && cohort.size() > 1 && composer_.caps().max_segments <= 1) {
+  // A joined cohort is predicted only when its verify width is fixed (a
+  // block drafter's, DSpark's waves, 87e8fb3b): with per-owner adaptive
+  // depths each owner's width is its own, so uniform-width joined shapes
+  // rarely match a wave and only cost plans (Qwen3.8 C4, F15a).
+  const bool joined_widths_known = !continuation.speculate || min_verify == max_verify;
+  if (predict_continuation && cohort.size() > 1 &&
+      (composer_.caps().max_segments <= 1 || !joined_widths_known)) {
     std::erase_if(cohort, [&](const auto& peer) {
       return !std::ranges::any_of(
           owners, [&](auto owner) { return units[owner].current.slot == peer.next.slot; });
     });
   }
   std::uint32_t elapsed = 0;
+  // The candidates through the ready cohort's own continuation (scenario 0).
+  std::size_t through_cohort = 0;
   for (std::size_t scenario = 0; predict_continuation && scenario <= cohort.size(); ++scenario) {
+    if (scenario == 1) through_cohort = filled;
     std::size_t survivors = 0;
     bool sampled = false, one_remaining = false;
     for (const auto& peer : cohort) {
@@ -321,13 +373,21 @@ std::expected<StepAhead, std::string> PrefillOrchestrator::Predict(
     elapsed = *exit;
   }
   for (std::size_t i = 0; i < filled; ++i) inventory.emplace_back(std::move(candidates[i]));
-  const std::uint32_t builds =
+  if (through_cohort == 0) through_cohort = filled;
+  // A speculative cohort's last prompt unit builds its continuation's every
+  // verify width ahead, beside the device's work: the whole ready cohort's
+  // (87e8fb3b keeps the decoding peers in it, which DSpark's C4 waves need),
+  // never each later exit's, which with four owners added a hundred plans
+  // built inside the measured prefill (Qwen3.8 C4 +8%); those are planned on use.
+  std::uint32_t builds =
       !has_prompt_future && predict_continuation && continuation.speculate &&
               continuation.verify_rows > 1 && options_.lookahead > 0
-          ? std::max<std::uint32_t>(options_.lookahead,
-                                    static_cast<std::uint32_t>(inventory.size()))
+          ? std::max<std::uint32_t>(options_.lookahead, static_cast<std::uint32_t>(through_cohort))
           : options_.lookahead;
-  return runner_.Predict(inventory, builds, has_prompt_future && options_.capture_ahead,
+  if (options_.lookahead > 0)
+    builds = std::max<std::uint32_t>(builds, static_cast<std::uint32_t>(catch_up_end));
+  return runner_.Predict(inventory, builds,
+                         has_prompt_future && options_.capture_ahead && next_full,
                          has_prompt_future && options_.prepare_ahead);
 }
 

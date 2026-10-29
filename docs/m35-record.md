@@ -31,13 +31,14 @@ removed and that the files are in Git at `1564dcd6`).
 | `ca32156b..265c821a` | U1–U10 and the memory modes; the first, reviewed fix pass `b7e6143b`, `f8f106a8`, `7c96e27b`, `265c821a` |
 | `265c821a..1564dcd6` (2026-10-28) | The foundation review's F1–F13 fixes, one reviewed commit each |
 | `1564dcd6..c36589b2` (2026-10-28) | F14 and F10a; F10b's final checks ran on `c36589b2` (2026-10-29) |
+| `c36589b2..` (2026-10-29) | F10b's record, then F15's fixes of what it found |
 
 Open at this record: U7 (fast paths by capability; only U7a's first GDN-gate
-spike is done) and U9 (M4 entry); the regressions F10b's final checks found
-([campaign final verification](#campaign-final-verification-f10b-2026-10-29):
-Qwen3.8 native decode, DeepSeek plain C2 decode, Qwen3.8 GGUF C1 prefill, the
-Gemma 4 31B assistant screen and the changed prompt scores); the families,
-formats and media items that M3.5 has always owned ([plan](plan.md)).
+spike is done) and U9 (M4 entry); the workstation `native`/`cpu-asan` tier
+confirmations of F10; the lowering's physical-placement cost (F15, below); the
+families, formats and media items that M3.5 has always owned ([plan](plan.md)).
+The regressions F10b's final checks found are fixed or explained by F15
+([F15](#f15-regressions-found-by-the-final-checks-2026-10-29)).
 
 ## Memory modes and U1–U10
 
@@ -92,7 +93,9 @@ fixed; each slice landed as one reviewed commit, with verification in batches
 | F13 follow-up | `1564dcd6` | Padding head rows bounded on the device in the heads component: every greedy argmax reads each row's first tokenizer-size logits in place, so padded heads (Qwen3.8, Qwen2.5) keep device greedy in joined waves (RE-050). |
 | F10a | `c36589b2` | Hygiene and docs: see below. |
 | F14 | `faa99893` | The test-suite audit: dead helpers out, duplicated bodies shared. |
-| F10b | this commit | The closeout checks: [campaign final verification](#campaign-final-verification-f10b-2026-10-29); not passed. |
+| F10b | `79c6586a` | The closeout checks: [campaign final verification](#campaign-final-verification-f10b-2026-10-29); not passed. |
+| F15b | `3c9a938f` | Prompt scores explained (RE-063); wide-output GLU rank rows (an `n` band): the Gemma 4 31B assistant screen −2.01% against M3.6. |
+| F15a | this commit | MTP prompt catch-up, prefill lookahead bounds, a chunk-weighted gate decode rate: every F10b speed failure passes against M3.6. |
 
 ## F10a hygiene (2026-10-28)
 
@@ -308,6 +311,41 @@ Raw records, logs, the frozen arms, the `53c2610b` build tree and the bisect
 tree were on the Sparks under `~/jobs/f10b` and `~/src` and are deleted
 (AGENTS.md, rule 8); this section is the aggregate.
 
+## F15: regressions found by the final checks (2026-10-29)
+
+Two slices, F15a on `spark-b` and F15b on `spark`, each with one review pass,
+checked together on the merged tree. Gates are tier-1 (2-block ABBA, +0.5% a
+metric) against `53c2610b` rebuilt from Git and serving `m36-v1-artifacts`,
+as in F10b; positive is slower.
+
+| Item (F10b) | Root cause | Fix | Gate after |
+| --- | --- | --- | --- |
+| Qwen3.8 native + MTP decode, about 24% lower | `dae227dd` (U2) deleted the repeat-pending prompt companions as test-only; serving needed them, so the MTP drafter's KV for prompt rows was never written (acceptance 79% → 51%) | `DecodingOrchestrator::CatchUpPrompt` after each prompt chunk writes the drafter's rows from the target's taps (each chunk's first row excepted, on every path); score-only prompts skip it | acceptance equal to M3.6; 4 blocks, every metric faster (decode −0.26/−0.21/−0.33%, prefill −0.91/−0.90/−1.49%, wall −0.61/−0.28/−0.25%) |
+| Qwen3.8 native C4 prefill (+5.8%, +8.2% with the catch-up) | `87e8fb3b` made a speculative cohort's last prompt unit build plans for every later exit and joined verify shapes of one width, which adaptive MTP depths never match | `Predict` builds only the ready cohort's continuation, and joins decoding peers only when the verify width is fixed (DSpark's block waves, which `87e8fb3b` was for) | as above |
+| Qwen3.8 GGUF C1 prefill +1.80% | the lookahead recorded the prompt's one-row tail graph ahead (135 ms of GPU idle against 25.6 ms) | a chunk records the next chunk's graph ahead only when that chunk is full (the full chunk as `PrefillRows` cuts it) | +0.40% (C2/C4 −0.96/−0.23%, decode −4.9% to −13.0%) |
+| DeepSeek plain C2 decode +10% | not the engine: `53c2610b` coalesced tokens into SSE chunks before the common window, and `decode_rate` gave every chunk the reply's mean tokens per chunk | `speed_gate.py` records each chunk's text length and credits in-window chunks by it; mixed records are INVALID ([protocol](experiments/m36-baselines/README.md)) | +0.77% by length (noisier where the arms' replies differ, U4's transfer); window step pace +0.10% (C2), −2.48% (C4), the verdict used |
+| Gemma 4 31B assistant screen +3.58% | `3cf3118c` bound Q8 vector-reduction evidence to every GB10 site, moving the 31B's wide FFN GLU (5376×21504) to `llmp.vecq`'s fused GLU; F7's rows, decided on narrower shapes, kept it at 2-4 rows | fusion rank rows gain an output (`n`) band; GLU rows for 8,192+ outputs split from 3 rows (Q4_K, Q6_K) or 4 (Q5_K) ([wide outputs](experiments/vecq-columns/README.md#wide-outputs-2026-10-29)) | 8 blocks −2.01% [−2.28, −1.74]; Gemma 4 31B every metric faster (C4 decode −6.00%) |
+| Prompt scores (Gemma 4 PPL +13–14%, Qwen3.8 native +4.78%) | not a defect: since `e6c3617a` literal prompts score in `prefill_chunk` chunks instead of one row a step, and each arm is bit-exact to llama.cpp at its own geometry | none; RE-063 (compare scores at one `prefill_chunk`), [runtime-serving](runtime-serving.md) corrected | `prefill_chunk = 1` reproduces M3.6's digests |
+
+Also gated on the round-1 binary: DSpark (decode −10.1% to −19.3%, wall
+−2.8% to −4.2%), Gemma 2 2B (every metric faster) and Llama 3.2 1B Q4_K_M
+against `79c6586a` (level; F15b's intermittent C4 prefill 60 ms did not recur
+in 2 blocks). No frozen digest changed. The `draft_rows = 2` slow decode seen
+once was a probe started after a build without the cache drop (RE-057).
+
+Left as a follow-up: a target plan's lowering costs about 7 ms more than at
+`53c2610b` (46 → 59 ms a Qwen3.8 prefill plan at HEAD, 73 ms at `d3374c67`):
+`d3374c67`'s physical placement runs twice (`planner::PlaceActivations`'
+greedy fit), and its first result lays out DeepSeek's HC carries, so it cannot
+simply be skipped.
+
+Checked on the merged tree (2026-10-29): `spark-b`, the shared set 3,974 of
+3,974, `-L models -R Qwen38` 32 of 32 and `Dsv4` 21 of 21; `spark`, the
+targeted rank, lowering, prefill, decoding and scoring tests 343 of 343,
+`Gemma4` 20 of 20 and `GemmaAssistantV1|GemmaNativeV1|DenseDecoder|Gemma31`
+4 of 4; no skips. The swap table was not rerun: its exact continuations are
+the kept-conversation model tests above.
+
 ## Owner decisions and standing rules so far
 
 - D-124 accepted 2026-10-25 as amended; D-121 (choose the better architecture,
@@ -321,8 +359,8 @@ tree were on the Sparks under `~/jobs/f10b` and `~/src` and are deleted
 ## Handed on
 
 Carried by the plan: U7 (b-e) and U9; the families, formats, media and
-tool-call qualification work; the regressions and score change F10b found
-(above). Candidates noted while writing
+tool-call qualification work; the lowering's physical-placement cost (F15).
+Candidates noted while writing
 this record: `docs/experiments/fusion-ranks/READY-MATRIX-RESULTS.md` (86 KB) and
 the other U6 reports repeat registration hashes and review wording and could be
 reduced to their tables; patch 0010 of GGML can be narrowed to the one dispatch

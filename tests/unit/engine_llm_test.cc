@@ -1570,6 +1570,55 @@ TEST_F(EngineLlmTest, RecoveryKeepsTheSpilledConversationAndForgetsTheRest) {
   EXPECT_EQ(again.out.tokens, Chain(fresh, 5));
 }
 
+// F15a: a chunk bound that is not a whole number of row tiles cuts tiled
+// chunks (PrefillRows: 1024 of 1030), which are still full chunks, so the
+// next one is recorded beside the current run and replays.
+TEST_F(EngineLlmTest, ATiledFullChunkIsRecordedAheadOfItsUse) {
+  context_rows_ = 4096;
+  chunk_rows_ = 1030;
+  Start(false, false);
+  const auto prompt = Prompt(3 * 1024 + 100, 7);
+  const Turned turn = Turn(0, prompt, 2);
+  EXPECT_EQ(turn.out.tokens, Chain(prompt, 2));
+  EXPECT_GE(llm_->runner().lookahead_stats().captured_ahead, 1U);
+}
+
+// F15a: the drafter's catch-up after a prompt chunk (CatchUpPrompt) is a
+// step of its own. One that fails after it queued its work faults the
+// cohort although the chunk itself retired: the prompt fails, and after the
+// fence the model recovers, prefills it again and drafts.
+TEST_F(EngineLlmTest, APromptCatchUpOfUnknownEffectFailsThePromptAndRecovers) {
+  native_outputs_ = true;
+  Start(true, true);
+  const auto prompt = Prompt(2 * kChunk + 5, 3);
+  rt::Llm::Branch& branch = BranchAt(0);
+  Open({&branch});
+  source_->options().positioned = true;  // eager runs, so the fault reaches them
+  source_->options().fail_run = kn::StepError::kUnknown;
+  source_->options().fail_phase = pl::Phase::kDraft;
+  const auto before = source_->executed();
+  std::vector<float> last;
+  std::uint32_t reused = 0;
+  EXPECT_FALSE(branch.PreparePrompt(prompt, 0, last, reused));
+  EXPECT_GT(source_->executed(), before);  // the queued catch-up ran
+  EXPECT_FALSE(llm_->runner().slots().usable(0));
+  source_->options().fail_run.reset();
+  source_->options().fail_phase.reset();
+  std::ignore = node_->EndRequest(0);
+  ASSERT_TRUE(node_->Job(
+      llmp::catalog::Closure{},
+      [](llmp::providers::NativeStream) { return llmp::scheduler::JobResult::kQueued; },
+      "fencing the test's stream", 0));
+  auto recovered = llm_->RecoverInPlace();
+  ASSERT_TRUE(recovered) << Why(recovered);
+  EXPECT_TRUE(branch.history().empty());
+  const Turned again = Turn(0, prompt, 12);
+  EXPECT_EQ(again.reused, 0U);
+  EXPECT_EQ(again.out.tokens, Chain(prompt, 12));
+  EXPECT_GT(again.out.drafted, 0U);
+  EXPECT_GT(again.out.accepted, 0U);
+}
+
 // Kept across a restart (D-105) with a spill file a stage (record version
 // 2): the first process spills a conversation with a turn checkpoint and
 // its record is written; the second checks the record and every stage's

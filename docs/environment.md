@@ -503,11 +503,11 @@ The models tests and the gate tools (`tools/speed_gate.py`,
 artifacts from one place: `LLMP_TEST_V1_STORE` if set, else
 `~/.local/share/llmp/artifacts` (`LLMP_TEST_MODELS` moves the base directory
 for the tests). On both Sparks `artifacts` is a link to the store the
-M3.5 work installed into (`u2-v1-artifacts`). The older `m36-v1-artifacts` is
-read only by the M3.6 old arm (`53c2610b` built from Git) in the final speed
-checks ([m35-record](m35-record.md#campaign-final-verification-f10b-2026-10-29));
-the owner approved deleting it once the regressions they found are settled. A
-new store generation is installed by pointing the
+M3.5 work installed into (`u2-v1-artifacts`). The older `m36-v1-artifacts`,
+which only the M3.6 old arm (`53c2610b` built from Git) read in M3.5's final
+speed checks, was deleted on both Sparks with the owner's approval once F15's
+gates passed (2026-10-29), with the old arm's build trees; a later comparison
+with M3.6 re-imports with `53c2610b`'s importer. A new store generation is installed by pointing the
 link, not by renaming files in tests or tools.
 
 ### Retired Spark data (2026-10-23)
@@ -553,7 +553,13 @@ or a record of raw outputs, and the git checkouts under `~/scratch` and
 open in no process), `spark`'s `~/src/vllm-perf` (a fork checkout with a
 weight-loader experiment) and `spark-b`'s three `~/scratch/m36-*-recipe*`
 checkouts (each holding the `patch_ple_offload.py` change that
-`acceptance/mia-fast` keeps) were removed, uncommitted changes included. The workstation has
+`acceptance/mia-fast` keeps) were removed, uncommitted changes included. On
+2026-10-29, also with the owner's approval, `spark`'s `~/src/vllm-gguf-plugin-perf`
+(a non-git source copy from 2026-09-28) and the loose job, script and dump
+files at the top of `~/.local/share/llmp` on both Sparks (79 and 21, named by
+no document) were removed; `spark`'s `u3-original-*.json`, which
+[original-parity](experiments/m35-generic-import/original-parity.md) names as
+its raw outputs, stay until M3.5 closes. The workstation has
 no stale worktrees: `git worktree list` shows only the active slices'.
 
 ### Jumbo frames on the direct link (2026-09-28)

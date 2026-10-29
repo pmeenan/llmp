@@ -26,7 +26,8 @@
 //   rewritten from the target's features (`catch_up`: MTP) starts each
 //   unit's first pass where its state stops being the committed tokens'
 //   (the verify's first row after a verify), so its first pass catches up
-//   the rows the last verify kept. One further behind than its chunk bound
+//   the rows the last verify kept; its rows of a prompt are written as each
+//   prompt chunk commits (CatchUpPrompt). One further behind than its chunk bound
 //   (an alternative not chosen for a while) catches up its last chunk's
 //   rows only, and one behind what the target's tap still holds (a plain
 //   step since: a forced or certain span, a plain wave) from the oldest
@@ -182,6 +183,19 @@ struct DecodeWork {
   bool certain_scores = false;  // genuine scores for every known row when requested
 };
 
+// One slot's prompt rows just committed (a prefill chunk), for its
+// drafters' prompt catch-up (DecodingOrchestrator::CatchUpPrompt).
+struct PromptCatchUp {
+  std::uint32_t slot = 0;
+  // The chunk's first position.
+  std::uint32_t first = 0;
+  // Every token through the slot's committed positions (it may hold more).
+  std::span<const std::int32_t> history{};
+  // The drafters' state before `first` does not follow this history (a new
+  // conversation, a restore): catch up from `first`, never the cursor.
+  bool restart = false;
+};
+
 // A verify's verdict: its first `keep` rows stay (the anchor and the
 // accepted drafts, so 1 to its rows), and the tokens they commit.
 struct Verdict {
@@ -307,6 +321,18 @@ class DecodingOrchestrator {
   // A slot's drafters' state now matches its committed positions (after a
   // prefill, a clear, a restore): each catch-up starts there.
   void Reset(std::uint32_t slot);
+  // After a prompt chunk: every catch-up drafter (MTP) writes its state for
+  // the slot's committed prompt rows, from its cursor (or the chunk's first
+  // row, on a restart) to the slot's positions, in one headless step a slot
+  // (joined across slots), so its attention reads the prompt as the target
+  // saw it; its first pass after the prompt then starts at the committed
+  // positions. A drafter with features writes only the rows whose features
+  // the chunk's own step tapped (not the chunk's first row, which would read
+  // a carry a restored conversation lacks, so restores continue exactly).
+  // Rows left out, or past the stage's chunk bound, stay stale (acceptance
+  // only); a refused step leaves the cursor where the drafter's state
+  // stopped. The steps run.
+  std::uint32_t CatchUpPrompt(std::span<const PromptCatchUp> work);
   std::uint32_t cursor(std::uint32_t slot, std::size_t drafter) const;
   // A slot's drafter's adaptive depth (a kept conversation's, D-105).
   const execution::AdaptiveDepth& depth(std::uint32_t slot, std::size_t drafter) const;

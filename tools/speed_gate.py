@@ -34,8 +34,10 @@ generated. Per cell the client takes, from its own monotonic clock:
   decode_tok_s  the sum of the requests' rates while every request decodes
                 (after the last first token, before the first last token),
                 each measured between its own streamed chunks in that window
-                (a chunk is a step, worth the request's mean tokens a chunk);
-                with one request, (tokens - 1) / its first-to-last span
+                (a chunk worth its share of the reply's tokens after the first
+                by its text's length, so chunks coalesced outside the window
+                weigh none inside it); with one request, (tokens - 1) / its
+                first-to-last span
   wall_tok_s    all completed tokens / (release to the last request's end)
 
 A run's value of a metric is the mean of its measured passes (each pass
@@ -571,6 +573,7 @@ def stream_chat(port: int, body: dict, barrier: threading.Barrier | None,
             return record
         digest = hashlib.sha256()
         times: list[float] = []
+        chars: list[int] = []  # each chunk's text length: its share of the tokens (decode_rate)
         for raw in response:
             if raw_output is not None:
                 raw_output.write(raw)
@@ -593,6 +596,7 @@ def stream_chat(port: int, body: dict, barrier: threading.Barrier | None,
                 text = (delta.get("reasoning") or "") + (delta.get("content") or "")
                 if text:
                     times.append(now)
+                    chars.append(len(text))
                     digest.update(text.encode())
                     record.setdefault("t_first", now)
                     record["t_last"] = now
@@ -600,6 +604,7 @@ def stream_chat(port: int, body: dict, barrier: threading.Barrier | None,
                     record["finish"] = choice["finish_reason"]
         record["chunks"] = len(times)
         record["times"] = times
+        record["chars"] = chars
         record["reply_sha256"] = digest.hexdigest()
         for key in ("t_first", "t_end", "usage"):
             if key not in record:
@@ -682,23 +687,49 @@ def collect_quality_replies(port: int, model: str, max_tokens: int, concurrency:
 
 def decode_rate(requests: list[dict]) -> float | None:
     """Tokens a second while every request decodes: the window after the last first token
-    and before the first last token. Each request's rate there is measured between its own
-    chunks inside the window (one chunk a decode step, worth its mean tokens a chunk), so a
-    chunk landing just inside or outside the window's edge does not count; the cohort's
-    rate is their sum."""
+    and before the first last token. Each request's rate there is the tokens its chunks
+    after its first chunk inside the window carry, over the time from that first chunk to
+    its last inside, so a chunk landing just inside or outside the window's edge does not
+    count; the cohort's rate is their sum.
+
+    A chunk's tokens are its share of the reply's tokens after the first chunk (its first
+    token), in proportion to its text's length (`chars`, recorded since 2026-10-29). A
+    server that coalesces several tokens into one chunk outside the window (while another
+    request prefills) then weighs no chunk inside it. A record without the lengths counts
+    every chunk at its reply's mean tokens a chunk (the earlier rule, which such coalescing
+    inflates); validity refuses a family whose runs mix the two."""
     start = max(r["t_first"] for r in requests)
     end = min(r["t_last"] for r in requests)
     if end <= start:
         return None
     rate = 0.0
     for r in requests:
-        steps = len(r["times"]) - 1
-        inside = [t for t in r["times"] if start <= t <= end]
-        if steps < 1 or len(inside) < 2 or inside[-1] <= inside[0]:
+        times = r["times"]
+        steps = len(times) - 1
+        inside = [i for i, t in enumerate(times) if start <= t <= end]
+        if steps < 1 or len(inside) < 2 or times[inside[-1]] <= times[inside[0]]:
             return None
-        per_chunk = (r["usage"]["completion_tokens"] - 1) / steps
-        rate += per_chunk * (len(inside) - 1) / (inside[-1] - inside[0])
+        tokens = r["usage"]["completion_tokens"] - 1
+        chars = r.get("chars")
+        if chars is not None and len(chars) == len(times) and sum(chars[1:]) > 0:
+            carried = tokens * sum(chars[i] for i in inside[1:]) / sum(chars[1:])
+        else:
+            carried = tokens / steps * (len(inside) - 1)
+        rate += carried / (times[inside[-1]] - times[inside[0]])
     return rate
+
+
+def chars_recorded(record: dict) -> set[bool]:
+    """Whether a run's streamed requests recorded their chunks' text lengths (decode_rate's
+    measure), one value per kind seen: both when the run mixes them, none for a run without
+    chunked cells (an image)."""
+    seen: set[bool] = set()
+    for p in record.get("passes") or []:
+        for cell in (p.get("cells") or {}).values():
+            for kept in cell.get("requests") or []:
+                if kept.get("chunk_times"):
+                    seen.add(kept.get("chunk_chars") is not None)
+    return seen
 
 
 def cell_metrics(requests: list[dict]) -> dict:
@@ -723,7 +754,8 @@ def stored_requests(cell: dict) -> list[dict] | None:
         t0 = kept["send_offset"]
         times = [t0 + t for t in kept["chunk_times"]]
         requests.append({"t_send": t0, "t_first": times[0], "t_last": times[-1],
-                         "t_end": t0 + kept["end_time"], "times": times, "usage": kept["usage"]})
+                         "t_end": t0 + kept["end_time"], "times": times, "usage": kept["usage"],
+                         "chars": kept.get("chunk_chars")})
     return requests
 
 
@@ -775,6 +807,7 @@ def run_cell(port: int, family: Family, corpus: str, first: int, width: int) -> 
         kept = {k: r.get(k) for k in ("error", "finish", "chunks", "reply_sha256", "usage")}
         if "t_send" in r:
             kept["chunk_times"] = [round(t - r["t_send"], 6) for t in r.get("times", [])]
+            kept["chunk_chars"] = r.get("chars")
             kept["end_time"] = round(r["t_end"] - r["t_send"], 6) if "t_end" in r else None
             kept["send_offset"] = r["t_send"]
         cell["requests"].append(kept)
@@ -1251,6 +1284,12 @@ def validity(family: Family, mine: list[dict], primes: dict) -> list[str]:
         for where, r in members:
             if began is None or r.get("started_unix") is None or r["started_unix"] < began:
                 reasons.append(f"session {session}: {where} did not start after its priming run")
+    # One decode-rate measure for every run (decode_rate): chunk lengths in all or none.
+    measures = set().union(*(chars_recorded(r) for b in mine for r in b.values()
+                             if not r["error"]))
+    if len(measures) > 1:
+        reasons.append("runs differ in their decode-rate measure: some recorded their chunks' "
+                       "text lengths, some did not (rerun the blocks without them)")
     # The same prompts must tokenize to the same counts in both arms (and within one).
     reasons += workload_problems([r for b in mine for _, r in sorted(b.items())
                                   if not r["error"]])

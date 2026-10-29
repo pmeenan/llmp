@@ -143,7 +143,16 @@ All LLM architectures on `ModelRunner` use the shared prefill lookahead
 lifecycle (`prefill_lookahead.h`, `prefill.h`, `step_ahead.h`), governed by
 each architecture mapping's `PolicyRule` (`prefill_lookahead`, `capture_ahead`).
 `StepRuns::CaptureAhead` records an eligible future step program without
-executing it. Gemma2/Gemma3 select two distinct missing futures. Both Gemma4
+executing it; a prompt unit requests it only for a full next chunk (a shape
+that recurs; a remainder or a few-row tail ran once and its recording only
+delayed it, F15a). A speculative cohort's last prompt unit builds ahead the
+whole ready cohort's continuation (every verify width), not each later
+exit's; the decoding peers join that prediction only when the verify width
+is fixed (DSpark's block), since owners with adaptive depths (Qwen3.8's
+MTP) verify widths of their own that no uniform joined shape matches. A
+catch-up drafter's rows of the chunk and of the next
+(`PrefillContinuation::catch_up_stage`) are predicted and built beside the
+chunk. Gemma2/Gemma3 select two distinct missing futures. Both Gemma4
 profiles compose the same fixed group, with ordinary policy retaining one
 future and no capture ahead: the
 [plain Gemma26 8192-row diagnostic screen](experiments/gemma26-capture-ahead/README.md)
@@ -670,9 +679,16 @@ unit of generation for a set of slots on the runner:
   positions is rewritten from the target's features: MTP) starts each
   unit's first pass at its cursor, which a verify moves to its first row,
   so the pass catches up the kept rows and the anchor (`Reset` puts the
-  cursor at the positions after a prefill, a clear or a restore); one
-  further behind than its chunk bound (an alternative not chosen for a
-  while) catches up its last chunk's rows, its older rows left stale;
+  cursor at the positions after a clear or a restore); after each prompt
+  chunk `CatchUpPrompt` writes its rows of the prompt in one headless
+  pass from the target's tap while the tap holds their features (all but
+  the chunk's first row, whose carried feature a restore does not keep),
+  so its attention reads the whole prompt and its first pass after it
+  starts at the committed positions (U2 had dropped M3.6's prompt
+  companions, leaving the prompt's rows stale and Qwen3.8's acceptance at
+  51% against 79%, F15a); one further behind than its chunk bound (an
+  alternative not chosen for a while) catches up its last chunk's rows,
+  its older rows left stale;
 - a drafter with `borrows_target` borrows the target's stage for its
   passes, after settling what the last verify owes; a stage whose
   contract views the target's tensor (`borrowed_from_target`, resolved by

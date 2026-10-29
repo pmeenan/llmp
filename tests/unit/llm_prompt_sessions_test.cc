@@ -102,6 +102,7 @@ class LlmPromptSessions : public LlmFixture {
   }
   void Recover() {
     source_->options().fail_run.reset();
+    source_->options().fail_record.reset();
     if (node_->InRequest(0)) std::ignore = node_->EndRequest(0);
     ASSERT_TRUE(node_->Job(
         llmp::catalog::Closure{},
@@ -109,7 +110,12 @@ class LlmPromptSessions : public LlmFixture {
         "fencing a faulted prompt stream", 0));
     ASSERT_TRUE(llm_->RecoverInPlace());
   }
-  void FailRun() { source_->options().fail_run = kn::StepError::kUnknown; }
+  // The next run faults, eager or recorded (a chunk no one recorded ahead
+  // records on its first use).
+  void FailRun() {
+    source_->options().fail_run = kn::StepError::kUnknown;
+    source_->options().fail_record = kn::StepError::kUnknown;
+  }
   std::uint64_t Occupancy() {
     auto stats = node_->Stats();
     EXPECT_TRUE(stats);
@@ -659,6 +665,9 @@ TEST_F(LlmPromptSessions, ResumablePromptFailuresDoNotPublishAnUnprovenChunk) {
   auto& session = **opened;
   ASSERT_TRUE(session.Advance());
   ASSERT_TRUE(session.Advance());
+  // The next chunk (full, so recorded ahead beside the first) would replay;
+  // without its recording the fault reaches its own run.
+  llm_->DropPlans();
   FailRun();
   EXPECT_FALSE(session.Advance());
   EXPECT_TRUE(session.done());

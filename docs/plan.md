@@ -689,17 +689,17 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       (RE-018) and pacing the dedicated pool's start-up fill (RE-049); then
       the full Spark check set and a speed confirmation of every family.
       Status (2026-10-29): hygiene, docs, the Spark check set, the IQ2_XXS
-      score and the swap table are done; the speed confirmation found the
-      regressions of F15 ([final verification](m35-record.md#campaign-final-verification-f10b-2026-10-29)),
-      and the workstation `native`/`cpu-asan` tier confirmations are still owed.
-- [ ] **F15 Regressions found by the final checks:** Qwen3.8 native + MTP
-      decode (drafts accepted 79% → 51%, in `639583b9..381eec18`), DeepSeek
-      plain-wave C2 decode (+10%, in `aa92bd1f..381eec18`), Qwen3.8 GGUF C1
-      prefill (+1.8%), the Gemma 4 31B assistant screen (+3.6%), and the
-      literal-route prompt scores of Qwen3.8 native (PPL +4.8%) and Gemma 4
-      (PPL +13–14%) that changed at `e6c3617a` while greedy replies stayed
-      byte-identical; each fixed against the `53c2610b` old arm, or accepted
-      by the owner as an exception.
+      score and the swap table are done; the speed confirmation's failures are
+      F15's, now fixed; the workstation `native`/`cpu-asan` tier confirmations
+      are still owed.
+- [x] **F15 Regressions found by the final checks** (2026-10-29): the MTP
+      drafter's prompt rows written again, prefill lookahead bounded to the
+      plans a cohort will use, wide-output GLU rank rows, and a gate decode
+      rate that SSE coalescing cannot skew; every F10b speed failure passes
+      against `53c2610b`, and the prompt-score change is the scoring geometry
+      (RE-063) ([record](m35-record.md#f15-regressions-found-by-the-final-checks-2026-10-29)).
+      Follow-up: the lowering's physical placement (`d3374c67`) runs twice a
+      plan, about 7 ms of a target plan's 59.
 - [x] **F12 Known model-test failures and swap continuation:** every model
       test that already failed at `265c821a` (stale frozen digests, a Gemma Q8
       cache admission, Gemma 4 tool rendering, the gemma2 store artifact
