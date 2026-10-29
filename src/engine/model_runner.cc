@@ -218,8 +218,8 @@ std::expected<void, std::string> ModelRunner::CheckShape(const pl::StepShape& sh
 std::uint32_t ModelRunner::LoneRead(std::size_t stage, std::uint32_t past,
                                     std::uint32_t rows) const {
   const std::uint64_t end = Frozen(stage) ? past : std::uint64_t{past} + rows;
-  return static_cast<std::uint32_t>(
-      std::min<std::uint64_t>(Round(end, slots_.read_align(stage)), slots_.context(stage)));
+  return execution::ReadCellsFor(end, slots_.read_align(stage), slots_.read_buckets(),
+                                 slots_.context(stage));
 }
 
 bool ModelRunner::Verifies(std::uint32_t slot, std::size_t stage) const {

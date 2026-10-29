@@ -9,6 +9,7 @@
 #include <expected>
 #include <format>
 #include <limits>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -68,11 +69,9 @@ bool SameExceptEncoding(const format::TensorFormat& a, const format::TensorForma
          a.stacked == b.stacked;
 }
 
-bool IsLeaf(Op op) { return op == Op::kInput || op == Op::kWeight || op == Op::kState; }
-
-}  // namespace
-
-std::expected<void, VerifyError> Verify(const Graph& graph) {
+// Verify, and with `infer` false VerifyBuilt: the outputs a Builder
+// inferred and recorded as it made each node are not inferred again.
+std::expected<void, VerifyError> Check(const Graph& graph, bool infer) {
   const std::span<const Node> nodes = graph.nodes();
   const std::size_t tensors = graph.tensor_count();
   if (nodes.size() > Graph::kMaxNodes || tensors > Graph::kMaxTensors) {
@@ -80,11 +79,15 @@ std::expected<void, VerifyError> Verify(const Graph& graph) {
                std::format("{} nodes and {} tensors, past {} and {}", nodes.size(), tensors,
                            Graph::kMaxNodes, Graph::kMaxTensors));
   }
+  // Inference reads the tensors as one span.
   std::vector<TensorDesc> descs;
-  descs.reserve(tensors);
-  for (std::size_t i = 0; i < tensors; ++i) {
-    descs.push_back(graph.tensor(TensorId{static_cast<std::uint32_t>(i)}));
+  if (infer) {
+    descs.reserve(tensors);
+    for (std::size_t i = 0; i < tensors; ++i) {
+      descs.push_back(graph.tensor(TensorId{static_cast<std::uint32_t>(i)}));
+    }
   }
+  const auto desc = [&](TensorId id) -> const TensorDesc& { return graph.tensor(id); };
   std::set<TensorId> outputs(graph.outputs().begin(), graph.outputs().end());
   std::vector<bool> made(tensors, false);
   std::set<WeightRef> weights;
@@ -94,9 +97,10 @@ std::expected<void, VerifyError> Verify(const Graph& graph) {
 
   for (std::size_t n = 0; n < nodes.size(); ++n) {
     const Node& node = nodes[n];
-    const std::string op = OpKeyName(node.key);
+    // Named only in an error.
+    const auto op = [&] { return OpKeyName(node.key); };
     if (node.nsrc > kMaxSources || node.nout > kMaxOutputs) {
-      return Err(GraphError::kArity, n, std::format("{}: too many sources or outputs", op));
+      return Err(GraphError::kArity, n, std::format("{}: too many sources or outputs", op()));
     }
     for (const TensorId s : node.sources()) {
       if (!s.valid()) {
@@ -104,63 +108,73 @@ std::expected<void, VerifyError> Verify(const Graph& graph) {
       }
       if (s.v >= tensors || !made.at(s.v)) {
         return Err(GraphError::kCycle, n,
-                   std::format("{}: source {} is not made by an earlier node", op, s.v));
+                   std::format("{}: source {} is not made by an earlier node", op(), s.v));
       }
     }
     requested.clear();
     for (const TensorId o : node.outputs()) {
       if (!o.valid() || o.v >= tensors || graph.producer(o).v != n || made.at(o.v)) {
-        return Err(GraphError::kCycle, n, std::format("{}: output {} is not this node's", op, o.v));
+        return Err(GraphError::kCycle, n,
+                   std::format("{}: output {} is not this node's", op(), o.v));
       }
       made.at(o.v) = true;
-      requested.push_back(descs.at(o.v));
+      if (infer) requested.push_back(desc(o));
     }
-    auto inferred = Infer(node.key, node.params, node.sources(), descs, requested);
-    if (!inferred) {
-      VerifyError e = std::move(inferred.error());
-      e.node = static_cast<std::uint32_t>(n);
-      return std::unexpected(e);
-    }
-    if (inferred->nout != node.nout) {
-      return Err(GraphError::kArity, n,
-                 std::format("{} makes {} outputs, not {}", op, inferred->nout, node.nout));
+    std::optional<Inferred> inferred;
+    if (infer) {
+      auto made_here = Infer(node.key, node.params, node.sources(), descs, requested);
+      if (!made_here) {
+        VerifyError e = std::move(made_here.error());
+        e.node = static_cast<std::uint32_t>(n);
+        return std::unexpected(e);
+      }
+      if (made_here->nout != node.nout) {
+        return Err(GraphError::kArity, n,
+                   std::format("{} makes {} outputs, not {}", op(), made_here->nout, node.nout));
+      }
+      inferred = std::move(*made_here);
     }
     std::uint8_t owner = kJoinedSegment;
     for (std::size_t i = 0; i < node.nout; ++i) {
       const TensorId id = node.out.at(i);
-      const TensorDesc& rec = descs.at(id.v);
-      const TensorDesc& inf = inferred->out.at(i);
-      const std::string which = std::format("{}'s output {}", op, i);
+      const TensorDesc& rec = desc(id);
+      // What the op makes: inferred again, or as the builder recorded it.
+      const TensorDesc& inf = inferred ? inferred->out.at(i) : rec;
+      const auto which = [&] { return std::format("{}'s output {}", op(), i); };
       if (rec.format.shape.rank != MinRank(rec.format.shape)) {
-        return Err(GraphError::kShape, n, which + " has a rank that is not canonical");
+        return Err(GraphError::kShape, n, which() + " has a rank that is not canonical");
       }
-      // A fused output recorded prepared (graph.h PreparedRows).
-      const bool prepared = node.key.op == Op::kFused && inferred->float_result.at(i) &&
-                            PreparedRows(rec.format) && rec.format.shape.ne == inf.format.shape.ne;
-      if (prepared) {
-        if (rec.nb != NaturalStrides(rec.format) || rec.view_of.valid()) {
-          return Err(GraphError::kShape, n, which + "'s prepared rows are not a root of their own");
+      if (inferred) {
+        // A fused output recorded prepared (graph.h PreparedRows).
+        const bool prepared = node.key.op == Op::kFused && inferred->float_result.at(i) &&
+                              PreparedRows(rec.format) &&
+                              rec.format.shape.ne == inf.format.shape.ne;
+        if (prepared) {
+          if (rec.nb != NaturalStrides(rec.format) || rec.view_of.valid()) {
+            return Err(GraphError::kShape, n,
+                       which() + "'s prepared rows are not a root of their own");
+          }
+        } else if (!SameExceptEncoding(rec.format, inf.format)) {
+          return Err(GraphError::kShape, n,
+                     std::format("{} is [{}, {}, {}, {}], where the op makes [{}, {}, {}, {}]",
+                                 which(), rec.ne(0), rec.ne(1), rec.ne(2), rec.ne(3), inf.ne(0),
+                                 inf.ne(1), inf.ne(2), inf.ne(3)));
         }
-      } else if (!SameExceptEncoding(rec.format, inf.format)) {
-        return Err(GraphError::kShape, n,
-                   std::format("{} is [{}, {}, {}, {}], where the op makes [{}, {}, {}, {}]", which,
-                               rec.ne(0), rec.ne(1), rec.ne(2), rec.ne(3), inf.ne(0), inf.ne(1),
-                               inf.ne(2), inf.ne(3)));
-      }
-      if (prepared) {
-        // checked above
-      } else if (rec.format.encoding != inf.format.encoding) {
-        if (!inferred->float_result.at(i) || !ResultEncoding(rec.format.encoding)) {
-          return Err(GraphError::kFormat, n, which + " has another encoding than the op makes");
+        if (prepared) {
+          // checked above
+        } else if (rec.format.encoding != inf.format.encoding) {
+          if (!inferred->float_result.at(i) || !ResultEncoding(rec.format.encoding)) {
+            return Err(GraphError::kFormat, n, which() + " has another encoding than the op makes");
+          }
+          if (rec.nb != NaturalStrides(rec.format)) {
+            return Err(GraphError::kShape, n, which() + "'s strides are not packed");
+          }
+        } else if (rec.nb != inf.nb) {
+          return Err(GraphError::kShape, n, which() + "'s strides are not what the op makes");
         }
-        if (rec.nb != NaturalStrides(rec.format)) {
-          return Err(GraphError::kShape, n, which + "'s strides are not packed");
+        if (rec.view_of != inf.view_of || rec.view_offset != inf.view_offset) {
+          return Err(GraphError::kShape, n, which() + "'s view is not what the op makes");
         }
-      } else if (rec.nb != inf.nb) {
-        return Err(GraphError::kShape, n, which + "'s strides are not what the op makes");
-      }
-      if (rec.view_of != inf.view_of || rec.view_offset != inf.view_offset) {
-        return Err(GraphError::kShape, n, which + "'s view is not what the op makes");
       }
       // Roles and bindings.
       const bool leaf = IsLeaf(node.key.op);
@@ -175,59 +189,59 @@ std::expected<void, VerifyError> Verify(const Graph& graph) {
              std::holds_alternative<StateRef>(rec.binding) &&
              std::get_if<StateRef>(&rec.binding)->segment == rec.segment);
         if (!role_ok) {
-          return Err(GraphError::kBinding, n, which + ": a leaf's role, binding or segment");
+          return Err(GraphError::kBinding, n, which() + ": a leaf's role, binding or segment");
         }
         if (const auto* w = std::get_if<WeightRef>(&rec.binding);
             w != nullptr && !weights.insert(*w).second) {
-          return Err(GraphError::kBinding, n, which + ": a weight bound twice");
+          return Err(GraphError::kBinding, n, which() + ": a weight bound twice");
         }
         if (const auto* s = std::get_if<StateRef>(&rec.binding);
             s != nullptr && !states.insert(*s).second) {
-          return Err(GraphError::kBinding, n, which + ": a state tensor bound twice");
+          return Err(GraphError::kBinding, n, which() + ": a state tensor bound twice");
         }
         if (node.key.op == Op::kInput) {
           inputs.push_back(id);
         }
       } else {
         if (!std::holds_alternative<std::monostate>(rec.binding)) {
-          return Err(GraphError::kBinding, n, which + ": only leaves are bound");
+          return Err(GraphError::kBinding, n, which() + ": only leaves are bound");
         }
         const bool output =
             rec.role == Role::kOutput && inf.role == Role::kActivation && outputs.contains(id);
         if (rec.role != inf.role && !output) {
-          return Err(
-              GraphError::kBinding, n,
-              std::format("{} has role {}, not {}", which, RoleName(rec.role), RoleName(inf.role)));
+          return Err(GraphError::kBinding, n,
+                     std::format("{} has role {}, not {}", which(), RoleName(rec.role),
+                                 RoleName(inf.role)));
         }
         if (inf.view_of.valid()) {
           if (rec.segment != inf.segment) {
-            return Err(GraphError::kBinding, n, which + ": a view's segment is its root's");
+            return Err(GraphError::kBinding, n, which() + ": a view's segment is its root's");
           }
         } else if (node.batch == Batch::kJoined) {
           if (rec.segment != kJoinedSegment) {
-            return Err(GraphError::kBinding, n, which + ": a joined node's result is joined");
+            return Err(GraphError::kBinding, n, which() + ": a joined node's result is joined");
           }
         } else if (rec.segment == kJoinedSegment) {
-          return Err(GraphError::kBinding, n, which + ": a per-owner node's result is its owner's");
+          return Err(GraphError::kBinding, n,
+                     which() + ": a per-owner node's result is its owner's");
         }
       }
       if (node.batch == Batch::kPerOwner) {
         if (rec.segment == kJoinedSegment || (owner != kJoinedSegment && owner != rec.segment)) {
-          return Err(GraphError::kBinding, n, which + ": a per-owner node is one owner's");
+          return Err(GraphError::kBinding, n, which() + ": a per-owner node is one owner's");
         }
         owner = rec.segment;
       }
     }
     if (node.batch == Batch::kPerOwner) {
       if (owner == kJoinedSegment) {
-        return Err(GraphError::kBinding, n, op + ": a per-owner node needs an owner's output");
+        return Err(GraphError::kBinding, n, op() + ": a per-owner node needs an owner's output");
       }
       for (const TensorId s : node.sources()) {
-        if (s.valid() && descs.at(s.v).segment != kJoinedSegment &&
-            descs.at(s.v).segment != owner) {
+        if (s.valid() && desc(s).segment != kJoinedSegment && desc(s).segment != owner) {
           return Err(
               GraphError::kBinding, n,
-              std::format("{}: reads segment {} for owner {}", op, descs.at(s.v).segment, owner));
+              std::format("{}: reads segment {} for owner {}", op(), desc(s).segment, owner));
         }
       }
     }
@@ -253,5 +267,11 @@ std::expected<void, VerifyError> Verify(const Graph& graph) {
   }
   return {};
 }
+
+}  // namespace
+
+std::expected<void, VerifyError> Verify(const Graph& graph) { return Check(graph, true); }
+
+std::expected<void, VerifyError> VerifyBuilt(const Graph& graph) { return Check(graph, false); }
 
 }  // namespace llmp::ir

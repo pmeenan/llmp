@@ -4,6 +4,7 @@
 #include "engine/graph_plan.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <format>
 #include <limits>
 #include <memory>
@@ -248,23 +249,46 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> LowerComponent
         input.token->step.inputs.size() != input.io.inputs.size() ||
         input.token->step.weights.size() != input.io.weights.size())
       return std::unexpected("token lowering metadata differs from the supplied graph interface");
+    // Each port exactly once on each side, by sorted ids (linear after the
+    // sort, not a count per port: a step has thousands of weights).
+    // Production passes the step's own vectors, so the weights then only
+    // need to be distinct.
+    std::vector<std::uint32_t> token_inputs;
+    token_inputs.reserve(input.token->step.inputs.size());
+    for (const auto& item : input.token->step.inputs) token_inputs.push_back(item.tensor.v);
+    std::ranges::sort(token_inputs);
     for (const auto tensor : input.io.inputs) {
-      const auto matches =
-          std::ranges::count(input.token->step.inputs, tensor, &components::StepInput::tensor);
-      if (matches != 1)
+      const auto [first, last] = std::ranges::equal_range(token_inputs, tensor.v);
+      if (last - first != 1)
         return std::unexpected("token input ports differ from the supplied typed graph interface");
     }
-    for (const auto& graph_weight : input.io.weights) {
-      const auto graph_id_count = std::ranges::count(input.io.weights, graph_weight.tensor,
-                                                     &components::StepWeight::tensor);
-      const auto token_id_count = std::ranges::count(input.token->step.weights, graph_weight.tensor,
-                                                     &components::StepWeight::tensor);
-      const auto matches = std::ranges::count_if(input.token->step.weights, [&](const auto& item) {
-        return item.tensor == graph_weight.tensor && item.ref == graph_weight.ref &&
-               item.parts == graph_weight.parts;
-      });
-      if (graph_id_count != 1 || token_id_count != 1 || matches != 1)
+    const auto sorted = [](const auto& weights) {
+      std::vector<const components::StepWeight*> out;
+      out.reserve(weights.size());
+      for (const auto& w : weights) out.push_back(&w);
+      std::ranges::sort(out, {}, [](const auto* w) { return w->tensor.v; });
+      return out;
+    };
+    const auto distinct = [](const std::vector<const components::StepWeight*>& weights) {
+      return std::ranges::adjacent_find(weights, {}, [](const auto* w) { return w->tensor.v; }) ==
+             weights.end();
+    };
+    const bool same = input.io.weights.data() == input.token->step.weights.data();
+    const auto graph_weights = sorted(input.io.weights);
+    if (!distinct(graph_weights))
+      return std::unexpected("token weight ports differ from the supplied typed graph interface");
+    if (!same) {
+      const auto token_weights = sorted(input.token->step.weights);
+      if (!distinct(token_weights))
         return std::unexpected("token weight ports differ from the supplied typed graph interface");
+      // Equal sizes and distinct ids on both sides: pair them in order.
+      for (std::size_t i = 0; i < graph_weights.size(); ++i) {
+        const auto& g = *graph_weights[i];
+        const auto& t = *token_weights[i];
+        if (g.tensor != t.tensor || g.ref != t.ref || g.parts != t.parts)
+          return std::unexpected(
+              "token weight ports differ from the supplied typed graph interface");
+      }
     }
   }
 

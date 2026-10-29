@@ -288,7 +288,8 @@ struct StageRecipe;
 // `kDefaultServingRecipe` via `ServingRecipeOf(mapping)`: batching on
 // (the mapping's own `policies` govern `max_decode_rows` and step composition),
 // shared route, drafters allowed when configured, `default_draft_rows = 3`,
-// `default_wave_read_align = 256`, `chat_thinking = true`, `chat_tools = true`,
+// `default_wave_read_align = 256`, `default_wave_read_buckets = 0`,
+// `chat_thinking = true`, `chat_tools = true`,
 // and `frozen_host_masks = true`.
 //
 // When adding a new family, consider overriding `Mapping::serving` only when:
@@ -339,8 +340,10 @@ struct ServingRecipe {
   // the list 0); the draft head's rows a pass reads (0: all); a three-draft
   // step's time over a two-draft step's (execution/adaptive_depth.h; 0:
   // its own prior); a request's drafts in a wave of several; how many
-  // requests draft in one joined wave (0: no bound); and the state a
-  // joined wave reads, rounded up to this.
+  // requests draft in one joined wave (0: no bound); the state a joined
+  // wave reads, rounded up to this; and the read classes per doubling of
+  // a step's reads (execution::ReadCellsFor; 0: every alignment, since
+  // no lone decode attention kernel skips masked cells yet).
   std::uint32_t default_draft_rows = 3;
   std::span<const double> default_wave_costs{};
   std::uint32_t default_draft_vocab = 0;
@@ -349,6 +352,7 @@ struct ServingRecipe {
   std::uint32_t default_draft_wave_max = 0;
   bool default_wave_lanes = false;
   std::uint32_t default_wave_read_align = 256;
+  std::uint32_t default_wave_read_buckets = 0;
   // What of its chat template the chat route serves (its qualified slice,
   // whatever template the model renders: a native match or an owner's
   // override never widens it): thought-channel output allowed and tool

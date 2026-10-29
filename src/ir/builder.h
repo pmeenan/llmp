@@ -8,8 +8,9 @@
 // through Emit.
 //
 // A builder never aborts on a malformed request: the first error is kept,
-// every later call returns invalid ids, and Finish() reports it. Finish()
-// verifies the whole graph (verify.h) before handing it over.
+// every later call returns invalid ids, and Finish() reports it. Each
+// node's outputs are inferred as it is made (Emit), and Finish() verifies
+// the rest of the graph (verify.h VerifyBuilt) before handing it over.
 //
 // Context applies to the nodes made after it is set: the component index
 // (SetComponent), and whether nodes are joined or one owner's

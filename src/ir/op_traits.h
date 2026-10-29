@@ -59,7 +59,9 @@ struct OpTraits {
   std::uint16_t written_sources;
   // Source aliased by each output, or -1. Conditional outputs are written
   // only when the node actually contains them (gdn_step's optional store).
-  std::array<std::int8_t, 2> aliased_outputs;
+  // A row names the first two; the rest are -1 (op_traits.cc checks every
+  // index against the row's sources).
+  std::array<std::int8_t, 4> aliased_outputs;
 };
 
 std::span<const OpTraits> PrimitiveTraits();

@@ -5,7 +5,7 @@
 
 A backend's measured fusion preferences are coarse rows
 (`execution::FusionRank`, [rank_data.h](../../../src/execution/rank_data.h)),
-consulted at selection (`execution::FusionPreferenceFor`, D-085's 10% band):
+consulted at selection (`execution::FusionPreferenceFor`, a 5% band):
 
 - **Key.** The device class, the fused operation, the implementation and
   its kernel version (`Implementation::version`), operand 0's encoding and
@@ -13,9 +13,12 @@ consulted at selection (`execution::FusionPreferenceFor`, D-085's 10% band):
   `k`: a row's elements). Nothing else: no build identity, source closure,
   graph, layer, weight name, address or policy digest, so a row survives
   unrelated code changes and stops deciding when its kernel changes.
-- **Decision.** Within 10% of the decomposition keeps the incumbent; a fusion
-  more than 10% slower is not a candidate, so the planner decomposes the node;
-  one more than 10% faster qualifies a fusion that needs measurement. A row
+- **Decision.** Within 5% of the decomposition keeps the incumbent; a fusion
+  more than 5% slower is not a candidate, so the planner decomposes the node;
+  one more than 5% faster qualifies a fusion that needs measurement. (The
+  band was D-085's coarse 10% until 2026-10-28; 5% is beyond the repeat
+  noise of the vecq column sweep, [vecq-columns](../vecq-columns/README.md),
+  so a measured gap above it chooses the faster.) A row
   never grants numerical eligibility and is never extrapolated past its
   bands.
 - **Staleness.** A row measured at another kernel version decides nothing.

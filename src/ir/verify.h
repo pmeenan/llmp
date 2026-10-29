@@ -51,6 +51,11 @@ struct VerifyError {
 };
 
 std::expected<void, VerifyError> Verify(const Graph& graph);
+// Verify without inferring each node's outputs again: for a graph whose
+// outputs were inferred and recorded as its nodes were made (a Builder's,
+// at Finish). Structure, roles and bindings, segments, the inputs' order
+// and the outputs and kept tensors are checked as Verify checks them.
+std::expected<void, VerifyError> VerifyBuilt(const Graph& graph);
 
 }  // namespace llmp::ir
 

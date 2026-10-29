@@ -519,10 +519,12 @@ constexpr int kArgmaxThreads = 256;
 // kProbability, a second pass sums exp(v - max) over the row (each thread
 // its part in order, then the block in a fixed tree) and the row's
 // probability of its highest value, 1 / sum, follows the indices.
+// Rows `row_stride` floats apart (n for packed rows).
 template <bool kProbability, bool kHostGreedy = false>
 __global__ void __launch_bounds__(kArgmaxThreads)
-    ArgmaxKernel(const float* __restrict__ x, std::int32_t* __restrict__ out, int n) {
-  const float* row = x + static_cast<std::int64_t>(blockIdx.x) * n;
+    ArgmaxKernel(const float* __restrict__ x, std::int32_t* __restrict__ out, int n,
+                 std::int64_t row_stride) {
+  const float* row = x + static_cast<std::int64_t>(blockIdx.x) * row_stride;
   Best best{0.0f, -1};
   for (int i = static_cast<int>(threadIdx.x); i < n; i += kArgmaxThreads) {
     const float v = row[i];
@@ -788,19 +790,20 @@ std::expected<void, KernelFailure> RunArgmax(LaunchContext& launch, ggml_tensor*
   }
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
     const ggml_tensor* x = node->src[0];
+    const auto stride = static_cast<std::int64_t>(x->nb[1] / sizeof(float));
     if (LlmpOpInt(node, 0) == 1) {
       ArgmaxKernel<true><<<static_cast<unsigned>(x->ne[1]), kArgmaxThreads, 0, context.stream()>>>(
           static_cast<const float*>(x->data), static_cast<std::int32_t*>(node->data),
-          static_cast<int>(x->ne[0]));
+          static_cast<int>(x->ne[0]), stride);
     } else if (LlmpOpInt(node, 1) == static_cast<std::int32_t>(ArgmaxFlavor::kHostGreedy)) {
       ArgmaxKernel<false, true>
           <<<static_cast<unsigned>(x->ne[1]), kArgmaxThreads, 0, context.stream()>>>(
               static_cast<const float*>(x->data), static_cast<std::int32_t*>(node->data),
-              static_cast<int>(x->ne[0]));
+              static_cast<int>(x->ne[0]), stride);
     } else {
       ArgmaxKernel<false><<<static_cast<unsigned>(x->ne[1]), kArgmaxThreads, 0, context.stream()>>>(
           static_cast<const float*>(x->data), static_cast<std::int32_t*>(node->data),
-          static_cast<int>(x->ne[0]));
+          static_cast<int>(x->ne[0]), stride);
     }
   });
 }

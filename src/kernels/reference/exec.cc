@@ -61,6 +61,7 @@ std::string_view ExecErrorName(ExecError error) {
 namespace {
 
 using format::Encoding;
+using ir::IsLeaf;
 using ir::Op;
 using ir::TensorDesc;
 using ir::TensorId;
@@ -201,8 +202,6 @@ bool IsCollective(Op op) {
   return op == Op::kAllReduce || op == Op::kAllGather || op == Op::kAllToAll || op == Op::kSend ||
          op == Op::kRecv;
 }
-
-bool IsLeaf(Op op) { return op == Op::kInput || op == Op::kWeight || op == Op::kState; }
 
 double Sigmoid(double x) { return 1.0 / (1.0 + std::exp(-x)); }
 double Silu(double x) { return x * Sigmoid(x); }

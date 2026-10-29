@@ -446,9 +446,12 @@ segments by ascending slot, row invariance, read alignment}; `Segment` {slot,
 rows, past, read cells, outputs, group, want_head, greedy}; `PlanKey` {spec
 digest, shape, pattern and policy digests, partition, capturable}. A segment's
 `past` is data, not the plan: equality ignores it, as every family's shape
-equality ignored `n_past`; `read_cells`, which follows it at the shape's
-alignment, and `capturable` (whether the step program avoids position-dependent
-baked state and may be recorded in a device graph) are part of the plan. A
+equality ignored `n_past`; `read_cells`, which follows it as its read class
+(`execution::ReadCellsFor`: the end rounded up to the shape's alignment, or
+with `wave_read_buckets` geometrically, the one rule the composer, a lone
+read and the row-invariant check share), and `capturable` (whether the step
+program avoids position-dependent baked state and may be recorded in a
+device graph) are part of the plan. A
 capturable step source's program therefore bakes nothing that follows `past`:
 positions reach it as input data; uncapturable plans receive positions through
 `Position`.
@@ -1004,9 +1007,13 @@ When a new component or optimization requires a new primitive IR op or a
 planner-selected fused operation:
 
 1. **For a new primitive IR op (`src/ir/` and `src/kernels/reference/`):**
-   - Add the `ir::Op` enum value and metadata in `src/ir/op.{h,cc}`, shape and
-     type inference in `src/ir/infer.cc`, structural verification in
-     `src/ir/verify.cc`, and builder helper in `src/ir/builder.{h,cc}`.
+   - Add its row to `src/ir/op_traits.inc` (the enum, name, arity,
+     parameters, layout class, partition rule, reference path and write
+     columns all come from it; its name is its identity in graph digests,
+     so rows may be inserted anywhere), its parameters in `src/ir/op.h`,
+     shape and type inference in `src/ir/infer.cc`, and a builder helper in
+     `src/ir/builder.{h,cc}`. The planner's per-op facts (launches nothing,
+     effects, written roots) follow the row's columns.
    - If the op is a composite primitive, add its decomposition into foundational
      ops in `src/ir/decompose.cc`; implement its exact scalar CPU execution in
      `src/kernels/reference/exec.cc` (`tests/unit/ir_test.cc`,
@@ -1021,7 +1028,11 @@ planner-selected fused operation:
      `src/kernels/decode/`, `src/kernels/exl3/`), register the `Implementation`
      in `implementations.cc`, validate operands in `validate.cc` /
      `validate_ext.cc`, and lower the op or fused pattern into the backend's
-     step program in `src/kernels/ggml/lower.cc` (`step_program.cc`).
+     step program in `src/kernels/ggml/lower.cc` (`step_program.cc`). An
+     implementation that draws launch-pool scratch adds its planner row to
+     `kScratchPlanners` in `src/kernels/ggml/executor.cc`; a measured
+     preference between implementations is a row in `measured_ranks.h`,
+     never a capability veto.
    - Add planner pattern tests (`tests/unit/planner_test.cc`) and GPU parity
      tests comparing the fused implementation against the primitive IR reference.
 

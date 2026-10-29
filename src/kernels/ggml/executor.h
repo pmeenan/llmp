@@ -49,6 +49,8 @@ std::expected<std::uint64_t, KernelFailure> PlanLaneScratch(const LaunchContext&
                                                             const GraphPlan& plan);
 std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& launch,
                                                           const GraphPlan& plan, bool lanes);
+// The implementations PlanScratchOn plans a pool draw for (one planner each).
+std::vector<std::string_view> ScratchPlannedImplementations();
 
 // SCRATCH DIAGNOSTIC ONLY: an installed observer sees the existing bound
 // launches without adding uses or changing placement. Its owning arm and

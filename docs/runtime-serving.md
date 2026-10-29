@@ -307,6 +307,7 @@ artifacts (no process lock, no device), so it runs beside the service.
 | `draft_wave_max` | Qwen3.8 | requests, 1 to 16 | fallback 2: past it each request drafts alone |
 | `wave_lanes` | LLM | boolean | fallback true: requests concurrent owner lanes when the admitted source and compiled backend support them; their workspace is paid separately |
 | `wave_read_align` | LLM | a power of two, 256 to 65,536 | fallback 2,048: the cells a wave reads, rounded up (coarser keeps plans replayable; GGUF equivalence is qualified at the same alignment) |
+| `wave_read_buckets` | LLM | 0 to 1,024 | fallback 0: every alignment is a read class. B > 0 rounds a step's reads geometrically (`execution::ReadCellsFor`): steps of the alignment through 2B of them, then B classes per doubling, so a 262K context has 36 read classes (decode plans and graphs) at B = 4 and alignment 256 instead of 1,024 (24 instead of 128 at 2,048), each read less than an alignment or a B-th of its end past it. Off by default: one-query decode attention (every flash-attention launcher at the pin) reads a class's masked cells in full, and the state is backed through them |
 | `image_size` | composition | pixels, 64 to 2,048, a multiple of 32 | fallback 1,024 (its latents file must match) |
 | `image_steps` | composition | 2 to 100 | fallback 40 |
 
@@ -433,7 +434,8 @@ lookup policy without calibration.
 For Qwen it also includes wave lanes, effective `draft_vocab`,
 `shared_wave_depth`, `draft_wave_max`, `wave_read_align` and the
 uncalibrated `depth_cost_ratio`. These alter the paid work or adaptive
-policy; a change makes the old measurements stale. Override presence for
+policy; a change makes the old measurements stale. A nonzero
+`wave_read_buckets` is keyed for every model. Override presence for
 the calibrated chunk, slot cap and depth ratio is also keyed: setting a
 fallback value explicitly can bypass a different calibrated value. The
 ratio used in the key is the override or fallback, so a recorded ratio does not invalidate

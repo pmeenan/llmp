@@ -929,6 +929,24 @@ TEST(SpatialComponentsTest, LowerComponentPlanMatchesTokenPortsByUniqueTensorIde
   EXPECT_EQ(mismatched_weight.error(),
             "token weight ports differ from the supplied typed graph interface");
   EXPECT_EQ(owner->lower_calls, 1U);
+  step.weights[1] = {.tensor = wx, .ref = x_ref, .parts = {{"x", format::PartRole::kData}}};
+
+  // The step's own weights on both sides (production's): they need only be
+  // distinct.
+  const GraphBuildIO own_io{step.graph, io.inputs, io.outputs, step.weights};
+  const kernels::LowerInput own_input{*plan, own_io, addresses,
+                                      kernels::TokenLowerInput{step, shape, 1, {}}};
+  auto own = engine::LowerComponentPlan(own_input, owner->backend(), policy, {}, owner);
+  ASSERT_TRUE(own) << Failed(own).value_or("");
+  EXPECT_EQ(owner->lower_calls, 2U);
+  own->reset();
+  step.weights[0] = step.weights[1];  // the same port twice
+  auto own_duplicate = engine::LowerComponentPlan(own_input, owner->backend(), policy, {}, owner);
+  ASSERT_FALSE(own_duplicate);
+  EXPECT_EQ(own_duplicate.error(),
+            "token weight ports differ from the supplied typed graph interface");
+  EXPECT_EQ(owner->lower_calls, 2U);
+  step.weights[0] = {.tensor = wy, .ref = y_ref, .parts = {{"y", format::PartRole::kData}}};
   reordered->reset();
   EXPECT_EQ(owner->alive, 0);
   EXPECT_EQ(owner->used, 0U);

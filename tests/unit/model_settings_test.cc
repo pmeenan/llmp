@@ -262,6 +262,15 @@ TEST(ModelSettings, FallbacksWhenTheArtifactSaysNothing) {
   EXPECT_EQ(q.draft_wave_max.value, 2U);
   EXPECT_EQ(q.wave_read_align.value, 2048U);
   EXPECT_FALSE(q.wave_lanes.value);
+  // Reads round to their alignment unless asked to bucket (no decode
+  // attention kernel skips a class's masked cells yet).
+  EXPECT_EQ(q.wave_read_buckets.value, 0U);
+  EXPECT_EQ(q.wave_read_buckets.source, SettingSource::kFallback);
+  auto bucketed = Model("q");
+  bucketed.overrides["wave_read_buckets"] = std::int64_t{4};
+  const ModelSettings b = Resolved(bucketed, Facts("qwen4exp"));
+  EXPECT_EQ(b.wave_read_buckets.value, 4U);
+  EXPECT_EQ(b.wave_read_buckets.source, SettingSource::kOverride);
 }
 
 TEST(ModelSettings, GemmaCohortPreferencesDoNotManufactureOrRestrictPhysicalCapabilities) {

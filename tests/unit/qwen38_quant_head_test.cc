@@ -34,10 +34,10 @@
 #include "base/bytes.h"
 #include "base/sha256.h"
 #include "ggml.h"
-#include "kernels/ggml/dsv4_fast.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/tensors.h"
+#include "kernels/ggml/vecq.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
 

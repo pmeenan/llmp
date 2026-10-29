@@ -21,6 +21,7 @@
 #include "format/tensor_format.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "ir/op_traits.h"
 #include "planner/fusions.h"
 #include "planner/pattern.h"
 #include "planner/policy.h"
@@ -384,6 +385,13 @@ QueryShape ShapeOfNode(ir::OpKey key, std::span<const ir::TensorDesc* const> sou
         const ir::TensorDesc* src = At(sources, 1);
         return src == nullptr ? QueryShape{} : QueryShape{.rows = Rows(*src), .k = src->ne(0)};
       }
+      case FusedKind::kGroupedMatMul: {
+        // (w [K, N, G], x [K, G, T]): T tokens of K, each group's N.
+        const ir::TensorDesc* x = At(sources, 1);
+        return s0 == nullptr || x == nullptr
+                   ? QueryShape{}
+                   : QueryShape{.rows = x->ne(2), .k = x->ne(0), .n = s0->ne(1)};
+      }
       case FusedKind::kInverseRopeGroupedMatMul: {
         const ir::TensorDesc* x = At(sources, 1);
         return x == nullptr ? QueryShape{}
@@ -442,17 +450,32 @@ QueryShape ShapeOfNode(ir::OpKey key, std::span<const ir::TensorDesc* const> sou
 }
 
 bool LaunchesNothing(ir::OpKey key) {
-  switch (key.op) {
-    case Op::kInput:
-    case Op::kWeight:
-    case Op::kState:
-    case Op::kView:
-    case Op::kReshape:
-    case Op::kPermute:
-      return true;
-    default:
-      return false;
+  const ir::OpTraits* traits = ir::Traits(key);
+  return traits != nullptr && traits->layout == ir::LayoutClass::kStructural;
+}
+
+execution::OperandBinding BindingOf(const ir::Graph& graph, ir::TensorId operand) {
+  const execution::OperandBinding other{.source = execution::OperandSource::kOther};
+  if (!operand.valid()) return other;
+  // The weight itself, or a reshape of all of it: contiguous, at its start.
+  ir::TensorId whole = operand;
+  const ir::Node& producer = graph.node(graph.producer(operand));
+  if (producer.key == ir::Primitive(Op::kReshape)) {
+    const ir::TensorDesc& reshaped = graph.tensor(operand);
+    if (producer.nsrc != 1 || !producer.src[0].valid() || reshaped.view_offset != 0 ||
+        !ir::IsContiguous(reshaped))
+      return other;
+    whole = producer.src[0];
   }
+  const ir::TensorDesc& weight = graph.tensor(whole);
+  const auto* ref = std::get_if<ir::WeightRef>(&weight.binding);
+  if (ref == nullptr || weight.is_view() ||
+      graph.node(graph.producer(whole)).key != ir::Primitive(Op::kWeight))
+    return other;
+  return {.source = execution::OperandSource::kWholeWeight,
+          .stored = {.rank = weight.format.shape.rank,
+                     .stacked = weight.format.stacked,
+                     .expert_array = ref->expert_array}};
 }
 
 SelectionView::SelectionView(const execution::Registry& registry, const DeviceFacts& device,
@@ -512,39 +535,43 @@ std::vector<RootAlignmentFact> SelectionView::Alignments(const ir::Graph& graph)
   return out;
 }
 
-std::vector<std::size_t> SelectionView::Candidates(ir::OpKey key,
-                                                   std::span<const ir::TensorDesc* const> sources,
-                                                   std::span<const ir::TensorDesc* const> outputs,
-                                                   std::span<const std::byte> params,
-                                                   bool state_span, bool automatic_fusion) const {
+std::vector<std::size_t> SelectionView::Candidates(
+    ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
+    std::span<const ir::TensorDesc* const> outputs, std::span<const std::byte> params,
+    bool state_span, bool automatic_fusion,
+    std::span<const execution::OperandBinding> bindings) const {
   // Hypothetical descriptors have no authenticated current graph/root.
-  return ForOperands(key, sources, outputs, params, state_span, {}, automatic_fusion);
+  return ForOperands(key, sources, outputs, params, state_span, {}, bindings, automatic_fusion);
 }
 
 bool SelectionView::HasCandidate(ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
                                  std::span<const ir::TensorDesc* const> outputs,
                                  std::span<const std::byte> params, bool state_span,
-                                 bool automatic_fusion) const {
+                                 bool automatic_fusion,
+                                 std::span<const execution::OperandBinding> bindings) const {
   bool found = false;
   // Hypothetical descriptors have no authenticated current graph/root. The
   // existence-only path avoids constructing a ranked candidate vector.
-  (void)ForOperands(key, sources, outputs, params, state_span, {}, automatic_fusion, {}, &found);
+  (void)ForOperands(key, sources, outputs, params, state_span, {}, bindings, automatic_fusion, {},
+                    &found);
   return found;
 }
 
 std::optional<std::size_t> SelectionView::NextCandidate(
     ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
     std::span<const ir::TensorDesc* const> outputs, std::span<const std::byte> params,
-    std::optional<std::size_t> after, bool state_span, bool automatic_fusion) const {
-  (void)ForOperands(key, sources, outputs, params, state_span, {}, automatic_fusion, {}, nullptr,
-                    &after);
+    std::optional<std::size_t> after, bool state_span, bool automatic_fusion,
+    std::span<const execution::OperandBinding> bindings) const {
+  (void)ForOperands(key, sources, outputs, params, state_span, {}, bindings, automatic_fusion, {},
+                    nullptr, &after);
   return after;
 }
 
 std::vector<std::size_t> SelectionView::ForOperands(
     ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
     std::span<const ir::TensorDesc* const> outputs, std::span<const std::byte> params,
-    bool state_span, std::span<const std::uint64_t> alignments, bool automatic_fusion,
+    bool state_span, std::span<const std::uint64_t> alignments,
+    std::span<const execution::OperandBinding> bindings, bool automatic_fusion,
     const QueryInspector& inspect, bool* has_candidate, std::optional<std::size_t>* next_after,
     std::size_t* check_implementation, bool* is_candidate) const {
   const auto clear_cursor = [&] {
@@ -578,6 +605,7 @@ std::vector<std::size_t> SelectionView::ForOperands(
         .layout = f.layout,
         .rank = f.shape.rank,
         .params = f.params,
+        .binding = i < bindings.size() ? bindings[i] : execution::OperandBinding{},
         .ne = {f.shape.ne.at(0), f.shape.ne.at(1), f.shape.ne.at(2), f.shape.ne.at(3)},
         .memory =
             execution::OperandMemory{.nb = sources[i]->nb,
@@ -790,37 +818,22 @@ std::vector<std::size_t> SelectionView::CandidatesForNode(
     std::size_t* check_implementation, bool* is_candidate) const {
   const auto cursor_start = next_after == nullptr ? std::optional<std::size_t>{} : *next_after;
   if (next_after != nullptr) next_after->reset();
-  // Direct composites need the same immutable source authority as the
-  // primitive matcher: a grouped product's weight is a whole stored table,
-  // reshaped into its groups. Refuse native selection early so ordinary
-  // expansion remains available for otherwise valid grouped products. The
-  // storage an implementation reads (its layouts and encodings) is its
-  // capability's to accept, never the selector's.
+  // A direct grouped product (a composite op the grouped_vecq pattern also
+  // makes) follows that pattern's switch; what its weight must be (a whole
+  // stored table, reshaped into its groups) is its implementation's to
+  // accept (the operands' bindings), so ordinary expansion stays available
+  // for any other.
   const bool grouped = key == ir::Fused(FusedKind::kGroupedMatMul);
-  if (grouped) {
-    if (Disabled(policy_, "grouped_vecq") || node.nsrc != 2 || !node.src[0].valid()) return {};
-    const auto& reshape = graph.node(graph.producer(node.src[0]));
-    if (reshape.key != ir::Primitive(Op::kReshape) || reshape.nsrc != 1) return {};
-    const auto& weight = graph.tensor(reshape.src[0]);
-    const auto& physical = graph.tensor(node.src[0]);
-    const auto* ref = std::get_if<ir::WeightRef>(&weight.binding);
-    if (!ref || ref->expert_array ||
-        graph.node(graph.producer(reshape.src[0])).key != ir::Primitive(Op::kWeight) ||
-        weight.is_view() || weight.format.shape.rank != 2 || weight.format.stacked != 1 ||
-        physical.view_offset != 0 || physical.ne(0) != weight.ne(0) || physical.ne(2) == 0 ||
-        weight.ne(1) / physical.ne(2) != physical.ne(1) || weight.ne(1) % physical.ne(2) != 0 ||
-        !ir::IsContiguous(physical))
-      return {};
-    const auto parts = format::PartsOf(weight.format);
-    if (!parts || parts->size() != 1 || (*parts)[0].role != format::PartRole::kData) return {};
-  }
+  if (grouped && Disabled(policy_, "grouped_vecq")) return {};
   std::array<const ir::TensorDesc*, ir::kMaxSources> sources{};
   std::array<const ir::TensorDesc*, ir::kMaxOutputs> outputs{};
   std::array<std::uint64_t, ir::kMaxSources + ir::kMaxOutputs> alignments{};
+  std::array<execution::OperandBinding, ir::kMaxSources> bindings{};
   for (std::size_t i = 0; i < node.nsrc; ++i) {
     const ir::TensorId s = node.source(i);
     sources[i] = s.valid() ? &graph.tensor(s) : nullptr;
     alignments[i] = s.valid() ? Alignment(graph, graph.root(s)) : 0;
+    bindings[i] = BindingOf(graph, s);
   }
   for (std::size_t i = 0; i < node.nout; ++i) {
     const ir::TensorId o = node.out[i];
@@ -843,11 +856,12 @@ std::vector<std::size_t> SelectionView::CandidatesForNode(
   const auto srcs = std::span(sources).first(node.nsrc);
   const auto outs = std::span(outputs).first(node.nout);
   const auto aligned = std::span(alignments).first(node.nsrc + node.nout);
+  const auto bound = std::span<const execution::OperandBinding>(bindings).first(node.nsrc);
   if (next_after != nullptr) {
     auto after = cursor_start;
     for (;;) {
-      (void)ForOperands(key, srcs, outs, node.params, state_span, aligned, automatic_fusion, {},
-                        nullptr, &after);
+      (void)ForOperands(key, srcs, outs, node.params, state_span, aligned, bound, automatic_fusion,
+                        {}, nullptr, &after);
       if (!after) {
         *next_after = {};
         return {};
@@ -867,8 +881,8 @@ std::vector<std::size_t> SelectionView::CandidatesForNode(
     }
   }
   if (check_implementation != nullptr) {
-    (void)ForOperands(key, srcs, outs, node.params, state_span, aligned, automatic_fusion, {},
-                      nullptr, nullptr, check_implementation, is_candidate);
+    (void)ForOperands(key, srcs, outs, node.params, state_span, aligned, bound, automatic_fusion,
+                      {}, nullptr, nullptr, check_implementation, is_candidate);
     if (grouped && is_candidate != nullptr && *is_candidate) {
       const auto& capability = registry_.at(*check_implementation).capability;
       *is_candidate =
@@ -878,8 +892,8 @@ std::vector<std::size_t> SelectionView::CandidatesForNode(
     }
     return {};
   }
-  auto candidates =
-      ForOperands(key, srcs, outs, node.params, state_span, aligned, automatic_fusion, inspect);
+  auto candidates = ForOperands(key, srcs, outs, node.params, state_span, aligned, bound,
+                                automatic_fusion, inspect);
   if (grouped) {
     std::erase_if(candidates, [&](std::size_t index) {
       const auto& capability = registry_.at(index).capability;

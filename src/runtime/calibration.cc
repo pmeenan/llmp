@@ -107,6 +107,10 @@ std::string MeasuredWith(const ModelSettings& s) {
         s.wave_read_align.value, s.depth_cost_ratio.value,
         s.depth_cost_ratio.source == SettingSource::kOverride);
   }
+  // Read classes change what each step reads; named only when set, so the
+  // default keeps every earlier calibration's identity.
+  if (s.wave_read_buckets.value != 0)
+    measured += std::format(" wave_read_buckets={}", s.wave_read_buckets.value);
   if (s.bound_spec) measured += " bound_spec=" + base::ToHex(*s.bound_spec);
   return measured;
 }

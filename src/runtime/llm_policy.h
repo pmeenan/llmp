@@ -28,6 +28,7 @@ struct LlmSourceCapabilities {
 
 struct LlmPolicyRequest {
   std::uint32_t owners = 0, read_align = 256;
+  std::uint32_t read_buckets = 0;  // read classes per doubling (execution::ReadCellsFor)
   bool wave_lanes = false;
   std::uint64_t lane_scratch_bytes = 0;
   // Admitted composition constraints, independently of the requested settings.
@@ -54,6 +55,7 @@ class LlmServingPolicy {
   const kernels::LaneConfiguration& lanes() const { return lanes_; }
   std::uint32_t owners() const { return owners_; }
   std::uint32_t read_align() const { return read_align_; }
+  std::uint32_t read_buckets() const { return read_buckets_; }
   std::uint32_t lookahead() const { return lookahead_; }
   bool device_tokens() const { return device_tokens_; }
   bool indexed_masks() const { return indexed_masks_; }
@@ -64,7 +66,7 @@ class LlmServingPolicy {
  private:
   model::Batching batching_;
   kernels::LaneConfiguration lanes_;
-  std::uint32_t owners_ = 0, read_align_ = 0, lookahead_ = 0;
+  std::uint32_t owners_ = 0, read_align_ = 0, read_buckets_ = 0, lookahead_ = 0;
   bool device_tokens_ = false, indexed_masks_ = false;
   bool capture_ahead_ = false, prepare_ahead_ = false, state_only_ = false;
 };

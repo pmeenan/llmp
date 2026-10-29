@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// llmp.vecq's raw launch (dsv4_fast.cu; llmp_ops.h, "DeepSeek V4's fast
-// plan"), below the node checks, for the launch-configuration measurements
-// (benchmarks/vecq_bench.cc) and RunVecQ. CUDA builds only.
+// llmp.vecq's raw launch (vecq.cu; llmp_ops.h), below the node checks, for
+// the launch-configuration measurements (benchmarks/vecq_bench.cc) and
+// RunVecQ. CUDA builds only.
 
-#ifndef LLMP_KERNELS_GGML_DSV4_FAST_H_
-#define LLMP_KERNELS_GGML_DSV4_FAST_H_
+#ifndef LLMP_KERNELS_GGML_VECQ_H_
+#define LLMP_KERNELS_GGML_VECQ_H_
 
 #include <cuda_runtime.h>
 
@@ -48,4 +48,4 @@ bool LaunchVecQ(ggml_type type, const VecQDesc& d, int variant, cudaStream_t str
 
 }  // namespace llmp::kernels::ggml
 
-#endif  // LLMP_KERNELS_GGML_DSV4_FAST_H_
+#endif  // LLMP_KERNELS_GGML_VECQ_H_

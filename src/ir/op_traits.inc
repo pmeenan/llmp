@@ -8,6 +8,12 @@
 // layout, partition rule, decomposes, decomposition handler, reference path,
 // direct write mask, aliased outputs. Handlers are typed in their owning modules;
 // missing symbols fail compilation. NoDecomposition and kWhole are explicit.
+//
+// Names are the identity; order is free. Digests and keys name an operation
+// by its name here (graph.cc), never by its row's position, so a row may go
+// anywhere (beside its relatives) and rows may be removed: each name is
+// unique among primitives and among fused kinds (ir_test.cc), and changing
+// one changes every digest that names it.
   // Structure.
 LLMP_PRIMITIVE(kInput, "input", 0, 0, 0, Leaf, ValidateNone, kStructural, kWhole, false, NoDecomposition, kDirect, 0, -1, -1)
 
@@ -210,9 +216,6 @@ LLMP_FUSED(kHcNorm, "hc_norm", sizeof(NormParams), 2, 2, InferFused, ValidateNon
   // (y, x, post, comb?): HcNormPostParams: two outputs, hc_post's p and
   // rms_norm(p as [W · hc, T]).
 LLMP_FUSED(kHcNormPost, "hc_norm_post", sizeof(HcNormPostParams), 3, 4, InferFused, ValidateNone, kFixed, kWhole, true, DecomposeHcNormPost, kDecomposition, 0, -1, -1)
-  // (q, wq, k, wk, pos, freq?): NormRopeParams: two outputs, each
-  // rope(rms_norm(·) · w).
-LLMP_FUSED(kQkPrep, "qk_prep", sizeof(NormRopeParams), 5, 6, InferFused, ValidateNormRope, kFixed, kWhole, true, DecomposeQkPrep, kDecomposition, 0, -1, -1)
   // (w0, w1, ..., x): an output per product wi · x, up to four; the
   // weights first, as kMatMulGlu's and kMatMulAdd's.
 LLMP_FUSED(kPreparedProducts, "prepared_products", 0, 2, 5, InferFused, ValidateNone, kFixed, kWhole, true, DecomposePreparedProducts, kDecomposition, 0, -1, -1)
@@ -220,8 +223,6 @@ LLMP_FUSED(kPreparedProducts, "prepared_products", 0, 2, 5, InferFused, Validate
   // (x, w, z): NormGateParams: rms_norm(x) · w · sigmoid(z) or SiLU(z)
 LLMP_FUSED(kNormGate, "norm_gate", sizeof(NormGateParams), 3, 3, InferFused, ValidateNone, kFixed, kWhole, true, DecomposeNormGate, kDecomposition, 0, -1, -1)
 
-  // (sample, noise, dt [1]): sample + dt · noise
-LLMP_FUSED(kEulerStep, "euler_step", 0, 3, 3, InferFused, ValidateNone, kFixed, kWhole, true, DecomposeEulerStep, kDecomposition, 0, -1, -1)
   // (x [2W, 2H, Co], shortcut [W, H, Ci]): DupUpParams: x plus Qwen-Image's
   // DupUp3D of the shortcut at its last kept frame (kernels/ggml/ops_ext.h
   // DupUpAddF32): output channel o's sub-pixel (b, d) reads input channel

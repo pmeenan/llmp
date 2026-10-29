@@ -80,6 +80,9 @@ struct SlotLifecycleOptions {
   std::vector<StageState> stages;  // [0] the target, then each drafter
   base::Sha256Digest spec{};       // the model spec's digest (kept_layout_id)
   std::uint32_t read_align = 256;  // ReserveStateThrough's default
+  // Every stage's read classes per doubling of its reads past twice as many
+  // alignments (execution::ReadCellsFor; 0: every alignment is a class).
+  std::uint32_t read_buckets = 0;
   // Where each slot's stage spills: unnamed files in `spill_directory`
   // unless given.
   std::function<LiveState::SpillPlace(std::uint32_t slot, std::uint32_t stage)> spill_place;
@@ -193,6 +196,9 @@ class SlotLifecycle {
     const std::uint32_t own = options_.stages.at(stage).read_align;
     return own != 0 ? own : options_.read_align;
   }
+  // The read classes per doubling every stage's steps read at
+  // (execution::ReadCellsFor).
+  std::uint32_t read_buckets() const { return options_.read_buckets; }
   std::uint32_t context(std::size_t stage) const { return layout(stage).context; }
   SlotMask active() const { return cohort_.active(); }
   bool faulted() const { return cohort_.faulted(); }

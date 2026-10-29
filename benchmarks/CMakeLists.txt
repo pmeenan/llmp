@@ -157,9 +157,11 @@ if(LLMP_CUDA)
   target_link_options(llmp_ggml_vmm_bench PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
-  # llmp.vecq's launch configurations on DeepSeek V4 Flash's product shapes
-  # (kernels/ggml/dsv4_fast.h; docs/experiments/dsv4-decode/).
-  add_executable(llmp_vecq_bench vecq_bench.cc)
+  # llmp.vecq's launch configurations on the GGML encodings' product shapes
+  # (kernels/ggml/vecq.h; docs/experiments/dsv4-decode/), against GGML's MMVQ.
+  add_executable(llmp_vecq_bench vecq_bench.cc vecq_upstream.cu)
+  get_target_property(vecq_architectures llmp_ggml_kernels CUDA_ARCHITECTURES)
+  set_target_properties(llmp_vecq_bench PROPERTIES CUDA_ARCHITECTURES "${vecq_architectures}")
   target_include_directories(llmp_vecq_bench SYSTEM PRIVATE
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   target_link_libraries(llmp_vecq_bench PRIVATE llmp_ggml_kernels llmp_cuda_device_memory

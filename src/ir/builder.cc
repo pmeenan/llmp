@@ -26,8 +26,6 @@
 namespace llmp::ir {
 namespace {
 
-bool IsLeafOp(Op op) { return op == Op::kInput || op == Op::kWeight || op == Op::kState; }
-
 template <typename P>
 ParamBytes B(const P& p) {
   return ToBytes(p);
@@ -108,7 +106,7 @@ Outputs Builder::Emit(OpKey key, const ParamBytes& params, std::span<const Tenso
       t.format.encoding = r->format.encoding;
       t.nb = NaturalStrides(t.format);
     }
-    if (!IsLeafOp(key.op) && !t.view_of.valid()) {
+    if (!IsLeaf(key.op) && !t.view_of.valid()) {
       t.role = Role::kActivation;
       t.segment = segment_;
     }
@@ -127,7 +125,7 @@ Outputs Builder::Emit(OpKey key, const ParamBytes& params, std::span<const Tenso
   node.nout = inferred->nout;
   // Leaves compute nothing: joined. A node whose outputs are all views (a
   // view, a store) is its outputs' owner's, or joined.
-  if (IsLeafOp(key.op)) {
+  if (IsLeaf(key.op)) {
     node.batch = Batch::kJoined;
   } else if (node.nout > 0) {
     bool views = true;
@@ -554,10 +552,12 @@ std::expected<Graph, VerifyError> Builder::Finish() && {
     return std::unexpected(std::move(*error_));
   }
   Graph g = std::move(graph_);
-  if (auto v = Verify(g); !v) {
+  // Emit inferred and recorded every output, so only the checks inference
+  // does not make remain (bindings, segments, outputs, the inputs' order).
+  // The digest waits for its first use (Graph::Digest).
+  if (auto v = VerifyBuilt(g); !v) {
     return std::unexpected(std::move(v.error()));
   }
-  g.digest_ = g.ComputeDigest();
   g.identity_ = Graph::NextIdentity();
   return g;
 }

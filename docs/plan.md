@@ -904,9 +904,13 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
 - [x] **F6 Comparison out of production:** exact-site recipe comparison moved to
       `benchmarks/` (dense decoders could not finish a prefill plan at
       `265c821a`); coarse, versioned rank rows in `src/`.
-- [ ] **F7 Decode GEMV and planner cost:** one-pass VecQ at 5–8 columns, rank
-      data instead of capability vetoes, upstream prefetch, stable op identity in
-      digests, cheaper inference, geometric decode buckets.
+- [x] **F7 Decode GEMV and planner cost:** measured rank rows instead of
+      capability vetoes (GGML's MMVQ at 2–8 columns where faster, fused GLUs
+      split where the decomposition is >5% faster; one-pass 8-column VecQ was
+      measured slower and dropped), upstream prefetch, a row-strided
+      `llmp.argmax`, stable op identity in digests, cheaper inference and
+      planning; geometric decode buckets built but off until attention skips
+      masked tiles ([vecq-columns](experiments/vecq-columns/README.md)).
 - [x] **F8 Boundaries and mapping language:** a vendor-free
       selected-operation interface, no kernel-source include cycles and a
       stricter boundary check; one mapping value language, one Qwen-Image VAE

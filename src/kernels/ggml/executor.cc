@@ -13,6 +13,7 @@
 #include <format>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -103,6 +104,143 @@ std::expected<std::uint64_t, KernelFailure> PlanLaneScratch(const LaunchContext&
   return PlanScratchOn(launch, plan, true);
 }
 
+namespace {
+
+using Planned = std::expected<std::uint64_t, KernelFailure>;
+using ScratchPlanner = Planned (*)(const LaunchContext&, const PlanStep&);
+struct ScratchEntry {
+  std::string_view implementation;
+  ScratchPlanner plan;
+};
+
+// The pool a step draws from its first node, as a planner of that node.
+template <auto kPlan>
+Planned First(const LaunchContext& launch, const PlanStep& step) {
+  return kPlan(launch, step.nodes.front());
+}
+template <auto kPlan>
+Planned FirstNoLaunch(const LaunchContext&, const PlanStep& step) {
+  return kPlan(step.nodes.front());
+}
+// An attention planner's scratch.
+template <auto kPlan>
+Planned Attention(const LaunchContext& launch, const PlanStep& step) {
+  auto attention = kPlan(launch, step.nodes.front());
+  if (!attention) return std::unexpected(attention.error());
+  return attention->scratch;
+}
+
+// Every implementation that draws scratch from the launch pool, with its
+// planner; the others draw none. One row an implementation (a new kernel
+// that draws scratch adds its row here; ScratchPlannedImplementations, and
+// the test that each row names a declared implementation).
+const std::array kScratchPlanners = std::to_array<ScratchEntry>({
+    {kConv2dTiledF32, &First<&PlanConv2dTiledF32>},
+    {kMulMatCublas,
+     [](const LaunchContext& launch, const PlanStep& step) -> Planned {
+       auto cublas = PlanMulMatCublas(launch, step.nodes.front());
+       if (!cublas) return std::unexpected(cublas.error());
+       return cublas->scratch;
+     }},
+    {kMmvqPreparedName, &First<&PlanMmvqPrepared>},
+    {kMulMatVecQ, &First<&PlanMulMatVecQ>},
+    {kMulMatIdVecQ, &First<&PlanMulMatVecQ>},
+    {kMulMatGluQFused,
+     [](const LaunchContext& launch, const PlanStep& step) {
+       return PlanMulMatVecQGlu(launch, step.nodes[0], step.nodes[1], step.nodes[2]);
+     }},
+    {kMulMatGeGluQFused,
+     [](const LaunchContext& launch, const PlanStep& step) {
+       return PlanMulMatVecQGlu(launch, step.nodes[0], step.nodes[1], step.nodes[2]);
+     }},
+    {kMulMatVecQRows, &First<&PlanMulMatVecQRows>},
+    {kMulMatIdVecQRows, &First<&PlanMulMatVecQRows>},
+    {kMulMatQ, &First<&PlanMulMatQ>},
+    {kMulMatIdQ, &First<&PlanMulMatQ>},
+    {kMulMatIdQPair,
+     [](const LaunchContext& launch, const PlanStep& step) {
+       return PlanMulMatIdQPair(launch, step.nodes[0], step.nodes[1], false);
+     }},
+    {kMulMatIdQPairCompact,
+     [](const LaunchContext& launch, const PlanStep& step) {
+       return PlanMulMatIdQPair(launch, step.nodes[0], step.nodes[1], true);
+     }},
+    {kMulMatIdQPairGlu,
+     [](const LaunchContext& launch, const PlanStep& step) {
+       return PlanMulMatIdQPair(launch, step.nodes[0], step.nodes[1], true);
+     }},
+    {kMulMatIdQPairGluQ8,
+     [](const LaunchContext& launch, const PlanStep& step) {
+       return PlanMulMatIdQPair(launch, step.nodes[0], step.nodes[1], true);
+     }},
+    {kMulMatIdQCompact, &First<&PlanMulMatIdQCompact>},
+    {kMulMatIdQCompactPrequant, &First<&PlanMulMatIdQCompact>},
+    {kMulMatIdQ2D2r, &First<&PlanMulMatIdQ2D2r>},
+    {kTopKName, &First<&PlanTopK>},
+    {kVisibleTopKName, &First<&PlanVisibleTopK>},
+    {kStableTopKName, &First<&PlanStableTopK>},
+    {kDsv4LidTopKName, &First<&PlanDsv4LidTopK>},
+    {kMoeGemmName, &First<&PlanMoeGemm>},
+    {kMxfp8GemmName, &First<&PlanMxfp8Gemm>},
+    {kQsaTopKName, &FirstNoLaunch<&PlanQsaTopK>},
+    {kQsaAttnName, &FirstNoLaunch<&PlanQsaAttn>},
+    {kDsv4HcaTokentileName, &First<&PlanDsv4HcaTokentile>},
+    {kMulMatQPairDense,
+     [](const LaunchContext& launch, const PlanStep& step) {
+       return PlanMulMatQPairDense(launch, step.nodes[0], step.nodes[1]);
+     }},
+    {kDsv4OutAName, &First<&PlanDsv4OutA>},
+    {kDsv4OutAFastPackName, &First<&PlanDsv4OutA>},
+    {kFlashAttnOwnersName,
+     [](const LaunchContext& launch, const PlanStep& step) -> Planned {
+       auto in = FlashAttnOwnersFromNode(step.nodes.front());
+       if (!in) return std::unexpected(in.error());
+       auto attention = PlanFlashAttnOwners(launch, *in);
+       if (!attention) return std::unexpected(attention.error());
+       return attention->original.scratch;
+     }},
+    {"ggml.flash_attn_ext.vec", &Attention<&PlanFlashAttnVec>},
+    {"ggml.flash_attn_ext.vec_common", &Attention<&PlanFlashAttnVecCommon>},
+    {"ggml.flash_attn_ext.mma_common", &Attention<&PlanFlashAttnMmaCommon>},
+    {kFlashAttnVec256Name, &Attention<&PlanFlashAttnVec256>},
+    {kFlashAttnVecQ8Name, &Attention<&PlanFlashAttnVecQuant>},
+    {kFlashAttnVecQ4Name, &Attention<&PlanFlashAttnVecQuant>},
+    {kAttentionF32, &First<&PlanAttentionF32>},
+    {kFlashAttnMmaGqa2Name, &Attention<&PlanFlashAttnMmaGqa2>},
+    {kFlashAttnMmaName,
+     [](const LaunchContext& launch, const PlanStep& step) -> Planned {
+       auto attention = PlanFlashAttnMma(launch, step.nodes.front(), false);
+       if (!attention) return std::unexpected(attention.error());
+       return attention->scratch;
+     }},
+    {kFlashAttnMmaWideName,
+     [](const LaunchContext& launch, const PlanStep& step) -> Planned {
+       auto attention = PlanFlashAttnMma(launch, step.nodes.front(), true);
+       if (!attention) return std::unexpected(attention.error());
+       return attention->scratch;
+     }},
+});
+
+ScratchPlanner ScratchPlannerOf(std::string_view implementation) {
+  static const auto sorted = [] {
+    std::array<ScratchEntry, kScratchPlanners.size()> out = kScratchPlanners;
+    std::ranges::sort(out, {}, &ScratchEntry::implementation);
+    return out;
+  }();
+  const auto at =
+      std::ranges::lower_bound(sorted, implementation, {}, &ScratchEntry::implementation);
+  return at != sorted.end() && at->implementation == implementation ? at->plan : nullptr;
+}
+
+}  // namespace
+
+std::vector<std::string_view> ScratchPlannedImplementations() {
+  std::vector<std::string_view> out;
+  out.reserve(kScratchPlanners.size());
+  for (const ScratchEntry& e : kScratchPlanners) out.push_back(e.implementation);
+  return out;
+}
+
 std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& launch,
                                                           const GraphPlan& plan, bool lanes) {
   std::uint64_t most = 0;
@@ -110,102 +248,9 @@ std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& l
     if ((step.lane != 0) != lanes) {
       continue;
     }
-    std::expected<std::uint64_t, KernelFailure> planned = 0;
-    if (step.implementation == kConv2dTiledF32) {
-      planned = PlanConv2dTiledF32(launch, step.nodes.front());
-    } else if (step.implementation == kMulMatCublas) {
-      auto cublas = PlanMulMatCublas(launch, step.nodes.front());
-      if (!cublas) {
-        return std::unexpected(cublas.error());
-      }
-      planned = cublas->scratch;
-    } else if (step.implementation == kMmvqPreparedName) {
-      planned = PlanMmvqPrepared(launch, step.nodes.front());
-    } else if (step.implementation == kMulMatVecQ || step.implementation == kMulMatIdVecQ) {
-      planned = PlanMulMatVecQ(launch, step.nodes.front());
-    } else if (step.implementation == kMulMatGluQFused ||
-               step.implementation == kMulMatGeGluQFused) {
-      planned = PlanMulMatVecQGlu(launch, step.nodes[0], step.nodes[1], step.nodes[2]);
-    } else if (step.implementation == kMulMatVecQRows || step.implementation == kMulMatIdVecQRows) {
-      planned = PlanMulMatVecQRows(launch, step.nodes.front());
-    } else if (step.implementation == kMulMatQ || step.implementation == kMulMatIdQ) {
-      planned = PlanMulMatQ(launch, step.nodes.front());
-    } else if (step.implementation == kMulMatIdQPair ||
-               step.implementation == kMulMatIdQPairCompact ||
-               step.implementation == kMulMatIdQPairGlu ||
-               step.implementation == kMulMatIdQPairGluQ8) {
-      planned = PlanMulMatIdQPair(launch, step.nodes[0], step.nodes[1],
-                                  step.implementation != kMulMatIdQPair);
-    } else if (step.implementation == kMulMatIdQCompact ||
-               step.implementation == kMulMatIdQCompactPrequant) {
-      planned = PlanMulMatIdQCompact(launch, step.nodes.front());
-    } else if (step.implementation == kMulMatIdQ2D2r) {
-      planned = PlanMulMatIdQ2D2r(launch, step.nodes.front());
-    } else if (step.implementation == kTopKName) {
-      planned = PlanTopK(launch, step.nodes.front());
-    } else if (step.implementation == kVisibleTopKName) {
-      planned = PlanVisibleTopK(launch, step.nodes.front());
-    } else if (step.implementation == kStableTopKName) {
-      planned = PlanStableTopK(launch, step.nodes.front());
-    } else if (step.implementation == kDsv4LidTopKName) {
-      planned = PlanDsv4LidTopK(launch, step.nodes.front());
-    } else if (step.implementation == kMoeGemmName) {
-      planned = PlanMoeGemm(launch, step.nodes.front());
-    } else if (step.implementation == kMxfp8GemmName) {
-      planned = PlanMxfp8Gemm(launch, step.nodes.front());
-    } else if (step.implementation == kQsaTopKName) {
-      planned = PlanQsaTopK(step.nodes.front());
-    } else if (step.implementation == kQsaAttnName) {
-      planned = PlanQsaAttn(step.nodes.front());
-    } else if (step.implementation == kDsv4HcaTokentileName) {
-      planned = PlanDsv4HcaTokentile(launch, step.nodes.front());
-    } else if (step.implementation == kMulMatQPairDense) {
-      planned = PlanMulMatQPairDense(launch, step.nodes[0], step.nodes[1]);
-    } else if (step.implementation == kDsv4OutAName ||
-               step.implementation == kDsv4OutAFastPackName) {
-      planned = PlanDsv4OutA(launch, step.nodes.front());
-    } else if (step.implementation == kFlashAttnOwnersName) {
-      auto in = FlashAttnOwnersFromNode(step.nodes.front());
-      if (!in) return std::unexpected(in.error());
-      auto attention = PlanFlashAttnOwners(launch, *in);
-      if (!attention) return std::unexpected(attention.error());
-      planned = attention->original.scratch;
-    } else if (step.implementation == "ggml.flash_attn_ext.vec") {
-      auto attention = PlanFlashAttnVec(launch, step.nodes.front());
-      if (!attention) return std::unexpected(attention.error());
-      planned = attention->scratch;
-    } else if (step.implementation == "ggml.flash_attn_ext.vec_common") {
-      auto attention = PlanFlashAttnVecCommon(launch, step.nodes.front());
-      if (!attention) return std::unexpected(attention.error());
-      planned = attention->scratch;
-    } else if (step.implementation == "ggml.flash_attn_ext.mma_common") {
-      auto attention = PlanFlashAttnMmaCommon(launch, step.nodes.front());
-      if (!attention) return std::unexpected(attention.error());
-      planned = attention->scratch;
-    } else if (step.implementation == kFlashAttnVec256Name) {
-      auto attention = PlanFlashAttnVec256(launch, step.nodes.front());
-      if (!attention) return std::unexpected(attention.error());
-      planned = attention->scratch;
-    } else if (step.implementation == kFlashAttnVecQ8Name ||
-               step.implementation == kFlashAttnVecQ4Name) {
-      auto attention = PlanFlashAttnVecQuant(launch, step.nodes.front());
-      if (!attention) return std::unexpected(attention.error());
-      planned = attention->scratch;
-    } else if (step.implementation == kAttentionF32) {
-      planned = PlanAttentionF32(launch, step.nodes.front());
-    } else if (step.implementation == kFlashAttnMmaGqa2Name) {
-      auto attention = PlanFlashAttnMmaGqa2(launch, step.nodes.front());
-      if (!attention) return std::unexpected(attention.error());
-      planned = attention->scratch;
-    } else if (step.implementation == kFlashAttnMmaName ||
-               step.implementation == kFlashAttnMmaWideName) {
-      auto attention = PlanFlashAttnMma(launch, step.nodes.front(),
-                                        step.implementation == kFlashAttnMmaWideName);
-      if (!attention) {
-        return std::unexpected(attention.error());
-      }
-      planned = attention->scratch;
-    }
+    const ScratchPlanner planner = ScratchPlannerOf(step.implementation);
+    if (planner == nullptr) continue;
+    const Planned planned = planner(launch, step);
     if (!planned) {
       return std::unexpected(planned.error());
     }

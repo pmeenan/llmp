@@ -53,6 +53,7 @@ std::expected<LlmServingPolicy, std::string> LlmServingPolicy::Resolve(
   LlmServingPolicy result;
   result.owners_ = request.owners;
   result.read_align_ = request.read_align;
+  result.read_buckets_ = request.read_buckets;
   result.batching_ = source.batching;
   result.batching_.max_segments = std::min(request.owners, source.batching.max_segments);
   if (request.owners_alone) result.batching_.max_segments = 1;

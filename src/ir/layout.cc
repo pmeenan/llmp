@@ -972,13 +972,11 @@ TensorId Sinker::EmitCheap(std::uint32_t i, const Axes& order) {
   return out;
 }
 
+// Graphs without state or writes in place (the trait table's write set,
+// decompose.h).
 bool Supported(const ir::Graph& g) {
   for (const ir::Node& n : g.nodes()) {
-    if (n.key == Prim(Op::kState) || n.key == Prim(Op::kCacheStore)) return false;
-    if (n.key.op == Op::kFused) {
-      for (std::size_t i = 0; i < n.nout; ++i)
-        if (ir::AliasedSource(n.key, i)) return false;
-    }
+    if (n.key == Prim(Op::kState) || ir::WritesInPlace(n)) return false;
   }
   return true;
 }

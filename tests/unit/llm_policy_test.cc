@@ -30,6 +30,20 @@ rt::LlmPolicyRequest Request() {
           .lookahead = 3};
 }
 
+// The read buckets a request names are the policy's (the slots' and the
+// composer's, runtime/component_build.cc); none by default.
+TEST(LlmServingPolicyTest, CarriesTheRequestedReadBuckets) {
+  auto request = Request();
+  const auto plain = rt::LlmServingPolicy::Resolve(Source(), kBackend, request);
+  ASSERT_TRUE(plain) << plain.error();
+  EXPECT_EQ(plain->read_buckets(), 0U);
+  request.read_buckets = 4;
+  const auto bucketed = rt::LlmServingPolicy::Resolve(Source(), kBackend, request);
+  ASSERT_TRUE(bucketed) << bucketed.error();
+  EXPECT_EQ(bucketed->read_buckets(), 4U);
+  EXPECT_EQ(bucketed->read_align(), 256U);
+}
+
 TEST(LlmServingPolicyTest, ActualCapabilitiesAndPreferencesDetermineOneOwnedValue) {
   auto source = Source();
   auto request = Request();

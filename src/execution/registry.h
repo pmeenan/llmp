@@ -210,6 +210,33 @@ struct OperandMemory {
   std::uint64_t is_view : 1 = 0;
 };
 
+// What an operand's bytes are, where the asker knows: a selection over a
+// graph's node says (planner/select.h BindingOf); a query of descriptors
+// alone (a matcher's node that does not exist yet) leaves it unknown, and
+// the selection of the node it makes, over its graph, decides.
+enum class OperandSource : std::uint8_t {
+  kUnknown,
+  // Computed in the step, an input or a constant, state, or part of a
+  // weight.
+  kOther,
+  // A bound weight's bytes, whole and unchanged: the weight itself, or a
+  // reshape of all of it (a stored table regrouped).
+  kWholeWeight,
+};
+// A whole weight as it is stored (kWholeWeight's): its rank and matrices.
+// Four bytes, in OperandFormat's padding; its extents are the operand's
+// (a reshape keeps the bytes and the element count).
+struct StoredWeight {
+  std::uint8_t rank = 0;
+  std::uint8_t stacked = 1;
+  bool expert_array = false;  // all experts as one tensor along ne[2]
+};
+struct OperandBinding {
+  OperandSource source = OperandSource::kUnknown;
+  StoredWeight stored{};
+};
+static_assert(sizeof(OperandBinding) == 4);
+
 struct OperandFormat {
   std::uint8_t operand = 0;
   // Matrices joined along ne[1], each with its own optional tensor scale.
@@ -218,6 +245,7 @@ struct OperandFormat {
   format::Layout layout = format::Layout::kDense;
   std::optional<std::uint8_t> rank{};  // exact logical rank when a graph supplies it
   format::EncodingParams params{};
+  OperandBinding binding{};
   std::array<std::uint64_t, 4> ne{};
   std::optional<OperandMemory> memory{};
 };
@@ -374,6 +402,9 @@ class Registry {
   const base::Sha256Digest& Digest() const { return digest_; }
   const RankData& ranks() const { return ranks_; }
   const base::Sha256Digest& RankDigest() const { return rank_digest_; }
+  // The indices of the implementations whose capability computes `op`, in
+  // index order: what a candidate query scans.
+  std::span<const std::size_t> Capable(ir::OpKey op) const;
 
  private:
   Registry(std::vector<Implementation> implementations, std::vector<base::Sha256Digest> identities,
@@ -385,6 +416,8 @@ class Registry {
   std::vector<Implementation> implementations_;
   std::vector<base::Sha256Digest> identities_;  // parallel to implementations_
   std::vector<std::size_t> by_name_;            // indices, sorted by name
+  // Those with a capability, by its operation, then index (Capable).
+  std::vector<std::size_t> by_op_;
 };
 
 // A planner's choice for one operation.

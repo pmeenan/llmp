@@ -303,6 +303,7 @@ struct ModelSettings {
   Setting<std::uint32_t> draft_wave_max;
   Setting<bool> wave_lanes;
   Setting<std::uint32_t> wave_read_align;
+  Setting<std::uint32_t> wave_read_buckets;
   // A composition (the image pipeline).
   Setting<std::uint32_t> image_size;
   Setting<std::uint32_t> image_steps;

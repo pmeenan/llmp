@@ -24,6 +24,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <format>
+#include <functional>
 #include <limits>
 #include <map>
 #include <optional>
@@ -46,6 +48,7 @@
 #include "ir/decompose.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "ir/op_traits.h"
 #include "planner/construction.h"
 #include "planner/fusions.h"
 #include "planner/lanes.h"
@@ -261,6 +264,263 @@ Policy Disabling(std::initializer_list<std::string> names) {
   return p;
 }
 
+// ------------------------------------------------- the mutation harness (M4)
+// A registered rewrite's positive control, broken in the ways every fusion
+// must notice, by a generic edit of the graph. For each tensor a rewrite of
+// the positive control elides, made by a node of the rewrite but its last:
+//   - kObserved: the tensor is kept as well (another reader). A rewrite of
+//     the mutated graph may replace its producer only by making it itself
+//     (a fused kind's optional output): it never elides what is read;
+//   - kNarrowed: the tensor, an F32 result, is recorded in F16. No fused
+//     rewrite may elide it: one may end at its producer, never pass it
+//     (the table's ElidesF32);
+// and for the first node of each rewrite but its last that reads a root a
+// store may target:
+//   - kWritten: a store of one row into that root right after the node. No
+//     rewrite may join the node with one past the store (the table's
+//     KeepsOrder).
+// The table applies kNarrowed's and kWritten's checks to the patterns that
+// do not make their own (own_checks): those type and order their
+// intermediates themselves (several emit at more than one place, and the
+// BF16 ones take narrow intermediates by design), and are asserted for
+// kObserved only. A mutation the graph cannot express (a view of a
+// narrowed tensor, an output not recordable in F16) does not build and is
+// skipped. Every mutated graph must also rewrite without error.
+enum class Mutation : std::uint8_t { kObserved, kWritten, kNarrowed };
+
+std::string_view MutationName(Mutation m) {
+  switch (m) {
+    case Mutation::kObserved:
+      return "an observed intermediate";
+    case Mutation::kWritten:
+      return "an intervening write";
+    case Mutation::kNarrowed:
+      return "an F16 intermediate";
+  }
+  return "unknown";
+}
+
+// `pattern` alone over `graph`; each applied rewrite's nodes sorted.
+std::optional<Rewritten> RewriteAlone(const Pattern& pattern, const ir::Graph& graph,
+                                      const ex::Registry& registry, const Policy& policy,
+                                      const StepShape* shape) {
+  const SelectionView view(registry, kDevice, policy, false, false);
+  auto result = ApplyPatternTable(std::span(&pattern, 1), graph, view, shape);
+  EXPECT_TRUE(result) << (result ? "" : result.error().detail);
+  if (!result) return std::nullopt;
+  for (auto& applied : result->applied) std::ranges::sort(applied.replaced);
+  return std::move(*result);
+}
+
+// `graph` copied node by node: with `keep` kept as well, `narrow` (an F32
+// result) recorded in F16, and after node `store_after` a store of one row
+// into `store_root`. None where the copy does not build.
+std::optional<ir::Graph> MutatedCopy(const ir::Graph& graph, TensorId keep, TensorId narrow,
+                                     std::optional<ir::NodeId> store_after, TensorId store_root) {
+  ir::Builder b;
+  std::vector<TensorId> map(graph.tensor_count());
+  RewriteContext rc(graph, b, map);
+  for (std::uint32_t i = 0; i < graph.nodes().size(); ++i) {
+    const ir::Node& node = graph.node(ir::NodeId{i});
+    if (narrow.valid() && graph.producer(narrow).v == i) {
+      b.SetComponent(node.component);
+      if (node.batch == ir::Batch::kPerOwner && node.nout > 0) {
+        b.SetOwner(graph.tensor(node.out[0]).segment);
+      } else {
+        b.SetJoined();
+      }
+      std::array<TensorId, ir::kMaxSources> sources{};
+      for (std::size_t k = 0; k < node.nsrc; ++k) sources[k] = rc.Map(node.src[k]);
+      std::array<ir::TensorDesc, ir::kMaxOutputs> requested{};
+      for (std::size_t k = 0; k < node.nout; ++k) {
+        requested[k] = graph.tensor(node.out[k]);
+        if (node.out[k] == narrow) requested[k].format.encoding = Encoding::kF16;
+      }
+      const ir::Outputs outs = b.Emit(node.key, node.params, std::span(sources).first(node.nsrc),
+                                      std::span(requested).first(node.nout));
+      for (std::size_t k = 0; k < node.nout && k < outs.n; ++k) rc.Set(node.out[k], outs[k]);
+      if (b.ok() && b.tensor(rc.Map(narrow)).format.encoding != Encoding::kF16) return std::nullopt;
+    } else {
+      rc.Copy(node);
+    }
+    if (store_after && store_after->v == i) {
+      const ir::TensorDesc root = graph.tensor(store_root);
+      b.SetJoined();
+      const TensorId rows = b.Input(F32({root.ne(0), 1, root.ne(2), root.ne(3)}));
+      const TensorId idx = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({1})));
+      (void)b.CacheStore(rc.Map(store_root), rows, idx);
+    }
+    if (!b.ok()) return std::nullopt;
+  }
+  for (const TensorId o : graph.outputs()) b.Output(rc.Map(o));
+  for (const TensorId k : graph.keep()) b.Keep(rc.Map(k));
+  if (keep.valid()) b.Keep(rc.Map(keep));
+  auto g = std::move(b).Finish();
+  if (!g) return std::nullopt;
+  return std::move(*g);
+}
+
+// A store's target: a root of the step's that is neither a weight nor a
+// plan constant, in a float encoding of one part.
+bool StoreTarget(const ir::TensorDesc& root) {
+  return root.role != ir::Role::kWeight && root.role != ir::Role::kConstant &&
+         root.format.layout == Layout::kDense &&
+         (root.format.encoding == Encoding::kF32 || root.format.encoding == Encoding::kF16 ||
+          root.format.encoding == Encoding::kBF16);
+}
+
+// The patterns the harness does not mutate, each with its reason
+// (PlannerPatternCoverageTest checks that every registered pattern is
+// harnessed or here, never both).
+struct MutationExempt {
+  std::string_view pattern;
+  std::string_view reason;
+};
+constexpr std::string_view kNotWired =
+    "positive control not through CheckRegisteredRewrite or CheckMatcherRewrites";
+constexpr std::string_view kElidesNothing =
+    "its rewrite elides no intermediate (one node replaced, or every replaced node's output "
+    "stays visible: re-recorded or made by the fused kind), so no mutation applies; its "
+    "refusals are its own tests'";
+constexpr MutationExempt kMutationExempt[] = {
+    {"grouped_stores",
+     "a batch: it joins independent stores and elides nothing; its order and distinct-cache "
+     "checks are pattern.cc's batch hazard checks (PlannerBatchTest.ConsecutiveStoresRunAsOne)"},
+    {"bf16_branch", kElidesNothing},
+    {"bf16_glu", kElidesNothing},
+    {"bf16_rows", kElidesNothing},
+    {"hc_fold_inputs", kElidesNothing},
+    {"mxfp8_inputs", kElidesNothing},
+    {"split_gated_residual_modulate", kElidesNothing},
+    {"trellis_products", kElidesNothing},
+    // Not yet harnessed (a follow-up): their positive controls plan with
+    // their tests' own policies, registries and facts rather than through
+    // the generic helpers, and assert their refusals in those tests.
+    {"state_bank_attention", kNotWired},
+    {"rms_norm_rope_tail", kNotWired},
+    {"prepared_head_gate", kNotWired},
+    {"vecq_glu", kNotWired},
+    {"bf16_inputs", kNotWired},
+    {"vecq_inputs", kNotWired},
+};
+bool MutationExempted(std::string_view name) {
+  return std::ranges::contains(kMutationExempt, name, &MutationExempt::pattern);
+}
+
+// A positive control's policy for another graph (a mutated copy of it):
+// its qualifications bound to that graph, as they were to the control.
+using PolicyFor = std::function<Policy(const ir::Graph&)>;
+
+// Every rewrite `name` applies to `graph` (its positive control) refuses
+// each mutation that applies to it (see above). Returns how many mutated
+// graphs it checked; a pattern not exempt (kMutationExempt) must apply to
+// its control and be checked at least once, so a listed pattern is never
+// harnessed in name only. `rebind` makes the control's policy for a
+// mutated graph where the generic rebinding (FixtureNumericalPolicy) would
+// not reproduce it (a role's full-leaf qualification).
+std::size_t CheckMutationsRefuse(std::string_view name, const ir::Graph& graph,
+                                 const ex::Registry& registry, const Policy* policy_override,
+                                 const StepShape* shape, const PolicyFor& rebind = {}) {
+  const Pattern* pattern = FindPattern(name);
+  if (pattern == nullptr || pattern->kind != PatternKind::kRewrite || MutationExempted(name))
+    return 0;
+  std::vector<NumericalChange> changes;
+  if (pattern->numerical_change) changes.push_back(*pattern->numerical_change);
+  // The positive control's policy; synthetic qualifications are bound to
+  // each mutated graph's own digest, as they were to the control's.
+  const auto policy_for = [&](const ir::Graph& g) {
+    if (rebind) return rebind(g);
+    if (policy_override != nullptr) {
+      return policy_override->numerical ? FixtureNumericalPolicy(g, *policy_override, changes)
+                                        : *policy_override;
+    }
+    Policy policy = FixtureNumericalPolicy(g, {}, changes);
+    policy.enabled.emplace_back(name);
+    Canonicalize(policy);
+    return policy;
+  };
+  const auto rewrite = [&](const ir::Graph& g) {
+    return RewriteAlone(*pattern, g, registry, policy_for(g), shape);
+  };
+  const bool fused = pattern->result.op == Op::kFused;
+  const bool table_checked = !pattern->own_checks;
+  std::size_t checked = 0;
+  const auto positive = rewrite(graph);
+  if (!positive) return 0;
+  EXPECT_FALSE(positive->applied.empty())
+      << name << ": the harness's rewrite of the positive control applies nothing";
+  for (const auto& applied : positive->applied) {
+    const auto& nodes = applied.replaced;
+    if (nodes.size() < 2) continue;
+    const ir::NodeId last = nodes.back();
+    for (const ir::NodeId id : nodes) {
+      if (id == last) continue;
+      for (const TensorId o : graph.node(id).outputs()) {
+        // What the positive rewrite elides.
+        if (o.v < positive->tensors.size() && positive->tensors[o.v].valid()) continue;
+        if (auto mutated = MutatedCopy(graph, o, {}, std::nullopt, {})) {
+          SCOPED_TRACE(std::format("{}: tensor {}", MutationName(Mutation::kObserved), o.v));
+          ++checked;
+          if (const auto result = rewrite(*mutated)) {
+            for (const auto& r : result->applied) {
+              if (!std::ranges::contains(r.replaced, id)) continue;
+              // Replaced only by making the observed tensor itself.
+              const TensorId made =
+                  o.v < result->tensors.size() ? result->tensors[o.v] : TensorId{};
+              EXPECT_TRUE(made.valid() &&
+                          std::ranges::contains(r.made, result->graph.producer(made)))
+                  << "node " << id.v << " replaced, its output elided";
+            }
+          }
+        }
+        const ir::TensorDesc& t = graph.tensor(o);
+        bool computed_readers = true;
+        for (const ir::Node& reader : graph.nodes())
+          if (std::ranges::contains(reader.sources(), o) && LaunchesNothing(reader.key))
+            computed_readers = false;
+        if (!fused || !table_checked || t.is_view() || t.format.encoding != Encoding::kF32 ||
+            t.format.layout != Layout::kDense || !computed_readers)
+          continue;
+        if (auto mutated = MutatedCopy(graph, {}, o, std::nullopt, {})) {
+          SCOPED_TRACE(std::format("{}: tensor {}", MutationName(Mutation::kNarrowed), o.v));
+          ++checked;
+          if (const auto result = rewrite(*mutated)) {
+            for (const auto& r : result->applied)
+              EXPECT_TRUE(!std::ranges::contains(r.replaced, id) || r.replaced.back() == id)
+                  << "node " << id.v << "'s F16 result elided";
+          }
+        }
+      }
+    }
+    if (!table_checked) continue;
+    for (const ir::NodeId id : nodes) {
+      if (id == last) break;
+      std::optional<TensorId> target;
+      for (const TensorId s : graph.node(id).sources()) {
+        if (s.valid() && StoreTarget(graph.tensor(graph.root(s)))) {
+          target = graph.root(s);
+          break;
+        }
+      }
+      if (!target) continue;
+      if (auto mutated = MutatedCopy(graph, {}, {}, id, *target)) {
+        SCOPED_TRACE(std::format("{}: into tensor {} after node {}",
+                                 MutationName(Mutation::kWritten), target->v, id.v));
+        ++checked;
+        // The store's rows, index and store are nodes id + 1 to id + 3.
+        if (const auto result = rewrite(*mutated)) {
+          for (const auto& r : result->applied)
+            EXPECT_TRUE(!std::ranges::contains(r.replaced, id) || r.replaced.back().v < id.v + 3)
+                << "node " << id.v << " joined past a write to what it reads";
+        }
+      }
+      break;
+    }
+  }
+  EXPECT_GT(checked, 0U) << name << ": no mutation applies to its positive control";
+  return checked;
+}
+
 // Exercise registered entries, including round-one rewrites, in isolation so
 // another fusion cannot satisfy a positive assertion or hide a refusal.
 void CheckRegisteredRewrite(std::string_view name, const ir::Graph& graph,
@@ -288,13 +548,15 @@ void CheckRegisteredRewrite(std::string_view name, const ir::Graph& graph,
       << (result->dropped.empty() ? "" : result->dropped.front().detail);
   EXPECT_EQ(result->applied.empty(), !matches);
   for (const auto& applied : result->applied) EXPECT_EQ(applied.pattern, name);
+  // A positive control is also the mutation harness's (M4).
+  if (matches) (void)CheckMutationsRefuse(name, graph, registry, nullptr, shape);
 }
 
 // `name`'s matcher accepts an anchor of `source` under its own policy (or
 // `policy_override`), and the rewrite applies through the pattern table.
 void CheckMatcherRewrites(std::string_view name, const ir::Graph& source,
                           const ex::Registry& registry, const Policy* policy_override = nullptr,
-                          const StepShape* shape = nullptr) {
+                          const StepShape* shape = nullptr, const PolicyFor& rebind = {}) {
   const Pattern* pattern = FindPattern(name);
   ASSERT_NE(pattern, nullptr);
   std::vector<NumericalChange> changes;
@@ -321,6 +583,8 @@ void CheckMatcherRewrites(std::string_view name, const ir::Graph& source,
     EXPECT_NE(std::ranges::find(rewritten->applied, name, &Applied::pattern),
               rewritten->applied.end())
         << name;
+    // A positive control is also the mutation harness's (M4).
+    (void)CheckMutationsRefuse(name, source, registry, policy_override, shape, rebind);
   }
 }
 
@@ -982,6 +1246,85 @@ TEST(PlannerPatternTest, ProductRowsAreTheInputsSecondDimensionOnly) {
   EXPECT_EQ(fused.n, 32U);
 }
 
+// A grouped product (w [K, N, G], x [K, G, T]) presents its tokens, K and
+// each group's N (L1), not the weight's extents.
+TEST(PlannerPatternTest, GroupedProductRowsAreItsTokens) {
+  ir::TensorDesc weight, input;
+  weight.format = F32({64, 16, 3});
+  input.format = F32({64, 3, 5});
+  const std::array<const ir::TensorDesc*, 2> sources{&weight, &input};
+  const auto shape = ShapeOfNode(ir::Fused(FusedKind::kGroupedMatMul), sources, {});
+  EXPECT_EQ(shape.rows, 5U);
+  EXPECT_EQ(shape.k, 64U);
+  EXPECT_EQ(shape.n, 16U);
+}
+
+// What launches nothing is the trait table's structural rows.
+TEST(PlannerPatternTest, LaunchesNothingIsTheStructuralRows) {
+  for (const auto& traits : ir::PrimitiveTraits()) {
+    SCOPED_TRACE(traits.name);
+    EXPECT_EQ(LaunchesNothing(traits.key), traits.layout == ir::LayoutClass::kStructural);
+  }
+  for (const auto& traits : ir::FusedTraits()) EXPECT_FALSE(LaunchesNothing(traits.key));
+  EXPECT_TRUE(LaunchesNothing(ir::Primitive(Op::kPermute)));
+  EXPECT_FALSE(LaunchesNothing(ir::Primitive(Op::kCont)));
+}
+
+// A capability is told what an operand of a graph is: a whole bound weight
+// (the leaf, or a reshape of all of it) or something else.
+TEST(PlannerSelectionTest, OperandBindingsNameWholeWeightsOnly) {
+  ir::Builder b;
+  const format::TensorFormat q8{
+      .encoding = Encoding::kQ8_0, .layout = Layout::kGgmlBlocks, .shape = ir::ShapeOf({64, 48})};
+  const TensorId leaf = b.Weight(q8, W(7));
+  const TensorId grouped = b.Reshape(leaf, ir::ShapeOf({64, 16, 3}));
+  const TensorId part = b.View(leaf, ir::ShapeOf({64, 32}), ir::NaturalStrides(q8), 68);
+  const TensorId experts = b.Weight(q8, {.role = 8, .expert_array = true});
+  const TensorId input = b.Input(F32({64, 3}));
+  const TensorId reshaped_input = b.Reshape(input, ir::ShapeOf({64, 1, 3}));
+  b.Output(b.Add(b.MatMul(leaf, input), b.MatMul(experts, input)));
+  b.Output(b.MatMul(part, input));
+  b.Output(b.Scale(reshaped_input, 2.0F));
+  b.Output(b.MatMul(grouped, b.Input(F32({64, 2, 3}))));
+  const ir::Graph g = Finish(b);
+  for (const TensorId whole : {leaf, grouped}) {
+    const auto binding = BindingOf(g, whole);
+    EXPECT_EQ(binding.source, ex::OperandSource::kWholeWeight);
+    EXPECT_EQ(binding.stored.rank, 2);
+    EXPECT_FALSE(binding.stored.expert_array);
+  }
+  EXPECT_TRUE(BindingOf(g, experts).stored.expert_array);
+  for (const TensorId other : {part, input, reshaped_input, TensorId{}})
+    EXPECT_EQ(BindingOf(g, other).source, ex::OperandSource::kOther);
+}
+
+// The registry's index by operation lists every implementation of it, and
+// only those, in index order: a scan of it is a scan of the registry.
+TEST(PlannerSelectionTest, RegistryIndexByOperationCoversExactlyItsImplementations) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.scale.second", Any(ir::Primitive(Op::kScale))));
+  const auto registry = Registry(std::move(implementations));
+  std::size_t listed = 0;
+  std::vector<ir::OpKey> keys;
+  for (std::size_t i = 0; i < registry.size(); ++i)
+    if (registry.at(i).capability && !std::ranges::contains(keys, registry.at(i).capability->op))
+      keys.push_back(registry.at(i).capability->op);
+  for (const ir::OpKey key : keys) {
+    const auto capable = registry.Capable(key);
+    EXPECT_TRUE(std::ranges::is_sorted(capable));
+    for (std::size_t i = 0; i < registry.size(); ++i) {
+      const bool computes = registry.at(i).capability && registry.at(i).capability->op == key;
+      EXPECT_EQ(std::ranges::contains(capable, i), computes) << registry.at(i).name;
+    }
+    listed += capable.size();
+  }
+  std::size_t declared = 0;
+  for (std::size_t i = 0; i < registry.size(); ++i) declared += registry.at(i).capability ? 1 : 0;
+  EXPECT_EQ(listed, declared);
+  EXPECT_EQ(registry.Capable(ir::Primitive(Op::kScale)).size(), 2U);
+  EXPECT_TRUE(registry.Capable(ir::Primitive(Op::kSoftMax)).empty());
+}
+
 TEST(PlannerPatternTest, GroupedOutputMatcherDelegatesSpecializedDimensionsToTheCandidate) {
   auto implementations = Everything();
   implementations.push_back(Fake("t.outa", Any(ir::Fused(FusedKind::kInverseRopeGroupedMatMul))));
@@ -1196,6 +1539,7 @@ TEST(PlannerPatternTest, Dsv4HcPostPreservesBothOutputsAcrossComponentBoundaries
     ASSERT_TRUE(rewritten) << (rewritten ? "" : rewritten.error().detail);
     ASSERT_EQ(rewritten->applied.size(), 1U);
     EXPECT_EQ(rewritten->applied[0].pattern, "hc_post_flat_norm");
+    CheckMatcherRewrites("hc_post_flat_norm", *g, registry, &on);
     EXPECT_EQ(rewritten->graph.producer(rewritten->graph.outputs()[0]),
               rewritten->graph.producer(rewritten->graph.outputs()[1]));
   }
@@ -2202,6 +2546,13 @@ TEST(PlannerPatternTest, GroupedVecQRequiresTheActualProductQualification) {
       EXPECT_EQ(matched->max_k, 64U);
       EXPECT_EQ(matched->max_n, 16U);
     }
+    if (authority == 1) {
+      // The role's full-leaf qualification, bound to each mutated graph.
+      CheckMatcherRewrites(
+          "grouped_vecq", graph, registry, &policy, nullptr, [&](const ir::Graph& g) {
+            return RoleNumericalPolicy(g, {}, NumericalChange::kQ8VectorReduction, role);
+          });
+    }
     const auto plan = PlanOf(graph.Clone(), registry, policy);
     const auto found = std::ranges::find(plan.applied, "grouped_vecq", &Applied::pattern);
     const bool permitted = authority == 1 || authority == 2;
@@ -3071,6 +3422,7 @@ TEST(PlannerPatternTest, SpatialChannelNormTakesTheWholeLayoutRoundTrip) {
     return Finish(b);
   };
   for (const bool silu : {false, true}) {
+    CheckMatcherRewrites("spatial_channel_norm", graph({.silu = silu}), fused);
     const StepPlan p = PlanOf(graph({.silu = silu}), fused);
     EXPECT_EQ(Patterns(p), std::vector<std::string_view>{"spatial_channel_norm"}) << silu;
     ASSERT_EQ(p.applied.size(), 1U);
@@ -3257,6 +3609,7 @@ TEST(PlannerPatternTest, Bf16GluRecordsTheMlpInBf16) {
     ASSERT_TRUE(accepted) << accepted.error().detail;
     ASSERT_EQ(accepted->applied.size(), 1U);
     EXPECT_EQ(accepted->applied.front().pattern, "bf16_glu");
+    CheckMatcherRewrites("bf16_glu", source, r, &qualified);
   }
   std::size_t converts = 0, bf16_products = 0;
   for (const ir::Node& n : p.graph.nodes()) {
@@ -4283,9 +4636,11 @@ TEST(PlannerPlanTest, InvariantInputsMakeAPrologueWhoseResultsStay) {
   EXPECT_EQ(both.prologue.size(), both.steps.size());
 }
 
-// Never the prologue's: what reads a state, and a store or a collective
-// reading an invariant input; such an input is then copied every run (not
-// kept in StepPlan::invariant), and nothing reuses a kept one's bytes.
+// Never the prologue's: what reads a state, a store, and a collective
+// reading an invariant input, which is then copied every run (not kept in
+// StepPlan::invariant: an implementation may reduce in place). A store
+// only reads its rows (L7): an invariant input it stores stays kept, and
+// what else reads it is the prologue's, the store itself never.
 TEST(PlannerPlanTest, AStateReadAStoreOrACollectiveIsNoPrologue) {
   auto implementations = Everything();
   implementations.push_back(Fake("t.all_reduce", Any(ir::Primitive(Op::kAllReduce))));
@@ -4324,10 +4679,19 @@ TEST(PlannerPlanTest, AStateReadAStoreOrACollectiveIsNoPrologue) {
     const ir::Graph g = stored(collective);
     const TensorId x = g.inputs()[0];
     const StepPlan p = PlanOf(stored(collective), r, {}, {.invariant = {x}});
-    // The input a store or a collective reads is written in place or sent:
-    // not kept, nothing is the prologue's, and it is copied every run.
-    EXPECT_TRUE(p.prologue.empty());
-    EXPECT_TRUE(p.invariant.empty());
+    if (collective) {
+      // The input a collective reads may be reduced in place or is sent:
+      // not kept, nothing is the prologue's, and it is copied every run.
+      EXPECT_TRUE(p.prologue.empty());
+      EXPECT_TRUE(p.invariant.empty());
+    } else {
+      // The store's rows stay kept and their scale is the prologue's; the
+      // store, which writes the cache, is not.
+      EXPECT_EQ(p.invariant, std::vector<TensorId>{x});
+      ASSERT_EQ(p.prologue.size(), 1U);
+      const auto& step = p.steps.at(p.prologue.front());
+      EXPECT_EQ(p.graph.node(step.nodes.front()).key, ir::Primitive(Op::kScale));
+    }
     ExpectDisjoint(p);
   }
 }
@@ -5495,6 +5859,66 @@ TEST(PlannerPatternCoverageTest, EveryRegisteredMatcherHasPositiveAndRefusalCont
       {"grouped_stores", "PlannerBatchTest.ConsecutiveStoresRunAsOne",
        "PlannerBatchTest.ConsecutiveStoresRunAsOne"},
   };
+  // M4: each registered rewrite's positive control also runs the mutation
+  // harness (CheckMutationsRefuse, through CheckRegisteredRewrite or
+  // CheckMatcherRewrites) in the test named here, or the pattern is exempt
+  // for the reason given.
+  struct Mutated {
+    std::string_view pattern;
+    std::string_view test;
+  };
+  constexpr Mutated mutated[] = {
+      {"block_sparse_attention",
+       "PlannerPatternTest.QsaSelectionChecksItsFixedWeightsMasksAndBias"},
+      {"float_mul_mat_add",
+       "PlannerPatternCoverageTest.FloatProductAddPreservesExplicitArithmeticAndShape"},
+      {"float_mul_mat_glu",
+       "PlannerPatternCoverageTest.PairedAndFloatingGluPreserveSharedInputAndVisibleProducts"},
+      {"gdn_conv", "PlannerPatternTest.GdnHistoryChecksStandaloneCommitTail"},
+      {"gdn_gates", "PlannerPatternCoverageTest.GdnGatesRequireVerifyAndSoftplus"},
+      {"gdn_norm_gate",
+       "PlannerPatternCoverageTest.GdnNormGatePreservesGateFunctionAndNormReaders"},
+      {"gdn_step", "PlannerPatternCoverageTest.GdnStepCannotDiscardAnObservedNextState"},
+      {"grouped_vecq", "PlannerPatternTest.GroupedVecQRequiresTheActualProductQualification"},
+      {"hc_combine",
+       "PlannerPatternTest.HyperConnectionCombineRejectsUnrepresentedScaleParameters"},
+      {"hc_mix", "PlannerPatternTest.HyperConnectionMixChecksItsStreamViewsAndFinalScale"},
+      {"hc_post_flat_norm",
+       "PlannerPatternTest.Dsv4HcPostPreservesBothOutputsAcrossComponentBoundaries"},
+      {"hc_prep", "PlannerPatternTest.HyperConnectionPrepRejectsLowRankScaleBias"},
+      {"interleaved_norm_rope",
+       "PlannerPatternCoverageTest.InterleavedNormRopeCannotElideAnObservedNorm"},
+      {"inverse_rope_grouped_mul_mat",
+       "PlannerPatternCoverageTest.InverseGroupedProductCannotEraseObservableRotation"},
+      {"mean_pool_norm_rope_store",
+       "PlannerPatternTest.QsaPoolingDoesNotDropRotationFrequencyFactors"},
+      {"moe_combine", "PlannerPatternCoverageTest.MoeCombinePreservesReductionReadersAndAddOrder"},
+      {"moe_experts", "PlannerPatternCoverageTest.MoeGluAndExpertsRequireTheirOwnRoutingScales"},
+      {"moe_glu", "PlannerPatternCoverageTest.MoeGluAndExpertsRequireTheirOwnRoutingScales"},
+      {"moe_router", "PlannerPatternCoverageTest.MoeRouterPreservesGateComponentAndReaders"},
+      {"mul_mat_glu", "PlannerPatternTest.GateAndUpProductsJoinTheirGlu"},
+      {"owner_attention",
+       "PlannerPatternCoverageTest.OwnerAttentionRequiresCompatibleOwnersAndPrivateQueries"},
+      {"paired_glu_products",
+       "PlannerPatternCoverageTest.PairedAndFloatingGluPreserveSharedInputAndVisibleProducts"},
+      {"prepared_inputs", "PlannerPatternTest.ProductsOfOneInputShareItsPreparation"},
+      {"qk_attention", "PlannerPatternCoverageTest.QkAttentionKeepsMaskSemanticsAndProductReaders"},
+      {"rms_norm_mul", "PlannerPatternTest.NormAndItsWeightFuse"},
+      {"rms_norm_mul_add", "PlannerPatternTest.NormThenResidualAdd"},
+      {"rms_norm_mul_rope", "PlannerPatternTest.TheLongerChainComesFirst"},
+      {"rms_norm_mul_rope_sections",
+       "PlannerPatternTest.RotatedSectionsTakeTheWeightWideningAndPositionCopies"},
+      {"rope_store", "PlannerPatternTest.ARotationStoredWhole"},
+      {"rounded_index_mask",
+       "PlannerPatternCoverageTest.RoundedMaskRequiresTheScoresVisibilityDomain"},
+      {"sinkhorn_hc_pre", "PlannerPatternTest.Dsv4HcPreChecksTheFullCarryAndPrimitiveArithmetic"},
+      {"softmax_pool_compress",
+       "PlannerPatternTest.Dsv4CompressorChecksTheEntireCanonicalAssemblyAndReadOrder"},
+      {"spatial_channel_norm", "PlannerPatternTest.SpatialChannelNormTakesTheWholeLayoutRoundTrip"},
+      {"split_gated_residual",
+       "PlannerPatternCoverageTest.SplitGatedResidualRequiresTanhAndPrivateIntermediates"},
+      {"split_modulate", "PlannerPatternTest.SplitModulationAndGatedResidualFuseTheirConditioning"},
+  };
   std::vector<std::string> tests;
   const auto* unit = ::testing::UnitTest::GetInstance();
   for (int s = 0; s != unit->total_test_suite_count(); ++s) {
@@ -5515,6 +5939,21 @@ TEST(PlannerPatternCoverageTest, EveryRegisteredMatcherHasPositiveAndRefusalCont
   std::ranges::sort(covered);
   std::ranges::sort(registered);
   EXPECT_EQ(covered, registered);
+  // Every registered pattern is mutation-harnessed or exempt, never both.
+  std::vector<std::string_view> mutation_covered;
+  for (const auto& item : mutated) {
+    SCOPED_TRACE(item.pattern);
+    EXPECT_TRUE(std::ranges::contains(tests, item.test));
+    mutation_covered.push_back(item.pattern);
+  }
+  for (const auto& item : kMutationExempt) {
+    SCOPED_TRACE(item.pattern);
+    EXPECT_FALSE(item.reason.empty());
+    EXPECT_FALSE(std::ranges::contains(mutation_covered, item.pattern));
+    mutation_covered.push_back(item.pattern);
+  }
+  std::ranges::sort(mutation_covered);
+  EXPECT_EQ(mutation_covered, registered);
 }
 
 }  // namespace

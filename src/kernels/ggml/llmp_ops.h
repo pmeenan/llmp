@@ -287,7 +287,9 @@ ggml_tensor* Nvfp4Rows(ggml_context* context, ggml_tensor* table, ggml_tensor* i
 // multiple of 32 values, at most 1,024; an id outside the table gives NaN
 // rather than a read out of bounds.
 ggml_tensor* QRows(ggml_context* context, ggml_tensor* table, ggml_tensor* ids);
-// `x` F32 [n, rows]: I32 [rows]; with `probability`, I32 [2 · rows]: the
+// `x` F32 [n, rows], its rows packed but any whole number of floats apart
+// (at least n: a view of the first n values of wider rows reads in place):
+// I32 [rows]; with `probability`, I32 [2 · rows]: the
 // indices, then each row's softmax probability of its highest value (F32
 // bits; 0 for a row of NaN), the drafter's confidence that TensorFold's
 // adaptive window reads (docs/experiments/tensorfold-techniques/).
@@ -1021,7 +1023,9 @@ std::expected<void, KernelFailure> RunQsaAttn(LaunchContext& launch, ggml_tensor
 
 // DeepSeek V4's fast decode plan (the owner's policy, 2026-09-28: speed
 // before bit-exactness; the DeepSeek fused plan), llmpalooza's own
-// kernels (dsv4_fast.cu), none of them GGML's arithmetic bit for bit:
+// kernels (llmp.q8_1 and llmp.vecq in vecq.cu, which every GGML-encoded
+// family's decode uses; the rest in dsv4_fast.cu), none of them GGML's
+// arithmetic bit for bit:
 //
 //   llmp.q8_1         F32 rows quantized once to GGML's Q8_1 blocks
 //                       (quantize_row_q8_1_cuda), each row padded to 512

@@ -59,6 +59,7 @@
 #include "kernels/common/device_backend.h"
 #include "kernels/compose/kernel_set.h"
 #include "kernels/ggml/capabilities.h"
+#include "kernels/ggml/executor.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops.h"
@@ -447,6 +448,11 @@ TEST_F(GgmlOpsTest, LiveFusionPreferencesDecideTheFusedCandidate) {
     workspaces.push_back(Allocate(Memory::kCudaMalloc, life.backend->persistent_bytes()));
   }
   ASSERT_TRUE(life.backend->BindWorkspaces(workspaces).has_value());
+  // A second bind without a release lends the new library handle before the
+  // old one is destroyed (the old one's live borrower would abort), and the
+  // backend works through the new one.
+  workspaces[0] = Allocate(Memory::kCudaMalloc, life.backend->library_workspace_bytes());
+  ASSERT_TRUE(life.backend->BindWorkspaces(workspaces).has_value());
   const auto owned = life.backend->Backend();
   ASSERT_TRUE(owned.owner && owned.owner->Ready());
   const auto& table = owned.owner->backend();
@@ -491,6 +497,21 @@ TEST_F(GgmlOpsTest, LiveFusionPreferencesDecideTheFusedCandidate) {
   for (std::uint64_t width : {256U, 512U, 1024U, 4096U}) {
     for (std::uint64_t rows : {1U, 4U, 32U, 256U}) inspect(width, rows);
   }
+}
+
+// Each scratch planner (executor.cc kScratchPlanners) names an
+// implementation this backend declares, once: a renamed or deleted kernel
+// cannot leave a planner that never runs while its pool draw goes unpaid.
+TEST(GgmlScratchPlannersTest, EachNamesOneDeclaredImplementation) {
+  const auto implementations = llmp::kernels::ggml::Implementations();
+  std::vector<std::string_view> seen;
+  for (const std::string_view name : llmp::kernels::ggml::ScratchPlannedImplementations()) {
+    EXPECT_TRUE(std::ranges::any_of(implementations, [&](const auto& i) { return i.name == name; }))
+        << name;
+    EXPECT_EQ(std::ranges::count(seen, name), 0) << name;
+    seen.push_back(name);
+  }
+  EXPECT_FALSE(seen.empty());
 }
 
 TEST_F(GgmlOpsTest, NormMulWrapperPreservesStandaloneLaunchesAndOutputs) {

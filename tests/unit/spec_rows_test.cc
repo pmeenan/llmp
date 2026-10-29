@@ -557,6 +557,44 @@ TEST_F(SpecRowsTest, ArgmaxTakesTheLowestIndexAmongEqualMaximaAndNeverANan) {
   EXPECT_EQ(got[4], want);
 }
 
+// A strided view of rows (a head's first `vocabulary` logits of padded
+// rows) argmaxes in place: the padding, though larger, never wins, and the
+// probability is the view's own. Overlapping rows are refused.
+TEST_F(SpecRowsTest, ArgmaxReadsAStridedViewOfRowsInPlace) {
+  constexpr std::int64_t kPadded = 1024;
+  constexpr std::int64_t kVocab = 1000;
+  constexpr std::int64_t kRows = 4;
+  std::vector<float> x = Normal(21, static_cast<std::size_t>(kPadded * kRows));
+  for (std::int64_t r = 0; r < kRows; ++r) {
+    for (std::int64_t i = kVocab; i < kPadded; ++i)
+      x[static_cast<std::size_t>((r * kPadded) + i)] = 100.0f;
+  }
+  ggml_tensor* padded = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kPadded, kRows), x);
+  ggml_tensor* rows = ggml_view_2d(c(), padded, kVocab, kRows, padded->nb[1], 0);
+  for (const bool probability : {false, true}) {
+    ggml_tensor* out = Place(kg::Argmax(c(), rows, probability));
+    Launched(kg::RunArgmax(launch(), out), "strided argmax");
+    const std::vector<std::int32_t> got = Download<std::int32_t>(out);
+    ASSERT_EQ(got.size(), static_cast<std::size_t>(kRows * (probability ? 2 : 1)));
+    for (std::int64_t r = 0; r < kRows; ++r) {
+      const auto row =
+          std::span<const float>(x).subspan(static_cast<std::size_t>(r * kPadded), kVocab);
+      const auto top = std::ranges::max_element(row);
+      EXPECT_EQ(got[static_cast<std::size_t>(r)], static_cast<std::int32_t>(top - row.begin()))
+          << r;
+      if (probability) {
+        double sum = 0;
+        for (const float v : row) sum += std::exp(static_cast<double>(v - *top));
+        float p = 0;
+        std::memcpy(&p, &got[static_cast<std::size_t>(kRows + r)], sizeof(p));
+        EXPECT_NEAR(p, 1.0 / sum, 1e-5) << r;
+      }
+    }
+  }
+  ggml_tensor* overlapping = ggml_view_2d(c(), padded, kVocab, kRows, sizeof(float) * 8, 0);
+  EXPECT_FALSE(kg::CheckArgmax(Place(kg::Argmax(c(), overlapping))));
+}
+
 TEST_F(SpecRowsTest, PlainHostGreedyMatchesMaxElementForOddRowsAndNonFiniteValues) {
   constexpr std::int64_t kN = 513;
   constexpr std::int64_t kRows = 8;

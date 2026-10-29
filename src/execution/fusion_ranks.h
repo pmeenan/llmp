@@ -11,16 +11,18 @@
 namespace llmp::execution {
 
 enum class FusionPreference { kUnmeasured, kStale, kNeutral, kFusion, kDecomposition };
-// Symmetric latency band relative to the decomposition: both exact +/-10%
-// endpoints are neutral. Zero timings are unmeasured. Shared with the harness.
+// Symmetric latency band relative to the decomposition: both exact +/-5%
+// endpoints are neutral (the faster wherever a gap is beyond the
+// measurements' repeat noise: docs/experiments/vecq-columns/README.md).
+// Zero timings are unmeasured. Shared with the harness.
 FusionPreference ClassifyFusionLatency(std::uint64_t fused_ns, std::uint64_t decomposition_ns);
 
 // The backend's coarse measured preference (rank_data.h FusionRank) for this
 // fused implementation computing this query: the first row whose device
 // class, operation, implementation, operand 0 encoding and layout match and
-// whose row and width bands hold the query's rows and k. D-085's coarse
-// decision: within 10% keeps the incumbent; a >10% loss excludes the fusion,
-// so the planner falls back to its own decomposition; a >10% win qualifies a
+// whose row and width bands hold the query's rows and k. A coarse decision:
+// within 5% keeps the incumbent; a >5% loss excludes the fusion, so the
+// planner falls back to its own decomposition; a >5% win qualifies a
 // fusion that needs measurement. It never grants numerical eligibility. A
 // matching row measured at another kernel version is kStale and decides
 // nothing.

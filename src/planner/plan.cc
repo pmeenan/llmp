@@ -29,6 +29,7 @@
 #include "ir/decompose.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "ir/op_traits.h"
 #include "ir/verify.h"
 #include "planner/lanes.h"
 #include "planner/pattern.h"
@@ -197,41 +198,39 @@ std::expected<std::optional<ir::Graph>, ir::VerifyError> CompactRouteReaders(
   return std::optional<ir::Graph>(std::move(*result));
 }
 
-// A node whose run matters beyond its outputs: a leaf, a write in place (a
-// cache store, a fused node's aliased output) or communication.
-bool Effect(const ir::Node& n) {
-  switch (n.key.op) {
-    case ir::Op::kInput:
-    case ir::Op::kWeight:
-    case ir::Op::kState:
-    case ir::Op::kCacheStore:
-    case ir::Op::kAllReduce:
-    case ir::Op::kAllGather:
-    case ir::Op::kAllToAll:
-    case ir::Op::kSend:
-    case ir::Op::kRecv:
-      return true;
-    case ir::Op::kFused:
-      return ir::WritesInPlace(n);
-    default:
-      return false;
-  }
+// Communication: a collective, a send or a receive (the trait table's
+// reference path).
+bool Communicates(const ir::Node& n) {
+  const ir::OpTraits* traits = ir::Traits(n.key);
+  return traits != nullptr && traits->reference == ir::ReferencePath::kCollective;
 }
 
-// The roots `graph` writes in place, by tensor: a cache store's target, a
-// fused node's aliased source, a state, and every root a node with an
-// Effect (but a weight or input leaf) reads or makes. A value read from
-// one may differ between two reads, so it is neither another node's
-// repeat nor a prologue's.
+// A node whose run matters beyond its outputs: a leaf, a write in place
+// (the trait table's write set: a cache store, a fused node's aliased
+// output) or communication.
+bool Effect(const ir::Node& n) {
+  return ir::IsLeaf(n.key.op) || ir::WritesInPlace(n) || Communicates(n);
+}
+
+// The roots `graph` writes in place, by tensor: what a node writes in
+// place (a cache store's target, a fused node's aliased source), a state,
+// and what communication reads or makes (an implementation may reduce in
+// place, and a send's bytes are in flight). A value read from one may
+// differ between two reads, so it is neither another node's repeat nor a
+// prologue's. What a write in place only reads (a store's rows and
+// indices) is not written.
 std::vector<bool> WrittenRoots(const ir::Graph& graph) {
   std::vector<bool> written(graph.tensor_count(), false);
   const auto mark = [&](TensorId t) {
     if (t.valid()) written.at(graph.root(t).v) = true;
   };
   for (const ir::Node& n : graph.nodes()) {
-    if (!Effect(n) || n.key.op == ir::Op::kInput || n.key.op == ir::Op::kWeight) continue;
-    for (const TensorId t : n.sources()) mark(t);
-    for (const TensorId t : n.outputs()) mark(t);
+    if (Communicates(n)) {
+      for (const TensorId t : n.sources()) mark(t);
+    }
+    if (n.key.op == ir::Op::kState || Communicates(n)) {
+      for (const TensorId t : n.outputs()) mark(t);
+    }
     ir::ForEachWrite(graph, n, mark);
   }
   return written;

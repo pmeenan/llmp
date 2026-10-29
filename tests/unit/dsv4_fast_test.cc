@@ -17,8 +17,6 @@
 //   BF16 weights against their F32 values bit for bit;
 // - what their checks refuse, and the registry's declarations.
 
-#include "kernels/ggml/dsv4_fast.h"
-
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
@@ -56,6 +54,7 @@
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/tensors.h"
+#include "kernels/ggml/vecq.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
 
@@ -1305,14 +1304,15 @@ TEST_F(Dsv4FastTest, EveryConfigurationCoversEveryTypeTailRowsAndPaddedRows) {
        {GGML_TYPE_IQ3_XXS, 1024}, {GGML_TYPE_Q3_K, 1024},    {GGML_TYPE_IQ2_S, 1024},
        {GGML_TYPE_IQ3_S, 1024},   {GGML_TYPE_IQ4_XS, 1024}}};
   constexpr float kLimit = 7.0f;
-  // Each configuration's rows a block reads together (dsv4_fast.cu kVariants).
+  // Each configuration's rows a block reads together (vecq.cu kVariants).
   constexpr std::array<std::int64_t, 16> kRows = {1, 1, 2, 1, 2, 4, 1, 2, 2, 1, 4, 1, 4, 4, 2, 1};
   ASSERT_EQ(kg::VecQVariants(), static_cast<int>(kRows.size()));
   for (const Case& test : cases) {
     for (const std::int64_t nrows : {130, 129}) {
       const std::vector<std::uint8_t> bytes = Quantize(test.type, test.k, nrows, 11);
       ggml_tensor* w = Place(ggml_new_tensor_2d(c(), test.type, test.k, nrows), bytes);
-      for (const std::int64_t tokens : {1, 3}) {
+      // 6 and 8: a second pass of four partly and wholly filled.
+      for (const std::int64_t tokens : {1, 3, 6, 8}) {
         const std::string what = std::string(ggml_type_name(test.type)) + " k " +
                                  std::to_string(test.k) + " rows " + std::to_string(nrows) + " x " +
                                  std::to_string(tokens);

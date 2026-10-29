@@ -24,6 +24,11 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- A `wave_read_buckets` model setting (default 0, unchanged behaviour) rounds
+  each step's state reads geometrically, cutting a 262K-context decode's
+  distinct plans and graphs from about 1,024 to about 36 at 4 classes per
+  doubling, at the cost of reading up to a quarter more masked cells
+  ([model settings](docs/runtime-serving.md#model-settings)).
 - Gemma4, Qwen3.8 and its MTP drafter now share one canonical mapping per
   architecture, preserving native/GGUF source conventions and stored execution
   contracts. The generic importer’s explicit U3 exits are complete
@@ -134,8 +139,34 @@ The entries below record each change; the record of the milestone is
   models and trim node budget/heap, and loopback clients can proactively trigger
   immediate working set release via `POST /llmp/v1/memory/release`.
 
+### Changed
+
+- On the GB10, GGUF decode products of two to eight rows (C2/C4 waves,
+  speculative verify) now run GGML's MMVQ where it measured faster than
+  `llmp.vecq` (Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q4_K, Q5_K, Q6_K, IQ4_NL: C4
+  decode 2.8% to 4.0% faster on DeepSeek, Qwen3.8 GGUF and Gemma 4 31B), and
+  `llmp.vecq`'s fused GLU stays separate where its decomposition (two
+  products and the GLU) measured more than 5% faster, from four to seven
+  rows through eight by encoding (the nine above, IQ2_XXS and IQ3_XXS),
+  as measured rank rows instead of the old Q6_K/Q8_0 capability veto (a
+  fusion's measured band is now 5%, beyond the sweep's repeat noise);
+  `llmp.vecq`'s GB10 L2 prefetch list matches the pinned MMVQ's, and its
+  prefetches compile for the GB10 only
+  ([vecq-columns](docs/experiments/vecq-columns/README.md)).
+- Planning is cheaper: fused-node inference is memoized, a built graph is not
+  re-inferred when it is finished, graph digests are computed on first use and
+  the registry is indexed by operation (the served plans build 17% to 36%
+  faster). Graph digests now hash each operation's stable name, so plan keys
+  and graph digests change once; outputs do not.
+
 ### Fixed
 
+- `ggml.fill` is offered only for F32 and F16 outputs, which its kernel fills;
+  a second workspace bind lends the new cuBLAS handle before the old one is
+  destroyed; the IR verifier refuses views not at whole elements or blocks;
+  `llmp.argmax` reads rows a stride apart (a view of padded rows) in place,
+  and its capability refuses at planning what its kernel refuses at launch
+  (rows whose elements are not packed floats).
 - Build diagnostics accept Ubuntu 26.04's QEMU package provider and renamed
   emulator, find mise in supervised Spark jobs, and report missing NVIDIA
   user-space tools beside a loaded kernel driver. The environment inventory

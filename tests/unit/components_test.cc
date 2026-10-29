@@ -925,6 +925,25 @@ TEST(ComponentsTest, AttentionFragmentsMatchTheirReference) {
   }
 }
 
+// A read class wider than its end (execution::ReadCellsFor's buckets)
+// hides every cell past the end: over a cache whose cells hold random
+// values everywhere (history before the end, garbage after it), steps
+// reading 1,024 cells of a 301- to 306-position state match the reference,
+// which attends to the held positions alone, as does one reading 512.
+TEST(ComponentsTest, AWideReadClassHidesTheCellsPastItsEnd) {
+  const ComponentRef r = Attention(0, 0.0, true, "neox", "pre");
+  auto in = MakeInstance(r, kFacts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(in.has_value()) << in.error();
+  const std::array<std::uint64_t, 2> both{1024, 1024};
+  const std::vector<Step> steps = {
+      {.shape = {.phase = planner::Phase::kDecode, .segments = {Seg(0, 1, 300, 1024, 1)}}},
+      {.shape = {.phase = planner::Phase::kPrefill, .segments = {Seg(0, 4, 301, 1024, 4)}}},
+      {.shape = {.phase = planner::Phase::kDecode, .segments = {Seg(0, 1, 305, 512, 1)}}},
+  };
+  Compare(*in, AttentionFormats(Encoding::kF32), both, steps, kOutputTolerance, kF16StateTolerance,
+          {}, true);
+}
+
 TEST(ComponentsTest, ProportionalRopeUsesFullHeadPairsAndFloorsTheActiveFraction) {
   // Independent analytic checks: HF's proportional definition uses the full
   // head denominator and halves, including when the active fraction is odd.

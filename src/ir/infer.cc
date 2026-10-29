@@ -14,6 +14,7 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include "format/encoding.h"
@@ -280,6 +281,20 @@ std::expected<void, VerifyError> InRoot(const Ctx& c, const TensorDesc& view,
   if ((view.ne(0) != per && view.nb[0] != unit) || view.ne(0) % per != 0) {
     return Fail(GraphError::kShape, c,
                 std::format("a view steps by one unit ({} bytes) over whole units", unit));
+  }
+  // It starts at a unit and steps by whole units along every axis it has
+  // more than one of (a singleton axis's stride is never taken): a kernel
+  // reads whole aligned elements or blocks, never a unit's middle.
+  bool aligned = view.view_offset % unit == 0;
+  for (std::size_t d = 1; d < format::kMaxDims; ++d) {
+    aligned = aligned && (view.ne(d) <= 1 || view.nb.at(d) % unit == 0);
+  }
+  if (!aligned) {
+    return Fail(
+        GraphError::kShape, c,
+        std::format("a view at offset {} with strides [{}, {}, {}, {}] is not at whole "
+                    "units ({} bytes)",
+                    view.view_offset, view.nb[0], view.nb[1], view.nb[2], view.nb[3], unit));
   }
   const auto parts = format::PartsOf(root.format);
   if (!parts) {
@@ -1432,20 +1447,99 @@ Out InferBatchKey(const Ctx& c) {
   return Fail(GraphError::kParams, c, "grouped_stores is a batch key, not a node");
 }
 
-Out InferFused(const Ctx& c) {
-  // The decomposition over stand-ins of the sources: its outputs are the
-  // node's.
-  Builder b;
-  std::array<TensorId, kMaxSources> ins{};
-  for (std::size_t i = 0; i < c.count(); ++i) {
-    if (const TensorDesc* s = c.src(i); s != nullptr) {
-      TensorDesc t = *s;
-      ins.at(i) = b.Input(t.format);
+// A fused node's computed outputs are its decomposition's over stand-ins
+// of its sources, so they depend only on its key, its parameters and what
+// the stand-ins carry of each source: its format and, for a strided view
+// (a permuted or sliced source; L3), its strides, its offset and its
+// root's format. A packed source's stand-in is a root of its format.
+struct StandIn {
+  bool present = false;
+  format::TensorFormat format{};
+  bool strided = false;
+  std::array<std::uint64_t, format::kMaxDims> nb{};
+  std::uint64_t view_offset = 0;
+  format::TensorFormat root{};
+  bool operator==(const StandIn&) const = default;
+};
+
+StandIn StandInOf(const Ctx& c, std::size_t i) {
+  StandIn s;
+  const TensorDesc* t = c.src(i);
+  if (t == nullptr) return s;
+  s.present = true;
+  s.format = t->format;
+  if (!t->is_view() || IsContiguous(*t)) return s;
+  // A view the stand-in can be: one that steps by one unit along ne[0]
+  // (a transposed one stays a packed stand-in, as before).
+  const TensorDesc& root = c.root_desc(i);
+  const std::uint64_t unit = UnitBytes(root.format);
+  const std::uint64_t per = UnitElements(root.format);
+  if (unit == 0 || per == 0 || (t->ne(0) != per && t->nb[0] != unit)) return s;
+  s.strided = true;
+  s.nb = t->nb;
+  s.view_offset = t->view_offset;
+  s.root = root.format;
+  return s;
+}
+
+struct FusedQuery {
+  OpKey key{};
+  ParamBytes params{};
+  std::uint8_t count = 0;
+  std::array<StandIn, kMaxSources> sources{};
+  bool operator==(const FusedQuery&) const = default;
+};
+
+struct FusedQueryHash {
+  static void Mix(std::uint64_t& h, std::uint64_t v) {
+    for (std::size_t i = 0; i < 8; ++i) {
+      h ^= (v >> (8 * i)) & 0xFFU;
+      h *= 0x100000001b3ULL;
     }
   }
-  ParamBytes params{};
-  std::ranges::copy(c.raw(), params.begin());
-  const Outputs outs = Decompose(b, c.key(), params, std::span(ins).first(c.count()), {});
+  static void Mix(std::uint64_t& h, const format::TensorFormat& f) {
+    Mix(h, static_cast<std::uint64_t>(f.encoding));
+    Mix(h, static_cast<std::uint64_t>(f.layout));
+    Mix(h, f.stacked);
+    for (const std::uint64_t n : f.shape.ne) Mix(h, n);
+  }
+  std::size_t operator()(const FusedQuery& q) const noexcept {
+    std::uint64_t h = 0xcbf29ce484222325ULL;
+    Mix(h, static_cast<std::uint64_t>(q.key.op));
+    Mix(h, static_cast<std::uint64_t>(q.key.fused));
+    for (const std::byte b : q.params) Mix(h, static_cast<std::uint64_t>(b));
+    Mix(h, q.count);
+    for (std::size_t i = 0; i < q.count; ++i) {
+      const StandIn& s = q.sources.at(i);
+      Mix(h, s.present ? 1 : 0);
+      Mix(h, s.format);
+      if (s.strided) {
+        for (const std::uint64_t b : s.nb) Mix(h, b);
+        Mix(h, s.view_offset);
+        Mix(h, s.root);
+      }
+    }
+    return static_cast<std::size_t>(h);
+  }
+};
+
+using FusedResult = std::expected<Inferred, VerifyError>;
+
+// The decomposition's outputs over the query's stand-ins; an output that
+// aliases a source is left for the node's own source (InferFused).
+FusedResult DecomposedOutputs(const FusedQuery& q) {
+  Builder b;
+  std::array<TensorId, kMaxSources> ins{};
+  for (std::size_t i = 0; i < q.count; ++i) {
+    const StandIn& s = q.sources.at(i);
+    if (!s.present) continue;
+    if (s.strided) {
+      ins.at(i) = b.View(b.Input(s.root), s.format.shape, s.nb, s.view_offset);
+    } else {
+      ins.at(i) = b.Input(s.format);
+    }
+  }
+  const Outputs outs = Decompose(b, q.key, q.params, std::span(ins).first(q.count), {});
   if (!b.ok()) {
     VerifyError e = *b.error();
     e.detail = std::format("{} (in its decomposition)", e.detail);
@@ -1454,12 +1548,7 @@ Out InferFused(const Ctx& c) {
   Inferred r;
   r.nout = outs.n;
   for (std::size_t i = 0; i < outs.n; ++i) {
-    if (const auto alias = AliasedSource(c.key(), i); alias) {
-      LLMP_TRY(Writable(c, *alias));
-      const TensorDesc& s = *c.src(*alias);
-      r.out.at(i) = ViewOf(c, *alias, s.format, s.nb, s.view_offset);
-      continue;
-    }
+    if (AliasedSource(q.key, i)) continue;
     const TensorDesc t = b.tensor(outs[i]);
     r.out.at(i) = Fresh(t.shape(), t.format.encoding);
     if (PreparedRows(t.format)) {
@@ -1468,6 +1557,43 @@ Out InferFused(const Ctx& c) {
       r.out.at(i).nb = NaturalStrides(r.out.at(i).format);
     }
     r.float_result.at(i) = ResultEncoding(t.format.encoding);
+  }
+  return r;
+}
+
+// Each decomposition is built once per query (M2), not at every Emit and
+// Verify of every graph a plan makes. The cache is the thread's own, so
+// planning on several threads shares nothing, and it holds only what
+// DecomposedOutputs returns for its key, so a lookup returns what building
+// it would: results do not depend on what was asked before. It is cleared
+// when full.
+constexpr std::size_t kFusedCacheEntries = 512;
+
+FusedResult CachedDecomposition(const FusedQuery& q) {
+  thread_local std::unordered_map<FusedQuery, FusedResult, FusedQueryHash> cache;
+  if (const auto found = cache.find(q); found != cache.end()) return found->second;
+  // A nested fused kind's inference reenters the cache: no iterator is
+  // held across it.
+  FusedResult r = DecomposedOutputs(q);
+  if (cache.size() >= kFusedCacheEntries) cache.clear();
+  cache.emplace(q, r);
+  return r;
+}
+
+Out InferFused(const Ctx& c) {
+  FusedQuery q;
+  q.key = c.key();
+  std::ranges::copy(c.raw(), q.params.begin());
+  q.count = static_cast<std::uint8_t>(c.count());
+  for (std::size_t i = 0; i < c.count(); ++i) q.sources.at(i) = StandInOf(c, i);
+  FusedResult r = CachedDecomposition(q);
+  if (!r) return std::unexpected(std::move(r.error()));
+  for (std::size_t i = 0; i < r->nout; ++i) {
+    if (const auto alias = AliasedSource(c.key(), i); alias) {
+      LLMP_TRY(Writable(c, *alias));
+      const TensorDesc& s = *c.src(*alias);
+      r->out.at(i) = ViewOf(c, *alias, s.format, s.nb, s.view_offset);
+    }
   }
   return r;
 }

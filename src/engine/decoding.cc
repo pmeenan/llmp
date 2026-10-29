@@ -135,7 +135,9 @@ std::expected<DecodingOrchestrator, std::string> DecodingOrchestrator::Make(
   if (composer.stages() != slots.stages())
     return Error("the composer's stages are not the runner's");
   for (std::size_t s = 0; s < slots.stages(); ++s) {
-    if (composer.read_align(s) != slots.read_align(s) || composer.context(s) != slots.context(s)) {
+    if (composer.read_align(s) != slots.read_align(s) ||
+        composer.read_buckets(s) != slots.read_buckets() ||
+        composer.context(s) != slots.context(s)) {
       return Error(std::format("the composer's stage {} reads otherwise than its state", s));
     }
   }

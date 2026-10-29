@@ -106,17 +106,17 @@ TEST(FusionRanksTest, LatencyBandUsesTheDecompositionReferenceInBothDirections) 
     ex::FusionPreference expected;
   };
   for (const auto& c : std::array{
-           Case{899, ex::FusionPreference::kFusion}, Case{900, ex::FusionPreference::kNeutral},
-           Case{905, ex::FusionPreference::kNeutral}, Case{1100, ex::FusionPreference::kNeutral},
-           Case{1101, ex::FusionPreference::kDecomposition}}) {
+           Case{949, ex::FusionPreference::kFusion}, Case{950, ex::FusionPreference::kNeutral},
+           Case{1005, ex::FusionPreference::kNeutral}, Case{1050, ex::FusionPreference::kNeutral},
+           Case{1051, ex::FusionPreference::kDecomposition}}) {
     SCOPED_TRACE(c.fused);
     EXPECT_EQ(ex::ClassifyFusionLatency(c.fused, 1000), c.expected);
     const Fixture f(Graph(), {Row(c.fused, 1000)});
     EXPECT_EQ(ex::FusionPreferenceFor(f.registry, f.query, "test.fusion"), c.expected);
   }
   constexpr auto max = std::numeric_limits<std::uint64_t>::max();
-  EXPECT_EQ(ex::ClassifyFusionLatency(max - max / 10, max), ex::FusionPreference::kNeutral);
-  EXPECT_EQ(ex::ClassifyFusionLatency(max - max / 10 - 1, max), ex::FusionPreference::kFusion);
+  EXPECT_EQ(ex::ClassifyFusionLatency(max - max / 20, max), ex::FusionPreference::kNeutral);
+  EXPECT_EQ(ex::ClassifyFusionLatency(max - max / 20 - 1, max), ex::FusionPreference::kFusion);
   EXPECT_EQ(ex::ClassifyFusionLatency(max, 1), ex::FusionPreference::kDecomposition);
   EXPECT_EQ(ex::ClassifyFusionLatency(0, 1000), ex::FusionPreference::kUnmeasured);
   EXPECT_EQ(ex::ClassifyFusionLatency(1000, 0), ex::FusionPreference::kUnmeasured);

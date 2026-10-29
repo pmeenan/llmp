@@ -274,6 +274,17 @@ Registry::Registry(std::vector<Implementation> implementations,
   hash.Update(std::as_bytes(std::span(rank_digest_)));
   for (const auto index : by_name_) hash.Update(std::as_bytes(std::span(identities_[index])));
   digest_ = hash.Finish();
+  for (std::size_t i = 0; i < implementations_.size(); ++i)
+    if (implementations_[i].capability) by_op_.push_back(i);
+  std::ranges::stable_sort(by_op_, [this](std::size_t a, std::size_t b) {
+    return implementations_[a].capability->op < implementations_[b].capability->op;
+  });
+}
+
+std::span<const std::size_t> Registry::Capable(ir::OpKey op) const {
+  const auto range = std::ranges::equal_range(
+      by_op_, op, {}, [this](std::size_t i) { return implementations_[i].capability->op; });
+  return {range.begin(), range.end()};
 }
 
 std::expected<Registry, PlanRejection> Registry::Create(std::vector<Implementation> implementations,
@@ -464,8 +475,8 @@ base::Sha256Digest RankDataDigest(const RankData& data) {
                             static_cast<unsigned>(r.params.codebook), r.params.tensor_scale,
                             r.params.bits, r.params.group, static_cast<unsigned>(r.params.scale),
                             r.params.zero_point, r.params.block_rows, r.params.block_cols));
-    Field(hash, std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}", r.arch, r.multiprocessors,
-                            static_cast<unsigned>(r.op.op), static_cast<unsigned>(r.op.fused),
+    Field(hash, ir::OpKeyName(r.op));
+    Field(hash, std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}", r.arch, r.multiprocessors,
                             static_cast<unsigned>(r.encoding), static_cast<unsigned>(r.layout),
                             r.rows_min, r.rows_max, r.k, r.n, r.rank, r.version));
     records.push_back(hash.Finish());
@@ -473,20 +484,20 @@ base::Sha256Digest RankDataDigest(const RankData& data) {
   std::ranges::sort(records);
   // Fusion rows in order: the first matching row decides (fusion_ranks.h).
   base::Sha256 fusions;
-  Field(fusions, "llmp-fusion-ranks-v3");
+  Field(fusions, "llmp-fusion-ranks-v4");
   for (const auto& r : data.fusions) {
     Field(fusions, r.device_class);
     Field(fusions, r.implementation);
     Field(fusions, r.provenance);
-    Field(fusions, std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-                               static_cast<unsigned>(r.op.op), static_cast<unsigned>(r.op.fused),
-                               r.version, static_cast<unsigned>(r.encoding),
-                               static_cast<unsigned>(r.layout), r.rows_min, r.rows_max, r.width_min,
-                               r.width_max, r.fused_ns, r.decomposition_ns, r.samples));
+    Field(fusions, ir::OpKeyName(r.op));
+    Field(fusions,
+          std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}", r.version, static_cast<unsigned>(r.encoding),
+                      static_cast<unsigned>(r.layout), r.rows_min, r.rows_max, r.width_min,
+                      r.width_max, r.fused_ns, r.decomposition_ns, r.samples));
   }
   const auto fusion_digest = fusions.Finish();
   base::Sha256 hash;
-  Field(hash, "llmp-device-measured-ranks-v5");
+  Field(hash, "llmp-device-measured-ranks-v6");
   hash.Update(std::as_bytes(std::span(fusion_digest)));
   for (const auto& record : records) hash.Update(std::as_bytes(std::span(record)));
   return hash.Finish();
@@ -549,9 +560,12 @@ bool RankedBefore(const RankedCandidate& a, const RankedCandidate& b) {
 }
 }  // namespace
 
+// Each scan visits only the implementations of the query's operation
+// (Registry::Capable): Computes refuses every other. The order a scan
+// visits them in decides nothing, since RankedBefore is a total order.
 std::vector<std::size_t> Candidates(const Registry& registry, const CapabilityQuery& query) {
   std::vector<RankedCandidate> ranked;
-  for (std::size_t i = 0; i < registry.size(); ++i) {
+  for (const std::size_t i : registry.Capable(query.op)) {
     const Implementation& implementation = registry.at(i);
     const auto fusion = FusionPreferenceFor(registry, query, implementation.name);
     if (!EligibleCandidate(registry, query, implementation, fusion)) continue;
@@ -577,7 +591,7 @@ std::optional<std::size_t> NextCandidate(const Registry& registry, const Capabil
   std::optional<RankedCandidate> best;
   std::optional<RankedCandidate> previous;
   if (after && *after < registry.size()) previous = RankCandidate(registry, query, *after);
-  for (std::size_t i = 0; i < registry.size(); ++i) {
+  for (const std::size_t i : registry.Capable(query.op)) {
     const Implementation& implementation = registry.at(i);
     const auto fusion = FusionPreferenceFor(registry, query, implementation.name);
     if (!EligibleCandidate(registry, query, implementation, fusion) ||
@@ -600,7 +614,7 @@ bool IsCandidate(const Registry& registry, const CapabilityQuery& query, std::si
 }
 
 bool HasCandidate(const Registry& registry, const CapabilityQuery& query) {
-  for (std::size_t i = 0; i < registry.size(); ++i) {
+  for (const std::size_t i : registry.Capable(query.op)) {
     const Implementation& implementation = registry.at(i);
     const auto fusion = FusionPreferenceFor(registry, query, implementation.name);
     if (EligibleCandidate(registry, query, implementation, fusion)) return true;

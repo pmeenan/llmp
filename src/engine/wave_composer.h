@@ -76,11 +76,13 @@ struct Composition {
   std::vector<std::pair<std::size_t, std::string>> refused;  // malformed work, by index
 };
 
-// One stage's reads: its state's positions and an owner's own read
-// alignment.
+// One stage's reads: its state's positions, an owner's own read alignment
+// and the read classes per doubling (execution::ReadCellsFor; 0: every
+// alignment).
 struct StageReads {
   std::uint32_t context = 0;
   std::uint32_t read_align = 256;
+  std::uint32_t read_buckets = 0;
   // Its steps read only the cells before their rows (model::ReadsFrozen:
   // a drafter over its target's frozen state), so an owner reads through
   // its past positions, not past its rows.
@@ -89,10 +91,10 @@ struct StageReads {
 
 class WaveComposer {
  public:
-  // `stages` by stage (the target's first): each one's context and own
-  // read alignment (its state's: RunWave refuses a runner whose
-  // SlotLifecycle::read_align or context differs). The three-argument
-  // form composes the target alone.
+  // `stages` by stage (the target's first): each one's context, own read
+  // alignment and read buckets (its state's: RunWave refuses a runner
+  // whose SlotLifecycle::read_align, read_buckets or context differs). The
+  // three-argument form composes the target alone.
   static std::expected<WaveComposer, std::string> Make(model::Batching caps,
                                                        std::vector<StageReads> stages);
   static std::expected<WaveComposer, std::string> Make(model::Batching caps, std::uint32_t context,
@@ -107,6 +109,7 @@ class WaveComposer {
   std::size_t stages() const { return stages_.size(); }
   std::uint32_t context(std::size_t stage = 0) const { return stages_.at(stage).context; }
   std::uint32_t read_align(std::size_t stage = 0) const { return stages_.at(stage).read_align; }
+  std::uint32_t read_buckets(std::size_t stage = 0) const { return stages_.at(stage).read_buckets; }
   bool frozen(std::size_t stage) const { return stages_.at(stage).frozen; }
   // A step's read alignment by its owner count (a row-invariant step's is
   // always its stage's own).
@@ -116,7 +119,8 @@ class WaveComposer {
                                                                         : read_align(stage);
   }
   // The cells an owner of `past` positions and `rows` rows reads alone (on
-  // a frozen stage, through `past`).
+  // a frozen stage, through `past`): their read class at the stage's own
+  // alignment (execution::ReadCellsFor), as ModelRunner's.
   std::uint32_t LoneRead(std::uint32_t past, std::uint32_t rows) const {
     return LoneRead(0, past, rows);
   }

@@ -3355,10 +3355,13 @@ std::optional<Match> GroupedVecQMatch(const MatchContext& c, NodeId anchor) {
   const auto result = DenseDesc(Encoding::kF32, {grouped.ne(1), grouped.ne(2), input.ne(2)});
   const std::array<const ir::TensorDesc*, 2> query_sources{&grouped, &input};
   const std::array<const ir::TensorDesc*, 1> outputs{&result};
+  // The fused node reads the same weight and input as the product.
+  const std::array bindings{BindingOf(c.graph(), w), BindingOf(c.graph(), x)};
   bool available = false;
   std::optional<std::size_t> after;
-  while (const auto candidate = c.view().NextCandidate(
-             ir::Fused(FusedKind::kGroupedMatMul), query_sources, outputs, product.params, after)) {
+  while (const auto candidate =
+             c.view().NextCandidate(ir::Fused(FusedKind::kGroupedMatMul), query_sources, outputs,
+                                    product.params, after, false, true, bindings)) {
     after = candidate;
     const auto& capability = c.view().registry().at(*candidate).capability;
     if (capability && std::ranges::all_of(capability->launches, [&](std::string_view name) {

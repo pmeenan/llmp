@@ -35,6 +35,7 @@
 #define LLMP_IR_GRAPH_H_
 
 #include <array>
+#include <atomic>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -235,7 +236,8 @@ class Graph {
   std::span<const TensorId> keep() const { return keep_; }
   std::string_view name(TensorId id) const;
 
-  // The canonical digest (see the header comment).
+  // The canonical digest (see the header comment), computed on first use
+  // (safe from several threads at once); zero for a moved-from graph.
   base::Sha256Digest Digest() const;
 
   // A copy (graphs are move-only so that a copy is always explicit): a
@@ -262,7 +264,12 @@ class Graph {
   std::vector<TensorId> outputs_;
   std::vector<TensorId> keep_;
   std::vector<std::string> names_;
-  base::Sha256Digest digest_{};
+  // Digest()'s cache: digest_ holds it once digest_state_ is kDigestReady.
+  static constexpr std::uint8_t kDigestNone = 0;
+  static constexpr std::uint8_t kDigestStoring = 1;
+  static constexpr std::uint8_t kDigestReady = 2;
+  mutable base::Sha256Digest digest_{};
+  mutable std::atomic<std::uint8_t> digest_state_{kDigestNone};
   std::uint64_t identity_ = 0;
 };
 

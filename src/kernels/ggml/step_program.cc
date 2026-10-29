@@ -1026,13 +1026,19 @@ class GgmlDeviceBackend final : public DeviceBackend {
     if (bases.size() != 1U + static_cast<std::size_t>(persistent_bytes() != 0)) {
       return std::unexpected("the kernel workspaces are not mapped");
     }
-    selected_state_ = {persistent_bytes() ? bases[1] : 0, persistent_bytes()};
     auto cublas =
         CublasHandle::Create(device_, execution_, stream_,
                              {.base = bases[0], .size = base::Bytes(library_workspace_bytes_)});
     if (!cublas) return std::unexpected(std::format("cuBLAS: {}", cublas.error().detail));
-    cublas_ = std::move(*cublas);
-    return backend_->LendCublas(cublas_.get());
+    // Lend the new handle before dropping the old one: a second bind without
+    // a release keeps the backend's loan on a live handle, and a refused
+    // loan leaves the old one lent and owned, and the old persistent
+    // workspace selected.
+    std::unique_ptr<CublasHandle> handle = std::move(*cublas);
+    if (auto lent = backend_->LendCublas(handle.get()); !lent) return lent;
+    cublas_ = std::move(handle);
+    selected_state_ = {persistent_bytes() ? bases[1] : 0, persistent_bytes()};
+    return {};
   }
 
   void ReleaseWorkspaces() override {

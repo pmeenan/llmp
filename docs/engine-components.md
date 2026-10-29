@@ -557,9 +557,10 @@ primitive ids). It is deterministic. The steps:
   the device class, the fused operation, the implementation and its kernel
   version (`Implementation::version`, which its author bumps), operand 0's
   encoding and layout and inclusive bands of the query's rows and width
-  (its k). Within 10% keeps the incumbent; a fusion more than 10% slower
-  is not a candidate, so the node decomposes; one more than 10% faster
-  qualifies a fusion that `fusion_needs_measurement`. A row of another
+  (its k). Within 5% keeps the incumbent; a fusion more than 5% slower
+  is not a candidate, so the node decomposes; one more than 5% faster
+  qualifies a fusion that `fusion_needs_measurement` (5%: beyond the
+  measurements' repeat noise, [vecq columns](experiments/vecq-columns/README.md)). A row of another
   kernel version decides nothing, and `fusion_ranks_test` fails on any
   shipped row naming a missing or other-version implementation.
   `benchmarks/fusion_ranks.cc` measures a case planned with and without

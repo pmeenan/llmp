@@ -28,7 +28,7 @@ ex::Implementation Capable(std::string name, ex::Capability capability) {
 }
 TEST(GgmlMeasuredRanksTest, DeviceRanksRequireEveryMeasuredFactAndUnbatchedOperands) {
   const auto data = llmp::kernels::ggml::MeasuredRanks();
-  ASSERT_EQ(data.records.size(), 2U);
+  ASSERT_GE(data.records.size(), 2U);
   for (const auto& record : data.records) {
     SCOPED_TRACE(record.implementation);
     const bool product = record.op == ir::Primitive(ir::Op::kMatMul);
@@ -116,10 +116,17 @@ TEST(GgmlMeasuredRanksTest, DeviceRanksRequireEveryMeasuredFactAndUnbatchedOpera
     EXPECT_NE(block_cols_registry.RankDigest(), registry.RankDigest());
     ++operands[0].stacked;
     misses();
-    --query.rows;
-    misses();
-    ++query.rows;
-    misses();
+    // Outside the rows' band (the product's input carrying the rows too).
+    for (const std::uint64_t rows : {record.rows_min - 1, record.rows_max + 1}) {
+      query.rows = rows;
+      if (product) operands[1].ne[1] = rows;
+      misses();
+    }
+    query.rows = record.rows_max;
+    if (product) operands[1].ne[1] = record.rows_max;
+    EXPECT_EQ(ex::DeviceRank(query, record.implementation, data.records), 0U);
+    query = original;
+    operands = original_operands;
     ++query.k;
     misses();
     ++query.n;

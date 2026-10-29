@@ -6,6 +6,10 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
+#include <tuple>
+
+#include "ir/graph.h"
 
 namespace llmp::ir {
 namespace {
@@ -22,7 +26,7 @@ namespace {
            decompose,                                                                         \
            ReferencePath::ref,                                                                \
            writes,                                                                            \
-           {a0, a1}},
+           {a0, a1, -1, -1}},
 #define LLMP_PRIMITIVE(op, ...) LLMP_TRAITS(Primitive(Op::op), __VA_ARGS__)
 #define LLMP_FUSED(...)
 constexpr auto kPrimitives = std::to_array<OpTraits>({
@@ -50,6 +54,22 @@ static_assert([] {
     if (static_cast<std::size_t>(kFusions[i].key.fused) != i) return false;
   return true;
 }());
+static_assert(std::tuple_size_v<decltype(OpTraits::aliased_outputs)> == kMaxOutputs);
+// Arity within the graph's bounds, and the write columns within the row's
+// sources: a write the table names out of range would go unrecorded
+// (ForEachWrittenSource skips it), so every pass would miss it.
+constexpr bool WritesInRange(std::span<const OpTraits> rows) {
+  for (const OpTraits& t : rows) {
+    if (t.required_sources > t.max_sources || t.max_sources > kMaxSources ||
+        t.written_sources >= (std::uint32_t{1} << t.max_sources))
+      return false;
+    for (const std::int8_t alias : t.aliased_outputs)
+      if (alias < -1 || alias >= static_cast<int>(t.max_sources)) return false;
+  }
+  return true;
+}
+static_assert(WritesInRange(kPrimitives));
+static_assert(WritesInRange(kFusions));
 
 }  // namespace
 

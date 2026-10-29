@@ -283,6 +283,9 @@ enum class FusedKind : std::uint16_t {
 #undef LLMP_PRIMITIVE
 #undef LLMP_FUSED
 };
+// A leaf: a node that computes nothing and holds a tensor bound from
+// outside the step (an input or plan constant, a weight, a state).
+constexpr bool IsLeaf(Op op) { return op == Op::kInput || op == Op::kWeight || op == Op::kState; }
 // Counts are generated too: no separate enum or last-kind edit for a new op.
 inline constexpr std::size_t kOpCount = 0
 #define LLMP_PRIMITIVE(...) +1

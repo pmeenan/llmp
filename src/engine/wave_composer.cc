@@ -17,7 +17,6 @@ namespace {
 
 namespace pl = llmp::planner;
 using support::Error;
-using support::Round;
 
 bool AlignValid(std::uint32_t align) { return align != 0 && align % 256 == 0; }
 
@@ -71,6 +70,7 @@ std::expected<WaveComposer, std::string> WaveComposer::For(model::Batching caps,
   for (std::size_t s = 0; s < slots.stages(); ++s) {
     stages.push_back({.context = slots.context(s),
                       .read_align = slots.read_align(s),
+                      .read_buckets = slots.read_buckets(),
                       .frozen = s != 0 && model::ReadsFrozen(slots.layout(s))});
   }
   return Make(caps, std::move(stages));
@@ -79,8 +79,7 @@ std::expected<WaveComposer, std::string> WaveComposer::For(model::Batching caps,
 std::uint32_t WaveComposer::LoneRead(std::size_t stage, std::uint32_t past,
                                      std::uint32_t rows) const {
   const std::uint64_t end = frozen(stage) ? past : std::uint64_t{past} + rows;
-  return static_cast<std::uint32_t>(
-      std::min<std::uint64_t>(Round(end, read_align(stage)), context(stage)));
+  return execution::ReadCellsFor(end, read_align(stage), read_buckets(stage), context(stage));
 }
 
 void WaveComposer::Finish(pl::StepShape& shape) const {
@@ -102,8 +101,7 @@ void WaveComposer::Finish(std::uint16_t stage, bool row_invariant, std::span<pl:
   std::uint32_t widest = 0;
   for (pl::Segment& s : segments) {
     const std::uint64_t end = frozen(stage) ? s.past : std::uint64_t{s.past} + s.rows;
-    s.read_cells =
-        static_cast<std::uint32_t>(std::min<std::uint64_t>(Round(end, read_align), context(stage)));
+    s.read_cells = execution::ReadCellsFor(end, read_align, read_buckets(stage), context(stage));
     widest = std::max(widest, s.read_cells);
   }
   if (caps_.common_read && segments.size() > 1 && !row_invariant) {
@@ -330,22 +328,23 @@ WaveReport RunWave(ModelRunner& runner, const WaveComposer& composer,
     report.outcomes[i].refusal = std::move(refusal);
     settled[i] = true;
   };
-  // An owner's lone read is the composer's alignment; what the runner backs
-  // first for each owner of a joined step is its state's. Equal, an owner
-  // whose widening is refused steps alone with no growth.
+  // An owner's lone read is the composer's alignment and buckets; what the
+  // runner backs first for each owner of a joined step is its state's.
+  // Equal, an owner whose widening is refused steps alone with no growth.
   const SlotLifecycle& slots = runner.slots();
   bool differs = composer.stages() > slots.stages();
   for (std::size_t s = 0; s < composer.stages() && !differs; ++s) {
     differs = composer.read_align(s) != slots.read_align(s) ||
+              composer.read_buckets(s) != slots.read_buckets() ||
               composer.context(s) != slots.context(s) ||
               composer.frozen(s) != (s != 0 && model::ReadsFrozen(slots.layout(s)));
   }
-  const char* mismatch = !authorization.empty() && authorization.size() != pending.size()
-                             ? "the wave authorization does not match its pending work"
-                         : work.size() != pending.size()
-                             ? "the wave's work does not match its pending work"
-                         : differs ? "the composer's read alignment or context is not the state's"
-                                   : nullptr;
+  const char* mismatch =
+      !authorization.empty() && authorization.size() != pending.size()
+          ? "the wave authorization does not match its pending work"
+      : work.size() != pending.size() ? "the wave's work does not match its pending work"
+      : differs ? "the composer's read alignment, buckets or context are not the state's"
+                : nullptr;
   if (mismatch != nullptr) {
     for (std::size_t i = 0; i < pending.size(); ++i) settle(i, {.what = mismatch});
     return report;

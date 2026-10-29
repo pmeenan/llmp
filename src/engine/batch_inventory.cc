@@ -36,6 +36,7 @@ std::expected<PromptBatchInventory, kn::ResourceFailure> PromptBatchInventory::P
   for (std::size_t s = 0; s < composer.stages(); ++s)
     if (composer.context(s) != runner.slots().context(s) ||
         composer.read_align(s) != runner.slots().read_align(s) ||
+        composer.read_buckets(s) != runner.slots().read_buckets() ||
         composer.frozen(s) != (s != 0 && model::ReadsFrozen(runner.slots().layout(s))))
       return Refused(kn::ResourceError::kBounds, "batch composer differs from its source layouts");
   for (std::size_t i = 0; i < target.size(); ++i) {

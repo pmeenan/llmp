@@ -90,8 +90,14 @@ QueryShape ShapeOfNode(ir::OpKey key, std::span<const ir::TensorDesc* const> sou
                        std::span<const ir::TensorDesc* const> outputs);
 
 // Whether a node launches nothing: leaves and views (kView, kReshape,
-// kPermute) are the lowering's bindings, not steps.
+// kPermute; the trait table's structural rows) are the lowering's
+// bindings, not steps.
 bool LaunchesNothing(ir::OpKey key);
+
+// What an operand of `graph` is, for a capability (execution::
+// OperandBinding): a whole bound weight (the weight leaf, or a reshape of
+// all of it) or something else (invalid: something else).
+execution::OperandBinding BindingOf(const ir::Graph& graph, ir::TensorId operand);
 
 // Immutable root-allocation guarantees. The callback sees the actual graph
 // at each rewrite/decomposition pass, never original IDs in a new graph.
@@ -149,22 +155,23 @@ class SelectionView {
 
   // The candidates (registry indices, in Candidates()' order) for a node
   // of `key` over `sources` with `outputs` and parameters `params` (its
-  // ParamBytes; empty: none given).
-  std::vector<std::size_t> Candidates(ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
-                                      std::span<const ir::TensorDesc* const> outputs,
-                                      std::span<const std::byte> params = {},
-                                      bool state_span = false, bool automatic_fusion = false) const;
+  // ParamBytes; empty: none given). `bindings`, by source, are what the
+  // asker knows of them (BindingOf); left out, unknown.
+  std::vector<std::size_t> Candidates(
+      ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
+      std::span<const ir::TensorDesc* const> outputs, std::span<const std::byte> params = {},
+      bool state_span = false, bool automatic_fusion = false,
+      std::span<const execution::OperandBinding> bindings = {}) const;
   bool HasCandidate(ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
                     std::span<const ir::TensorDesc* const> outputs,
                     std::span<const std::byte> params = {}, bool state_span = false,
-                    bool automatic_fusion = false) const;
-  std::optional<std::size_t> NextCandidate(ir::OpKey key,
-                                           std::span<const ir::TensorDesc* const> sources,
-                                           std::span<const ir::TensorDesc* const> outputs,
-                                           std::span<const std::byte> params,
-                                           std::optional<std::size_t> after,
-                                           bool state_span = false,
-                                           bool automatic_fusion = false) const;
+                    bool automatic_fusion = false,
+                    std::span<const execution::OperandBinding> bindings = {}) const;
+  std::optional<std::size_t> NextCandidate(
+      ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
+      std::span<const ir::TensorDesc* const> outputs, std::span<const std::byte> params,
+      std::optional<std::size_t> after, bool state_span = false, bool automatic_fusion = false,
+      std::span<const execution::OperandBinding> bindings = {}) const;
   // The same for a node of `graph` (with its parameters), as it is or
   // under another key (a batch's).
   std::vector<std::size_t> Candidates(const ir::Graph& graph, const ir::Node& node) const;
@@ -225,7 +232,8 @@ class SelectionView {
   std::vector<std::size_t> ForOperands(
       ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
       std::span<const ir::TensorDesc* const> outputs, std::span<const std::byte> params,
-      bool state_span, std::span<const std::uint64_t> alignments, bool automatic_fusion = false,
+      bool state_span, std::span<const std::uint64_t> alignments,
+      std::span<const execution::OperandBinding> bindings, bool automatic_fusion = false,
       const QueryInspector& inspect = {}, bool* has_candidate = nullptr,
       std::optional<std::size_t>* next_after = nullptr, std::size_t* check_implementation = nullptr,
       bool* is_candidate = nullptr) const;

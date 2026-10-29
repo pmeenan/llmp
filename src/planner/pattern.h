@@ -189,13 +189,13 @@ class RewriteSelectionView {
                     std::span<const std::byte> params = {}, bool state_span = false) const {
     return view_.HasCandidate(key, sources, outputs, params, state_span, true);
   }
-  std::optional<std::size_t> NextCandidate(ir::OpKey key,
-                                           std::span<const ir::TensorDesc* const> sources,
-                                           std::span<const ir::TensorDesc* const> outputs,
-                                           std::span<const std::byte> params,
-                                           std::optional<std::size_t> after,
-                                           bool state_span = false) const {
-    return view_.NextCandidate(key, sources, outputs, params, after, state_span, true);
+  std::optional<std::size_t> NextCandidate(
+      ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
+      std::span<const ir::TensorDesc* const> outputs, std::span<const std::byte> params,
+      std::optional<std::size_t> after, bool state_span = false, bool automatic_fusion = true,
+      std::span<const execution::OperandBinding> bindings = {}) const {
+    return view_.NextCandidate(key, sources, outputs, params, after, state_span, automatic_fusion,
+                               bindings);
   }
   std::vector<std::size_t> Candidates(const ir::Graph& graph, const ir::Node& node,
                                       ir::OpKey key) const {

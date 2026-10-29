@@ -647,7 +647,9 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
   // Whether a target's verify saves in, or commits, a slot's stage.
   bool Verifies(std::uint32_t slot, std::size_t stage) const;
   // The cells an owner of `past` positions and `rows` rows reads alone on
-  // `stage` (a stage that reads frozen, through `past` only).
+  // `stage` (a stage that reads frozen, through `past` only): their read
+  // class at the stage's alignment and the slots' read buckets
+  // (execution::ReadCellsFor, as WaveComposer::LoneRead).
   std::uint32_t LoneRead(std::size_t stage, std::uint32_t past, std::uint32_t rows) const;
   // Its steps read only the cells before their rows (model::ReadsFrozen).
   bool Frozen(std::size_t stage) const { return frozen_.at(stage); }

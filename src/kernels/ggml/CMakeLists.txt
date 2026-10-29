@@ -111,7 +111,7 @@ if(LLMP_CUDA)
   add_library(llmp_ggml_objects OBJECT conv2d_tiled.cu attention_f32.cu launch.cu ops.cu mul_mat_cublas.cu
                                          fattn.cu ops_ext.cu mul_mat_q.cu mul_mat_q2_d2r.cu dsv4_hca_tokentile.cu mmvq_rows.cu fattn_mma.cu
                                          fattn_mma_common.cu fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
-                                         llmp_ops.cu llmp_fused.cu llmp_moe.cu dsv4_fast.cu dsv4_sparse.cu
+                                         llmp_ops.cu llmp_fused.cu llmp_moe.cu vecq.cu dsv4_fast.cu dsv4_sparse.cu
                                          qsa_sparse.cu
                                          cublas.cc executor.cc implementations.cc
                                          step_program.cc)
@@ -192,7 +192,7 @@ if(LLMP_CUDA)
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
   set(module_files measured_ranks.h ../device/float_formats.cuh float_route.cc float_route.h CMakeLists.txt capabilities.cc capabilities.h recipe_entries.inc lower.cc lower.h step_program.cc
-                   step_program.h cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_sparse.cu
+                   step_program.h cublas.cc cublas.h vecq.cu vecq.h rope_scaled.cuh binary_shift.h dsv4_fast.cu dsv4_sparse.cu
                    dsv4_weighted_reduce.h dsv4_weighted_reduce.cc dsv4_weighted_reduce.cu
                    gemma_moe.h gemma_moe.cc gemma_moe.cu
                    graph_read_index.h graph_read_index.cc gemma_moe_fusion.h gemma_moe_fusion.cc
@@ -279,7 +279,7 @@ if(LLMP_CUDA)
   # compiles as the nodes' does.
   set_source_files_properties(fattn_owner.cu fattn_mma.cu fattn_mma_common.cu fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
                               mul_mat_q.cu mul_mat_q_glu.cu mul_mat_q2_d2r.cu mmvq_rows.cu ops_ext.cu llmp_fused.cu llmp_moe.cu
-                              dsv4_fast.cu dsv4_sparse.cu dsv4_weighted_reduce.cu gemma_moe.cu dsv4_qhead.cu dsv4_outa.cu dsv4_hc_norm.cu PROPERTIES COMPILE_OPTIONS
+                              vecq.cu dsv4_fast.cu dsv4_sparse.cu dsv4_weighted_reduce.cu gemma_moe.cu dsv4_qhead.cu dsv4_outa.cu dsv4_hc_norm.cu PROPERTIES COMPILE_OPTIONS
                               "-use_fast_math;-extended-lambda")
 
   add_library(llmp_ggml_kernels STATIC)

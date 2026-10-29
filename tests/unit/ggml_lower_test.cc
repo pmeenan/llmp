@@ -55,6 +55,7 @@
 #include "kernels/ggml/kv_quant.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/lower.h"
+#include "kernels/ggml/measured_ranks.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/tensors.h"
@@ -101,6 +102,48 @@ ex::Registry PlanningRegistry(bool hc_post = true, bool grouped = true,
 const pl::DeviceFacts& Gb10() {
   static const pl::DeviceFacts facts{.device_class = "sm_121", .arch = kGb10};
   return facts;
+}
+// The GB10 as its measured rank rows name it (measured_ranks.h).
+const pl::DeviceFacts& MeasuredGb10() {
+  static const pl::DeviceFacts facts{.device_class = "sm_121",
+                                     .arch = kGb10,
+                                     .device_model = "NVIDIA GB10",
+                                     .multiprocessors = 48};
+  return facts;
+}
+// The module's capabilities with its measured ranks, as a live registry.
+ex::Registry RankedRegistry() {
+  return std::move(
+      ex::Registry::Create(kg::PlanningImplementations(), kg::MeasuredRanks()).value());
+}
+// measured_ranks.h's bands for the encodings these tests use: GGML's MMVQ
+// ahead of llmp.vecq for dense products, and llmp.vecq's fused GLU measured
+// slower than its decomposition.
+bool MmvqBand(llmp::format::Encoding e, std::uint64_t rows) {
+  using llmp::format::Encoding;
+  switch (e) {
+    case Encoding::kQ6_K:
+      return rows >= 2 && rows <= 8;
+    case Encoding::kQ8_0:
+      return rows >= 5 && rows <= 8;
+    case Encoding::kQ4_K:
+      return rows >= 3 && rows <= 8;
+    default:
+      return false;
+  }
+}
+bool SplitGluBand(llmp::format::Encoding e, std::uint64_t rows) {
+  using llmp::format::Encoding;
+  switch (e) {
+    case Encoding::kQ6_K:
+      return rows >= 4 && rows <= 8;
+    case Encoding::kQ8_0:
+      return rows >= 5 && rows <= 8;
+    case Encoding::kQ4_K:
+      return rows >= 5 && rows <= 8;
+    default:
+      return false;
+  }
 }
 
 std::optional<llmp::format::Encoding> EncodingOf(ggml_type type) {
@@ -840,14 +883,19 @@ TEST(GgmlLowerTest, VectorRowsBoundTheVectorForms) {
   EXPECT_FALSE(vecq(17, {}));
 }
 
-TEST(GgmlLowerTest, OrdinaryWideVectorRoutingUsesPhysicalDeviceAndEncodingDomain) {
+// llmp.vecq takes every column count it computes; which of it and GGML's
+// MMVQ runs a dense product, and whether its fused GLU is a candidate, is
+// the GB10's measured rank data, keyed by device, encoding and column
+// count. Another device, or an encoding or count outside the bands, keeps
+// the ordinary order.
+TEST(GgmlLowerTest, MeasuredRanksChooseBetweenVecQAndMmvq) {
   using llmp::format::Encoding;
   using llmp::format::Layout;
-  const auto registry = PlanningRegistry();
-  for (const auto encoding : {Encoding::kQ6_K, Encoding::kQ8_0, Encoding::kQ2_K}) {
+  const auto registry = RankedRegistry();
+  for (const auto encoding : {Encoding::kQ6_K, Encoding::kQ8_0, Encoding::kQ4_K, Encoding::kQ2_K}) {
     for (const std::uint32_t arch : {86U, 121U}) {
       if (!kg::CompiledFor(arch)) continue;
-      for (const std::uint64_t rows : {1U, 4U, 5U, 8U, 9U}) {
+      for (const std::uint64_t rows : {1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U}) {
         SCOPED_TRACE(
             std::format("encoding {} arch {} rows {}", static_cast<int>(encoding), arch, rows));
         std::array operands{ex::OperandFormat{.operand = 0,
@@ -863,58 +911,52 @@ TEST(GgmlLowerTest, OrdinaryWideVectorRoutingUsesPhysicalDeviceAndEncodingDomain
                                               .layout = Layout::kDense,
                                               .ne = {64, rows, 1, 1}}};
         auto params = ir::ToBytes(ir::ProductParams{});
+        const bool gb10 = arch == 121;
         ex::CapabilityQuery query{.op = ir::Primitive(ir::Op::kMatMul),
                                   .operands = operands,
                                   .rows = rows,
                                   .k = 256,
                                   .n = 64,
                                   .arch = arch,
-                                  .params = params};
+                                  .params = params,
+                                  .device_class = gb10 ? "sm_121" : "sm_86",
+                                  .device_model = gb10 ? "NVIDIA GB10" : "",
+                                  .multiprocessors = gb10 ? 48U : 80U};
+        const auto candidates = [&] { return ex::Candidates(registry, query); };
         const auto has = [&](std::string_view name) {
-          return std::ranges::any_of(ex::Candidates(registry, query),
+          return std::ranges::any_of(candidates(),
                                      [&](std::size_t i) { return registry.at(i).name == name; });
         };
-        const bool upstream = arch == 121 && rows >= 5 && rows <= 8 && encoding != Encoding::kQ2_K;
-        EXPECT_EQ(has("llmp.vecq.dense"), !upstream);
-        if (upstream) EXPECT_TRUE(has("llmp.mmvq.prepared"));
-        if (!upstream) continue;
-        // Outer row count alone cannot suppress a grouped physical product.
-        operands[0].ne[2] = 2;
-        EXPECT_TRUE(kg::CapabilityOf("llmp.vecq.dense")->accepts(query));
-        operands[0].ne[2] = 1;
-        operands[1].ne = {256, 1, rows, 1};
-        EXPECT_TRUE(kg::CapabilityOf("llmp.vecq.dense")->accepts(query));
-        operands[1].ne = {256, rows, 1, 1};
-        // A caller's explicit accumulation/hint/arithmetic is not a speed preference.
-        for (const auto p :
-             {ir::ProductParams{.accumulate = ir::Accumulate::kF32},
-              ir::ProductParams{.hint = ir::ProductHint::kHadamard},
-              ir::ProductParams{.arithmetic = ir::ProductArithmetic::kBlock32Q8SumF32}}) {
-          params = ir::ToBytes(p);
-          EXPECT_TRUE(kg::CapabilityOf("llmp.vecq.dense")->accepts(query));
-        }
-        params = ir::ToBytes(ir::ProductParams{});
+        // What the kernel computes is not a speed preference.
+        EXPECT_TRUE(has("llmp.vecq.dense"));
+        const bool mmvq = gb10 && MmvqBand(encoding, rows);
+        ASSERT_FALSE(candidates().empty());
+        EXPECT_EQ(registry.at(candidates().front()).name == "llmp.mmvq.prepared", mmvq);
+        if (!mmvq) EXPECT_EQ(registry.at(candidates().front()).name, "llmp.vecq.dense");
         std::array glu_operands{operands[0], operands[0], operands[1], operands[2]};
         glu_operands[1].operand = 1;
         glu_operands[2].operand = 2;
         query.op = ir::Fused(ir::FusedKind::kMatMulGlu);
         query.operands = glu_operands;
         params = ir::ToBytes(ir::GluParams{.kind = ir::GluKind::kSwiGlu});
-        query.automatic_fusion = true;
-        EXPECT_FALSE(has("llmp.vecq.glu"));
-        query.automatic_fusion = false;
-        EXPECT_TRUE(has("llmp.vecq.glu"));  // explicit prepared fused IR stays supported
+        for (const bool automatic : {true, false}) {
+          query.automatic_fusion = automatic;
+          EXPECT_EQ(has("llmp.vecq.glu"), !(gb10 && SplitGluBand(encoding, rows)));
+        }
       }
     }
   }
 }
 
-TEST(GgmlLowerTest, OrdinaryWideVectorRewriteKeepsUpstreamProductsAndSeparateGlu) {
+// The planned graph follows the ranks: products in an MMVQ band take it over
+// their shared Q8_1 rows, a GLU in its band stays separate, the rest keep
+// llmp.vecq.
+TEST(GgmlLowerTest, MeasuredRanksPlanMmvqProductsAndSeparateGlus) {
   using llmp::format::Encoding;
   using llmp::format::Layout;
-  const auto registry = PlanningRegistry();
-  for (const auto encoding : {Encoding::kQ6_K, Encoding::kQ8_0}) {
-    for (const std::uint32_t rows : {4U, 5U, 8U, 9U}) {
+  const auto registry = RankedRegistry();
+  for (const auto encoding : {Encoding::kQ6_K, Encoding::kQ8_0, Encoding::kQ4_K}) {
+    for (const std::uint32_t rows : {2U, 4U, 5U, 8U, 9U}) {
       SCOPED_TRACE(std::format("encoding {} rows {}", static_cast<int>(encoding), rows));
       ir::Builder b;
       b.SetComponent(1);
@@ -930,7 +972,7 @@ TEST(GgmlLowerTest, OrdinaryWideVectorRewriteKeepsUpstreamProductsAndSeparateGlu
       ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
       pl::Policy policy;
       policy.numerical_candidates = {pl::NumericalChange::kQ8VectorReduction};
-      auto plan = pl::Plan(graph->Clone(), registry, Gb10(), policy);
+      auto plan = pl::Plan(graph->Clone(), registry, MeasuredGb10(), policy);
       ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
       std::size_t upstream = 0, vecq = 0, separate = 0;
       for (const auto& step : plan->steps) {
@@ -939,13 +981,10 @@ TEST(GgmlLowerTest, OrdinaryWideVectorRewriteKeepsUpstreamProductsAndSeparateGlu
         vecq += name == "llmp.vecq.dense" || name == "llmp.vecq.glu";
         separate += name == "ggml.swiglu";
       }
-      if (rows == 5 || rows == 8) {
-        EXPECT_EQ(upstream, 3U);
-        EXPECT_EQ(vecq, 0U);
-        EXPECT_EQ(separate, 1U);
-      } else {
-        EXPECT_GT(vecq, 0U);
-      }
+      const bool mmvq = MmvqBand(encoding, rows), split = SplitGluBand(encoding, rows);
+      EXPECT_EQ(upstream, (mmvq ? 1U : 0U) + (split ? 2U : 0U));
+      EXPECT_EQ(vecq, (mmvq ? 0U : 1U) + (split ? 0U : 1U));
+      EXPECT_EQ(separate, split ? 1U : 0U);
     }
   }
 }
@@ -953,7 +992,7 @@ TEST(GgmlLowerTest, OrdinaryWideVectorRewriteKeepsUpstreamProductsAndSeparateGlu
 TEST(GgmlLowerTest, OrdinaryWideVectorRoutingKeepsRoutedSiblingAndGroupedProducts) {
   using llmp::format::Encoding;
   using llmp::format::Layout;
-  const auto registry = PlanningRegistry();
+  const auto registry = RankedRegistry();
   for (const std::uint32_t rows : {5U, 8U}) {
     SCOPED_TRACE(rows);
     ir::Builder b;
@@ -973,7 +1012,7 @@ TEST(GgmlLowerTest, OrdinaryWideVectorRoutingKeepsRoutedSiblingAndGroupedProduct
     ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
     pl::Policy policy;
     policy.numerical_candidates = {pl::NumericalChange::kQ8VectorReduction};
-    auto plan = pl::Plan(graph->Clone(), registry, Gb10(), policy);
+    auto plan = pl::Plan(graph->Clone(), registry, MeasuredGb10(), policy);
     ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
     std::size_t upstream = 0, routed = 0;
     for (const auto& step : plan->steps) {
@@ -998,7 +1037,7 @@ TEST(GgmlLowerTest, OrdinaryWideVectorRoutingKeepsRoutedSiblingAndGroupedProduct
     auto gg = std::move(grouped).Finish();
     ASSERT_TRUE(gg) << (gg ? "" : gg.error().detail);
     const std::vector<ir::TensorId> staged{gx};
-    auto gp = pl::Plan(gg->Clone(), registry, Gb10(), policy,
+    auto gp = pl::Plan(gg->Clone(), registry, MeasuredGb10(), policy,
                        {.staged = staged, .written = kg::WrittenBytes});
     ASSERT_TRUE(gp) << (gp ? "" : gp.error().detail);
     EXPECT_EQ(std::ranges::count_if(gp->steps,
@@ -2783,6 +2822,62 @@ TEST(GgmlLowerTest, PrepareCapabilityDistinguishesItsOutputEncoding) {
         candidates, [&](auto at) { return registry.at(at).name == "llmp.q8_1"; });
     EXPECT_EQ(q8, output == Encoding::kQ8_1);
   }
+}
+
+// GGML's fill computes F32 and F16 only (CheckFill): the capability says so,
+// so a BF16 or I32 fill plans another implementation instead of a refused
+// step.
+TEST(GgmlLowerTest, FillCapabilityTakesOnlyTheEncodingsItsKernelFills) {
+  using llmp::format::Encoding;
+  using llmp::format::Layout;
+  const auto registry = PlanningRegistry();
+  for (const auto output : {Encoding::kF32, Encoding::kF16, Encoding::kBF16, Encoding::kI32}) {
+    const std::array operands{ex::OperandFormat{
+        .operand = ex::kOutputOperand, .encoding = output, .layout = Layout::kDense}};
+    const auto candidates = ex::Candidates(registry, {.op = ir::Primitive(ir::Op::kFill),
+                                                      .operands = operands,
+                                                      .rows = 1,
+                                                      .k = 64,
+                                                      .arch = 121});
+    const bool fill = std::ranges::any_of(
+        candidates, [&](auto at) { return registry.at(at).name == "ggml.fill"; });
+    EXPECT_EQ(fill, output == Encoding::kF32 || output == Encoding::kF16)
+        << llmp::format::Info(output).name;
+  }
+}
+
+// llmp.argmax reads rows in place, strided or not, but each row's floats
+// packed (CheckArgmax): the capability refuses at plan time what the kernel
+// would refuse at launch.
+TEST(GgmlLowerTest, ArgmaxCapabilityTakesStridedRowsOfPackedFloatsOnly) {
+  using llmp::format::Encoding;
+  using llmp::format::Layout;
+  const auto registry = PlanningRegistry();
+  constexpr std::uint64_t kVocab = 1000, kPadded = 1024, kRows = 4;
+  const auto accepts = [&](std::optional<ex::OperandMemory> memory,
+                           std::array<std::uint64_t, 4> ne = {kVocab, kRows, 1, 1}) {
+    const std::array operands{ex::OperandFormat{.operand = 0,
+                                                .encoding = Encoding::kF32,
+                                                .layout = Layout::kDense,
+                                                .ne = ne,
+                                                .memory = memory}};
+    const auto candidates = ex::Candidates(
+        registry,
+        {.op = ir::Primitive(ir::Op::kArgmax), .operands = operands, .rows = ne[1], .arch = 121});
+    return std::ranges::any_of(candidates,
+                               [&](auto at) { return registry.at(at).name == "llmp.argmax"; });
+  };
+  const auto rows = [](std::uint64_t nb0, std::uint64_t nb1, std::uint64_t offset = 0) {
+    return ex::OperandMemory{.nb = {nb0, nb1, nb1 * kRows, nb1 * kRows}, .view_offset = offset};
+  };
+  EXPECT_TRUE(accepts(std::nullopt));                          // descriptors alone
+  EXPECT_TRUE(accepts(rows(4, kVocab * 4)));                   // packed
+  EXPECT_TRUE(accepts(rows(4, kPadded * 4)));                  // a padded head's rows, in place
+  EXPECT_FALSE(accepts(rows(8, kPadded * 8)));                 // elements not packed
+  EXPECT_FALSE(accepts(rows(4, (kPadded * 4) + 2)));           // rows not whole floats apart
+  EXPECT_FALSE(accepts(rows(4, 32)));                          // overlapping rows
+  EXPECT_FALSE(accepts(rows(4, kPadded * 4, 2)));              // a misaligned view
+  EXPECT_FALSE(accepts(std::nullopt, {kVocab, kRows, 2, 1}));  // not one matrix
 }
 
 TEST(GgmlLowerTest, StatelessSharedQ8PreparationLowersUnderDefaultPolicy) {

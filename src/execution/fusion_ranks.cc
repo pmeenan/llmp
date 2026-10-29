@@ -14,11 +14,11 @@ namespace llmp::execution {
 
 FusionPreference ClassifyFusionLatency(std::uint64_t fused_ns, std::uint64_t decomposition_ns) {
   if (fused_ns == 0 || decomposition_ns == 0) return FusionPreference::kUnmeasured;
-  // Difference versus floor(D/10) is exact for integer nanoseconds and avoids
+  // Difference versus floor(D/20) is exact for integer nanoseconds and avoids
   // overflow even at uint64 max. Both directions use the reference latency D.
-  if (fused_ns > decomposition_ns && fused_ns - decomposition_ns > decomposition_ns / 10)
+  if (fused_ns > decomposition_ns && fused_ns - decomposition_ns > decomposition_ns / 20)
     return FusionPreference::kDecomposition;
-  if (decomposition_ns > fused_ns && decomposition_ns - fused_ns > decomposition_ns / 10)
+  if (decomposition_ns > fused_ns && decomposition_ns - fused_ns > decomposition_ns / 20)
     return FusionPreference::kFusion;
   return FusionPreference::kNeutral;
 }

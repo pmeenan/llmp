@@ -15,9 +15,11 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -39,9 +41,10 @@ namespace {
 using format::Encoding;
 using format::Layout;
 
-// The v2 digest of DigestIsStableAcrossBuilds' graph (68-byte node parameters).
+// The v3 digest of DigestIsStableAcrossBuilds' graph (68-byte node
+// parameters; operations by their trait names, not their table rows).
 constexpr std::string_view kGoldenDigest =
-    "815b7fc68dbd63410f7a84cdc032c56d8514838023983359d4794b3b02fa72e8";
+    "3a2c99093af2f9a8ed5052870ec0a3efcc6836526b3bb85c780405cb5b5e6f46";
 
 format::TensorFormat F32(std::initializer_list<std::uint64_t> ne) {
   return Dense(Encoding::kF32, ShapeOf(ne));
@@ -689,7 +692,6 @@ TEST(IrTest, FusedDescriptorValidatorsRunBeforeDecompositionReadsParameters) {
       {FusedKind::kRopeStore, 1, true},
       {FusedKind::kInverseRopeGroupedMatMul, 1, true},
       {FusedKind::kRmsNormMulRope, 5, true},
-      {FusedKind::kQkPrep, 5, true},
       {FusedKind::kMeanPoolNormRopeStore, 9, true},
       {FusedKind::kStateBankAttention, 16, true},
       {FusedKind::kSoftmaxPoolCompress, 4, true},
@@ -924,6 +926,156 @@ TEST(IrTest, DigestIsStableAcrossBuilds) {
   auto g = std::move(b).Finish();
   ASSERT_TRUE(g.has_value());
   EXPECT_EQ(base::ToHex(g->Digest()), kGoldenDigest);
+}
+
+// Digests name operations by their trait names (op_traits.inc: "names are
+// the identity; order is free"), so each name is one operation's.
+TEST(IrTest, TraitNamesAreUniqueStableIdentities) {
+  std::set<std::string_view> primitives;
+  for (const auto& traits : PrimitiveTraits()) {
+    SCOPED_TRACE(traits.name);
+    EXPECT_FALSE(traits.name.empty());
+    EXPECT_TRUE(primitives.insert(traits.name).second);
+  }
+  std::set<std::string_view> fused;
+  for (const auto& traits : FusedTraits()) {
+    SCOPED_TRACE(traits.name);
+    EXPECT_FALSE(traits.name.empty());
+    EXPECT_TRUE(fused.insert(traits.name).second);
+  }
+  // Every key's full name is its own, primitives and fused kinds together
+  // (the kFused row is the fused kinds' op, named by each of them).
+  std::set<std::string> keys;
+  for (const auto& traits : PrimitiveTraits()) {
+    if (traits.key.op != Op::kFused) {
+      EXPECT_TRUE(keys.insert(OpKeyName(traits.key)).second);
+    }
+  }
+  for (const auto& traits : FusedTraits()) EXPECT_TRUE(keys.insert(OpKeyName(traits.key)).second);
+}
+
+// The digest waits for its first use; a clone and a move carry it, a
+// moved-from graph has none, and threads asking at once agree.
+TEST(IrTest, DigestIsComputedOnceOnDemandAndSharedSafely) {
+  const auto build = [] {
+    Builder b;
+    const TensorId x = b.Input(F32({8, 2}));
+    const TensorId w = b.Weight(F32({8, 4}), WeightRef{.role = 1});
+    b.Output(b.Scale(b.MatMul(w, x), 2.0f));
+    return std::move(b).Finish();
+  };
+  auto g = build();
+  ASSERT_TRUE(g.has_value());
+  auto fresh = build();
+  ASSERT_TRUE(fresh.has_value());
+  std::array<base::Sha256Digest, 4> seen{};
+  std::vector<std::thread> threads;
+  for (std::size_t i = 0; i < seen.size(); ++i)
+    threads.emplace_back([&, i] { seen[i] = fresh->Digest(); });
+  for (auto& t : threads) t.join();
+  const base::Sha256Digest d = g->Digest();
+  for (const auto& s : seen) EXPECT_EQ(s, d);
+  auto clone = g->Clone();
+  ASSERT_TRUE(clone.has_value());
+  EXPECT_EQ(clone->Digest(), d);
+  Graph moved = std::move(*g);
+  EXPECT_EQ(moved.Digest(), d);
+  EXPECT_EQ(g->Digest(), base::Sha256Digest{});
+}
+
+// A view starts at a whole unit (an element, a block) and steps by whole
+// units along every axis it has more than one of.
+TEST(IrTest, ViewsAreAlignedToTheirUnits) {
+  {
+    Builder b;
+    const TensorId root = b.Input(F32({8, 4}));
+    b.View(root, ShapeOf({4, 2}), {4, 32, 64, 64}, 8);
+    EXPECT_TRUE(b.ok());
+    b.View(root, ShapeOf({4, 2}), {4, 32, 64, 64}, 2);
+    EXPECT_EQ(ErrorOf(b), GraphError::kShape);
+  }
+  {
+    Builder b;
+    const TensorId root = b.Input(F32({8, 4}));
+    b.View(root, ShapeOf({4, 2}), {4, 30, 64, 64}, 0);
+    EXPECT_EQ(ErrorOf(b), GraphError::kShape);
+  }
+  {
+    // A singleton axis's stride is never taken.
+    Builder b;
+    const TensorId root = b.Input(F32({8, 4}));
+    b.View(root, ShapeOf({4, 2}), {4, 32, 3, 3}, 0);
+    EXPECT_TRUE(b.ok()) << b.error()->detail;
+  }
+  {
+    Builder b;
+    const format::TensorFormat q8{
+        .encoding = Encoding::kQ8_0, .layout = Layout::kGgmlBlocks, .shape = ShapeOf({64, 4})};
+    const TensorId w = b.Weight(q8, WeightRef{.role = 1});
+    b.View(w, ShapeOf({32, 4}), {34, 68, 272, 272}, 34);
+    EXPECT_TRUE(b.ok()) << b.error()->detail;
+    b.View(w, ShapeOf({32, 4}), {34, 68, 272, 272}, 17);  // mid-block
+    EXPECT_EQ(ErrorOf(b), GraphError::kShape);
+  }
+}
+
+// A fused node's inference sees a strided source as its expansion does
+// (L3), and is remembered by what decides it, never by the node: two
+// stores of one shape into two caches each view their own cache.
+TEST(IrTest, FusedInferenceUsesRealStridesAndRemembersOnlyWhatDecidesIt) {
+  Builder b;
+  const TensorId root = b.Input(F32({16, 4}));
+  const TensorId rows = b.View(root, ShapeOf({8, 4}), {4, 64, 256, 256}, 32);
+  ASSERT_TRUE(b.ok()) << b.error()->detail;
+  EXPECT_FALSE(IsContiguous(b.tensor(rows)));
+  const TensorId w = b.Weight(F32({8}), WeightRef{.role = 1});
+  const TensorId packed = b.Input(F32({8, 4}));
+  const TensorId strided =
+      b.Fused(FusedKind::kRmsNormMul, std::array{rows, w}, NormParams{.eps = 1e-6f})[0];
+  const TensorId plain =
+      b.Fused(FusedKind::kRmsNormMul, std::array{packed, w}, NormParams{.eps = 1e-6f})[0];
+  ASSERT_TRUE(b.ok()) << b.error()->detail;
+  EXPECT_EQ(b.tensor(strided).format, b.tensor(plain).format);
+  EXPECT_EQ(b.tensor(strided).nb, b.tensor(plain).nb);
+  const TensorId x = b.Input(F32({8, 2, 3}));
+  const TensorId pos = b.Input(I32({3}));
+  const TensorId idx = b.Input(I32({3}));
+  const RopeParams rope{.mode = RopeMode::kNeox, .dims = 8};
+  std::array<TensorId, 2> caches{};
+  std::array<TensorId, 2> stored{};
+  for (std::uint16_t i = 0; i < 2; ++i) {
+    caches[i] = b.State(Dense(Encoding::kF16, ShapeOf({16, 10})), StateRef{.tensor = i});
+    stored[i] = b.Fused(FusedKind::kRopeStore, std::array{x, pos, caches[i], idx}, rope)[0];
+  }
+  ASSERT_TRUE(b.ok()) << b.error()->detail;
+  EXPECT_EQ(b.tensor(stored[0]).view_of, caches[0]);
+  EXPECT_EQ(b.tensor(stored[1]).view_of, caches[1]);
+  b.Output(strided);
+  b.Output(plain);
+  auto g = std::move(b).Finish();
+  ASSERT_TRUE(g.has_value()) << g.error().detail;
+  EXPECT_TRUE(Verify(*g).has_value());
+  auto expanded = Expand(*g, false);
+  ASSERT_TRUE(expanded.has_value()) << expanded.error().detail;
+}
+
+// A builder's graph needs no second inference at Finish (VerifyBuilt), and
+// a full Verify of it agrees.
+TEST(IrTest, BuiltGraphsVerifyWithoutReinferringButFullVerifyAgrees) {
+  Builder b;
+  (void)BuildLayer(b, false, "");
+  auto g = std::move(b).Finish();
+  ASSERT_TRUE(g.has_value()) << g.error().detail;
+  EXPECT_TRUE(Verify(*g).has_value());
+  EXPECT_TRUE(VerifyBuilt(*g).has_value());
+  // What inference does not check is still refused: a weight bound twice.
+  Builder twice;
+  const TensorId a = twice.Weight(F32({8}), WeightRef{.role = 3});
+  const TensorId c = twice.Weight(F32({8}), WeightRef{.role = 3});
+  twice.Output(twice.Add(a, c));
+  const auto refused = std::move(twice).Finish();
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().error, GraphError::kBinding);
 }
 
 TEST(IrTest, ExpandLeavesOnlyPrimitives) {

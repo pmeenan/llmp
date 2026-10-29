@@ -19,10 +19,10 @@
 #include <vector>
 
 #include "base/bytes.h"
-#include "kernels/ggml/dsv4_fast.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops_ext.h"
+#include "kernels/ggml/vecq.h"
 #include "providers/cuda/cuda_device_execution.h"
 
 namespace kg = llmp::kernels::ggml;

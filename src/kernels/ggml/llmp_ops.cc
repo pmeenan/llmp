@@ -350,11 +350,16 @@ std::expected<void, KernelFailure> CheckArgmax(const ggml_tensor* node) {
       !Matrix2d(x) || node->ne[0] != per_row * x->ne[1] || ggml_nrows(node) != 1) {
     return Rejected("F32 rows into one I32 index a row (and its probability)");
   }
-  if (!Packed(x) || !Packed(node) || !Aligned(x, 4) || !Aligned(node, 4) ||
+  // The rows may be a strided view (each row packed, rows a whole number of
+  // floats apart and not overlapping): the head's first `vocabulary` logits
+  // of padded rows, read in place.
+  if (x->nb[0] != sizeof(float) || x->nb[1] % sizeof(float) != 0 ||
+      x->nb[1] < static_cast<std::size_t>(x->ne[0]) * sizeof(float) || !Packed(node) ||
+      !Aligned(x, 4) || !Aligned(node, 4) ||
       // A block a row (grid x takes 2^31 - 1); the row offset is 64-bit and
       // the probability's (rows + row) unsigned.
       std::cmp_greater(x->ne[0], kInt32Max) || std::cmp_greater(x->ne[1], kInt32Max)) {
-    return Rejected("packed operands within the kernel's grid");
+    return Rejected("packed rows of floats, packed output, within the kernel's grid");
   }
   if (!AllCurrent({node, x}) || !Disjoint(node, x, false)) {
     return Rejected("a stale view, or an output overlapping its operand");

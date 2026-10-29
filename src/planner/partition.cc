@@ -40,6 +40,7 @@ namespace {
 using components::Instance;
 using components::SplitKind;
 using components::SplitOption;
+using ir::IsLeaf;
 using ir::Op;
 using ir::TensorId;
 
@@ -1515,8 +1516,6 @@ bool IsCollective(Op op) {
   return op == Op::kAllReduce || op == Op::kAllGather || op == Op::kAllToAll || op == Op::kSend ||
          op == Op::kRecv;
 }
-bool IsLeaf(Op op) { return op == Op::kInput || op == Op::kWeight || op == Op::kState; }
-
 std::uint64_t DenseBytes(const ir::TensorDesc& t) {
   return ir::Elements(t.shape()) * (format::Info(t.format.encoding).element_bits / 8);
 }

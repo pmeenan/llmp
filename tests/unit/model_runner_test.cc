@@ -2179,6 +2179,131 @@ TEST(WaveComposerTest, RefusesMalformedWorkAlone) {
   EXPECT_FALSE(en::WaveComposer::Make(too_many, kContext, 256).has_value());
 }
 
+// Read buckets (ex::ReadCellsFor): an owner's lone read and every composed
+// read follow the one rule; a row-invariant step reads each owner's own
+// class at its stage's alignment, never its peers' or the joined one.
+TEST(WaveComposerTest, ReadBucketsFollowTheOneReadRule) {
+  auto composer = en::WaveComposer::Make(
+      Caps(),
+      std::vector<en::StageReads>{{.context = kContext, .read_align = 256, .read_buckets = 1}});
+  ASSERT_TRUE(composer.has_value());
+  EXPECT_EQ(composer->read_buckets(), 1U);
+  for (std::uint32_t past = 0; past < kContext; ++past)
+    ASSERT_EQ(composer->LoneRead(past, 1), ex::ReadCellsFor(past + 1, 256, 1, kContext)) << past;
+  // Through 512 cells the aligned classes; past them one class of 1,024.
+  EXPECT_EQ(composer->LoneRead(300, 1), 512U);
+  EXPECT_EQ(composer->LoneRead(520, 1), 1024U);
+  const auto lone = composer->Compose(std::vector<en::PendingWork>{Decode(0, 520)});
+  ASSERT_EQ(lone.steps.size(), 1U);
+  EXPECT_EQ(lone.steps[0].shape.read_align, 256U);
+  EXPECT_EQ(lone.steps[0].shape.segments[0].read_cells, 1024U);
+  std::vector<en::PendingWork> verify = {Decode(0, 520, 2), Decode(1, 10, 2)};
+  for (auto& v : verify) {
+    v.phase = pl::Phase::kVerify;
+    v.row_invariant = true;
+  }
+  const auto inv = composer->Compose(verify);
+  ASSERT_EQ(inv.steps.size(), 1U);
+  EXPECT_EQ(inv.steps[0].shape.read_align, 256U);
+  ASSERT_EQ(inv.steps[0].shape.segments.size(), 2U);
+  EXPECT_EQ(inv.steps[0].shape.segments[0].read_cells, composer->LoneRead(520, 2));
+  EXPECT_EQ(inv.steps[0].shape.segments[1].read_cells, 256U);
+  // Without buckets the same owner reads its aligned 768.
+  auto aligned = en::WaveComposer::Make(Caps(), kContext, 256);
+  ASSERT_TRUE(aligned.has_value());
+  EXPECT_EQ(aligned->LoneRead(520, 1), 768U);
+}
+
+// A runner whose slots read in buckets: a step past 512 positions reads
+// its class of 1,024 cells, the state backed through all of them, and
+// finds only its real cells valid; every decode in the class is one plan;
+// a row-invariant step must read its owner's class; and a composer reading
+// otherwise than the state is refused.
+class ReadBucketsTest : public ModelRunnerTest {
+ protected:
+  // 16 KiB a position: 128 positions an extent, so that backing through
+  // 768 and through 1,024 cells differ.
+  std::vector<en::StageState> StateStages() const override {
+    const std::vector<std::pair<std::uint32_t, md::StateContract>> layers = {
+        {0,
+         {.tensors = {md::StateTensorContract{
+              .name = "kv", .kind = md::StateKind::kKv, .cell_bytes = 16384}}}}};
+    return {{.name = "target", .layout = md::Layout(layers, kContext, 256).value()}};
+  }
+  std::vector<pl::StepShape> SetupShapes() override {
+    return {Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}),
+            Shape(pl::Phase::kPrefill, {Seg(0, 0, 256, 1)})};
+  }
+  void Configure(en::RunnerConfig& config) override { config.slots.read_buckets = 1; }
+  std::uint64_t Backed(std::uint32_t cells) {
+    auto used = md::UsedThrough(runner_->slots().layout(0), cells, 256);
+    EXPECT_TRUE(used.has_value());
+    if (!used) return 0;
+    std::vector<en::LiveState::Range> ranges;
+    for (const auto& r : *used)
+      ranges.push_back({.region = 0, .offset = r.offset, .bytes = r.bytes});
+    auto bytes = runner_->slots().live(0, 0).UsedBytesOf(ranges);
+    EXPECT_TRUE(bytes.has_value());
+    return bytes.value_or(0);
+  }
+};
+
+TEST_F(ReadBucketsTest, AClassPastItsEndIsBackedHoldsOnlyItsCellsAndIsOnePlan) {
+  ASSERT_EQ(runner_->slots().read_buckets(), 1U);
+  auto composer = en::WaveComposer::For(Caps(), runner_->slots());
+  ASSERT_TRUE(composer.has_value());
+  ASSERT_EQ(composer->read_buckets(), 1U);
+  // A prompt of 520 positions in chunks of at most 256 rows: its last
+  // (512 to 520) reads the class of 1,024 cells.
+  std::vector<std::int32_t> all;
+  for (std::uint32_t at = 0; at < 520; at += 256) {
+    const std::uint32_t rows = std::min(256U, 520U - at);
+    const auto tokens = Tokens(rows, static_cast<std::int32_t>(100 + at));
+    all.insert(all.end(), tokens.begin(), tokens.end());
+    const auto c = composer->Compose(std::vector<en::PendingWork>{Prefill(0, at, rows)});
+    ASSERT_EQ(c.steps.size(), 1U);
+    auto ran = Run(c.steps[0].shape, {tokens});
+    ASSERT_TRUE(ran) << ran.error().what;
+  }
+  EXPECT_EQ(runner_->slots().live(0, 0).used_bytes(), Backed(1024));
+  EXPECT_GT(Backed(1024), Backed(768));
+  const std::size_t plans = runner_->plans().size();
+  for (std::uint32_t past = 520; past < 530; ++past) {
+    const auto c = composer->Compose(std::vector<en::PendingWork>{Decode(0, past)});
+    ASSERT_EQ(c.steps.size(), 1U);
+    ASSERT_EQ(c.steps[0].shape.segments.at(0).read_cells, 1024U);
+    const auto token = static_cast<std::int32_t>(900 + past);
+    all.push_back(token);
+    auto ran = Run(c.steps[0].shape, {{token}});
+    ASSERT_TRUE(ran) << ran.error().what;
+    // It reads 1,024 cells; only its positions' are valid.
+    EXPECT_EQ(Rows(ran->outputs.at(0)).at(0).cells, static_cast<std::int32_t>(past + 1));
+  }
+  EXPECT_EQ(runner_->plans().size(), plans + 1);
+  ExpectPrompt(0, all);
+  // A row-invariant step reads its owner's class, not the aligned 768.
+  const auto verify = [](std::uint32_t read) {
+    return pl::StepShape{
+        .stage = 0,
+        .phase = pl::Phase::kVerify,
+        .segments = {{.slot = 0, .rows = 2, .past = 530, .read_cells = read, .outputs = 2}},
+        .row_invariant = true,
+        .read_align = 256};
+  };
+  EXPECT_TRUE(runner_->PrepareStep(verify(1024)));
+  EXPECT_FALSE(runner_->PrepareStep(verify(768)));
+  // A composer without the state's buckets reads otherwise: refused.
+  auto aligned = en::WaveComposer::Make(Caps(), kContext, 256);
+  ASSERT_TRUE(aligned.has_value());
+  const std::vector<en::PendingWork> pending = {Decode(0, 530)};
+  const std::vector<std::int32_t> token = {1};
+  const std::vector<en::SegmentWork> work = {{.tokens = token, .bytes = {}}};
+  const auto report = en::RunWave(*runner_, *aligned, pending, work);
+  ASSERT_EQ(report.outcomes.size(), 1U);
+  EXPECT_TRUE(report.outcomes[0].refusal.has_value());
+  EXPECT_EQ(runner_->slots().positions(0), 530U);
+}
+
 // ---------------------------------------------------------------- waves
 
 class WaveTest : public ModelRunnerTest {

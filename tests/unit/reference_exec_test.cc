@@ -2435,14 +2435,9 @@ TEST(ReferenceDecompositionTest, FusedKindsRunAsThePrimitivesTheyName) {
   pair(b.Fused(ir::FusedKind::kRmsNormMulRope, std::array{heads, hw, pos},
                ir::NormRopeParams{.eps = 1e-6f, .rope = rope})[0],
        b.Rope(b.Mul(b.RmsNorm(heads, 1e-6f), hw), pos, {}, rope));
-  const TensorId k = in({4, 2, 3});
-  const TensorId kw = in({4});
   pair(b.Fused(ir::FusedKind::kRmsNormMulRope, std::array{heads, pos},
                ir::NormRopeParams{.eps = 1e-6F, .rope = rope})[0],
        b.Rope(b.RmsNorm(heads, 1e-6F), pos, {}, rope));
-  const ir::Outputs qk = b.Fused(ir::FusedKind::kQkPrep, std::array{heads, hw, k, kw, pos},
-                                 ir::NormRopeParams{.eps = 1e-6f, .rope = rope});
-  pair(qk[1], b.Rope(b.Mul(b.RmsNorm(k, 1e-6f), kw), pos, {}, rope));
   const TensorId wg = in({8, 5});
   const TensorId wu = in({8, 5});
   const ir::GluParams glu{.kind = ir::GluKind::kGeGluTanh};
@@ -2464,8 +2459,6 @@ TEST(ReferenceDecompositionTest, FusedKindsRunAsThePrimitivesTheyName) {
   pair(b.Fused(ir::FusedKind::kNormGate, std::array{x, w, z},
                ir::NormGateParams{.eps = 1e-5f, .gate = ir::NormGateFn::kSilu})[0],
        b.Mul(b.Mul(b.RmsNorm(x, 1e-5f), w), b.Unary(z, ir::UnaryFn::kSilu)));
-  const TensorId dt = in({1});
-  pair(b.Fused(ir::FusedKind::kEulerStep, std::array{x, r, dt})[0], b.Add(x, b.Mul(r, dt)));
   // Full Sinkhorn pre carries and the following post's two outputs.
   const TensorId hx = in({8, 4, 3}), hfn = in({32, 24});
   const TensorId hs = in({3}), hb = in({24}), hn = in({8});

@@ -55,8 +55,9 @@ class D {
   TensorId s(std::size_t i) const { return i < src_.size() ? src_[i] : TensorId{}; }
   // A copy: the builder's tensors move as it grows.
   TensorDesc t(TensorId id) const { return b_.tensor(id); }
-  // Reshape only packed values. Fused inference uses packed stand-ins,
-  // while expansion receives the real sources and must retain their order.
+  // Reshape only packed values. Fused inference's stand-ins carry a
+  // strided view's strides (infer.cc StandIn) and expansion receives the
+  // real sources, so both see what the node reads.
   TensorId Packed(TensorId id) {
     if (!b_.ok()) return {};
     return IsContiguous(t(id)) ? id : b_.Cont(id);
@@ -742,17 +743,6 @@ Outputs DecomposeRopeStore(D& d, const ParamBytes& params) {
   return One(b.CacheStore(d.s(2), rows, d.s(3)));
 }
 
-Outputs DecomposeQkPrep(D& d, const ParamBytes& params) {
-  Builder& b = d.b();
-  if (!d.need(5, 6)) {
-    return {};
-  }
-  const auto p = Get<NormRopeParams>(params);
-  const TensorId q = b.Rope(b.Mul(b.RmsNorm(d.s(0), p.eps), d.s(1)), d.s(4), d.s(5), p.rope);
-  const TensorId k = b.Rope(b.Mul(b.RmsNorm(d.s(2), p.eps), d.s(3)), d.s(4), d.s(5), p.rope);
-  return Many({q, k});
-}
-
 Outputs DecomposeNormGate(D& d, const ParamBytes& params) {
   Builder& b = d.b();
   if (!d.need(3, 3)) {
@@ -766,14 +756,6 @@ Outputs DecomposeNormGate(D& d, const ParamBytes& params) {
   const TensorId n = b.Mul(b.RmsNorm(d.s(0), p.eps), d.s(1));
   return One(
       b.Mul(n, b.Unary(d.s(2), p.gate == NormGateFn::kSilu ? UnaryFn::kSilu : UnaryFn::kSigmoid)));
-}
-
-Outputs DecomposeEulerStep(D& d, const ParamBytes&) {
-  Builder& b = d.b();
-  if (!d.need(3, 3)) {
-    return {};
-  }
-  return One(b.Add(d.s(0), b.Mul(d.s(1), d.s(2))));
 }
 
 Outputs DecomposeDupUpAdd(D& d, const ParamBytes& params) {

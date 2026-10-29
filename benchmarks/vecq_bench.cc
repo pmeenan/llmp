@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // llmp.vecq's launch configurations on DeepSeek V4 Flash's product
-// shapes (kernels/ggml/dsv4_fast.h), for choosing its defaults: each
+// shapes (kernels/ggml/vecq.h), for choosing its defaults: each
 // configuration's time per launch and the weight bytes it streams per
 // second. Weights and activations are random bytes (the time does not
 // depend on the values); each launch reads other experts (routed) or
@@ -10,12 +10,20 @@
 // Needs a CUDA device and about 6 GB.
 //
 //   llmp_vecq_bench [--launches N] [--overlap F] [--vmm on|off] [--only TEXT]
+//   llmp_vecq_bench --sweep 1 [--launches N]
 //
 // --overlap: in a multi-token routed case, the fraction of each later
 // token's experts taken from the token before it (a verify's neighbouring
 // tokens share some experts). --vmm on: the weights in device VMM as the
 // paged node maps them (a 2 MiB backing each 2 MiB) instead of cudaMalloc.
-// --only: the cases whose name contains TEXT.
+// --only: the cases whose name contains TEXT. --sweep: every encoding's
+// dense products at 1 to 8 columns, the default schedule against GGML's
+// ordinary MMVQ (vecq_upstream.cu) on the same Q8_1 activations, one line
+// each: `sweep TYPE KxN cols default_us upstream_us`, and for the gated
+// product `sweepglu TYPE KxN cols default_us 2x_upstream_us` (GGML's two
+// products; its GLU kernel not counted, but timed apart once a shape and
+// column count: `sweepswiglu KxN cols upstream_us`, GGML's SwiGLU of two
+// F32 [N, cols] products).
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -33,10 +41,12 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "ggml.h"
-#include "kernels/ggml/dsv4_fast.h"
+#include "kernels/ggml/vecq.h"
+#include "vecq_upstream.h"
 
 namespace {
 
@@ -114,6 +124,140 @@ std::int64_t RowBytes(ggml_type type, int k) {
   return static_cast<std::int64_t>(ggml_row_size(type, k));
 }
 
+bool Sweep(int launches, cudaStream_t stream, cudaEvent_t start, cudaEvent_t stop) {
+  const ggml_type types[] = {
+      GGML_TYPE_Q4_0,    GGML_TYPE_Q4_1,   GGML_TYPE_Q5_0,  GGML_TYPE_Q5_1,    GGML_TYPE_Q8_0,
+      GGML_TYPE_Q2_K,    GGML_TYPE_Q3_K,   GGML_TYPE_Q4_K,  GGML_TYPE_Q5_K,    GGML_TYPE_Q6_K,
+      GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S,
+      GGML_TYPE_IQ4_NL,  GGML_TYPE_IQ4_XS, GGML_TYPE_MXFP4};
+  const std::pair<int, int> shapes[] = {{4096, 4096}, {2560, 10240}};
+  std::mt19937 rng(7);  // NOLINT(bugprone-random-generator-seed): reproducible
+  std::uniform_int_distribution<int> byte(0, 255);
+  for (const auto [k, n] : shapes) {
+    const int k_padded = (k + 511) / 512 * 512;
+    const int y_row = k_padded / 32;
+    void* y = nullptr;
+    float* dst = nullptr;
+    const std::size_t y_bytes = U(y_row) * U(kQ8Block) * 8U;
+    if (!Ok(cudaMalloc(&y, y_bytes), "y") ||
+        !Ok(cudaMalloc(reinterpret_cast<void**>(&dst), sizeof(float) * U(n) * 8U), "dst")) {
+      return false;
+    }
+    {
+      std::vector<unsigned char> host(y_bytes);
+      for (std::size_t i = 0; i < host.size(); ++i) {
+        int value = byte(rng) % 16;
+        if (i % kQ8Block < 4) value = i % 2 == 0 ? 0 : 0x20;
+        host[i] = static_cast<unsigned char>(value);
+      }
+      if (!Ok(cudaMemcpy(y, host.data(), host.size(), cudaMemcpyHostToDevice), "y")) return false;
+    }
+    {
+      // The decomposition's SwiGLU, whatever the weights' encoding.
+      float* glu = nullptr;
+      const std::size_t plane = U(n) * 8U;
+      if (!Ok(cudaMalloc(reinterpret_cast<void**>(&glu), sizeof(float) * plane * 3U), "glu") ||
+          !Ok(cudaMemset(glu, 0, sizeof(float) * plane * 3U), "glu")) {
+        return false;
+      }
+      for (int columns = 1; columns <= 8; ++columns) {
+        const auto launch = [&] {
+          return llmp::benchmarks::vecq::UpstreamSwiGlu(glu, glu + plane, glu + (2 * plane), n,
+                                                        columns, stream);
+        };
+        float ms = 0;
+        if (!launch() || !Ok(cudaStreamSynchronize(stream), "warm-up") ||
+            !Ok(cudaEventRecord(start, stream), "record")) {
+          return false;
+        }
+        for (int l = 0; l < launches; ++l) (void)launch();
+        if (!Ok(cudaEventRecord(stop, stream), "record") ||
+            !Ok(cudaEventSynchronize(stop), "sync") ||
+            !Ok(cudaEventElapsedTime(&ms, start, stop), "elapsed")) {
+          return false;
+        }
+        std::println("sweepswiglu {}x{} {} {:.2f}", k, n, columns, 1000.0 * ms / launches);
+      }
+      cudaFree(glu);
+    }
+    for (const ggml_type type : types) {
+      const std::int64_t row = RowBytes(type, k);
+      const std::int64_t matrix = row * n;
+      const std::size_t weight_bytes = U(matrix) * U(kDenseCopies);
+      void* w = nullptr;
+      if (!Ok(cudaMalloc(&w, weight_bytes), "weights")) return false;
+      {
+        std::vector<unsigned char> host(1U << 24U);
+        for (unsigned char& b : host) b = static_cast<unsigned char>(byte(rng));
+        for (std::size_t at = 0; at < weight_bytes; at += host.size()) {
+          const std::size_t m = std::min(host.size(), weight_bytes - at);
+          if (!Ok(cudaMemcpy(static_cast<char*>(w) + at, host.data(), m, cudaMemcpyHostToDevice),
+                  "fill")) {
+            return false;
+          }
+        }
+      }
+      for (int columns = 1; columns <= 8; ++columns) {
+        const auto describe = [&](int l) {
+          kg::VecQDesc d;
+          d.w = static_cast<const char*>(w) + ((l % kDenseCopies) * matrix);
+          d.y = y;
+          d.dst = dst;
+          d.ncols_x = k;
+          d.nrows = n;
+          d.stride_row = static_cast<int>(row / static_cast<std::int64_t>(ggml_type_size(type)));
+          d.stride_expert = d.stride_row * n;
+          d.y_token = y_row;
+          d.tokens = columns;
+          d.dst_token = n;
+          return d;
+        };
+        // -1: not taken.
+        const auto timed = [&](auto&& launch) -> double {
+          if (!launch(0) || !Ok(cudaStreamSynchronize(stream), "warm-up")) return -1.0;
+          if (!Ok(cudaEventRecord(start, stream), "record")) return -1.0;
+          for (int l = 0; l < launches; ++l) (void)launch(l);
+          float ms = 0;
+          if (!Ok(cudaEventRecord(stop, stream), "record") ||
+              !Ok(cudaEventSynchronize(stop), "sync") ||
+              !Ok(cudaEventElapsedTime(&ms, start, stop), "elapsed")) {
+            return -1.0;
+          }
+          return 1000.0 * ms / launches;
+        };
+        const auto vecq = [&](int variant) {
+          return timed([&](int l) { return kg::LaunchVecQ(type, describe(l), variant, stream); });
+        };
+        const double fallback = vecq(-1);
+        const double upstream = timed([&](int l) {
+          return llmp::benchmarks::vecq::UpstreamMmvq(
+              type, static_cast<const char*>(w) + ((l % kDenseCopies) * matrix), y, dst, k, n,
+              columns, stream);
+        });
+        std::println("sweep {} {}x{} {} {:.2f} {:.2f}", ggml_type_name(type), k, n, columns,
+                     fallback, upstream);
+        // The gated product: llmp.vecq's fused GLU (gate weights another
+        // copy) against GGML's MMVQ twice (the GLU itself not counted).
+        const auto glu = [&](int variant) {
+          return timed([&](int l) {
+            kg::VecQDesc d = describe(l);
+            d.g = static_cast<const char*>(w) + (((l + 1) % kDenseCopies) * matrix);
+            d.glu = 2;
+            d.limit = 10.0f;
+            return kg::LaunchVecQ(type, d, variant, stream);
+          });
+        };
+        std::println("sweepglu {} {}x{} {} {:.2f} {:.2f}", ggml_type_name(type), k, n, columns,
+                     glu(-1), 2 * upstream);
+      }
+      cudaFree(w);
+    }
+    cudaFree(y);
+    cudaFree(dst);
+  }
+  return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -122,6 +266,7 @@ int main(int argc, char** argv) {
   bool vmm = false;
   std::string only;
   int spin = 0;
+  bool sweep = false;
   const std::span args(argv, static_cast<std::size_t>(argc));
   for (std::size_t i = 1; i + 1 < args.size(); i += 2) {
     const std::string_view a = args[i];
@@ -136,6 +281,8 @@ int main(int argc, char** argv) {
       only = v;
     } else if (a == "--spin") {
       std::from_chars(v.data(), v.data() + v.size(), spin);
+    } else if (a == "--sweep") {
+      sweep = v != "0";
     }
   }
   // CPU threads spinning meanwhile, as the paged node's lanes poll through
@@ -237,6 +384,9 @@ int main(int argc, char** argv) {
   cudaEvent_t stop = nullptr;
   if (!Ok(cudaEventCreate(&start), "event") || !Ok(cudaEventCreate(&stop), "event")) {
     return 1;
+  }
+  if (sweep) {
+    return Sweep(launches, stream, start, stop) ? 0 : 1;
   }
   std::println("launches {}, routed overlap {:.2f}", launches, overlap);
   if (vmm && (!Ok(cudaFree(nullptr), "context") || !Ok(cuInit(0), "driver"))) {

@@ -20,8 +20,10 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <limits>
 #include <memory>
+#include <set>
 #include <span>
 #include <string>
 #include <thread>
@@ -742,6 +744,73 @@ TEST(PlanCacheTest, RegistryBackendAndCapturabilityAreDistinctKeys) {
       EXPECT_NE(keys[i], keys[j]);
       EXPECT_NE(llmp::execution::HashOf(keys[i]), llmp::execution::HashOf(keys[j]));
     }
+}
+
+// A step's read class (execution::ReadCellsFor), the one rule its readers
+// share. Without buckets: its end at the alignment, at most the context
+// (every earlier step's read).
+TEST(ReadCellsForTest, WithoutBucketsIsTheAlignedEndWithinTheContext) {
+  for (const std::uint32_t align : {256U, 512U, 2048U}) {
+    for (const std::uint32_t context : {1000U, 4096U, 262144U}) {
+      for (std::uint64_t end = 0; end <= context; end += 37) {
+        const std::uint64_t aligned = (end + align - 1) / align * align;
+        EXPECT_EQ(llmp::execution::ReadCellsFor(end, align, 0, context),
+                  std::min<std::uint64_t>(aligned, context))
+            << align << " " << context << " " << end;
+      }
+    }
+  }
+  EXPECT_EQ(llmp::execution::ReadCellsFor(0, 256, 4, 4096), 0U);
+}
+
+// With buckets: monotonic in the end, covering it, a multiple of the
+// alignment within the context, idempotent, less than the larger of an
+// alignment and end / buckets past the end, every alignment times a power
+// of two a class boundary (a kernel's power-of-two cell limit is crossed
+// only by an end past it), and the aligned classes through 2 * buckets
+// alignments unchanged.
+TEST(ReadCellsForTest, BucketsAreMonotonicCoveringBoundedAndKeepPowerOfTwoBoundaries) {
+  constexpr std::uint32_t kContext = 262144;
+  for (const std::uint32_t align : {256U, 2048U}) {
+    for (const std::uint32_t buckets : {1U, 2U, 3U, 4U, 8U, 16U}) {
+      SCOPED_TRACE(std::format("align {} buckets {}", align, buckets));
+      std::uint32_t last = 0;
+      for (std::uint64_t end = 0; end <= kContext; ++end) {
+        const std::uint32_t read = llmp::execution::ReadCellsFor(end, align, buckets, kContext);
+        ASSERT_GE(read, last) << end;
+        ASSERT_GE(read, end);
+        ASSERT_LE(read, kContext);
+        ASSERT_EQ(read % align, 0U) << end;
+        ASSERT_EQ(llmp::execution::ReadCellsFor(read, align, buckets, kContext), read) << end;
+        ASSERT_LT(read - end, std::max<std::uint64_t>(align, end / buckets)) << end;
+        if (end <= std::uint64_t{2} * buckets * align)
+          ASSERT_EQ(read, llmp::execution::ReadCellsFor(end, align, 0, kContext)) << end;
+        last = read;
+      }
+      for (std::uint64_t limit = align; limit <= kContext; limit *= 2)
+        EXPECT_EQ(llmp::execution::ReadCellsFor(limit, align, buckets, kContext), limit);
+    }
+  }
+  // Capped by a context that is not a class boundary.
+  EXPECT_EQ(llmp::execution::ReadCellsFor(5000, 256, 1, 6000), 6000U);
+}
+
+// About 36 decode plans at a 262K context for four buckets of 256, against
+// 1,024 aligned; the 2,048-aligned families' 128 become 24.
+TEST(ReadCellsForTest, CountsTheClassesOfALongContext) {
+  const auto classes = [](std::uint32_t align, std::uint32_t buckets, std::uint32_t context) {
+    std::set<std::uint32_t> seen;
+    for (std::uint64_t end = 1; end <= context; ++end)
+      seen.insert(llmp::execution::ReadCellsFor(end, align, buckets, context));
+    return seen.size();
+  };
+  EXPECT_EQ(classes(256, 0, 262144), 1024U);
+  EXPECT_EQ(classes(256, 4, 262144), 36U);
+  EXPECT_EQ(classes(256, 8, 262144), 64U);
+  EXPECT_EQ(classes(256, 16, 262144), 112U);
+  EXPECT_EQ(classes(256, 4, 131072), 32U);
+  EXPECT_EQ(classes(2048, 0, 262144), 128U);
+  EXPECT_EQ(classes(2048, 4, 262144), 24U);
 }
 
 }  // namespace

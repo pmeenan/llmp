@@ -184,13 +184,22 @@ class Hasher {
     U32(static_cast<std::uint32_t>(v >> 32U));
   }
   void Bytes(std::span<const std::byte> b) { sha_.Update(b); }
+  // Text, length-prefixed: no two sequences of texts hash alike.
+  void Text(std::string_view text) {
+    U32(static_cast<std::uint32_t>(text.size()));
+    Bytes(std::as_bytes(std::span(text)));
+  }
+  // An operation by its stable names (op_traits.inc), never by its row's
+  // position: the table's order is free.
+  void Key(OpKey key) {
+    Text(OpName(key.op));
+    Text(FusedKindName(key.fused));
+  }
   base::Sha256Digest Finish() { return sha_.Finish(); }
 
  private:
   base::Sha256 sha_;
 };
-
-bool IsLeaf(Op op) { return op == Op::kInput || op == Op::kWeight || op == Op::kState; }
 
 void Format(Hasher& h, const format::TensorFormat& f) {
   h.U16(static_cast<std::uint16_t>(f.encoding));
@@ -226,6 +235,7 @@ Graph::Graph(Graph&& other) noexcept
       keep_(std::move(other.keep_)),
       names_(std::move(other.names_)),
       digest_(std::exchange(other.digest_, {})),
+      digest_state_(other.digest_state_.exchange(kDigestNone, std::memory_order_acq_rel)),
       identity_(std::exchange(other.identity_, 0)) {}
 
 Graph& Graph::operator=(Graph&& other) noexcept {
@@ -238,6 +248,8 @@ Graph& Graph::operator=(Graph&& other) noexcept {
     keep_ = std::move(other.keep_);
     names_ = std::move(other.names_);
     digest_ = std::exchange(other.digest_, {});
+    digest_state_.store(other.digest_state_.exchange(kDigestNone, std::memory_order_acq_rel),
+                        std::memory_order_release);
     identity_ = std::exchange(other.identity_, 0);
   }
   return *this;
@@ -261,16 +273,33 @@ std::expected<Graph, VerifyError> Graph::Clone() const {
   g.outputs_ = outputs_;
   g.keep_ = keep_;
   g.names_ = names_;
-  g.digest_ = digest_;
+  // A digest already computed is the clone's too.
+  if (digest_state_.load(std::memory_order_acquire) == kDigestReady) {
+    g.digest_ = digest_;
+    g.digest_state_.store(kDigestReady, std::memory_order_release);
+  }
   g.identity_ = NextIdentity();
   return g;
 }
 
-base::Sha256Digest Graph::Digest() const { return digest_; }
+// Computed on first use: most graphs a plan builds (each rewrite round's,
+// each decomposition pass's) are never asked. Concurrent first callers each
+// compute the same value; one stores it, and the rest return their own.
+base::Sha256Digest Graph::Digest() const {
+  if (identity_ == 0) return {};  // moved-from, or still a builder's
+  if (digest_state_.load(std::memory_order_acquire) == kDigestReady) return digest_;
+  const base::Sha256Digest digest = ComputeDigest();
+  std::uint8_t expected = kDigestNone;
+  if (digest_state_.compare_exchange_strong(expected, kDigestStoring, std::memory_order_acq_rel)) {
+    digest_ = digest;
+    digest_state_.store(kDigestReady, std::memory_order_release);
+  }
+  return digest;
+}
 
 base::Sha256Digest Graph::ComputeDigest() const {
   Hasher h;
-  h.Bytes(std::as_bytes(std::span(std::string_view("llmp.ir.graph.v2"))));
+  h.Bytes(std::as_bytes(std::span(std::string_view("llmp.ir.graph.v3"))));
   h.U32(kOpSetVersion);
 
   const std::size_t leaf_count = static_cast<std::size_t>(
@@ -353,7 +382,7 @@ base::Sha256Digest Graph::ComputeDigest() const {
     }
     Hasher leaf;
     const TensorDesc& t = tensors_.at(node.out[0].v);
-    leaf.U16(static_cast<std::uint16_t>(node.key.op));
+    leaf.Key(node.key);
     if (const auto* w = std::get_if<WeightRef>(&t.binding)) {
       leaf.U8(1);
       leaf.U16(w->stage);
@@ -405,8 +434,7 @@ base::Sha256Digest Graph::ComputeDigest() const {
     if (IsLeaf(node.key.op)) {
       continue;
     }
-    h.U16(static_cast<std::uint16_t>(node.key.op));
-    h.U16(static_cast<std::uint16_t>(node.key.fused));
+    h.Key(node.key);
     h.U8(static_cast<std::uint8_t>(node.batch));
     h.U16(node.component);
     h.Bytes(std::as_bytes(std::span(node.params)));

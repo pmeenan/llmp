@@ -96,6 +96,9 @@ constexpr std::array kQuantizedNvfp4 = {Encoding::kNvfp4};
 
 using Rule = ex::OperandRule;
 constexpr std::array<Rule, 1> kF32In = {{{.operand = 0, .encodings = kF32, .layouts = kDense}}};
+// GGML's fill (CheckFill): F32 or F16 output only.
+constexpr std::array<Rule, 1> kFillRules = {
+    {{.operand = ex::kOutputOperand, .encodings = kF32F16, .layouts = kDense}}};
 constexpr std::array<Rule, 2> kF32Binary = {{{.operand = 0, .encodings = kF32, .layouts = kDense},
                                              {.operand = 1, .encodings = kF32, .layouts = kDense}}};
 constexpr std::array<Rule, 4> kSpatialConvRules = {
@@ -1142,7 +1145,22 @@ bool AcceptsIndexScore(const ex::CapabilityQuery& q) {
          keys->ne[2] <= static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()) - 64;
 }
 
-bool AcceptsArgmax(const ex::CapabilityQuery& q) { return Built(q); }
+// llmp.argmax (CheckArgmax): F32 rows of one matrix, a block a row; each
+// row's elements packed, rows a whole number of floats apart and not
+// overlapping (a strided view of a padded head's rows reads in place).
+bool AcceptsArgmax(const ex::CapabilityQuery& q) {
+  const auto* x = Operand(q, 0);
+  constexpr auto max = static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
+  if (!Built(q) || x == nullptr || x->ne[0] == 0 || x->ne[1] == 0 || x->ne[2] != 1 ||
+      x->ne[3] != 1 || x->ne[0] > max || x->ne[1] > max)
+    return false;
+  if (!x->memory) return true;
+  const auto& m = *x->memory;
+  return m.nb[0] == sizeof(float) && m.nb[1] % sizeof(float) == 0 &&
+         m.nb[1] >= x->ne[0] * sizeof(float) && m.view_offset % sizeof(float) == 0 &&
+         (m.root_alignment == 0 ||
+          (m.root_alignment >= sizeof(float) && m.root_alignment % sizeof(float) == 0));
+}
 bool AcceptsTopK(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::TopKParams>(q);
   const auto* x = Operand(q, 0);
@@ -1837,6 +1855,23 @@ bool AcceptsGroupedVecQ(const ex::CapabilityQuery& q) {
       out->ne != std::array<std::uint64_t, 4>{n, groups, tokens, 1} ||
       n > limit / (k / block) / groups || !w->memory || !x->memory || !out->memory)
     return false;
+  // The lowering reads the weight's own bytes: a whole stored 2D table of
+  // one data part, reshaped into the groups (its N · G rows of K: the same
+  // bytes, whatever the table's own extents). Known for a graph's node; a
+  // descriptor-only query (a matcher's) is decided again when its node is
+  // selected.
+  if (w->binding.source == ex::OperandSource::kOther) return false;
+  if (w->binding.source == ex::OperandSource::kWholeWeight) {
+    const auto& stored = w->binding.stored;
+    if (stored.expert_array || stored.rank != 2 || stored.stacked != 1) return false;
+    format::TensorFormat table{};
+    table.encoding = w->encoding;
+    table.params = w->params;
+    table.layout = w->layout;
+    table.shape = {.ne = {k, n * groups, 1, 1}, .rank = 2};
+    const auto parts = format::PartsOf(table);
+    if (!parts || parts->size() != 1 || (*parts)[0].role != format::PartRole::kData) return false;
+  }
   const auto packed = [](const ex::OperandFormat& operand, std::uint64_t unit,
                          std::uint64_t inner) {
     if (operand.memory->view_offset != 0 || operand.memory->nb[0] != unit) return false;
@@ -1868,44 +1903,10 @@ bool VecQGluFormula(const ex::CapabilityQuery& q) {
            glu->limit == 0.0F));
 }
 
-// The registered GB10 five-column Q6_K/Q8_0 workload regressed in first-token
-// latency. Prefer upstream MMVQ across that two-warp column class, sharing
-// preparation where eligible and keeping automatic GLUs separate. This
-// device/encoding/physical-column choice leaves routed and grouped work alone.
-bool PreferOrdinaryMmvq(const ex::CapabilityQuery& q) {
-  const bool dense = q.op == ir::Primitive(Op::kMatMul);
-  const bool glu = q.op == ir::Fused(FusedKind::kMatMulGlu);
-  if (q.arch != 121 || (!dense && !glu) || q.rows < 5 || q.rows > 8) return false;
-  // A directly supplied fused operation keeps its implementation contract.
-  if (glu && !q.automatic_fusion) return false;
-  if (dense) {
-    const auto p = ParamsOf<ir::ProductParams>(q);
-    if (!p || p->accumulate != ir::Accumulate::kDefault || p->hint != ir::ProductHint::kNone ||
-        p->arithmetic != ir::ProductArithmetic::kImplementation)
-      return false;
-  }
-  const auto* w = Operand(q, 0);
-  const auto* x = Operand(q, glu ? 2 : 1);
-  const auto* out = Operand(q, kOut);
-  if (!w || !x || !out || w->stacked != 1 || w->layout != Layout::kGgmlBlocks ||
-      (w->encoding != Encoding::kQ6_K && w->encoding != Encoding::kQ8_0) ||
-      w->ne != std::array<std::uint64_t, 4>{q.k, q.n, 1, 1} ||
-      x->ne != std::array<std::uint64_t, 4>{q.k, q.rows, 1, 1} ||
-      out->ne != std::array<std::uint64_t, 4>{q.n, q.rows, 1, 1} ||
-      out->encoding != Encoding::kF32 || out->layout != Layout::kDense)
-    return false;
-  if (glu) {
-    const auto* up = Operand(q, 1);
-    if (!up || up->stacked != 1 || up->encoding != w->encoding || up->layout != w->layout ||
-        up->ne != w->ne)
-      return false;
-  }
-  return MmvqRouted(w->encoding, q.arch, q.rows);
-}
-
+// What the kernel computes; which of it and GGML's MMVQ runs a shape is
+// measured rank data (measured_ranks.h).
 bool AcceptsVecQ(const ex::CapabilityQuery& q) {
-  return VecQ(q) && VecQGluFormula(q) && q.rows >= 1 && q.rows <= MaxVecQRows(q) &&
-         !PreferOrdinaryMmvq(q);
+  return VecQ(q) && VecQGluFormula(q) && q.rows >= 1 && q.rows <= MaxVecQRows(q);
 }
 // Routed: its (token, slot) pairs within the kernel's 128 (the fast form's).
 // The primitive accepts one broadcast input slot or one for each selected
@@ -2543,7 +2544,7 @@ const std::array kEntries = {
     Entry{"ggml.div", Cap(P(Op::kDiv), kF32Binary, &AcceptsAny, true), kBuilt},
     Entry{"ggml.unary", Cap(P(Op::kUnary), kF32In, &AcceptsUnary, true), kBuilt},
     Entry{"ggml.clamp", Cap(P(Op::kClamp), kF32In, &AcceptsAny, true), kBuilt},
-    Entry{"ggml.fill", Cap(P(Op::kFill), {}, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.fill", Cap(P(Op::kFill), kFillRules, &AcceptsAny, true), kBuilt},
     Entry{"ggml.repeat", Cap(P(Op::kRepeat), {}, &AcceptsAny, true), kBuilt},
     Entry{"ggml.concat", Cap(P(Op::kConcat), {}, &AcceptsAny, true), kBuilt},
     Entry{"ggml.cont", Cap(P(Op::kCont), {}, &AcceptsCont, true), kBuilt},
@@ -2962,7 +2963,15 @@ struct KernelVersionEntry {
   std::string_view name;
   std::uint32_t version;
 };
-constexpr std::array<KernelVersionEntry, 0> kKernelVersions{};
+// 2: llmp.vecq's GB10 prefetch list matches the pinned MMVQ's and its
+// prefetches compile for the GB10 only (docs/experiments/vecq-columns).
+constexpr auto kKernelVersions = std::to_array<KernelVersionEntry>({
+    {kVecQDenseName, 2},
+    {kVecQGluName, 2},
+    {kVecQExpertsName, 2},
+    {kVecQExpertsGluName, 2},
+    {"llmp.vecq.grouped", 2},
+});
 }  // namespace
 
 std::uint32_t KernelVersion(std::string_view implementation) {

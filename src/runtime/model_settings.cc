@@ -935,6 +935,9 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   s.wave_read_align =
       Pick<std::uint32_t>(U32(entry.Integer("wave_read_align")), basis("wave_read_align"), {}, {},
                           {}, {}, recipe.default_wave_read_align, "the plans' reuse across depths");
+  s.wave_read_buckets = Pick<std::uint32_t>(
+      U32(entry.Integer("wave_read_buckets")), basis("wave_read_buckets"), {}, {}, {}, {},
+      recipe.default_wave_read_buckets, "decode attention reads a wider class's masked cells");
   return s;
 }
 
@@ -1037,6 +1040,8 @@ std::vector<ModelSettings::Line> ModelSettings::Lines() const {
       add(k, wave_lanes);
     } else if (k == "wave_read_align") {
       add(k, wave_read_align);
+    } else if (k == "wave_read_buckets") {
+      add(k, wave_read_buckets);
     } else if (k == "image_size") {
       add(k, image_size);
     } else if (k == "image_steps") {
