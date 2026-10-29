@@ -9,18 +9,14 @@
 // coalesced direct-read plans for missing chunks. It never reads tensor
 // payload.
 //
-// It reads two format versions, told apart by the manifest's `format`: v0
-// ("jitllm-artifact", format_version 0), whose resources carry v0's
-// library-named representation descriptors, and v1 ("llmp-artifact",
-// format_version 1), whose resources carry their tensor's format and the
-// part of it they hold (format_json.h), whose manifest names the importer,
-// the source container and the folds and relayouts the importer applied,
-// and which may carry the model spec as a hashed document of its own,
-// spec.json. Any other version of either is refused (kUnsupportedVersion,
-// `item` the version found): a newer artifact needs a newer runtime, an
-// older one a re-import; nothing is migrated (D-018). Groups, chunks,
-// placements and read plans are the same for both, so nothing that pages
-// an artifact in depends on which version it read.
+// It reads format version 1 ("llmp-artifact", format_version 1): its
+// resources carry their tensor's format and the part of it they hold
+// (format_json.h), its manifest names the importer, the source container
+// and the folds and relayouts the importer applied, and it may carry the
+// model spec as a hashed document of its own, spec.json. Any other version
+// is refused (kUnsupportedVersion, `item` the version found): a newer
+// artifact needs a newer runtime, an older one a re-import; nothing is
+// migrated (D-018, D-121; the v0 reader was removed in M3.5 U2).
 //
 // Open checks what the prototype verifier checks when a loader opens an
 // artifact (layout.py's verify with deep=False), in its order:

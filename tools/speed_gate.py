@@ -81,7 +81,7 @@ whose session's priming run is missing, failed, recorded a problem or did
 not start before it, makes its family INVALID.
 
 The node configuration an arm gets is the family's default (config_text): both
-arms serve the v1 imports from `m36-v1-artifacts` (falling back to `artifacts`,
+arms serve the v1 imports from the `artifacts` store (LLMP_TEST_V1_STORE names another;
 D-118). `run --config-template` gives an arm its own
 instead: the whole node configuration with {share}, {data} and {port} for the
 share directory, the run's data directory and its port. Use it when a newer runtime needs other keys or a
@@ -198,7 +198,7 @@ class Family:
     score_chars: int = 4000
 
 
-# The v1 imports of every family (`u2-v1-artifacts` / `artifacts`, D-118), by
+# The v1 imports of every family (the `artifacts` store, D-118), by
 # name from the pinned in-tree map the models tests read
 # (tests/unit/data/v1_frozen/v1-ids.json), so a re-import changes one file.
 V1_IDS = pathlib.Path(__file__).resolve().parent.parent / "tests/unit/data/v1_frozen/v1-ids.json"
@@ -223,18 +223,13 @@ GEMMA26_ASSISTANT_V1 = _PUBLISHED["gemma26-assistant"]
 GEMMA31_V1 = _PUBLISHED["gemma31"]
 GEMMA31_ASSISTANT_V1 = _PUBLISHED["gemma31-assistant"]
 IMAGE_V1 = _PUBLISHED["qwen-image"]
-V1_STORE = "u2-v1-artifacts"
+V1_STORE = "artifacts"  # under the models directory: the one name every tool and test reads
 
 
-def resolve_store(store: str, share: pathlib.Path) -> str:
-    """Resolve `store` under `share`, falling back to `artifacts` for v1 stores."""
-    if store == V1_STORE and os.environ.get("LLMP_TEST_V1_STORE"):
-        return os.environ["LLMP_TEST_V1_STORE"]
-    if (share / store).is_dir():
-        return store
-    if store == V1_STORE and (share / "artifacts").is_dir():
-        return "artifacts"
-    return store
+def v1_store(share: pathlib.Path) -> str:
+    """The published v1 store every tool and the models tests read: LLMP_TEST_V1_STORE,
+    else `artifacts` under the models directory (tests/support/v1_frozen.h V1Store)."""
+    return os.environ.get("LLMP_TEST_V1_STORE") or str(share / V1_STORE)
 
 
 def _qwen_files() -> str:
@@ -345,9 +340,7 @@ def render_config(template: str, share: pathlib.Path, data: pathlib.Path, port: 
     for key in ("{data}", "{port}"):
         if key not in template:
             raise SystemExit(f"the configuration template has no {key}")
-    resolved_v1 = resolve_store(V1_STORE, share)
-    if resolved_v1 != V1_STORE:
-        template = template.replace(f"{{share}}/{V1_STORE}", f"{{share}}/{resolved_v1}")
+    template = template.replace(f"{{share}}/{V1_STORE}", v1_store(share))
     return (template.replace("{share}", str(share)).replace("{data}", str(data))
             .replace("{port}", str(port)))
 

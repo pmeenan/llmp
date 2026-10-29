@@ -311,7 +311,8 @@ E's operation recording) gave the uninstrumented run's logits bit for bit
   lanes (rungs 4 and 5), as `llmp_fp16_paged` does for FP16. The launch
   recorder (`tests/support/`) now wraps `cudaLaunchKernel`,
   `cudaLaunchCooperativeKernel` and `cublasLtMatmul`, and the recording
-  marks each operation (`OpLine`).
+  marks each operation (the `OpLine` marker of that recorder has since been
+  removed).
 - **Launch plans:** the four model plans (`model_plan.py`, below) use only
   P0's frozen caches' records: `plan-40-G` `b34fe49d…`, `plan-40-O`
   `9665fd29…`, `plan-45-G` `153e8662…`, `plan-45-O` `45a1fa5b…`.

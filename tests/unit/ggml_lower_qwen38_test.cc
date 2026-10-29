@@ -10,7 +10,7 @@
 // plain and with the MTP drafter (each step's streams for the drafter, a
 // verify with its saves, the drafter's prefill and draft passes), the step
 // planned under the mapping's default policy and lowered launches valid GGML
-// nodes under PlanGraph's steps.
+// nodes under the plan's steps.
 
 #include <gtest/gtest.h>
 

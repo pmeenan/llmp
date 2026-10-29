@@ -61,6 +61,16 @@ inline constexpr std::string_view kCalibrationDirectory = "calibration";
 std::expected<RuntimeRoles, std::vector<std::string>> PrepareRuntimeRoles(
     const Storage& storage, uid_t runtime, const std::filesystem::path& anchor);
 
+// The warning for a storage role that reads by direct I/O (installed and
+// spill) on a filesystem that satisfies a direct read through the page cache
+// without saying so: btrfs, for misaligned requests and compressed extents
+// (RE-018). The role then passes D-034's direct-I/O probe yet fills the cache,
+// against the intent of keeping weights out of it. Empty for any other
+// filesystem or role. `filesystem` is the kernel's name for it
+// (platform::FilesystemFacts::type).
+std::string DirectIoCaveat(std::string_view role, const std::filesystem::path& path,
+                           std::string_view filesystem);
+
 // Adds the `storage` section: each role's path, whether it exists, its
 // owner, mode and filesystem, and the problems (a runtime role that
 // exists on a filesystem the runtime refuses, or read-only, or is not a

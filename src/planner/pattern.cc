@@ -2381,7 +2381,7 @@ constexpr std::array kContAnchors = {Op::kCont};
 constexpr std::array kRouteReduce = {ir::Primitive(Op::kRoute), ir::Primitive(Op::kExpertReduce)};
 
 // The table (see the header): its order is priority; where two patterns
-// meet at a node (the RMS norm), the order PlanGraph tries them today.
+// meet at a node (the RMS norm), the order the patterns are tried in.
 constexpr std::array kPatterns = {
     // Closed structural fusions are available by default. Their own checks
     // and replacement capability queries preserve the numerical, state and

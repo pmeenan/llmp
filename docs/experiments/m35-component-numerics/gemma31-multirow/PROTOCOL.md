@@ -3,7 +3,7 @@
 
 # Gemma31 ordinary multirow quality registration
 
-**Prospective registration; collect only after its reviewed commit.** [pins.json](pins.json)
+**Prospective registration; collect only after its reviewed commit.** pins.json
 binds the Spark B source snapshot, runtime, dependency closure, build receipts,
 artifact metadata, helper bytes and executors. The external registration starts
 with `preparation_only=true`, `reviewed_registration=false`, `commit=null`.

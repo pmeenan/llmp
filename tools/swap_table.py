@@ -30,7 +30,7 @@ runtime's status.
 
 The node configuration is rendered from the case with the artifact IDs of `--ids`, a JSON
 object over the defaults, by model name. The defaults are the v1 imports serving uses (D-118,
-`--store` the store holding them, `m36-v1-artifacts` / `artifacts`). Each entry
+`--store` the store holding them; by default LLMP_TEST_V1_STORE, else `artifacts`). Each entry
 may hold `artifact`, `drafter`, `composition`, `tokenizer`, `chat_template` and `settings`
 (extra keys for the model's table, e.g. what a newer runtime needs):
 
@@ -227,20 +227,12 @@ def common_options(args: argparse.Namespace) -> list[str]:
 
 
 def resolve_store(store: str | None, share: pathlib.Path) -> str:
+    """`--store` (relative names are under `share`), else the one standing v1 store:
+    LLMP_TEST_V1_STORE, else `artifacts` under `share` (speed_gate.v1_store)."""
     if not store:
-        canonical = share / "artifacts"
-        legacy = share / "u2-v1-artifacts"
-        if not canonical.is_dir() and legacy.is_dir():
-            return str(legacy)
-        return str(canonical)
+        return sg.v1_store(share)
     path = pathlib.Path(store).expanduser()
-    if not path.is_absolute():
-        path = share / path
-    if not path.is_dir() and path.name == "artifacts":
-        legacy = path.parent / "u2-v1-artifacts"
-        if legacy.is_dir():
-            return str(legacy)
-    return str(path)
+    return str(path if path.is_absolute() else share / path)
 
 
 def cmd_plan(args: argparse.Namespace) -> int:

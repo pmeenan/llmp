@@ -5,7 +5,7 @@
 
 This registration fixes the remaining affected-path speed screen before collection.
 Collection requires a committed, independently reviewed protocol, static disabled
-[pins](pins.json), the bound [executor](run-c1.py), and an external enabled receipt
+pins, the bound executor, and an external enabled receipt
 naming that commit and their hashes. The positive head/state controls and bounded
 reply checks must already pass. No timing is collected by the default preview.
 

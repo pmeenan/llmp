@@ -53,8 +53,6 @@ The entries below record each change; the record of the milestone is
   missing evidence retains exact arithmetic. Repaired teacher-score, full-head,
   assistant/state and matched speed controls pass at their registered scope
   ([U4 qualification](docs/experiments/m35-component-numerics/remaining-domain-transfer/RESULTS.md)).
-  Historical frozen-result differences and strict Mia failures remain recorded
-  with unchanged bounds and expectations.
 
 - Stored drafter execution contracts describe anchored, block and MTP protocols;
   serving derives structure and selected-head ownership from the stored graph,
@@ -74,14 +72,6 @@ The entries below record each change; the record of the milestone is
   portable scalar fallback and unchanged digests, artifact IDs and verification
   passes ([bounded hash screen](docs/experiments/m35-sha256-arm/README.md)).
 
-- Opt-in quality runs retain raw streamed replies and timing records, support
-  concurrent fixed prompts, and join all started requests before reporting a
-  failure. A failed reply stops likelihood collection.
-
-- LLM startup shares admitted artifact metadata and composed structure across
-  settings and runner construction; retries retain successful preparation while
-  each build keeps its own funded state and execution checks (M3.5 U3a).
-
 - Shared GDN gate fusion accepts positive head and row counts within checked
   storage bounds, preserving its original pointwise arithmetic (M3.5 U7a).
 
@@ -100,16 +90,9 @@ The entries below record each change; the record of the milestone is
   geometry bindings, preserving alternate graph wiring from the artifact
   (M3.5 U8, D-122; affected image artifacts require re-import).
 
-- Image components own their spatial construction and operand contracts, so
-  adding a spatial definition no longer requires compiler kind-name branches
-  (M3.5 U8).
-
-- IR operation traits select typed parameter, inference, decomposition and
-  partition handlers, with exhaustive dispatch controls (M3.5 U6).
-
 - Chat Completions tool intake, generated calls and result continuation through
   the shared format-driven parser and renderer, with canonical stable-span
-  forcing in the common engine (M3.5; real-model/client qualification pending).
+  forcing in the common engine (M3.5; bounded qualification passed for one run identity, broader qualification open).
   Gemma missing-ID histories now resolve unambiguous call names instead of
   matching every result to the final empty-ID call; ambiguous histories fail.
   Call-only assistant history accepts omitted content. Tool names that cannot
@@ -118,11 +101,6 @@ The entries below record each change; the record of the milestone is
   argument values. Open calls exclude premature stop IDs, and exact tool
   markers continue past legacy route-only stops.
 
-- Owned structured conversation parts with bounded text/template projection
-  (M3.5 U5b); images and the Messages route remain disabled.
-
-- Route-owned streaming encoders for OpenAI-compatible and Messages events
-  (M3.5 U5a); the Messages request route remains disabled.
 - Generic architecture-owned normalization for native quantized tensor parts,
   expert gathers and shards (M3.5 U3, D-125), with import-time role-based
   transforms, mapping provenance and stored drafter specs. Llama 3 frequency
@@ -138,6 +116,10 @@ The entries below record each change; the record of the milestone is
   reclamation levers (idle timeout and external `PressureTrim`) drop resident
   models and trim node budget/heap, and loopback clients can proactively trigger
   immediate working set release via `POST /llmp/v1/memory/release`.
+
+- `llmp doctor` warns of an `installed` or `spill` role on btrfs, which serves
+  misaligned or compressed direct reads through the page cache without saying
+  so (RE-018); ext4 and xfs do not.
 
 ### Changed
 
@@ -160,22 +142,6 @@ The entries below record each change; the record of the milestone is
   and graph digests change once; outputs do not.
 
 ### Fixed
-
-- `ggml.fill` is offered only for F32 and F16 outputs, which its kernel fills;
-  a second workspace bind lends the new cuBLAS handle before the old one is
-  destroyed; the IR verifier refuses views not at whole elements or blocks;
-  `llmp.argmax` reads rows a stride apart (a view of padded rows) in place,
-  and its capability refuses at planning what its kernel refuses at launch
-  (rows whose elements are not packed floats).
-- Build diagnostics accept Ubuntu 26.04's QEMU package provider and renamed
-  emulator, find mise in supervised Spark jobs, and report missing NVIDIA
-  user-space tools beside a loaded kernel driver. The environment inventory
-  records the 2026-10-28 OS update and its measurement caveat.
-- CPU-only x86 builds compile the tool-call test fixtures with explicit byte
-  conversions, matching ARM's unsigned-char behavior.
-- Test processes suppress core collection, preserving death-test checks under
-  QEMU/ASan after the Ubuntu 26 upgrade. Caller label exclusions also preserve
-  the test preset's GPU and model exclusions.
 
 - A running node no longer refuses a fresh plan's execution metadata
   (its report inventory, a source's construction) because the physical
@@ -246,14 +212,6 @@ The entries below record each change; the record of the milestone is
   shared-gate squeezes, row-interleaved tables, expert projections) are
   declared by the component catalog, and expert tables are classified by the
   selected mapping alone, never by scanning every registered mapping.
-- `llmp_import_fuzz` reaches the safetensors gathers, expert relayouts, GDN
-  permutations, HF FP8 blocks, ModelOpt MXFP4 and NVFP4, MLX MXFP8 and affine
-  modes, the configured spatial recipes and image component reuse (branches
-  0x80 to 0x82, ten new seeds in `tests/unit/data/import_fuzz/`;
-  `--save-last=PATH` keeps the input in flight for replaying an abort):
-  `--corpus=tests/unit/data/import_fuzz --iterations=10000`, seed `20261021`,
-  20 seeds, 4.77 s on `spark-b` `spark-native`, 2026-10-26, 0 failures
-  (100,000 iterations: 46.8 s, 0 failures).
 - A model with `kv_cache_encoding = "q8_0"` starts again: its numerical
   admission accepts the alias's Q8_0 K/V encoding of the admitted spec instead
   of refusing "numerical semantic identity differs from the admitted spec".
@@ -262,12 +220,6 @@ The entries below record each change; the record of the milestone is
   as the unrestored one: the swap table's DeepSeek → Qwen3.8 8K continuation
   is exact again (15 of 16 logit rows differed since the drafter-progress
   ledger's removal).
-- `tools/speed_gate.py`, `swap_table.py`, `k1_quality.py` and
-  `assistant_gate.py` take the published artifact IDs from the pinned
-  `tests/unit/data/v1_frozen/v1-ids.json` instead of stale copies, which
-  named Gemma2, Gemma3, Qwen GGUF, DeepSeek and the assistants' superseded
-  imports (Gemma2's refused "stored stage folds disagree with preprocessing
-  receipts").
 - Output already generated is host-only work: a cohort whose members only
   wait for their clients to read no longer swaps its model back in (or fails
   a finished reply when that swap is refused), a member whose generation is

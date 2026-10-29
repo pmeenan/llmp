@@ -70,7 +70,7 @@ and `raw_logprobs`; retain that one generated token but exclude it from all
 confirmed actual teacher inclusion, full-vocabulary normalization, chunk
 assembly, the model head and runner selection. No source forward/head adapter
 is needed. The exact observed module hashes are frozen in
-[source-hashes.json](source-hashes.json) and must match the later registration.
+source-hashes.json and must match the later registration.
 
 ## CPU-only preparation for review
 

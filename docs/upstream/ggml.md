@@ -933,7 +933,15 @@ while historical comparisons retain their original source and image.
 - **Pin:** `d81235049384534c167caea52b85a694f6103d14`; patch 0010 changes
   `ggml/src/ggml-cuda/mmvq.cu`, `mmvq.cuh`, `quantize.cu`, `quantize.cuh`, and
   `common.cuh`.
-- **Purpose:** comparison validation needs the exact selected MMVQ and Q8_1
+- **Current use (F10, 2026-10-28):** the only caller left is
+  `benchmarks/vecq_upstream.cu` (`llmp_vecq_bench`), which calls the
+  patched `ggml_cuda_op_mul_mat_vec_q_dispatch` entry point to time upstream's
+  ordinary MMVQ against the VecQ columns. The comparison machinery that needed
+  the pointer-free describe records was retired in `3be174f0`, so those records and
+  `ggml_cuda_quantize_q8_1_dispatch` have no caller; narrowing the patch to the
+  one dispatch split (and re-locking it) is an open cleanup, and the patch
+  goes with the benchmark if that is ever retired.
+- **Original purpose:** comparison validation needed the exact selected MMVQ and Q8_1
   preparation effects. The shared describe/execute endpoints fill pointer-free
   records at the same dispatch calculations ordinary execution uses. The
   describe path returns before kernel launch; ordinary execution retains its

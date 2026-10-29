@@ -10,8 +10,8 @@ without retries, exclusions or altered thresholds. These are bounded C1 results
 on the two GB10 Sparks;
 they do not grant general batching, maximum-context or completed-answer quality.
 
-The [prospective protocol](PROTOCOL.md), [static pins](pins.json) and
-[executor](run-c1.py) were committed before collection at
+The [prospective protocol](PROTOCOL.md), static pins and
+executor were committed before collection at
 `f987915079e179dc54fc3325356d9e5202107789`. The enabled external receipt has
 SHA-256 `3f827c09b4eec7a86882916b521dc17bad437255dd5f82c1ee3a8f5e3bb20b51`;
 independent preregistration review `f7dde5eb3e71627fea6e98dd0ede527e0ef62aa3614a5312e1b99df218c99c6f`.

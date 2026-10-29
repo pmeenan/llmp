@@ -193,7 +193,7 @@ this slice runs the affected model areas above.
 ## Current latency ledger
 
 Integer nanoseconds below are the installed nine-sample medians, not estimates.
-Full exact keys, protocol/receipt hashes and provenance are in [data.json](data.json).
+Full exact keys, protocol/receipt hashes and provenance are in data.json.
 
 | Host | Shape class | Incumbent ns | Own alternative ns | Decision |
 | --- | --- | ---: | ---: | --- |

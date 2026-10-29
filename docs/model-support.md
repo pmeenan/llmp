@@ -1203,7 +1203,7 @@ checks passed, with the coverage accounting described there.
   not a supported model; `embedding.token`, `norm.rms`,
   `attention.dense` with normal or NeoX RoPE and optional per-dimension
   `rope_freqs.weight`, `ffn.glu` (`silu`), and tied or untied `head.linear`).
-  No new component or kernel was written: serves through `EngineLlm` under
+  No new component or kernel was written: serves through `Llm` under
   `kDefaultServingRecipe` (`spec/mapping.h`: `prefill_rows = 4096`) and
   `kDensePolicies` (`max_decode_rows 16`, `vector_rows 16`,
   `product dense_pair`).
@@ -1249,7 +1249,7 @@ checks passed, with the coverage accounting described there.
 ## M2 fixtures (served on the shared engine)
 
 Small dense models from the backend proof, now served through `rt::Server`
-(`EngineLlm`) under `kDefaultServingRecipe` (`spec/mapping.h`,
+(`Llm`) under `kDefaultServingRecipe` (`spec/mapping.h`,
 `dense_decoder_serving_gpu_test`). All three
 use shared components, planning and operation dispatch on fixed teacher IDs.
 FP16 has original-model scoring and checkpoint/spill/repeated-execution controls
@@ -1268,7 +1268,7 @@ in the table below describe the historical implementations.
 | v0 against v1 | bit-identical ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)) | bit-identical (same) |
 | Template | `d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4`, the GGUF's `tokenizer.chat_template` ([first-slice](first-slice.md)), through the interpreter | `cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f`, `tokenizer_config.json`'s `chat_template`, both rates ([runtime.json](experiments/exl3-reference/runtime.json)), through the interpreter |
 | Tokenizer | the GGUF's Qwen2 BPE | `tokenizer.json` |
-| Decoding | greedy, plain; chat and literal completions and target likelihoods (`EngineLlm`) | greedy, plain; chat and literal completions and target likelihoods (`EngineLlm`) |
+| Decoding | greedy, plain; chat and literal completions and target likelihoods (`Llm`) | greedy, plain; chat and literal completions and target likelihoods (`Llm`) |
 | Context | the GGUF declares 8,192 | the config declares 32,768 |
 | Verified | bit-identical to the FP16 bridge (llama.cpp's GGML rebuilt with llmpalooza's SDK) on all four arms, resident and paged, evicted, restored and relocated ([P2](experiments/backend-proof-p2/README.md), [aggregate](experiments/backend-proof/README.md)); served through `rt::Server` (`dense_decoder_serving_gpu_test`: multi-row prompt scoring, greedy decode, idle state spill, zero-step restore, bit-identical state image and continuation) | every linear byte-equal to ExLlamaV3 `6b84a21b` at a forced plan; end to end within Tier C's bounds; paged and restored bit-identical ([P3](experiments/backend-proof-p3/README.md)); served through `rt::Server` (`dense_decoder_serving_gpu_test`: multi-row prompt scoring, greedy decode, idle state spill, zero-step restore, bit-identical state image and continuation) |
 | Known divergences | the GGUF's template differs from the base checkpoint's, and its context from the base's 32,768 | ExLlamaV3's autotuner is part of its numerical plan; the oracle runs a frozen tuning cache ([P0](experiments/backend-proof-p0/README.md)) |

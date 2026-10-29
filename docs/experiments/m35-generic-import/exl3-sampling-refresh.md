@@ -35,7 +35,7 @@ process positively completed its one named case; outer CTest also passed both
 with zero skips. Full raw and inner logs remain outside Git.
 
 The reviewed recipe and positive publication/parity/native-test receipts are
-summarized in [the aggregate](exl3-sampling-refresh.json). The actual importer
+summarized in the aggregate. The actual importer
 binary SHA-256 is `f77aede27a4b58f3f7b595662a8806a95bb46a9d494055dae2e588789451f8f4`;
 source manifest is `e6227b0cc7fbb6cbe36350d60369f02a1f61b2bbdff4c47bbec82ee7b96470d9`.
 Spark's stale Git metadata supplied the retained `61f8426f…dirty` build label;

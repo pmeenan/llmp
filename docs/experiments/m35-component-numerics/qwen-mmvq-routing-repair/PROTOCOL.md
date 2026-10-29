@@ -62,10 +62,10 @@ claim that new replies were collected. If source review finds any actual 5..8
 ordinary site in those executions, this reuse condition fails before enabling
 collection, and a new fixed recipe must be registered.
 
-The [head/state pins](head-state-pins.json) and [speed pins](speed-pins.json)
+The head/state pins and speed pins
 remain statically disabled. Executors are the unchanged
-[head/state runner](../remaining-domain-transfer/run-arm.py) and
-[speed runner](../remaining-c1-speed/run-c1.py), bound by their registered hashes.
+head/state runner and
+speed runner, bound by their registered hashes.
 The original [speed failure](../remaining-c1-speed/RESULTS.md) remains evidence.
 
 The completed source/domain reuse review has SHA-256

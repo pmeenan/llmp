@@ -395,6 +395,22 @@ std::expected<RuntimeRoles, std::vector<std::string>> PrepareRuntimeRoles(const 
                       .warnings = std::move(warnings)};
 }
 
+std::string DirectIoCaveat(std::string_view role, const fs::path& path,
+                           std::string_view filesystem) {
+  const Storage defaults;
+  const auto roles = RuntimeRoleSpecs(defaults);
+  const bool direct = std::ranges::any_of(
+      roles, [&](const RoleSpec& spec) { return spec.name == role && spec.direct_io; });
+  if (!direct || filesystem != "btrfs") {
+    return "";
+  }
+  return std::format(
+      "storage.{} ({}) is on btrfs, which serves misaligned or compressed direct reads through "
+      "the page cache without saying so (RE-018), so page-ins from it may fill the cache that "
+      "D-034 keeps weights out of: ext4 or xfs does not",
+      role, path.string());
+}
+
 void DescribeStorage(const Storage& storage, uid_t runtime, const fs::path& writable_under,
                      base::Report& report) {
   base::ReportSection& section = report.AddSection("storage");
@@ -455,6 +471,9 @@ void DescribeStorage(const Storage& storage, uid_t runtime, const fs::path& writ
                       role.name, where, filesystem->type));
     } else if (filesystem->read_only) {
       judged.push_back(std::format("storage.{} {} on a read-only filesystem", role.name, where));
+    } else if (std::string caveat = DirectIoCaveat(role.name, resolved->resolved, filesystem->type);
+               !caveat.empty()) {
+      report.warnings.push_back(std::move(caveat));
     }
     if (!writable_under.empty() && !Within(writable_under, resolved->resolved)) {
       report.warnings.push_back(

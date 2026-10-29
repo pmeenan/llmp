@@ -10,7 +10,7 @@ was updated. This does not qualify the wider Gemma families, assistants, speed,
 or U3 closeout.
 
 Registration `78747648169b2643cdc031680b304ce5a43ab09a` fixes the
-[protocol](PROTOCOL.md), [arm/source/dependency pins](pins.json) and existing
+[protocol](PROTOCOL.md), arm/source/dependency pins and existing
 Gemma2 quality bounds. [results.json](results.json) records the exact metrics,
 launches, completed-plan counts and raw evidence hashes. The bound file's reused
 historical v0/v1 display name does not describe this experiment: these are U4

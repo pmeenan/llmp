@@ -33,7 +33,7 @@
 namespace llmp::kernels::ggml {
 
 // The device's part of upstream's choices on the context's device
-// (ops.h SelectMulMat and MulMatVecFusible), for PlanGraph. The context
+// (ops.h SelectMulMat and MulMatVecFusible), for planning. The context
 // must outlive the result.
 DeviceChoices DeviceChoicesOf(const LaunchContext& launch);
 

@@ -36,7 +36,7 @@ Reference image:
 `sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8`.
 The existing instanttensor 0.2.0 payload, parent API checks, callback transport,
 source metadata and live backend inspection remain mandatory. The 37 installed
-source files in [source-hashes.json](source-hashes.json), SHA-256
+source files in source-hashes.json, SHA-256
 `80ad88e3b7f01de67e86f72c2ec59e3fdac6ec108ee0961bf434b1b6efe5a9b4`,
 must match before and after source collection. The actual GPU container must
 retain `VLLM_USE_V2_MODEL_RUNNER=1`, as the Paris launch did. No kernel, head,

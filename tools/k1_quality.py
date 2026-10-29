@@ -39,19 +39,9 @@ QUALITY_PROMPTS = (
     "Write a short story about a lighthouse keeper who finds a map.",
 )
 
-# The v1 imports of every family (D-118), served from one store.
-V1_STORE = "u2-v1-artifacts"
+# The v1 imports of every family (D-118), served from one store (speed_gate.v1_store).
+V1_STORE = speed_gate.V1_STORE
 
-
-def resolve_store(store: str, share: pathlib.Path) -> str:
-    """Resolve `store` under `share`, falling back to `artifacts` for v1 stores."""
-    if store == V1_STORE and os.environ.get("LLMP_TEST_V1_STORE"):
-        return os.environ["LLMP_TEST_V1_STORE"]
-    if (share / store).is_dir():
-        return store
-    if store == V1_STORE and (share / "artifacts").is_dir():
-        return "artifacts"
-    return store
 DSV4 = speed_gate.DSV4_V1
 DSPARK = speed_gate.DSPARK_V1
 QWEN = speed_gate.QWEN_V1
@@ -244,10 +234,10 @@ def arm_env(runtime_env: dict[str, str]) -> dict[str, str]:
 def make_config(
     family: Family, encoding: str, share: pathlib.Path, data: pathlib.Path, port: int
 ) -> str:
-    store = resolve_store(family.store, share)
+    store = speed_gate.v1_store(share) if family.store == V1_STORE else f"{share}/{family.store}"
     template = (
         'schema_version = 2\n[storage]\ndata_dir = "{data}"\n'
-        f'installed = "{{share}}/{store}"\n'
+        f'installed = "{store}"\n'
         "[client]\nbind = [\"loopback\"]\nport = {port}\n"
         + family.models_toml.rstrip()
         + f'\nkv_cache_encoding = "{encoding}"\n'

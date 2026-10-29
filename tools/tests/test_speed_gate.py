@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import math
+import os
 import pathlib
 import socket
 import sys
@@ -707,13 +708,14 @@ class Inputs(unittest.TestCase):
         with self.assertRaises(SystemExit):
             gate.render_config('data_dir = "{data}"\n', pathlib.Path("/s"), pathlib.Path("/d"), 7)
 
+    @unittest.mock.patch.dict(os.environ, {"LLMP_TEST_V1_STORE": ""})
     def test_each_arm_defaults_to_its_labels_artifacts(self):
         for name, family in gate.FAMILIES.items():
             old = gate.arm_template(family, None, "old")
             new = gate.arm_template(family, None, "new")
             self.assertEqual(old, gate.config_template(family))
             self.assertEqual(old, new, name)
-            self.assertIn('installed = "{share}/u2-v1-artifacts"', old)
+            self.assertIn('installed = "{share}/artifacts"', old)
             if name == "image":
                 self.assertIn(gate.IMAGE_V1, new)
                 continue
@@ -736,11 +738,12 @@ class Inputs(unittest.TestCase):
                 self.assertEqual(gate.arm_template(gate.FAMILIES["gemma2"], str(path), label),
                                  "x = 1\n")
 
+    @unittest.mock.patch.dict(os.environ, {"LLMP_TEST_V1_STORE": ""})
     def test_config_binds_loopback_and_names_the_share(self):
         text = gate.config_text(gate.FAMILIES["qwen38"], pathlib.Path("/s"), pathlib.Path("/d"),
                                 18114)
         self.assertIn('data_dir = "/d"', text)
-        self.assertIn('installed = "/s/u2-v1-artifacts"', text)
+        self.assertIn('installed = "/s/artifacts"', text)
         self.assertIn('bind = ["loopback"]', text)
         self.assertIn("port = 18114", text)
         self.assertIn('tokenizer = "/s/models/', text)

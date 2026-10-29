@@ -1334,7 +1334,7 @@ runtime's own budget `B`, checked on every materialization, is the bound;
 the memory breakdown reconciles against `MemAvailable`. Measurement:
 [vmm-counters](experiments/vmm-counters/README.md).
 
-## RE-018: Btrfs quietly serves misaligned or compressed direct I/O through the page cache  (2026-09-25, status: open)
+## RE-018: Btrfs quietly serves misaligned or compressed direct I/O through the page cache  (2026-09-25, status: open; `llmp doctor` warns of an installed or spill role on btrfs since F10a, 2026-10-28)
 
 Environment: the workstation's build tree, btrfs mounted with
 `compress=zstd:1`, kernel 7.0.0-31-generic. A file opened with `O_DIRECT`
@@ -1350,6 +1350,8 @@ Impact: a storage role on btrfs can pass D-034's direct-I/O probe
 against D-034's no-page-cache intent. Tests that expect the kernel to refuse
 misaligned direct I/O accept either outcome on btrfs
 (`unit.UringTest.*`). The Spark roles are ext4.
+`llmp doctor` now reports a warning for the `installed` and `spill` roles when
+they are on btrfs (`config::DirectIoCaveat`); the runtime still accepts btrfs.
 
 ## RE-017: A sleeping thread takes hundreds of microseconds to wake on the Spark  (2026-09-24, status: worked-around)
 

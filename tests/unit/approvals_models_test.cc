@@ -3,8 +3,7 @@
 
 // The approved checkpoints as data (runtime/approvals.h, D-109) against the
 // published v1 store (LLMP_TEST_V1_STORE; by default the models directory's
-// `artifacts`, falling back to `m36-v1-artifacts`, whose absence fails: a
-// models run needs it):
+// `artifacts`; its absence fails: a models run needs it):
 //
 //   - every pinned spec digest is the stored one, and every drafter pin the
 //     composition the drafter's kept metadata gives;

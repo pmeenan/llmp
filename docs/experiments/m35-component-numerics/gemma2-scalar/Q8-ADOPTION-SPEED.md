@@ -4,7 +4,7 @@
 # Prospective Q8 schedule adoption speed screen
 
 **Prospective: not enrolled.** Actual same-host baseline transfer and candidate
-pins are frozen in [q8-adoption-speed-pins.json](q8-adoption-speed-pins.json).
+pins are frozen in q8-adoption-speed-pins.json.
 Review and commit before timing. This is
 one representative Gemma2 D-085 regression screen; it does not qualify other
 consumers or replace numerical/state controls. The original A/D quality FAIL

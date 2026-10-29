@@ -59,7 +59,7 @@ namespace ja = llmp::artifact;
 
 using ConstructionCharge = serving_support::Paid;
 
-// PlanGraph owns one temporary reader index per synchronous lowering; current
+// Lowering owns one temporary reader index per synchronous lowering; current
 // and future retained programs do not retain that index. This named category
 // is both paid by automatic construction and enforced, for every source,
 // before index allocation (its inventory bound: 1,024 bytes an occurrence).

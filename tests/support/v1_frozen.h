@@ -26,8 +26,8 @@
 //
 // The published v1 artifacts' IDs for the tests that take a store: the
 // store's v1-ids.json maps each v0 artifact ID to its v1 ID and names them
-// (LLMP_TEST_V1_STORE names the store; by default the Sparks' models
-// directory's `artifacts`, falling back to `m36-v1-artifacts`).
+// (LLMP_TEST_V1_STORE names the store; by default the models directory's
+// `artifacts`; tools/speed_gate.py v1_store resolves it the same way).
 
 #ifndef LLMP_TESTS_SUPPORT_V1_FROZEN_H_
 #define LLMP_TESTS_SUPPORT_V1_FROZEN_H_
@@ -180,21 +180,14 @@ inline std::string Qwen2OraclePath(std::string_view file) {
   return ec ? raw.string() : canon.string();
 }
 
-// The published v1 store: LLMP_TEST_V1_STORE, else the models directory's
-// `u2-v1-artifacts` store (falling back to `artifacts` and `m36-v1-artifacts`).
+// The published v1 store, resolved one way for every test and tool
+// (tools/speed_gate.py v1_store): LLMP_TEST_V1_STORE, else the models
+// directory's `artifacts` (a directory or a link to one).
 inline std::string V1Store() {
   const char* store = std::getenv("LLMP_TEST_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
   if (store != nullptr && store[0] != '\0') return store;
   const auto base = StandingModelsDir();
-  if (base.empty()) return "";
-  std::error_code ec;
-  const std::string u2 = base + "/u2-v1-artifacts";
-  if (std::filesystem::is_directory(u2, ec)) return u2;
-  const std::string canonical = base + "/artifacts";
-  if (std::filesystem::is_directory(canonical, ec)) return canonical;
-  const std::string legacy = base + "/m36-v1-artifacts";
-  if (std::filesystem::is_directory(legacy, ec)) return legacy;
-  return canonical;
+  return base.empty() ? "" : base + "/artifacts";
 }
 // The published v1 IDs, pinned in-tree: tests/unit/data/v1_frozen/v1-ids.json
 // (a copy of the store's), read from LLMP_TEST_DATA (else ctest's working
@@ -234,12 +227,6 @@ inline constexpr std::string_view kQwen38Gguf =
     "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8";
 inline constexpr std::string_view kQwen38ModelOptDrafter =
     "bb49b7da7edb78202a64f1f9ab049412a10f2a9f73eb4eef66608e81b011f263";
-inline constexpr std::string_view kDeepSeekV4Target =
-    "01a5e5ba5a911528fd58268406ac6cff032e767fd09a20fd4c9cbf84f2043f13";
-inline constexpr std::string_view kDeepSeekV4Drafter =
-    "e14bf29f28c408a742ba6ab19879e415b1ec13019c0ed33b87b7802232a0bd90";
-inline constexpr std::string_view kQwenImageComposition =
-    "62497918eae947b8d4327bf8e0771318118d581c59c2c0574208345ed7cc6518";
 
 }  // namespace v1_store
 

@@ -2,9 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The composition reader (artifact/composition.h, D-089, D-113): a valid
-// v1 composition built here, and each rule broken one at a time. The real
-// Qwen-Image-2.1 composition is opened where it is installed (a Spark) and
-// skipped elsewhere.
+// v1 composition built here, and each rule broken one at a time.
 
 #include "artifact/composition.h"
 

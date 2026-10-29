@@ -839,8 +839,8 @@ kernels::StepBackend GgmlBackend::Backend() {
 
 kernels::StepBackend GgmlBackend::PlainBackend() {
   // A plan names a group's member but the lowering may resolve it to
-  // another (PlanGraph's), so a member of a group with a cuBLAS member
-  // stays on the stream too.
+  // another, so a member of a group with a cuBLAS member stays on the
+  // stream too.
   return {.registry = registry_.get(),
           .device = facts_,
           .lanes = options_.lanes,

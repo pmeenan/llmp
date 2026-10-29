@@ -20,7 +20,7 @@ Raw failures and historical controls remain retained.
 
 ## Fixed arms and input
 
-[pins.json](pins.json) binds both original U4 diagnostic runtimes, all ten
+pins.json binds both original U4 diagnostic runtimes, all ten
 resolved dependencies, their original source manifests/patches, and the unchanged
 Gemma2 Q8_0 artifact. The runtimes and cuBLAS libraries were copied, individually
 verified and resolved outside build directories at

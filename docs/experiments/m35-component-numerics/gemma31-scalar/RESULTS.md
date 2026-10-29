@@ -12,7 +12,7 @@ No frozen expectation or numerical bound changed.
 
 [PROTOCOL.md](PROTOCOL.md) was committed before collection as
 `a777309880253b7bc4997956b461276d6e0b1658`. [results.json](results.json) records
-exact metrics, bounds, texts, hashes and lifecycle receipts; [pins.json](pins.json)
+exact metrics, bounds, texts, hashes and lifecycle receipts; pins.json
 retains complete inputs and source/runtime/dependency identities. Both arms ran
 once on Spark A (`spark-c4e2`, driver580.178.04), with the same retained runtime
 `5965e83cf2217ffcfe79fff98e7850699a0afd74b37776f853b6d6aa074d0767`,

@@ -527,32 +527,27 @@ class PlanAndRun(Fixture):
                      "--name", "x"])
         self.assertFalse((self.dir / "out").exists())
 
-    def test_resolve_store_fallback(self):
+    def test_resolve_store(self):
         share = self.dir / "share_test"
         share.mkdir()
-        # Default with no directories
-        self.assertEqual(st.resolve_store(None, share), str(share / "artifacts"))
-        # Fallback to u2-v1-artifacts when artifacts doesn't exist
-        (share / "u2-v1-artifacts").mkdir()
-        self.assertEqual(st.resolve_store(None, share), str(share / "u2-v1-artifacts"))
-        self.assertEqual(st.resolve_store("artifacts", share), str(share / "u2-v1-artifacts"))
-        # artifacts takes precedence when it exists
-        (share / "artifacts").mkdir()
-        self.assertEqual(st.resolve_store(None, share), str(share / "artifacts"))
-        self.assertEqual(st.resolve_store("artifacts", share), str(share / "artifacts"))
-        # Custom non-artifact store
-        self.assertEqual(st.resolve_store("/custom/store", share), "/custom/store")
+        with mock.patch.dict(os.environ, {"LLMP_TEST_V1_STORE": ""}):
+            self.assertEqual(st.resolve_store(None, share), str(share / "artifacts"))
+            self.assertEqual(st.resolve_store("artifacts", share), str(share / "artifacts"))
+            self.assertEqual(st.resolve_store("/custom/store", share), "/custom/store")
+        with mock.patch.dict(os.environ, {"LLMP_TEST_V1_STORE": "/env/store"}):
+            self.assertEqual(st.resolve_store(None, share), "/env/store")
+            self.assertEqual(st.resolve_store("other", share), str(share / "other"))
 
     def test_plan_with_default_store(self):
         share = self.dir / "share"
-        (share / "u2-v1-artifacts").mkdir(parents=True, exist_ok=True)
+        share.mkdir(parents=True, exist_ok=True)
         out = io.StringIO()
-        with contextlib.redirect_stdout(out):
+        with mock.patch.dict(os.environ, {"LLMP_TEST_V1_STORE": ""}), contextlib.redirect_stdout(out):
             st.main(["plan", "--case", "gemma31", "--runtime", "/r",
                      "--share", str(share), "--out", "/o"])
         lines = out.getvalue().splitlines()
         self.assertEqual(len(lines), 1)
-        self.assertIn(f"--store {share / 'u2-v1-artifacts'}", lines[0])
+        self.assertIn(f"--store {share.resolve() / 'artifacts'}", lines[0])
 
 
 if __name__ == "__main__":

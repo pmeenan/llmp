@@ -29,7 +29,7 @@
 //      recipes, retaining proof-only dependencies in the IR; a descriptor-only
 //      provisional binding makes group routing checkable without submitting work;
 //   4. emits the selected implementations' explicit launch recipes, resolving
-//      only declared groups. It never runs the independent native PlanGraph;
+//      only declared groups. It never runs an independent native planning pass;
 //   5. places the real schedule, including paired products and extra reads,
 //      then authenticates final addresses, typed operands and protected owner
 //      recipes. Provisional addresses grant no execution authority;

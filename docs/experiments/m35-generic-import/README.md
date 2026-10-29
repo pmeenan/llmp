@@ -3,6 +3,11 @@
 
 # Generic importer proof — M3.5 U3
 
+Retention (F10, 2026-10-28): the job-telemetry `*-sampling-refresh.json` files
+and `metadata-identities.json` (per-file hash inventories) were deleted under
+AGENTS rule 8; the reports keep their aggregates and digests, and the files
+are in Git at `1564dcd6`.
+
 The owner-approved plain-NVFP4 and second-architecture MLX checkpoints use
 one mapping-driven normalization/publication route. Successful publication
 includes the writer's deep payload verification, `Artifact::Open`, `StoredSpec`

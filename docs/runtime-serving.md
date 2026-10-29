@@ -1520,6 +1520,16 @@ without authentication. An optional API key is M5's.
     GET  /v1/models                the configured models (the image among them)
     GET  /v1/models/{id}
     GET  /llmp/v1/ignored-fields the unknown fields seen (loopback peers only)
+    POST /llmp/v1/memory/release  surrender the working set (loopback peers only; below)
+
+`POST /llmp/v1/memory/release` (D-124; for local tooling such as `hostlock`)
+takes no body and answers 200 with `{"evicted_model","spilled_bytes",
+"reclaimed_bytes","released_backings"}` once the node is idle: it waits at
+most for the running turn or cohort to end (the starvation bound comes first,
+see the scheduling section on pending releases), answers 409
+(`busy`) if work is then running, queued or parked on a client, and 500
+(`release_failed`) on the runtime's own failure. A non-loopback peer gets 403
+and a method other than POST gets 405 with `Allow: POST`.
 
 It is a strict subset of client-api-baseline.md's Chat Completions profile,
 not M5's front door. A request is stateless, as OpenAI's are: the whole
@@ -1547,8 +1557,8 @@ concatenation and tool IDs/JSON ownership, and refuses parts it cannot express
 (including images and ambiguous result associations). Projection and part
 storage are charged before rendering. Chat Completions accepts tools/functions,
 required/named/auto/none choices, generated calls and tool results through the
-shared format-driven implementation; real-model and client qualification remains
-pending. See [tool calls](tool-calls.md) for constraints, canonical span feeding,
+shared format-driven implementation; a bounded real-model and client qualification
+passed for one run identity (2026-10-22; broader qualification is open). See [tool calls](tool-calls.md) for constraints, canonical span feeding,
 continuation ownership and the explicit Gemma history correction. Images,
 Messages request handling and signed reasoning remain future work;
 `/v1/messages` is not enabled by this seam.
@@ -2547,7 +2557,7 @@ short DeepSeek and Qwen prompts, with speculation on and off.
 
 - One process, one model resident at a time: M3's full swap. Partial
   eviction, admission and the switching policy come with M5 and M6.
-- The chat route adds M3.5 tool calls (qualification pending), but no reasoning controls,
+- The chat route adds M3.5 tool calls (bounded qualification passed for one run identity; broader qualification open), but no reasoning controls,
   no credentials (the optional API key is M5's), no CORS, no Responses or
   Messages routes. Qwen and DeepSeek chat and literal completions share up to their request slots
   (four by default; [request slots](#request-slots)); other

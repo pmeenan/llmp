@@ -496,6 +496,17 @@ downloaded itself, verified the same way. One sample each, on 2026-09-28:
   ([jumbo frames](#jumbo-frames-on-the-direct-link-2026-09-28), which also
   gives the faster recipe).
 
+### Published v1 store (2026-10-28)
+
+The models tests and the gate tools (`tools/speed_gate.py`,
+`k1_quality.py`, `swap_table.py`; `assistant_gate.py` takes its stores on the command line) read the published v1
+artifacts from one place: `LLMP_TEST_V1_STORE` if set, else
+`~/.local/share/llmp/artifacts` (`LLMP_TEST_MODELS` moves the base directory
+for the tests). On both Sparks `artifacts` is a link to the store the
+M3.5 work installed into (`u2-v1-artifacts`); the older `m36-v1-artifacts` is no
+longer read by anything. A new store generation is installed by pointing the
+link, not by renaming files in tests or tools.
+
 ### Retired Spark data (2026-10-23)
 
 Owner-authorized cleanup removed the v0 stores `m3-artifacts`,
@@ -517,6 +528,26 @@ storage were checked too. Mia's 27 GiB packed PLE cache on each Spark remains
 for the [pinned reference launcher](experiments/fast-swap/baselines.md).
 Machine-readable cleanup and verification receipts are under
 `~/.local/share/llmp/cleanup-20261024/` on each host.
+
+### Spark home-folder cleanup (2026-10-28)
+
+F10a (AGENTS.md rule 8) removed closed-milestone raw logs and scratch from both
+Sparks' home folders: the top-level build, check and gate logs, `scratch-g2d-*`,
+`rev-*`, `m2close-*`, `m2gate-*`, `m3*-scratch`, `m3clean-*`, `m3imgspd-scripts`,
+`chal`, `port-scratch`, `review-g4a`, `Testing` and `cufile.log`; the two
+non-git `llmp-m35-u8-*` source copies on `spark-b` (U8 landed in `de3c1a50`;
+they held no file the landed tree lacks); and, from `~/scratch`, the M0-M3.6
+directories dated 2026-10-17 or earlier that no document names and that are
+not reference or oracle data (38 entries on `spark`, 63 on `spark-b`).
+About 1.0 GB came back on `spark` and 3.6 GB on `spark-b`. Kept: `~/src`,
+`~/jobs`, `~/.local` (including the v1 stores, the baselines and the M3.5 raw
+outputs under `~/.local/share/llmp/m35-*` and `u3-*`), `~/scratch`'s `m35-*`
+directories, everything dated after 2026-10-17, every reference, oracle and
+comparator directory, every directory a document or script names as an input
+or a record of raw outputs, and the git checkouts under `~/scratch` and
+`~/src`. `~/scratch/m3-concurrent-source` on `spark-b` holds root-owned files
+from a container and needs `sudo rm -rf` from the owner. The workstation has
+no stale worktrees: `git worktree list` shows only the active slices'.
 
 ### Jumbo frames on the direct link (2026-09-28)
 

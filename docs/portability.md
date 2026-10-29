@@ -514,10 +514,10 @@ serving classes with one skeleton and one runner in `src/engine/`
 
 Every LLM runs on `ModelRunner` (`engine/model_runner.h`) over
 `ComponentStepSource` (`engine/component_source.h`) and `SlotLifecycle`
-(`engine/slot_lifecycle.h`), served through `EngineLlm`
-(`runtime/engine_llm.h`, assembled by `ComponentLlmBuild` in
-`runtime/component_build.h`) over `Llm`'s conversation logic
-(`runtime/llm.cc`), which builds in every profile. Image pipelines run on
+(`engine/slot_lifecycle.h`), served through the one concrete `Llm`
+(`runtime/serving.h`, assembled by `ComponentLlmBuild` in
+`runtime/component_build.h`; its conversation logic is `runtime/llm.cc`),
+which builds in every profile. Image pipelines run on
 `StagedExecution` (`engine/staged_execution.h`), served through
 `EngineImage` (`runtime/engine_image.h`, assembled by
 `ComponentImageGenerationBuild` and `ComponentImageServingBuild` in

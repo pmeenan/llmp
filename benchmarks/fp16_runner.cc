@@ -197,9 +197,7 @@ Status Fp16Runner::Setup() {
   const auto& o = s.options;
   if (s.entered || s.released || s.host != nullptr)
     return Error("FP16 benchmark setup is not repeatable");
-  if (s.recording || o.restores != 0 || o.relocate || o.load_only != 0 || o.weights_host ||
-      o.premapped || o.partial || !o.spill.empty() || o.shared_embeddings)
-    return Error("historical BP-P modes require their retired legacy protocol");
+  if (s.recording) return Error("the FP16 adapter does not record launches");
   // Harness nodes do not charge their counted host heap by default. Pay the
   // complete bounded adapter envelope explicitly without changing node policy;
   // active callers already include pinned occupancy in their Start budgets.

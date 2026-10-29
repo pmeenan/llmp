@@ -52,8 +52,7 @@ performance is in
 **The harnesses.** [`fp16_paged.cc`](../../../benchmarks/fp16_paged.cc) and
 [`exl3_paged.cc`](../../../benchmarks/exl3_paged.cc) gained:
 - `--partial` (BP-P2): one more evaluation, which at the restore point runs
-  [`paging_cases.h`](../../../benchmarks/paging_cases.h)'s partial
-  evictions. Each evicts exactly its extents, then checks that a phase's
+  the partial evictions (the cases were in `benchmarks/paging_cases.h`, since deleted). Each evicts exactly its extents, then checks that a phase's
   job submitted without materializing is refused before it runs, and pages
   only those extents back in.
 - `--spill premapped|managed` (BP-P4): one more evaluation, which writes the

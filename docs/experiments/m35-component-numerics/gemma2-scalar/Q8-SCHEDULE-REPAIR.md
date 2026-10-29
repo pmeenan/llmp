@@ -13,7 +13,7 @@ qualification, a speed gate or permission to refresh frozen expectations.
 
 ## Candidate and prerequisite evidence
 
-[q8-schedule-repair-pins.json](q8-schedule-repair-pins.json) freezes the new runtime,
+q8-schedule-repair-pins.json freezes the new runtime,
 all 2883 source files, compiled module/receipt, actual resolved dependencies,
 retained dependency bytes, the exact two-file repair patch, passed controls and
 original A raw files. The source is root's W10 union plus the two repair files;

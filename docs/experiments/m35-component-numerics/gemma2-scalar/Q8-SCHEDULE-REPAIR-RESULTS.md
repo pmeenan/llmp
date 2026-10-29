@@ -18,7 +18,7 @@ by `9ab2fe542e13ccecf8acdddd768c292034d4e373` and
 `913b7949c26478ceea4b9958225b0e204d629ad4`. The final registration preserves all
 runtime, source, input and numerical bounds. [Aggregate results and raw-file
 hashes](q8-schedule-repair-results.json) bind the collection, comparison and
-retained failures; [candidate pins](q8-schedule-repair-pins.json) bind the
+retained failures; candidate pins bind the
 2-file production/fixture delta and its four passed operand controls.
 
 R uses retained runtime SHA-256

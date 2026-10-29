@@ -39,7 +39,7 @@ checkpoint. That wrapper reads `text_config`, remaps `model.language_model`
 and individual expert/scales, and omits multimodal towers. No checkpoint code,
 source edits, remote code trust or alternative checkpoint is permitted by this
 recipe. Source and metadata SHA-256 pins are executable constants in
-[reference.py](reference.py). In particular:
+reference.py. In particular:
 
 - Gemma implementation: `6074e4a2f0c40a5bb28d101060fb4fe64f11ac6ee0cb6f524a9bb3deaceab797`.
 - ModelOpt implementation: `3f3ca743fd3c66d72be92b7544591a8632f1aa422b73bb50c83e8a3281196e7d`.

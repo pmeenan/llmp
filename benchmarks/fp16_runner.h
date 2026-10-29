@@ -27,14 +27,6 @@ struct Fp16Options {
   std::filesystem::path tokens;
   bool fusion = true;
   std::filesystem::path out;
-  int restores = 0;
-  bool relocate = false;
-  int load_only = 0;
-  bool weights_host = false;
-  bool premapped = false;
-  bool partial = false;
-  std::string spill;  // empty, premapped or managed
-  bool shared_embeddings = false;
   // Fixed paid adapter inventory, including retained caller results.
   std::uint64_t host_allowance = 12ULL << 30U;
 };

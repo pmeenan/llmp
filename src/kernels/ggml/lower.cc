@@ -1918,7 +1918,7 @@ std::expected<void, KernelFailure> Lowering::Flush(NodeId limit) {
       // A primitive's input can be ready before another input of its
       // selected fusion (for example a converted norm scale). Expanding it
       // then would put the norm before that conversion, splitting the
-      // selected norm/mul sequence and changing PlanGraph's operation order.
+      // selected norm/mul sequence and changing the plan's operation order.
       const bool ready =
           std::ranges::all_of(fused.sources(),
                               [&](TensorId s) { return !s.valid() || made_.at(s.v) != nullptr; }) &&
@@ -3726,7 +3726,7 @@ std::expected<void, KernelFailure> Lowering::EmitSchedule() {
       if (i >= plan_.steps.size()) return Refused("a prologue step outside the plan");
       in_prologue[i] = true;
     }
-    // Each PlanGraph step's IR steps.
+    // Each plan step's IR steps.
     std::vector<std::vector<std::size_t>> covers(ir_end);
     for (std::size_t i = 0; i < plan_.steps.size(); ++i) {
       if (launches_nothing[i]) continue;

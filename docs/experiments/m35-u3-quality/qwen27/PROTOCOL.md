@@ -37,7 +37,7 @@ The source image was built with the existing
 [Dockerfile.tensorfold](../../fast-swap/Dockerfile.tensorfold) and exact source
 revision. It contains TensorFold 0.6.6, torch `2.13.0a0+9186a08b2c.nv26.7` and
 Triton `3.7.1+gitf797708c.nv26.7`. The 449 installed package files are authenticated
-by [tensorfold-source-hashes.txt](tensorfold-source-hashes.txt), whose SHA-256 is
+by tensorfold-source-hashes.txt, whose SHA-256 is
 `8605fa47ae126abb91a79688ab72cb440032679b741ce3bcd7aeb75ae65a7cd3`.
 Image inspection, full dependency inventory and build logs remain external raw
 receipts. Neither a moving tag nor a different quantization is an oracle substitute.

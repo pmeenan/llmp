@@ -1724,7 +1724,7 @@ bool AcceptsGdnNormGate(const ex::CapabilityQuery& q) {
          Ne(q, 0, 0) == 128 && Ne(q, 0, 3) <= 1;
 }
 // GGML's gated delta rule (upstream's or llmpalooza's column-blocked
-// kernels, which PlanGraph picks by shape): one sequence.
+// kernels, which the planner picks by shape): one sequence.
 bool AcceptsGatedDelta(const ex::CapabilityQuery& q) { return Built(q) && Ne(q, 2, 3) <= 1; }
 // llmp.qsa.prep: the interleaved multi-section rotation of 64 dimensions,
 // heads of whole warps from 64 to 512 values.

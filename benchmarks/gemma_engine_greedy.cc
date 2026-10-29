@@ -3,9 +3,9 @@
 
 // The Gemma 4 31B assistant's repeated greedy screen on the shared engine
 // (M3.6's gate for the assistant, docs/experiments/m36-baselines): the
-// work llmp_gemma_greedy_reference pays on the M3 runner, paid by serving's
-// component build (runtime/component_build.h) and the decoding modes
-// (engine/decoding.h) instead. The 31B target and its assistant, C1 at
+// screen the M3 runner's llmp_gemma_greedy_reference ran (deleted in G2d,
+// `04339dec`), on serving's component build (runtime/component_build.h) and
+// the decoding modes (engine/decoding.h). The 31B target and its assistant, C1 at
 // context 4,096 and 128-row chunks, the canonical P=64 inputs, the M3
 // screen's arithmetic (its explicit norm-rope and norm-add chains, no
 // quantized GLU, no owner attention, no narrowed head: a policy given in
@@ -61,7 +61,7 @@ using en::support::Error;
 
 constexpr std::uint32_t kVocab = 262144, kPast = 64, kEmitted = 32;
 constexpr std::uint64_t kHost = 256ULL << 20U;
-// The M3 screen's arithmetic on the target (the retired
+// The M3 screen's arithmetic on the target (the deleted
 // gemma_greedy_reference.cc's Gemma4Options: the plain, norm-rope and
 // norm-add chains, nothing else; its retained features keep every row to
 // the head).

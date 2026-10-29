@@ -13,7 +13,7 @@
 #include "kernels/ggml/fusion.h"
 
 namespace llmp::kernels::ggml::detail {
-// Borrowed, immutable descriptors for one PlanGraph invocation only. Rebuild
+// Borrowed, immutable descriptors for one lowering only. Rebuild
 // after placement: neither logical identity nor validation survives mutation.
 class GraphReadIndex {
  public:

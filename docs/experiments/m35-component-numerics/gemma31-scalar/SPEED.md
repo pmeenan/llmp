@@ -11,7 +11,7 @@ policy A with repaired normal VecQ policy D, using the same retained runtime
 competitiveness against the incumbent, not an isolated before/after measurement
 of the old inaccurate VecQ schedule. No frozen expectation changes.
 
-[speed-pins.json](speed-pins.json) binds the actual runnable binary, source2903,
+speed-pins.json binds the actual runnable binary, source2903,
 compiled identities, retained/resolved libraries, artifact metadata and payload
 stat identities, input, method, executors and prior quality/manual-review
 receipts. It reuses the authenticated quality preflight directly. Run only on

@@ -23,7 +23,7 @@ remain unchanged, and no owner-row-invariance policy is enabled here.
 
 ## Same binary, artifact and input
 
-[pins.json](pins.json) freezes the actual runtime `5965e83c…`, its complete
+pins.json freezes the actual runtime `5965e83c…`, its complete
 2903-file source manifest, reviewed two-file delta, compiled module/compiler
 receipts and runnable dependencies retained outside build directories. The
 runtime-only build/retention job passed in20s; it neither changed source nor ran a model.

@@ -1152,7 +1152,7 @@ llmp_gtest(component_bindings_test TEST_PREFIX unit. PROPERTIES LABELS unit
 
 # The approved checkpoints as data (runtime/approvals.h): the table's rules;
 # and against the published v1 store (LLMP_TEST_V1_STORE, by default the
-# models directory's m36-v1-artifacts) every artifact and pairing admitted by
+# models directory's `artifacts`) every artifact and pairing admitted by
 # its pinned spec digest, each pin the compiled profile's synthesis, and every
 # family's default settings within its approval.
 add_executable(approvals_test approvals_test.cc)

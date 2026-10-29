@@ -217,6 +217,7 @@ the commit gate.
 | [docs/m1-record.md](docs/m1-record.md) | Where an M1 result came from: each bootstrap item's outcome, verification hosts and hand-offs. Frozen history |
 | [docs/m2-record.md](docs/m2-record.md) | Where an M2 result came from: each resource-core and backend-proof item's outcome, commits, reports and caveats, and the gate. Frozen history |
 | [docs/m3-record.md](docs/m3-record.md) | Frozen M3 task history, accepted speed exceptions, final profile/quality and swap evidence, build/package checks and work handed on |
+| [docs/m35-record.md](docs/m35-record.md) | The in-progress M3.5 record: the memory modes, U1–U10 and the foundation review's F-series fixes with their commits, results and evidence links (frozen when M3.5 closes) |
 | [docs/m36-record.md](docs/m36-record.md) | Frozen M3.6 record: exit-criteria evidence, final speed table, owner decisions, accepted exceptions, the classified review follow-ups and work handed on to M3.5, M4 and M9 |
 | [docs/vision.md](docs/vision.md) | Why the project exists, who it's for, success criteria, non-goals |
 | [docs/features.md](docs/features.md) | The feature matrix: confirmed scope, proposed additions, open questions |
@@ -235,7 +236,10 @@ the commit gate.
 | [docs/portability.md](docs/portability.md) | Other GPU platforms and OSes: where vendor and Linux code may live (the boundary check), the device runtime and platform seams, the registry's primitive-fallback rule and each model's minimum primitive set, the runners' shared skeleton, distribution |
 | [docs/optimization-inventory.md](docs/optimization-inventory.md) | The catalog of optimization techniques with their measurements, consumers as of `cc70d69` (the per-family transfer record, frozen by D-107) and shape/format limits, including useful pieces of rejected kernels; read before proposing another kernel experiment |
 | [docs/tokenizer.md](docs/tokenizer.md) | The native tokenizer, chat renderers, stop tokens and sampling: pre-tokenizers, bounds, Unicode tables, agreement with the references, template hashes |
+| [docs/tool-calls.md](docs/tool-calls.md) | Tool-call interpretation: the protocol-neutral interpreter, the output grammar, forced spans, sampling masks, the Gemma history correction and what is qualified |
 | [docs/client-api-baseline.md](docs/client-api-baseline.md) | The M5 inference API contract: routes, client profiles, front-door, status and keepalive rules; links the Ollama, vLLM and OpenRouter assessments |
+| [docs/deepinfer-assessment.md](docs/deepinfer-assessment.md), [flare](docs/flare-assessment.md), [humming](docs/humming-assessment.md), [locals](docs/locals-assessment.md), [tensorfold](docs/tensorfold-assessment.md) | Assessments of other engines and kernel sources: what to take, what not to, and the plan items they produced |
+| [docs/xgrammar-audit.md](docs/xgrammar-audit.md), [tilekernels-audit.md](docs/tilekernels-audit.md) | License and source audits for XGrammar and TileKernels (no code copied; also summarized in docs/licensing.md) |
 | [docs/ideation.md](docs/ideation.md) | The full original reasoning and source links behind a constraint. Long; read the section you need, not the whole file |
 
 ## Rules for all agents
@@ -325,23 +329,16 @@ the commit gate.
    `~/.local/bin/mise`. Checkpoints come from the model archive (rule 14),
    staged on `spark` and copied to `spark-b` over the direct link. Details: docs/workflow.md
    ("Long runs on the Sparks"), docs/environment.md.
-10. **Checks run once per slice, with narrow scope and dual-Spark parallelism.**
-    While iterating and verifying a slice (owner, 2026-10-21), build only the
-    touched targets, run targeted tests (`ctest -R <touched>`), the shared
-    `-LE 'models|timing'` set, and **only** the model tests of the areas the
-    slice touched (`-L models -R <area>`); defer the full all-models
-    `models|timing` sweep and the `cpu` preset build to milestone closeout unless
-    a slice directly touches them. Batch independent slices with disjoint file
-    sets into one parallel build/test/review wave, split imports, test subsets
-    and model qualifications across `spark` and `spark-b` in parallel, and
-    re-import only artifacts whose on-disk output changed (syncing the delta via
-    `rsync`). Builders and reviewers verify with targeted tests and the model
-    tests of what they touched; the full shared set and the union of touched
-    model areas run once, on the merged tree, before commit, and finished
-    slices from both streams land together under one such check (owner,
-    2026-10-26). Never hand off broken, and read any `Skipped` result with `-V`
-    before believing it (RE-053). Say which checks ran where. docs/workflow.md
-    ("Check cadence", "Focused optimization checks").
+10. **Checks run once per slice, with narrow scope and dual-Spark parallelism**
+    (owner, 2026-10-21 and 2026-10-26). While iterating, build the touched
+    targets and run targeted tests, the shared `-LE 'models|timing'` set and
+    only the model tests of the areas touched; the full all-models sweep and
+    the `cpu` preset build wait for milestone closeout. Use `spark` and
+    `spark-b` in parallel and re-import only artifacts whose output changed.
+    The full shared set and the union of touched model areas run once, on the
+    merged tree, before commit. Never hand off broken, read any `Skipped`
+    result with `-V` (RE-053), and say which checks ran where.
+    docs/workflow.md ("Check cadence", "Focused optimization checks").
 11. **Product behaviour agents must not undo.** Each is an owner direction;
     detail is in the cited place.
     - *Every quant of every supported model runs and is competitively fast;
@@ -427,19 +424,27 @@ the commit gate.
 
 ## Current status
 
-**M0 through M3.6 are complete (M3.6 2026-10-17); M3.5 resumes next.**
+**M0 through M3.6 are complete (M3.6 2026-10-17); M3.5 is in progress.**
 M3.6 (owner, 2026-10-08) replaced the per-family runners with one engine of
 shared components over llmpalooza's own graph IR, a format layer that keeps
 weights compressed, one runner and serving adapter per pipeline kind, and a
 native importer; every model M3 served runs on it within 1% of its frozen
-baseline, bar the accepted exceptions listed in the record, serves from format-v1 artifacts only
-(D-118) and has its legacy code deleted
-([design](docs/engine-components.md), D-107 to D-118; results, owner
-decisions, exceptions, retained limits (what is not yet family-neutral) and
-handed-on work in the [M3.6 record](docs/m36-record.md)). M3.5's first item is physical memory modes (the fix for M3.6's DSpark C4 wall exception), beside the drafter confidence calibration screen; the items taken from [DeepInfer](docs/deepinfer-assessment.md) and [Flare](docs/flare-assessment.md) (plan.md) join its remaining families, formats, the importer's per-family normalizers, MLX serving
-qualification, batching gaps, media inputs, Clef/Jev and media generation
-routes (D-101) resume on that engine; M3.5's status at `cc70d69` is in
-[plan.md](docs/plan.md) and [model-support.md](docs/model-support.md).
+baseline, bar the accepted exceptions listed in the record, serves from
+format-v1 artifacts only (D-118) and has its legacy code deleted
+([design](docs/engine-components.md), D-107 to D-118; the
+[M3.6 record](docs/m36-record.md)). M3.5's foundation work is done and
+reviewed ([M3.5 record](docs/m35-record.md)): the physical memory modes
+(D-124: a dedicated node pool or shared-machine mode, chosen by device), one
+generic mapping-driven import route (D-125), numerics as per-device component
+data (D-126), the image pipeline as data, the IR trait table, bounded
+tool-call interpretation on the chat route ([tool-calls.md](docs/tool-calls.md)),
+and the 2026-10 foundation review's fixes F1–F13. Still open: the test-suite
+audit (F14), the closeout checks (F10b), U7 (fast paths by capability) and U9,
+then M3.5's remaining families, formats, the importer's per-family
+normalizers, MLX serving qualification, batching gaps, media inputs, Clef/Jev
+and media generation routes (D-101), plus the items taken from
+[DeepInfer](docs/deepinfer-assessment.md) and [Flare](docs/flare-assessment.md);
+see [plan.md](docs/plan.md) and [model-support.md](docs/model-support.md).
 
 The runtime serves Chat Completions and literal Completions with target
 likelihoods on loopback and the tailnet. DeepSeek V4 Flash, Qwen3.8 Flash

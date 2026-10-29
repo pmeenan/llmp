@@ -145,7 +145,7 @@ constexpr int kMaxPairs = 128;  // CheckVecQ: used · tokens <= 128
 // does not compute). Upstream prefetches only when built for the DGX Spark
 // (its measured gain on every type listed; on higher-bandwidth parts the
 // extra requests cost more than they save): PrefetchesOnDevice.
-constexpr __host__ __device__ bool Prefetches(ggml_type type) {
+[[maybe_unused]] constexpr __host__ __device__ bool Prefetches(ggml_type type) {
   switch (type) {
     case GGML_TYPE_Q4_0:
     case GGML_TYPE_Q5_0:

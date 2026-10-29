@@ -4,7 +4,7 @@
 // Backend-proof P3, the per-linear sweep (BP-N5; docs/backend-proof.md,
 // Tier E "EXL3 packed linears" and "EXL3 reconstruction-path linears";
 // docs/experiments/backend-proof-p3/README.md): every real projection of
-// an EXL3 fixture, from its v0 prepared artifact on cudaMalloc memory,
+// an EXL3 fixture, from its prepared v1 artifact on cudaMalloc memory,
 // through llmpalooza's launchers at the forced plans upstream's frozen tuning
 // cache gives, on the inputs upstream's run used.
 //

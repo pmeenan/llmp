@@ -1498,6 +1498,19 @@ TEST_F(Roles, WarnsOfADefaultAcl) {
   EXPECT_THAT(roles->warnings, ElementsAre(HasSubstr("has a default ACL")));
 }
 
+TEST(DirectIoCaveat, WarnsOfBtrfsOnTheDirectIoRolesOnly) {
+  const std::filesystem::path path = "/data/llmp/installed";
+  const std::string warning = llmp::config::DirectIoCaveat("installed", path, "btrfs");
+  EXPECT_NE(warning.find("storage.installed (/data/llmp/installed) is on btrfs"), std::string::npos)
+      << warning;
+  EXPECT_NE(warning.find("RE-018"), std::string::npos) << warning;
+  EXPECT_FALSE(llmp::config::DirectIoCaveat("spill", path, "btrfs").empty());
+  // The state role does no direct I/O; ext4 and xfs refuse what btrfs absorbs.
+  EXPECT_TRUE(llmp::config::DirectIoCaveat("state", path, "btrfs").empty());
+  EXPECT_TRUE(llmp::config::DirectIoCaveat("installed", path, "ext4").empty());
+  EXPECT_TRUE(llmp::config::DirectIoCaveat("spill", path, "xfs").empty());
+}
+
 TEST_F(Roles, RefusesAMarkerItDidNotWrite) {
   fs::create_directories(tree_ / "data/spill");
   ASSERT_EQ(::chmod((tree_ / "data/spill").c_str(), 0700), 0);

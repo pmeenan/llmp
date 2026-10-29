@@ -121,7 +121,8 @@ re-check the ones that could reach a served model.
 
 The reports below are frozen history. Their identities, receipts, data
 files and helper scripts describe the retired mechanism and are not
-re-runnable against the current tree:
+re-runnable against the current tree (F10 deleted the fresh-W5 launch helper
+and its test; they are in Git at `1564dcd6`):
 [U6 final results](U6-FINAL-RESULTS.md) and
 [registration](U6-FINAL-MATRIX-REGISTRATION.md),
 [shared-support pass](U6-SUPPORT-CLOSURE-RESULTS.md),

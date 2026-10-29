@@ -3,6 +3,16 @@
 
 # M3.5 component numerical qualification
 
+Retention (F10, 2026-10-28): the per-run `pins.json` bundles (they carried
+`/tmp` paths and helper hashes), identity maps and crosswalks, the 343 KB
+implementation-identity registry dump, the relational-plan self-test, the
+source-change ledger and the run-once drivers (`run-*.py`, `mia_capture.py`,
+`plan_audit.py`) and their tests were deleted under AGENTS rule 8. The
+protocols, results and aggregates stay; their digests and file names are
+history, and the deleted files are in Git at `1564dcd6`. The capture,
+plan-report, reference-input and image-compare helpers named below stay
+because the recipes here use them.
+
 Status: U4's component/device evidence join is implemented and its bounded
 transfer checks pass: [image results](IMAGE-RESULTS.md) and
 [LLM results](LLM-RESULTS.md). Both strict Mia comparisons remain failures;

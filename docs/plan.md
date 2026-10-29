@@ -533,231 +533,36 @@ D-113, D-120), U4 (numerical evidence as component data scoped by device
 class; amends D-123) and U8 (the image stage graph as spec data; amends
 D-122).
 
-- [x] **U1 Engine seams for the memory modes** (the memory modes' first
-      sub-slice): the node budget held live by the scheduler and reaching
-      `PlanMaterialization`, `AcquireProgram` and `LiveState` (copied by
-      value at `Start` today); `PressureTrimLimits` from the node
-      configuration; one engine-side backend factory owning the device
-      index, GGML backend, cuBLAS handle and workspace sizing (each of
-      `runtime/component_build.cc` and `component_image_build.cc` builds its
-      own on device 0), with `runner_resources.h` naming no GGML launch
-      types, `expert_slab.cc` sizing from the format layer, `SelectedSource`
-      out of `kernels/ggml/`, and `tools/llmp_boundaries.py` checking
-      kernel-library names; one unproven-work object cleared only by a
-      positive stream fence, replacing `step_flight_`, `routed_flight_`, the
-      row table's `stalled`, the batch's `unknown`, `HostCopyUnproven` and
-      `KeepPinned` (on R20's fence acknowledgement); `PagedNode` split along
-      its driver-thread and catalog-call contracts; `SupplementalJob`
-      reclaiming as `Acquire` does before on-demand experts are wired.
-      **Exit:** one budget owner and one backend factory in the memory-mode
-      design, no runtime or engine file naming a kernel library (checked),
-      and a recovery test whose retirement is genuinely unprovable serving
-      again.
-- [x] **U2 Test-only paths and v0 removed:** delete `PlanGraph`
-      (`kernels/ggml/graph_plan.cc`) and move its tests and
-      `benchmarks/decode_templates.cc` onto the IR lowering production uses;
-      delete `Qwen38Commit` (its tests become component tests); port
-      `tests/support/families`, `V0ArtifactSource`, the tests that need
-      `~/.local/share/llmp/m3-artifacts` and the v0 arms of `speed_gate.py`,
-      `swap_table.py` and `assistant_gate.py` to v1, then delete the v0
-      reader (`artifact/representation.{h,cc}`, `artifact/format_map.{h,cc}`,
-      `tests/unit/artifact_corpus.py`), rename the `"spark-v0"` layout
-      profile to `"profile": "spark", "profile_version": 1` (D-121) and list
-      the M3 v0 store (`~/.local/share/llmp/m3-artifacts` on `spark` and
-      `spark-b`) for the owner to delete (rule 8); move `LLMP_TEST_HOLD_READS`
-      out of the production binary (`NodeSettings::hold_reads` in unit tests);
-      delete the repeat-pending drafter ledger (owner, 2026-10-20); extend
-      `benchmarks/import_fuzz.cc` through `spec::Synthesize`, `import::Normalize`,
-      `planner::Plan` and the v1 artifact/composition readers, with a
-      checked-in seed corpus (`tests/unit/data/import_fuzz/`) and one
-      recorded bounded run (D-085: `llmp_import_fuzz
-      --corpus=tests/unit/data/import_fuzz --iterations=10000`, seed `20261021`,
-      9 seeds across branches 0..8, 2.36 s on `spark-b` `spark-native`, 2026-10-21,
-      0 failures), and add the fuzz entry to engine.md's
-      "add a container" checklist. **Exit:** no production source references
-      v0 or `PlanGraph`, the shared suite passes without `m3-artifacts`, and
-      the fuzz run is recorded. Owner-authorized cleanup removed the retired
-      v0 stores on both Sparks on 2026-10-23; see the
-      [storage cleanup](environment.md#retired-spark-data-2026-10-23).
-- [x] **U3 One generic import route** (completed 2026-10-23; D-125).
-      ModelOpt and MLX checkpoints use one mapping-driven normalization and
-      publication pipeline; checkpoint-specific Qwen3.8 normalizers and the
-      derived SourceMapping registry are removed. Stored target/drafter specs,
-      authenticated source metadata and explicit preprocessing receipts supply
-      serving semantics. The [closeout](experiments/m35-generic-import/canonical-mappings.md)
-      records final native/shared/affected checks, source applicability and limits.
-      - **U3a One mapping per architecture:** each registered LLM architecture
-        has one canonical mapping, with selected source dialects for metadata,
-        tensor names/parts, parameter chains, folds, selectors, layer schedules,
-        planning policies and drafter values. Dense Qwen2/Llama/Mistral
-        [controls](experiments/m35-generic-import/dense-dialects-mxfp4.md) and the
-        final Gemma4/Qwen3.8/MTP consolidation preserve canonical component roles
-        and actual source conventions. Source architecture, execution architecture
-        and mapping provenance are distinct; import-time composition resolves the
-        target's actual dialect. Selected-head regressions cover native,
-        cross-container and canonical drafter inputs with exact gathered bytes.
-        Serving consumes stored specs and typed drafting contracts rather than
-        reconstructing topology from checkpoint metadata. Startup shares admitted
-        immutable metadata, prepays reader/construction workspace and publishes
-        chat assets only after complete validation. Artifact identity follows the
-        canonical rule; importer provenance does not replace source provenance.
-        [Explicit source-fold publications](experiments/m35-source-fold/RESULTS.md),
-        [sampling refreshes](experiments/m35-generic-import/README.md) and four
-        [stored drafter publications](experiments/m35-stored-drafter/RESULTS.md)
-        preserve their complete index/payload proofs on both Sparks.
-        **Exit met:** known-shape dense families use one mapping file and registry
-        line; affected published v1 artifacts retain tensor content, with explicit
-        provenance/sampling changes documented. The scoped store inventory has no
-        Gemma3_text publication requiring its narrow provenance migration.
-      - **U3b Quantized parts and experts:** generic part descriptors carry block,
-        global and affine scales, biases and zero points; `{expert}` gathers
-        per-expert tensors. Role/encoding rules plan folds, permutations, scale
-        relayouts and strided parts at import. Native Gemma2/3 retain zero-centered
-        norm folds; Gemma4 uses direct gamma. Qwen3.8 ModelOpt and MLX
-        [re-import parity](experiments/m35-generic-import/original-parity.md)
-        covers all 323,607 named parts, including every expert slice.
-        ModelOpt MXFP4 preserves packed E2M1/E8M0 parts; HF block FP8 retains
-        E4M3FN/F32 scales with checked geometry and CPU decoding
-        ([checks](experiments/m35-generic-import/block-fp8.md)).
-        **Exit met:** original content parity, owner-approved plain ModelOpt
-        NVFP4 and second-architecture MLX import/serve controls, plus refusal and
-        adversarial coverage for new part kinds. AWQ/GPTQ and new GPU-format
-        support remain separate format work; future additions use this route.
-      - **U3c Llama3 RoPE frequency scaling:** the component carries low/high
-        frequency factors and original context through CPU/GPU execution.
-        **Exit met:** owner-approved Llama3.3 NVFP4 import and bounded
-        [reference likelihood/behavior controls](experiments/m35-u3-quality/RESULTS.md),
-        with the separately registered [512-token supplement](experiments/m35-u3-quality/FIBONACCI512-RESULTS.md).
-        The original 256-token Fibonacci observation remains failed/unresolved.
-      The distinct qwen3_5 MLX [quality screen](experiments/m35-u3-quality/qwen27/RESULTS.md)
-      passes both short/depth repeat pairs and six completed raw-ID cases; its old
-      empty-final chat smoke is retained. These explicit exits grant no general
-      Gemma NVFP4 quality, assistant numerical evidence, new device/encoding,
-      batching, maximum-context or competitive-speed qualification. Current
-      arithmetic qualification is recorded with U4 below; retained numerical
-      negatives and original bounds are unchanged.
-- [x] **U4 Numerics as component data, per device** (completed 2026-10-23;
-      D-126). Admission joins explicit component roles, encodings and device
-      evidence identically for pinned and unpinned artifacts. Missing device
-      evidence keeps the exact path and reports the unmet requirement; no sm86
-      numerical grant is made. The implemented contract and focused admission,
-      state/formula and image controls pass at their recorded scope.
-      The generic GB10 scalar schedule follows upstream reduction geometry for
-      all 18 VecQ encodings (182 operand controls). Its repaired
-      [Gemma2](experiments/m35-component-numerics/gemma2-scalar/Q8-SCHEDULE-REPAIR-RESULTS.md)
-      and [Gemma31](experiments/m35-component-numerics/gemma31-scalar/RESULTS.md)
-      screens each match all 1,070 original-A teacher scores and both bounded
-      replies exactly; their matched three-pair adoption speed screens pass.
-      The ordinary two-through-eight-column repair passes 178 upstream operand
-      controls and changed-input Q8/GLU replay. The original
-      [Gemma31 A/D screen](experiments/m35-component-numerics/gemma31-multirow/RESULTS.md)
-      remains failed under all four unchanged numerical bounds; the separate
-      [repaired R screen](experiments/m35-component-numerics/gemma31-multirow-repair/RESULTS.md)
-      matches all 1,070 original-A scores exactly. Its
-      [C2 speed screen](experiments/m35-component-numerics/gemma31-multirow-repair-speed/RESULTS.md)
-      passes all three median slowdown bounds (TTFT 0.996109, decode 0.970889,
-      wall 0.987638).
-      The [remaining transfer controls](experiments/m35-component-numerics/remaining-domain-transfer/RESULTS.md)
-      pass all 14 current/reference head/state/transport arms across Gemma26,
-      Gemma31, Qwen GGUF and DeepSeek/DSpark. Full-head comparisons preserve
-      proposal/verify results, continuation state and exact spill/restore;
-      independent actual-plan reviews cover complete operand and storage
-      relationships. DeepSeek's historical two-row prefill has a source/operand
-      bridge, not a claimed current two-row execution. Unchanged wide-score
-      plans reuse Qwen's 996 and DeepSeek's 966 teacher targets; two current
-      128-token replies per family pass bounded-prefix review. DeepSeek remains
-      reasoning-only with empty final content at that bound. The initial
-      [C1 screen](experiments/m35-component-numerics/remaining-c1-speed/RESULTS.md)
-      passes Gemma26/Gemma31/DeepSeek and retains Qwen's failed 1.121499 TTFT
-      median. Shared GGML selection now prefers upstream MMVQ for GB10 ordinary
-      Q6_K/Q8_0 physical columns 5..8, preserving explicit and routed/grouped
-      contracts. The separately registered
-      [Qwen routing repair](experiments/m35-component-numerics/qwen-mmvq-routing-repair/RESULTS.md)
-      passes a new five-row head/state control and the same three-pair speed
-      bound; source/domain proofs reuse the unchanged families and replies.
-      Final native targets, 174 related checks and the shared 3,696-test
-      suite pass without skips.
-      Frozen Gemma26/Gemma31 assistant, DSpark, DeepSeek target and Qwen GGUF
-      differences remain recorded failures with unchanged expectations; the
-      positive upstream comparisons and source attribution do not rewrite them.
-      The [LLM results](experiments/m35-component-numerics/LLM-RESULTS.md)
-      retain both strict Mia failures and the unchanged-target limitation; MTP
-      has separate controls and inherits no exception.
-      [Image transfer](experiments/m35-component-numerics/IMAGE-RESULTS.md)
-      retains both registered geometries and speed pairs. Completion grants no
-      new device, untested encoding, maximum context, general batching or
-      full-answer quality claim. The implemented contract follows: each
-      changed-arithmetic rewrite declares the qualification it needs and the
-      component roles and encodings it applies to, and admission derives
-      qualifications identically for pinned and unpinned checkpoints (no
-      `approval->numerical.empty()` early return, no container proxies, so
-      NVFP4 in GGUF qualifies as in safetensors, and no component-kind
-      proxies granting DeepSeek's evidence to any `hc.mix` or `ffn.moe`);
-      evidence is data naming the device class it was measured on, with no
-      `arch = 121` default, and a device without evidence runs the exact
-      unfused path and says so in its plan report (`sm_86` qualifies through
-      its own `gpu-discrete` evidence run, owner 2026-10-20). Image attention
-      tuning stops defaulting on by `architecture / 10 == 121`. **Exit:**
-      `component_admission.cc` has no container or kind branches; a pinned
-      and an unpinned artifact of one architecture and encoding set receive
-      identical qualifications (tested); an `sm_86` plan report names what
-      it lacks.
-- [x] **U5 Front-door and scheduling seams** — **U5a complete (2026-10-22):**
-      Channel, Stream and I/O use route-owned start, delta,
-      finish, error and keepalive events; the Messages encoder has indexed
-      text/tool blocks and incremental JSON inputs. The Messages route is
-      not enabled. **U5b complete (2026-10-22):** owned structured message parts
-      and checked native/interpreted projection retain text boundaries, tool IDs and
-      owned JSON; unsupported rendering combinations are refused. Public tool
-      intake/extraction and Messages handling remain open.
-      **U5c complete (2026-10-22):** scheduler-owned cohort, turn, drain and
-      substitute policy has socket-free tests; substitutes time-slice, then
-      rotate behind other models with continuations before fresh peers.
-      The unchanged unit chooser also lives in the scheduler; calibrated
-      starvation remains the separate throughput-first item below. The native
-      build, all 3,483 shared checks (including 175 focused cases), and four
-      affected model state/cohort cases pass on spark-b without skips.
-      **U5d complete (2026-10-22):** activation and reclamation have named
-      per-attempt phases owning snapshots, protection, rollback and accounting.
-      Native builds, all 3,483 shared checks and 13 actual-model swap, recovery
-      and observer cases pass on spark-b without skips; whole and adversarial
-      reviews are clean. **U5e complete (2026-10-22):** one concrete `Llm`
-      replaces the 70-hook adapter; tests use the real engine with fake providers.
-      Scalar clean refusal now preserves its proven prefix, matching wave
-      recovery. Whole and adversarial reviews are clean. The combined wave
-      passed 3,525 shared checks, 461 AArch64 no-CUDA checks and 31 actual-model
-      state, speculation, swap and image cases across both Sparks, with no
-      required skips. The final isolated native build also passes. Tool calls
-      and Messages remain separate open plan items below.
-      Each serving-loop change took the heavy review path. Route encoders own
-      protocol events, structured message parts retain text and tool boundaries,
-      and shared paths have no OpenAI-specific encoding. The scheduler cohort
-      policy has socket-free tests and is reusable by M4's conductor and the
-      throughput-first scheduling item below. Activation and reclamation use
-      named phases, and the LLM has one concrete implementation. These seams
-      are ready for the separate tool-call and Messages work.
-- [x] **U6 IR and planner structure:** complete (2026-10-25), independently reviewed.
-      One checked trait table supplies operation identity, arity, parameter
-      validation, inference, write sets, layout, partition and decomposition
-      dispatch. GGML validates its own extent limits; vendor facts stay outside
-      IR and selection code. All 49 registered rewrite/batch patterns have
-      enforced synthetic match and refusal controls.
-
-      **Revised by F6 (2026-10-26):** the exact-site recipe comparison U6
-      added to production (owned comparisons, cumulative recipe adoption) ran on
-      every plan miss without any row able to match a real model, and left dense
-      decoders unable to finish a prefill plan; F6 removed it. The U6 rank rows,
-      including `7c96e27b`'s re-stamp without re-measurement, are retired.
-      Selection uses coarse, versioned `FusionRank` rows (none shipped yet)
-      measured by `llmp_fusion_ranks`; a re-check at Qwen-Image VAE shapes kept
-      the fused spatial channel norm (4.5–5.7× faster there). The U6 reports
-      under [fusion-ranks](experiments/fusion-ranks/README.md) remain as history.
-
-      **Exit:** adding an IR op declares its dispatch once in the trait
-      table; new semantic algorithms live in their
-      owning modules and need no duplicate per-op classification lists. Its
-      kernels and tests complete the addition, and the boundary check finds no
-      vendor or kernel names under `ir/` or `execution/`.
+- [x] **U1 Engine seams for the memory modes** (`61f8426f`). One budget owner held
+      live by the scheduler, one engine-side backend factory, one fence-proven
+      unproven-work object, `PagedNode` split along its contracts, a kernel-library
+      name boundary check. **Exit met** ([record](m35-record.md#memory-modes-and-u1u10)).
+- [x] **U2 Test-only paths and v0 removed** (`dae227dd`). `PlanGraph`, `Qwen38Commit`,
+      the v0 artifact reader and the repeat-pending ledger are deleted; the import
+      fuzz entry reaches synthesis, normalization, planning and the v1 readers with a
+      checked-in corpus. **Exit met**; the v0 stores were removed on 2026-10-23
+      ([record](m35-record.md#memory-modes-and-u1u10)).
+- [x] **U3 One generic import route** (completed 2026-10-23; D-125, D-127). U3a one
+      mapping per architecture, U3b quantized parts and experts, U3c Llama3 RoPE
+      scaling. **Exits met** at the recorded scope; no general Gemma NVFP4 quality,
+      assistant numerics, new device or encoding, batching, maximum-context or speed
+      claim ([closeout](experiments/m35-generic-import/canonical-mappings.md),
+      [record](m35-record.md#memory-modes-and-u1u10)).
+- [x] **U4 Numerics as component data, per device** (completed 2026-10-23; D-126).
+      Admission joins component roles, encodings and device evidence for pinned and
+      unpinned artifacts alike; a device without evidence runs the exact path and
+      says so; no `sm_86` grant. **Exit met**; recorded failures and limits stay in
+      [component-numerics](experiments/m35-component-numerics/README.md) and the
+      [record](m35-record.md#memory-modes-and-u1u10).
+- [x] **U5 Front-door and scheduling seams** (completed 2026-10-22). U5a route-owned
+      stream events, U5b structured message parts, U5c scheduler-owned cohort policy,
+      U5d named activation/reclamation phases, U5e one concrete `Llm`. Tool calls
+      (shipped, bounded qualification only) and Messages stay separate items.
+- [x] **U6 IR and planner structure** (completed 2026-10-25). One checked trait table
+      (`src/ir/op_traits.inc`) for every IR op's dispatch; all registered rewrites
+      have synthetic match and refusal controls. Revised by F6: exact-site comparison
+      left production and the U6 rank rows are retired
+      ([fusion-ranks](experiments/fusion-ranks/README.md)). **Exit met.**
 - [ ] **U7 Fast paths by capability** (after the memory-mode re-gate and
       U4/U6; five sub-slices, each moving its fusions' patterns to matching
       against their decompositions, which three of the sixty use today):
@@ -806,67 +611,16 @@ D-122).
       rows hold; the format coverage report lists a device path for every
       encoding the importer accepts; Qwen2's C1/C2/C4 is measured against
       its comparator.
-- [x] **U8 Image pipeline as data** (completed 2026-10-23): Qwen-Image's
-      VAE decoder and DiT block wiring are mapping-owned stage-graph recipes;
-      spatial behavior is supplied by shared component hooks, and request
-      construction validates stored geometry bindings and endpoint shapes.
-      Import-time recipes account for each source tensor as consumed or
-      explicitly omitted. The approved Q4 image import completes the registered
-      512×512, two-step request twice with matching digests; the pinned BF16
-      import matches the published frozen pixels for the 1024×1024, 40-step
-      fixture. (Revised by F8: the second configuration imports through the one Qwen-Image VAE mapping, whose 2-D/causal-3-D and residual/halving dialects the checkpoint selects.) The second configuration imports the pinned Ming transformer
-      and first-frame RGBA VAE into native components using declarative mapping
-      tables and shared importer/compiler/runtime primitives; no
-      Ming-specific importer, compiler, or runtime wiring was added.
-
-      **Exit evaluation:** (1) Qwen-Image produces identical images from the
-      data-driven import: **passed** for the pinned BF16 full image comparison
-      and frozen pixel digest. The Q4 repeat screen establishes completion and
-      determinism only, not Q4 parity or quality. (2) A second VAE/DiT
-      configuration imports without family-specific C++ wiring: **passed** as a
-      bounded native component-import and stored-topology proof for the actual
-      pinned Ming transformer and first-frame RGBA VAE. It does not claim a
-      composed Ming pipeline, serving, or image quality.
-
-      Final integrated validation used the 72-path source manifest
-      (`0eca59143b04650cd4d7a1dcc9268f83a9fc160def03d274e8bdd2c68308d9c7`).
-      Both Spark native builds passed. Shared coverage comprises 3,751
-      unchanged passing tests from the two complete Spark splits plus three
-      repaired test fixtures, and 111 focused final tests; all passed with no
-      skips. This is not a single full-suite rerun on one final source snapshot.
-      The 26 affected model checks passed across Spark A and B, including the
-      BF16 image comparison, rectangular request, and Q4 repeat screen. Local
-      REUSE, header, boundary, and formatter checks passed with the pinned
-      workstation SDK. See the
-      [U8 evidence report](experiments/m35-image-pipeline-data/RESULTS.md) for
-      source pins, component IDs, jobs, and scope limits. This compiler change
-      leaves the historical W5 fusion rows stale; current dispatch retains the
-      incumbent until fresh matching data exists, with no re-pinning
-      ([status](experiments/fusion-ranks/README.md)).
+- [x] **U8 Image pipeline as data** (completed 2026-10-23; D-122). Stage-graph recipes
+      are mapping-owned; the pinned BF16 image is identical and a second VAE/DiT
+      configuration imports without family wiring (bounded: no composed Ming
+      pipeline, serving or quality) ([evidence](experiments/m35-image-pipeline-data/RESULTS.md),
+      [record](m35-record.md#memory-modes-and-u1u10)).
 - [ ] **U9 Partitioning and per-model residency** (M4 entry; amends M4's
       "Concurrent models and the shared workspace" item).
-- [x] **U10 Review leftovers** (re-verified 2026-10-22).
-      **Reader subspikes complete:** checkpoint, ordinary artifact and
-      direct-I/O readers pin the selected regular object before opening it
-      for I/O; a buffered retry uses the same object. Each caller's symlink
-      policy remains in force. **Drafter carry subspike complete:** ordinary
-      spill/restore preserves continuation features; logical state
-      replacement still clears them.
-      **Swap ownership subspike complete:** each actual activation owns a paid receipt
-      retained by its asynchronous eviction and handoff work; the service
-      collects completed measurements without blocking subsequent switches.
-      Same-model requests and cancelled/failed switches preserve independent
-      accounting. Observer names and metadata are paid before allocation and
-      survive their storage; focused ownership controls, 3,458 shared checks and
-      all seven swap controls (five using real model artifacts) pass.
-      **Kept-file and lock-file subspike complete:** existing regular
-      files are pinned before write/create I/O; nine deterministic race
-      controls, integrated shared checks and real-artifact swap cases pass.
-      The prior count/catalog and pending-counter failures, `CheckOwners`,
-      HTTP deadline/half-close ordering and I/O-thread heap trim findings
-      are fixed or retired. Physical-file overlap checks, JSON accessor
-      bounds, checked image payload sums, kept-pipeline JSON identity and
-      writer permission-error handling are present at HEAD.
+- [x] **U10 Review leftovers** (re-verified 2026-10-22). Pinned regular-file readers,
+      drafter carry across spill/restore, per-activation paid swap receipts, pinned
+      kept and lock files ([record](m35-record.md#memory-modes-and-u1u10)).
 
 **Foundation review follow-ups (owner, 2026-10-25).** A cross-verified review
 of `ca32156b..265c821a` found that broken image serving, the memory modes, the

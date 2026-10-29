@@ -45,6 +45,7 @@ class TestK1Quality(unittest.TestCase):
         for name in k1.STANDARD_LLM_FAMILIES:
             self.assertIn(name, k1.FAMILIES)
 
+    @mock.patch.dict(os.environ, {"LLMP_TEST_V1_STORE": ""})
     def test_make_config_encodings(self):
         share = pathlib.Path("/share")
         data = pathlib.Path("/data")
@@ -53,7 +54,7 @@ class TestK1Quality(unittest.TestCase):
 
         cfg_f16 = k1.make_config(family, "f16", share, data, port)
         self.assertIn('kv_cache_encoding = "f16"', cfg_f16)
-        self.assertIn('installed = "/share/u2-v1-artifacts"', cfg_f16)
+        self.assertIn('installed = "/share/artifacts"', cfg_f16)
         self.assertIn(k1.GEMMA2, cfg_f16)
         self.assertIn('data_dir = "/data"', cfg_f16)
         self.assertIn("port = 18114", cfg_f16)
@@ -68,10 +69,10 @@ class TestK1Quality(unittest.TestCase):
             ("qwen38-gguf", "qwen38-gguf"), ("deepseek", "deepseek"))}
         for name, artifact in v1.items():
             with self.subTest(name=name):
-                self.assertEqual(k1.FAMILIES[name].store, "u2-v1-artifacts")
+                self.assertEqual(k1.FAMILIES[name].store, "artifacts")
                 self.assertIn(f'artifact = "{artifact}"', k1.FAMILIES[name].models_toml)
         for name in k1.FAMILIES:
-            self.assertEqual(k1.FAMILIES[name].store, "u2-v1-artifacts")
+            self.assertEqual(k1.FAMILIES[name].store, "artifacts")
 
     def test_assistant_families(self):
         fam26 = k1.FAMILIES["gemma26-assistant"]
@@ -242,15 +243,15 @@ class TestK1Quality(unittest.TestCase):
                     self.assertIsNone(again["error"])
                     self.assertEqual(again["prompt_sha256"], record["prompt_sha256"])
 
-    def test_default_v1_store_fallback(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            base = pathlib.Path(tmpdir)
-            with mock.patch.dict(os.environ, {"LLMP_TEST_V1_STORE": ""}):
-                self.assertEqual(k1.resolve_store("u2-v1-artifacts", base), "u2-v1-artifacts")
-                (base / "artifacts").mkdir()
-                self.assertEqual(k1.resolve_store("u2-v1-artifacts", base), "artifacts")
-                (base / "u2-v1-artifacts").mkdir()
-                self.assertEqual(k1.resolve_store("u2-v1-artifacts", base), "u2-v1-artifacts")
+    def test_the_v1_store_is_the_env_override_or_the_artifacts_store(self):
+        with mock.patch.dict(os.environ, {"LLMP_TEST_V1_STORE": ""}):
+            cfg = k1.make_config(k1.FAMILIES["gemma2"], "f16", pathlib.Path("/s"),
+                                 pathlib.Path("/d"), 1)
+            self.assertIn('installed = "/s/artifacts"', cfg)
+        with mock.patch.dict(os.environ, {"LLMP_TEST_V1_STORE": "/env/store"}):
+            cfg = k1.make_config(k1.FAMILIES["gemma2"], "f16", pathlib.Path("/s"),
+                                 pathlib.Path("/d"), 1)
+            self.assertIn('installed = "/env/store"', cfg)
 
     def test_stream_chat_raises_on_sse_error(self):
         with mock.patch("http.client.HTTPConnection") as mock_conn_cls:

@@ -15,7 +15,7 @@ revisions, including source authentication, StoredSpec/component validation and
 Deep artifact verification. Publication took 253.346 s and 281.777 s on Spark A;
 these observations are not model performance measurements. The actual W8 writer
 snapshot is `616545478ad909e8b9854fa1fbe0ab0aa82d9c808dfb58eaed97a44be1d2303f`.
-The [aggregate](gemma-sampling-refresh.json) retains source revisions, full IDs,
+The aggregate retains source revisions, full IDs,
 actual compiler/binary identities and content digests. Raw manifest hashes and
 semantic artifact IDs are recorded separately; build provenance is retained as
 emitted by the writer.

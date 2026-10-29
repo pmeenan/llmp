@@ -95,10 +95,10 @@ and matched speed obligations are complete.
 
 ## Frozen collector and invocation
 
-[mia_capture.py](mia_capture.py), SHA-256
+mia_capture.py, SHA-256
 `736fb71535c6b33969e1830ddba04d8d137c93d84c6d5fe8facc0d7d7bb89461`,
 enforces the collection contract above. Its additional
-[input pins](mia-capture-pins.json) have SHA-256
+input pins have SHA-256
 `bc246e63a64a9aa84235e539c57daa3a4a43a7f0f2312b1992e17d2b4b587e2b`.
 The existing capture helper, physical-plan parser, speed helper, quality-pair
 helper, arm pins and strict Mia preregistration are authenticated too.

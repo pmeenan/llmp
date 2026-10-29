@@ -42,7 +42,7 @@ corpus and helper pre/post hashes matched. The final supervisor returned zero;
 Spark A's post-job check reported no running/waiting jobs or GPU processes.
 
 The [freeze receipt](freeze-receipt.json) records both attempts, exact raw
-evidence hashes and lifecycle. [source-hashes.json](source-hashes.json) records
+evidence hashes and lifecycle. source-hashes.json records
 37 actual installed source snapshots; the 15 previously pinned source hashes
 also matched. Independent review confirmed teacher-token inclusion even outside
 top-1, full-vocabulary normalization, chunk assembly, and the head's 262,144-token

@@ -577,8 +577,9 @@ and `string-arguments-not-object`, which both refuse).
 **Generated tool output.** The protocol-neutral [tool-call foundation](tool-calls.md)
 attaches a declarative output grammar to verified native templates and consumes
 only generated text. It serves the Chat Completions route, with required and
-named triggers forced through the canonical span planner above; real-model
-qualification remains outstanding.
+named triggers forced through the canonical span planner above; a bounded
+real-model qualification passed for one run identity (2026-10-22), and broader
+qualification remains open.
 
 **Structured content.** `chat::Content` owns either nullable scalar text or
 ordered text, tool-use, tool-result and image parts. Intake keeps text-part

@@ -3,6 +3,13 @@
 
 # U3 Llama 3.3 NVFP4 bounded quality results
 
+Retention (F10, 2026-10-28): this directory keeps the collectors and the
+reference and native runners that the reproduction recipe below names. The
+per-model run-once drivers under `gemma26/` and `qwen27/` (freeze, launch,
+lifecycle and source-adapter scripts, their tests) and the per-file source-hash
+inventories were deleted under AGENTS rule 8; the protocols, pre-registrations,
+frozen inputs and results stay, and the deleted files are in Git at `1564dcd6`.
+
 Measured on 2026-10-22 on `spark` (`spark-c4e2`, NVIDIA GB10).
 The [registered protocol](PROTOCOL.md) passed both likelihood phases and
 five paired behavioral controls. Both Fibonacci replies truncated at the
