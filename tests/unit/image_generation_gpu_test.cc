@@ -5,10 +5,9 @@
 // published v1 composition (tests/support/v1_frozen.h V1Store, or
 // LLMP_IMAGE_GENERATION_STORE) and the Qwen-Image-2.1 reference fixture's
 // source noise (the models directory's references/qwen-image-2.1/native/ref1,
-// or LLMP_IMAGE_GENERATION_NOISE). Every check runs in the standard models
-// set and fails when its inputs are absent, except the imported Q4 proof,
-// which skips, naming them, until its Q4_K_M composition and 512² fixture
-// are staged.
+// or LLMP_IMAGE_GENERATION_NOISE). Every check, the imported Q4 proof
+// (its Q4_K_M composition and 512² fixture) included, runs in the standard
+// models set and fails, naming them, when its inputs are absent.
 #include <gtest/gtest.h>
 #include <sys/stat.h>
 #include <unistd.h>

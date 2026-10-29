@@ -6,8 +6,8 @@
 // through the interpreter and through what ChatTemplate chooses for it, on
 // every conversation of tests/unit/data/chat/corpus-conversations.json. The
 // templates and references live outside the repository (their licenses
-// vary), under the models directory's chat-templates/; the test skips where
-// they are absent and fails where a template's bytes differ from its
+// vary), under the models directory's chat-templates/; the test fails where
+// they are absent, and where a template's bytes differ from its
 // manifest's hash.
 
 #include <gtest/gtest.h>

@@ -8,13 +8,15 @@
 // weights. Acquiring one model evicts only the other's weights, as many as
 // its shortfall needs, never the workspace (in the closure, or protected
 // when it is not); a closure that cannot fit is refused and evicts
-// nothing. The paged harnesses' node runs the same
-// program on the real providers (cuda_paged_node_test.cc).
+// nothing; a launch over a closure not all resident is refused before it
+// runs. The paged harnesses' node runs the same program on the real
+// providers (cuda_paged_node_test.cc).
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -554,6 +556,46 @@ TEST_F(AcquireTest, LiveBudgetUpdateGovernsSubsequentAcquisitions) {
       succeeded));
   EXPECT_EQ(Resident(0), kPerModel);
   EXPECT_TRUE(Loaded(0));
+}
+
+// A launch over a closure that is not all resident, none of it or all but
+// one evicted extent, is refused (kNotResident) before its job can run;
+// once the closure is resident again the same launch runs (BP-P2's
+// incomplete closure).
+TEST_F(AcquireTest, ALaunchOverAClosureNotAllResidentIsRefusedBeforeItRuns) {
+  Build(1 + kPerModel);
+  const auto launch = [&](bool& ok, int& why) {
+    std::atomic<bool> ran{false};
+    ts::Done done;
+    ok = Run(std::make_unique<ts::LaunchOnlyProgram>(done, ModelClosure(0), ran), done);
+    why = done.error.load();
+    return ran.load();
+  };
+  bool succeeded = true;
+  int error = -1;
+  EXPECT_FALSE(launch(succeeded, error));
+  EXPECT_FALSE(succeeded);
+  EXPECT_EQ(error, static_cast<int>(sc::WorkError::kNotResident));
+
+  ts::Done loaded;
+  ts::AcquireReport report;
+  ASSERT_TRUE(
+      Run(std::make_unique<ts::AcquireProgram>(loaded, ModelClosure(0), domain_, report), loaded));
+  ts::Done evicted;
+  ASSERT_TRUE(Run(std::make_unique<ts::EvictProgram>(
+                      evicted, std::vector<ExtentId>{weights_[0][kPerModel - 1]}),
+                  evicted));
+  ASSERT_EQ(Resident(0), kPerModel - 1);
+  EXPECT_FALSE(launch(succeeded, error));
+  EXPECT_FALSE(succeeded);
+  EXPECT_EQ(error, static_cast<int>(sc::WorkError::kNotResident));
+
+  ts::Done reloaded;
+  ASSERT_TRUE(Run(std::make_unique<ts::AcquireProgram>(reloaded, ModelClosure(0), domain_, report),
+                  reloaded));
+  EXPECT_TRUE(launch(succeeded, error));
+  EXPECT_TRUE(succeeded);
+  EXPECT_EQ(Resident(0), kPerModel);
 }
 
 }  // namespace

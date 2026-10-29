@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The DeepSeek V4 mappings on the published v1 artifacts (label `models`;
-// skipped when the store or the target is absent): DeepSeek V4 Flash 0731's
+// failing when the store or the target is absent): DeepSeek V4 Flash 0731's
 // UD-Q2_K_XL (01a5e5ba) and the DSpark drafter (e14bf29f) composed with it.
 // The target's stored spec is validated against its tensors and equals the
 // spec of the unit tests' fixture (dsv4_fixture.h, synthesized with the

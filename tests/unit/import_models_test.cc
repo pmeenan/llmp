@@ -13,8 +13,7 @@
 // quantized module and decodes within its quantization of the native
 // checkpoint's weights; and the safetensors reader leaves an MLX
 // checkpoint to its reader. Needs the model files (label `models`); each
-// case is skipped without its files; the explicitly scheduled closed
-// Qwen header-normalization case refuses missing input.
+// case fails without its files.
 
 #include <fcntl.h>
 #include <gtest/gtest.h>
@@ -752,7 +751,7 @@ std::uint64_t ExpectResourcesAreTheCheckpoints(const std::filesystem::path& root
 // architectures, the kept files the composition keeps, and in each
 // component every tensor the v1 artifact holds, in its format and with its
 // bytes (all ~33 GB compared).
-TEST(ImportPipelineModelsTest, QwenImageComponentsAreTheV0Imports) {
+TEST(ImportPipelineModelsTest, QwenImageComponentsAreTheV1Imports) {
   const std::filesystem::path path = Models() / "models/Qwen/Qwen-Image-2.1@790c9263";
   const std::filesystem::path store = test_support::V1Store();
   const auto id = test_support::V1IdNamed("qwen-image");

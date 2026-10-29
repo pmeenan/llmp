@@ -84,12 +84,6 @@ std::string ChunkLine(const Chunk& chunk) {
 
 std::string EndChunkLine() { return "{\"type\":\"end_chunk\"}\n"; }
 
-std::string OpLine(std::string_view name, int layer) {
-  return std::format(R"({{"type":"op","name":{},"layer":{}}})"
-                     "\n",
-                     Quoted(name), layer);
-}
-
 std::string EventLine(const Event& event) {
   switch (event.kind) {
     case EventKind::kKernel:

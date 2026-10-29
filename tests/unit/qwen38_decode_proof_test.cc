@@ -35,7 +35,7 @@
 // Spark's). A partial copy serves: manifest, index and meta whole, each
 // shard at full size with its header and the groups and table rows above
 // present (the rest may be holes); the test reads nothing else. Without
-// the artifact the test skips, naming the variable. (The v0 imports'
+// the artifact the test fails, naming the variable. (The v0 imports'
 // comparison of the GGML-layout experts with the CUTLASS layout's went
 // with the v0 artifacts: no v1 import keeps GGML's layout.)
 //

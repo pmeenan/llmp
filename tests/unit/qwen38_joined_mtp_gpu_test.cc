@@ -3,7 +3,7 @@
 
 // One owned target/MTP composition, two owners with different pending spans:
 // the published v1 ModelOpt target (02354af1) and its MTP drafter (bb49b7da)
-// from the v1 store (skipped without them). This is same-implementation
+// from the v1 store (failing without them). This is same-implementation
 // state/capture evidence, not a quality comparison.
 #include <gtest/gtest.h>
 

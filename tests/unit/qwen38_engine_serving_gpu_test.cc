@@ -1129,6 +1129,7 @@ class Qwen38GgufKeptGpu : public testing::Test {
   fs::path scratch;
   std::FILE* log = nullptr;
   bool retirement_failed = false;
+  void CheckKeptRestartContinuesExactly(bool expect_drafts);
   bool mtp = false;  // the native target with its MTP drafter (a per-row tap)
 
   void SetUp() override {
@@ -1274,7 +1275,9 @@ class Qwen38GgufKeptGpu : public testing::Test {
   }
 };
 
-TEST_F(Qwen38GgufKeptGpu, ConversationKeptAcrossARestartContinuesExactly) {
+// A conversation kept across a graceful restart continues exactly
+// (kept_restart_serving_checks.h), with or without the drafter's drafts.
+void Qwen38GgufKeptGpu::CheckKeptRestartContinuesExactly(bool expect_drafts) {
   struct Harness {
     Qwen38GgufKeptGpu& test;
     rt::Server& server() { return *test.life->server; }
@@ -1296,6 +1299,7 @@ TEST_F(Qwen38GgufKeptGpu, ConversationKeptAcrossARestartContinuesExactly) {
   ASSERT_TRUE(started) << (started ? "" : started.error());
   llmp::test::KeptRestartPlan plan;
   plan.vocab = kVocab;
+  plan.expect_drafts = expect_drafts;
   plan.tokens = [](std::uint32_t owner, std::size_t count) {
     std::vector<std::int32_t> out;
     out.reserve(count);
@@ -1308,6 +1312,10 @@ TEST_F(Qwen38GgufKeptGpu, ConversationKeptAcrossARestartContinuesExactly) {
   EXPECT_EQ(Engine().runner().coverage().violations, 0U);
 }
 
+TEST_F(Qwen38GgufKeptGpu, ConversationKeptAcrossARestartContinuesExactly) {
+  CheckKeptRestartContinuesExactly(false);
+}
+
 // The same with the native target and its MTP drafter, whose feature tap is
 // a cell per chunk row (its held positions are host bookkeeping beside the
 // kept state).
@@ -1316,34 +1324,5 @@ class Qwen38MtpKeptGpu : public Qwen38GgufKeptGpu {
   Qwen38MtpKeptGpu() { mtp = true; }
 };
 TEST_F(Qwen38MtpKeptGpu, ConversationKeptAcrossARestartContinuesExactly) {
-  struct Harness {
-    Qwen38GgufKeptGpu& test;
-    rt::Server& server() { return *test.life->server; }
-    rt::Llm& model() { return *test.model; }
-    rt::Llm::Branch& Branch(std::uint32_t id) { return test.Branch(id); }
-    std::expected<llmp::base::Sha256Digest, std::string> StateHash(std::uint32_t slot) {
-      return test.StateHash(slot);
-    }
-    std::string Log() const { return test.Log(); }
-    rt::Status Restart() {
-      test.life->server->Persist(rt::Clock::now() + std::chrono::seconds(120), {});
-      if (auto r = test.Retire(); !r) return r;
-      return test.Start();
-    }
-  } harness{*this};
-  const auto started = Start();
-  ASSERT_TRUE(started) << (started ? "" : started.error());
-  llmp::test::KeptRestartPlan plan;
-  plan.vocab = kVocab;
-  plan.expect_drafts = true;
-  plan.tokens = [](std::uint32_t owner, std::size_t count) {
-    std::vector<std::int32_t> out;
-    out.reserve(count);
-    for (std::size_t p = 0; p < count; ++p)
-      out.push_back(static_cast<std::int32_t>(100 + ((p * 7919U + 13U + owner * 17U) % 150000U)));
-    return out;
-  };
-  const auto r = llmp::test::CheckKeptRestart(harness, plan);
-  ASSERT_TRUE(r) << (r ? "" : r.error());
-  EXPECT_EQ(Engine().runner().coverage().violations, 0U);
+  CheckKeptRestartContinuesExactly(true);
 }

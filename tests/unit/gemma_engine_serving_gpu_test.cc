@@ -390,9 +390,7 @@ class GemmaEngineServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   }
 };
 
-// The tests of Gemma 3 alone: a suite of its own, so that no test of another
-// family skips beside them (CTest reports a test that prints a skip as
-// skipped whatever else it printed).
+// The tests of Gemma 3 alone, in a suite of their own.
 class GemmaEngineGemma3Gpu : public GemmaEngineServingGpu {};
 
 class GemmaEngineNativeV1Gpu : public GemmaEngineServingGpu {};

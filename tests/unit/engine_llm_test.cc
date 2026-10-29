@@ -21,78 +21,10 @@
 #include <fstream>
 
 #include "llm_fixture.h"
-#include "u4_diagnostic_export.h"
 
 namespace {
 using namespace llmp::test_support::llm_fixture;
 class EngineLlmTest : public LlmFixture {};
-
-TEST(U4DiagnosticExporterTest, StreamsFramedPlanRecordsAndPreservesMalformedPartialFiles) {
-  std::string parent_name =
-      (std::filesystem::path(testing::TempDir()) / "u4-export-XXXXXX").string();
-  ASSERT_NE(::mkdtemp(parent_name.data()), nullptr);
-  const std::filesystem::path parent(parent_name);
-  auto export_to = llmp::test_support::U4DiagnosticExport::Create(parent / "registered");
-  ASSERT_TRUE(export_to) << (export_to ? "" : export_to.error());
-  struct stat directory_info{};
-  ASSERT_EQ(::stat((parent / "registered").c_str(), &directory_info), 0);
-  EXPECT_EQ(directory_info.st_mode & 0777, 0700);
-  auto move_probe = export_to->Open("move-probe.jsonl");
-  ASSERT_TRUE(move_probe) << (move_probe ? "" : move_probe.error());
-  ASSERT_TRUE(move_probe->Write("abc"));
-  auto moved_probe = std::move(*move_probe);
-  EXPECT_EQ(moved_probe.bytes(), 3U);
-  ASSERT_TRUE(moved_probe.Write("\n"));
-  EXPECT_EQ(moved_probe.bytes(), 4U);
-  ASSERT_TRUE(moved_probe.Close());
-  auto file = export_to->Open("plans-test.jsonl");
-  ASSERT_TRUE(file) << (file ? "" : file.error());
-  auto moved_file = std::move(*file);
-  llmp::test_support::U4PlanRecordWriter writer(moved_file, "test");
-  auto sink = writer.Sink();
-  sink(llmp::kernels::PlanReportEvent::kBegin, {});
-  sink(llmp::kernels::PlanReportEvent::kFragment, "{\"installed\":true}");
-  sink(llmp::kernels::PlanReportEvent::kEnd, {});
-  auto count = writer.Finish();
-  ASSERT_TRUE(count) << (count ? "" : count.error());
-  EXPECT_EQ(*count, 1U);
-  ASSERT_TRUE(moved_file.Close());
-  struct stat info{};
-  ASSERT_EQ(::stat((parent / "registered" / "plans-test.jsonl").c_str(), &info), 0);
-  EXPECT_EQ(info.st_mode & 0777, 0600);
-  std::ifstream input(parent / "registered" / "plans-test.jsonl");
-  std::string record;
-  ASSERT_TRUE(std::getline(input, record));
-  EXPECT_EQ(record, "{\"phase\":\"test\",\"record\":{\"installed\":true}}");
-  EXPECT_FALSE(export_to->Open("plans-test.jsonl"));
-
-  auto partial = export_to->Open("plans-partial.jsonl");
-  ASSERT_TRUE(partial);
-  llmp::test_support::U4PlanRecordWriter invalid(*partial, "turn");
-  auto invalid_sink = invalid.Sink();
-  invalid_sink(llmp::kernels::PlanReportEvent::kEnd, {});
-  EXPECT_FALSE(invalid.Finish());
-  ASSERT_TRUE(partial->Close());
-  EXPECT_TRUE(std::filesystem::exists(parent / "registered" / "plans-partial.jsonl"));
-  ASSERT_TRUE(export_to->Complete());
-  std::ifstream status_input(parent / "registered" / "status.jsonl");
-  std::string incomplete, complete;
-  ASSERT_TRUE(std::getline(status_input, incomplete));
-  ASSERT_TRUE(std::getline(status_input, complete));
-  EXPECT_EQ(incomplete, "{\"status\":\"incomplete\"}");
-  EXPECT_EQ(complete, "{\"status\":\"complete\"}");
-  auto full = llmp::test_support::U4JsonlFile::AdoptRawForTest(std::fopen("/dev/full", "wb"));
-  ASSERT_TRUE(full) << (full ? "" : full.error());
-  ASSERT_EQ(::setvbuf(full->Raw(), nullptr, _IONBF, 0), 0);
-  EXPECT_EQ(std::fwrite("raw", 1, 3, full->Raw()), 0U);
-  EXPECT_FALSE(full->failed());
-  EXPECT_FALSE(full->Flush());
-  auto moved_full = std::move(*full);
-  EXPECT_TRUE(moved_full.failed());
-  EXPECT_FALSE(moved_full.Close());
-  std::error_code ignored;
-  std::filesystem::remove_all(parent, ignored);
-}
 
 // Snapshot payload and variable metadata have one catalog charge. These are
 // integration controls over the real slot copy/restore path on the fake node;

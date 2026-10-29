@@ -40,7 +40,7 @@
 // tuple): the automatic startup payment against the node's measured
 // headroom; one (the logit-row case) takes the speed gate's diagnostic
 // tuple instead, `auto` under a 112 GiB cap, as the service applies it. Every test needs roughly
-// 116 GiB of headroom on a quiet host. A missing artifact skips with its reason.
+// 116 GiB of headroom on a quiet host. A missing artifact fails with its reason.
 
 #include <gtest/gtest.h>
 #include <sys/stat.h>
@@ -403,10 +403,10 @@ class Dsv4EngineBase : public testing::Test {
   }
 };
 
-// The target alone: no drafter, so no test of the drafter's skips beside it.
+// The target alone: no drafter, so none of its tests needs the drafter.
 class Dsv4EngineTarget : public Dsv4EngineBase {};
 
-// The target with DSpark (a suite of its own: it skips without the drafter).
+// The target with DSpark (a suite of its own: it fails without the drafter).
 class Dsv4EngineDspark : public Dsv4EngineBase {
  protected:
   Dsv4EngineDspark() { needs_drafter = true; }

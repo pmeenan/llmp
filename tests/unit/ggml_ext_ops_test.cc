@@ -174,6 +174,11 @@ class GgmlExtOpsTest : public ::testing::Test {
   void SmallOwnerControl(std::uint32_t cap, std::uint32_t small_owners = 0);
   void BoundedOwnerControl(std::uint32_t cap);
   void MultirowOwnerControl(std::span<const std::pair<std::int64_t, std::int64_t>> shapes);
+  void SlidingMaskControl(std::uint32_t window, std::uint32_t global_cells,
+                          std::uint32_t local_cells, std::int32_t context,
+                          std::span<const std::pair<std::uint32_t, std::uint32_t>> cases);
+  void UnequalOwnerPaddingControl(std::int64_t heads, std::int64_t d, float q_scale, float k_scale,
+                                  std::uint32_t softcap, const char* label, const char* tag);
   void SetUp() override {
     execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
@@ -377,14 +382,16 @@ TEST_F(GgmlExtOpsTest, SelectCopiesPayloadBitsAndCapturedPredicatesWithoutArithm
   }
 }
 
-TEST_F(GgmlExtOpsTest, Gemma3DeviceMasksMatchEveryHostByteAcrossWrapAndTrainedMaximum) {
+// Both owners' global and sliding masks of one chunk, at each (past, rows)
+// case: every host byte, eagerly and replayed, the padding and guards
+// untouched, a replay after one owner advances, and a refused input type.
+void GgmlExtOpsTest::SlidingMaskControl(
+    std::uint32_t window, std::uint32_t global_cells, std::uint32_t local_cells,
+    std::int32_t context, std::span<const std::pair<std::uint32_t, std::uint32_t>> cases) {
   const auto submission = execution_->Submission(stream_);
   ASSERT_TRUE(submission);
   const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
-  const std::uint32_t window = 1024;                              // Gemma 3 4B's sliding window
-  const std::uint32_t global_cells = 131072, local_cells = 1280;  // ring: pad(1024 + 128, 256)
-  for (const auto [past, rows] :
-       {std::pair{1279U, 1U}, std::pair{1152U, 128U}, std::pair{130816U, 128U}}) {
+  for (const auto [past, rows] : cases) {
     std::array<std::array<std::uint32_t, 2>, 2> segments{{{past, rows}, {past + rows, rows}}};
     const auto host = ReferenceChunk(window, global_cells, local_cells, segments);
     auto* positions = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 2 * rows), host.positions);
@@ -396,7 +403,7 @@ TEST_F(GgmlExtOpsTest, Gemma3DeviceMasksMatchEveryHostByteAcrossWrapAndTrainedMa
             kg::CausalMask(c(), positions, cells, static_cast<std::int32_t>(segment * rows),
                            static_cast<std::int32_t>(rows),
                            static_cast<std::int32_t>(local ? local_cells : global_cells),
-                           local ? static_cast<std::int32_t>(window) : 0, 131072);
+                           local ? static_cast<std::int32_t>(window) : 0, context);
         const auto address = Allocate(ggml_nbytes(mask) + 512);
         kg::TensorArena::Bind(mask, address + 256);
         const auto expected = [&](const auto& fresh) {
@@ -469,96 +476,17 @@ TEST_F(GgmlExtOpsTest, Gemma3DeviceMasksMatchEveryHostByteAcrossWrapAndTrainedMa
   }
 }
 
+TEST_F(GgmlExtOpsTest, Gemma3DeviceMasksMatchEveryHostByteAcrossWrapAndTrainedMaximum) {
+  // Gemma 3 4B's sliding window, and its ring: pad(1024 + 128, 256).
+  constexpr std::array kCases{std::pair{1279U, 1U}, std::pair{1152U, 128U},
+                              std::pair{130816U, 128U}};
+  SlidingMaskControl(1024, 131072, 1280, 131072, kCases);
+}
+
 TEST_F(GgmlExtOpsTest, Gemma2DeviceMasksMatchEveryHostByteAcrossWrapAndEightKBoundary) {
-  const auto submission = execution_->Submission(stream_);
-  ASSERT_TRUE(submission);
-  const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
-  const std::uint32_t window = 4096;                            // Gemma 2 2B's sliding window
-  const std::uint32_t global_cells = 8192, local_cells = 4352;  // ring: pad(4096 + 128, 256)
-  for (const auto [past, rows] :
-       {std::pair{4351U, 1U}, std::pair{4224U, 128U}, std::pair{7936U, 128U}}) {
-    std::array<std::array<std::uint32_t, 2>, 2> segments{{{past, rows}, {past + rows, rows}}};
-    const auto host = ReferenceChunk(window, global_cells, local_cells, segments);
-    auto* positions = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 2 * rows), host.positions);
-    for (std::uint32_t segment = 0; segment < 2; ++segment) {
-      for (const bool local : {false, true}) {
-        const auto& input = host.owners[segment];
-        const auto cells = local ? input.local_n_kv : input.global_n_kv;
-        auto* mask =
-            kg::CausalMask(c(), positions, cells, static_cast<std::int32_t>(segment * rows),
-                           static_cast<std::int32_t>(rows),
-                           static_cast<std::int32_t>(local ? local_cells : global_cells),
-                           local ? static_cast<std::int32_t>(window) : 0, 8192);
-        const auto address = Allocate(ggml_nbytes(mask) + 512);
-        kg::TensorArena::Bind(mask, address + 256);
-        const auto expected = [&](const auto& fresh) {
-          const auto& in = fresh.owners[segment];
-          const auto& logical = local ? in.local_mask : in.global_mask;
-          std::vector<std::uint16_t> padded(ggml_nbytes(mask) / 2, 0xFC00);
-          std::ranges::copy(logical, padded.begin());
-          return padded;
-        };
-        const auto poison = [&] {
-          EXPECT_EQ(cudaMemsetAsync(reinterpret_cast<void*>(address), 0xa5, ggml_nbytes(mask) + 512,
-                                    stream),
-                    cudaSuccess);
-        };
-        const auto guards = [&] {
-          std::array<std::uint8_t, 256> before{}, after{};
-          Finish();
-          EXPECT_EQ(cudaMemcpy(before.data(), reinterpret_cast<void*>(address), 256,
-                               cudaMemcpyDeviceToHost),
-                    cudaSuccess);
-          EXPECT_EQ(
-              cudaMemcpy(after.data(), reinterpret_cast<void*>(address + 256 + ggml_nbytes(mask)),
-                         256, cudaMemcpyDeviceToHost),
-              cudaSuccess);
-          EXPECT_TRUE(std::ranges::all_of(before, [](auto x) { return x == 0xa5; }));
-          EXPECT_EQ(before, after);
-        };
-        poison();
-        ASSERT_TRUE(kg::RunCausalMask(launch(), mask));
-        const auto eager = Download<std::uint16_t>(mask);
-        EXPECT_EQ(eager, expected(host));
-        auto captured =
-            launch().Capture([&](auto& context) { return kg::RunCausalMask(context, mask); });
-        ASSERT_TRUE(captured);
-        poison();
-        ASSERT_TRUE(launch().Launch(*captured));
-        EXPECT_EQ(Download<std::uint16_t>(mask), eager);
-        guards();
-        // Advance only this owner, leaving the peer's offset/positions untouched.
-        const std::int32_t delta = (segments[segment][0] + rows) % 256 == 0 ? -1 : 1;
-        segments[segment][0] =
-            static_cast<std::uint32_t>(static_cast<std::int64_t>(segments[segment][0]) + delta);
-        const auto fresh = ReferenceChunk(window, global_cells, local_cells, segments);
-        ASSERT_EQ(fresh.owners[segment].global_n_kv, input.global_n_kv);
-        ASSERT_EQ(fresh.owners[segment].local_n_kv, input.local_n_kv);
-        ASSERT_EQ(cudaMemcpyAsync(positions->data, fresh.positions.data(), ggml_nbytes(positions),
-                                  cudaMemcpyHostToDevice, stream),
-                  cudaSuccess);
-        poison();
-        ASSERT_TRUE(launch().Launch(*captured));
-        const auto replay = Download<std::uint16_t>(mask);
-        EXPECT_EQ(replay, expected(fresh));
-        poison();
-        ASSERT_TRUE(kg::RunCausalMask(launch(), mask));
-        EXPECT_EQ(Download<std::uint16_t>(mask), replay);
-        EXPECT_EQ(Download<std::int32_t>(positions), fresh.positions);
-        guards();
-        segments[segment][0] =
-            static_cast<std::uint32_t>(static_cast<std::int64_t>(segments[segment][0]) - delta);
-        ASSERT_EQ(cudaMemcpyAsync(positions->data, host.positions.data(), ggml_nbytes(positions),
-                                  cudaMemcpyHostToDevice, stream),
-                  cudaSuccess);
-        const auto saved = positions->type;
-        positions->type = GGML_TYPE_F32;
-        EXPECT_FALSE(kg::RunCausalMask(launch(), mask));
-        positions->type = saved;
-        EXPECT_FALSE(launch().faulted());
-      }
-    }
-  }
+  // Gemma 2 2B's sliding window, and its ring: pad(4096 + 128, 256).
+  constexpr std::array kCases{std::pair{4351U, 1U}, std::pair{4224U, 128U}, std::pair{7936U, 128U}};
+  SlidingMaskControl(4096, 8192, 4352, 8192, kCases);
 }
 
 // A frozen read (a drafter's rows over its target's cache, which they never
@@ -5414,14 +5342,21 @@ TEST_F(GgmlExtOpsTest, Gemma3PrefillCommonOperandsExposePackedAndSplitMmaGeometr
   }
 }
 
-TEST_F(GgmlExtOpsTest, Gemma3UnequalOwnerPaddingMatchesTheFundedCommonStream) {
-  if (ComputeCapability() != 1210) GTEST_SKIP() << "GB10 two-owner control";
-  constexpr std::int64_t d = 256, heads = 8, kvh = 4, short_cells = 512, cells = 1024;
+// Two owners of unequal length (512 and 1024 source cells, the shorter
+// zero-padded with invisible cells) against the funded common stream at
+// one head shape: byte-equal to the whole MMA, near the FP64 reference,
+// a changed input's replay, and every source left as it was. A nonzero
+// softcap applies to both and to the reference.
+void GgmlExtOpsTest::UnequalOwnerPaddingControl(std::int64_t heads, std::int64_t d, float q_scale,
+                                                float k_scale, std::uint32_t softcap,
+                                                const char* label, const char* tag) {
+  const std::int64_t gqa = d == 256 ? 2 : 8, kvh = heads / gqa;
+  constexpr std::int64_t short_cells = 512, cells = 1024;
   const auto n = [](std::int64_t x) { return static_cast<std::size_t>(x); };
   auto arena = TensorArena::Create(96).value();
   auto* ctx = arena.context();
-  auto qdata = Normal(741, n(d * heads * 2), 0.0625F);
-  auto kdata = Halves(Normal(742, n(d * kvh * (short_cells + cells)), 0.25F));
+  auto qdata = Normal(741, n(d * heads * 2), q_scale);
+  auto kdata = Halves(Normal(742, n(d * kvh * (short_cells + cells)), k_scale));
   auto vdata = Halves(Normal(743, n(d * kvh * (short_cells + cells)), 0.25F));
   auto* raw_q = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, d, heads, 1, 2), qdata);
   auto* q = ggml_permute(ctx, raw_q, 0, 2, 1, 3);
@@ -5455,6 +5390,7 @@ TEST_F(GgmlExtOpsTest, Gemma3UnequalOwnerPaddingMatchesTheFundedCommonStream) {
   in.mask = owner_mask;
   in.output = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, d, heads, 1, 2));
   in.owner_count = in.logical_cohort = 2;
+  in.logit_softcap = softcap;
   for (std::size_t owner = 0; owner < 2; ++owner) {
     auto* key = owner == 0 ? padded_k : raw_k[1];
     auto* value = owner == 0 ? padded_v : raw_v[1];
@@ -5472,17 +5408,25 @@ TEST_F(GgmlExtOpsTest, Gemma3UnequalOwnerPaddingMatchesTheFundedCommonStream) {
   auto* v = ggml_permute(ctx, physical_v, 0, 2, 1, 3);
   TensorArena::Bind(k, reinterpret_cast<std::uintptr_t>(physical_k->data));
   TensorArena::Bind(v, reinterpret_cast<std::uintptr_t>(physical_v->data));
-  auto* whole = Place(ggml_flash_attn_ext(ctx, q, k, v, physical_mask, 1, 0, 0));
+  auto* whole =
+      Place(ggml_flash_attn_ext(ctx, q, k, v, physical_mask, 1, 0, static_cast<float>(softcap)));
   ggml_prec_set_acc(whole, GGML_PREC_F32);
-  auto plan = kg::PlanFlashAttnMmaGqa2(launch(), whole);
+  auto plan = (d == 256 ? kg::PlanFlashAttnMmaGqa2(launch(), whole)
+                        : kg::PlanFlashAttnMma(launch(), whole));
   auto owners = kg::PlanFlashAttnOwners(launch(), in);
   ASSERT_TRUE(plan);
   ASSERT_TRUE(owners);
-  EXPECT_EQ(plan->columns, 4);
+  EXPECT_EQ(plan->columns, d == 256 ? 4 : 1);
   EXPECT_EQ(owners->original.columns, plan->columns);
   EXPECT_EQ(owners->cohort_blocks, plan->blocks);
   EXPECT_EQ(owners->original.mask_prepass, plan->mask_prepass);
   EXPECT_TRUE(plan->mask_prepass);
+  if (softcap != 0) {
+    const auto shape = kg::detail::FlashAttnMmaShapeGqa2(4, launch().device(), true);
+    ASSERT_TRUE(shape);
+    EXPECT_EQ(owners->original_blocks_per_sm, shape->blocks_per_sm);
+    EXPECT_GT(owners->owner_blocks_per_sm, 0);
+  }
   const auto scratch = std::max(plan->scratch, owners->original.scratch);
   auto paid = LaunchContext::Create(launch().device(), *execution_, stream_,
                                     {.base = Allocate(scratch), .size = Bytes(scratch)});
@@ -5495,7 +5439,10 @@ TEST_F(GgmlExtOpsTest, Gemma3UnequalOwnerPaddingMatchesTheFundedCommonStream) {
       if (auto x = kg::Fill(context, fill); !x) return x;
     for (auto* concat : {padded_k, padded_v, padded_mask, owner_mask})
       if (auto x = kg::Concat(context, concat); !x) return x;
-    if (auto x = kg::FlashAttnMmaGqa2(context, whole); !x) return x;
+    if (auto x =
+            (d == 256 ? kg::FlashAttnMmaGqa2(context, whole) : kg::FlashAttnMma(context, whole));
+        !x)
+      return x;
     return kg::FlashAttnOwnerRoots(context, in);
   };
   std::vector<float> prior;
@@ -5556,9 +5503,9 @@ TEST_F(GgmlExtOpsTest, Gemma3UnequalOwnerPaddingMatchesTheFundedCommonStream) {
           double dot = 0;
           for (std::int64_t i = 0; i < d; ++i)
             dot += static_cast<double>(qdata[n((owner * heads + head) * d + i)]) *
-                   ggml_fp16_to_fp32(pk[n(((owner * cells + cell) * kvh + head / 2) * d + i)]);
-          scores[n(cell)] = dot;
-          largest = std::max(largest, dot);
+                   ggml_fp16_to_fp32(pk[n(((owner * cells + cell) * kvh + head / gqa) * d + i)]);
+          scores[n(cell)] = softcap != 0 ? softcap * std::tanh(dot / softcap) : dot;
+          largest = std::max(largest, scores[n(cell)]);
         }
         double sum = 0;
         for (double score : scores) sum += std::exp(score - largest);
@@ -5566,9 +5513,9 @@ TEST_F(GgmlExtOpsTest, Gemma3UnequalOwnerPaddingMatchesTheFundedCommonStream) {
           for (std::int64_t i = 0; i < d; ++i)
             want[n((owner * heads + head) * d + i)] +=
                 std::exp(scores[n(cell)] - largest) / sum *
-                ggml_fp16_to_fp32(pv[n(((owner * cells + cell) * kvh + head / 2) * d + i)]);
+                ggml_fp16_to_fp32(pv[n(((owner * cells + cell) * kvh + head / gqa) * d + i)]);
       }
-    ExpectNmse(eager, want, kFlashAttnNmse, "unequal padded owner FP64");
+    ExpectNmse(eager, want, kFlashAttnNmse, label);
     if (pass != 0) EXPECT_NE(eager, prior);
     if (!graph) {
       auto captured = (*paid)->Capture(run);
@@ -5604,7 +5551,7 @@ TEST_F(GgmlExtOpsTest, Gemma3UnequalOwnerPaddingMatchesTheFundedCommonStream) {
       std::fill_n(original_mask.begin(), (owner == 0 ? 260 : 772) - static_cast<int>(pass), 0);
       EXPECT_EQ(Download<ggml_fp16_t>(masks[owner]), original_mask);
     }
-    std::cout << "GEMMA3_UNEQUAL_PADDING pass=" << pass
+    std::cout << tag << "_UNEQUAL_PADDING heads=" << heads << " d=" << d << " pass=" << pass
               << " source_cells=512/1024 common_cells=1024"
               << " columns=" << plan->columns << " blocks=" << plan->blocks
               << " scan=" << plan->mask_prepass << " scratch=" << scratch << '\n';
@@ -5612,218 +5559,17 @@ TEST_F(GgmlExtOpsTest, Gemma3UnequalOwnerPaddingMatchesTheFundedCommonStream) {
   }
 }
 
+TEST_F(GgmlExtOpsTest, Gemma3UnequalOwnerPaddingMatchesTheFundedCommonStream) {
+  if (ComputeCapability() != 1210) GTEST_SKIP() << "GB10 two-owner control";
+  UnequalOwnerPaddingControl(8, 256, 0.0625F, 0.25F, 0, "unequal padded owner FP64", "GEMMA3");
+}
+
 TEST_F(GgmlExtOpsTest, Gemma4UnequalOwnerPaddingMatchesBothHeadDimensions) {
   if (ComputeCapability() != 1210) GTEST_SKIP() << "GB10 two-owner control";
   for (const std::int64_t heads : {16, 32})
-    for (const std::int64_t d : {256, 512}) {
-      const std::int64_t gqa = d == 256 ? 2 : 8, kvh = heads / gqa;
-      constexpr std::int64_t short_cells = 512, cells = 1024;
-      const auto n = [](std::int64_t x) { return static_cast<std::size_t>(x); };
-      auto arena = TensorArena::Create(96).value();
-      auto* ctx = arena.context();
-      auto qdata = Normal(741, n(d * heads * 2), 0.0625F);
-      auto kdata = Halves(Normal(742, n(d * kvh * (short_cells + cells)), 0.25F));
-      auto vdata = Halves(Normal(743, n(d * kvh * (short_cells + cells)), 0.25F));
-      auto* raw_q = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, d, heads, 1, 2), qdata);
-      auto* q = ggml_permute(ctx, raw_q, 0, 2, 1, 3);
-      TensorArena::Bind(q, reinterpret_cast<std::uintptr_t>(raw_q->data));
-      std::array<ggml_tensor*, 2> raw_k{}, raw_v{}, masks{};
-      for (std::size_t owner = 0; owner < 2; ++owner) {
-        const auto count = owner == 0 ? short_cells : cells;
-        const auto begin = owner == 0 ? 0 : n(d * kvh * short_cells);
-        const auto slice = [&](const auto& data) {
-          return std::vector<ggml_fp16_t>(
-              data.begin() + static_cast<std::ptrdiff_t>(begin),
-              data.begin() + static_cast<std::ptrdiff_t>(begin + n(d * kvh * count)));
-        };
-        raw_k[owner] =
-            Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, count, 1), slice(kdata));
-        raw_v[owner] =
-            Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, count, 1), slice(vdata));
-        masks[owner] = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, count, 32, 1, 1));
-      }
-      const auto filled = [&](std::array<std::int64_t, 4> dims, float value) {
-        auto* out = ggml_fill(ctx, ggml_new_tensor(ctx, GGML_TYPE_F16, 4, dims.data()), value);
-        out->src[0] = nullptr;  // shape-only template; fill reads no source
-        return Place(out);
-      };
-      auto* zeros = filled({d, kvh, cells - short_cells, 1}, 0);
-      auto* invisible = filled({cells - short_cells, 32, 1, 1}, -INFINITY);
-      auto* padded_k = Place(ggml_concat(ctx, raw_k[0], zeros, 2));
-      auto* padded_v = Place(ggml_concat(ctx, raw_v[0], zeros, 2));
-      auto* padded_mask = Place(ggml_concat(ctx, masks[0], invisible, 0));
-      auto* owner_mask = Place(ggml_concat(ctx, padded_mask, masks[1], 3));
-      kg::FlashAttnOwners in;
-      in.q = q;
-      in.mask = owner_mask;
-      in.output = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, d, heads, 1, 2));
-      in.owner_count = in.logical_cohort = 2;
-      for (std::size_t owner = 0; owner < 2; ++owner) {
-        auto* key = owner == 0 ? padded_k : raw_k[1];
-        auto* value = owner == 0 ? padded_v : raw_v[1];
-        in.k[owner] = ggml_permute(ctx, key, 0, 2, 1, 3);
-        in.v[owner] = ggml_permute(ctx, value, 0, 2, 1, 3);
-        TensorArena::Bind(const_cast<ggml_tensor*>(in.k[owner]),
-                          reinterpret_cast<std::uintptr_t>(key->data));
-        TensorArena::Bind(const_cast<ggml_tensor*>(in.v[owner]),
-                          reinterpret_cast<std::uintptr_t>(value->data));
-      }
-      auto* physical_k = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, cells, 2));
-      auto* physical_v = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, cells, 2));
-      auto* physical_mask = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, cells, 32, 1, 2));
-      auto* k = ggml_permute(ctx, physical_k, 0, 2, 1, 3);
-      auto* v = ggml_permute(ctx, physical_v, 0, 2, 1, 3);
-      TensorArena::Bind(k, reinterpret_cast<std::uintptr_t>(physical_k->data));
-      TensorArena::Bind(v, reinterpret_cast<std::uintptr_t>(physical_v->data));
-      auto* whole = Place(ggml_flash_attn_ext(ctx, q, k, v, physical_mask, 1, 0, 0));
-      ggml_prec_set_acc(whole, GGML_PREC_F32);
-      auto plan = (d == 256 ? kg::PlanFlashAttnMmaGqa2(launch(), whole)
-                            : kg::PlanFlashAttnMma(launch(), whole));
-      auto owners = kg::PlanFlashAttnOwners(launch(), in);
-      ASSERT_TRUE(plan);
-      ASSERT_TRUE(owners);
-      EXPECT_EQ(plan->columns, d == 256 ? 4 : 1);
-      EXPECT_EQ(owners->original.columns, plan->columns);
-      EXPECT_EQ(owners->cohort_blocks, plan->blocks);
-      EXPECT_EQ(owners->original.mask_prepass, plan->mask_prepass);
-      EXPECT_TRUE(plan->mask_prepass);
-      const auto scratch = std::max(plan->scratch, owners->original.scratch);
-      auto paid = LaunchContext::Create(launch().device(), *execution_, stream_,
-                                        {.base = Allocate(scratch), .size = Bytes(scratch)});
-      ASSERT_TRUE(paid);
-      const auto submission = execution_->Submission(stream_);
-      ASSERT_TRUE(submission);
-      const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
-      const auto run = [&](LaunchContext& context) -> std::expected<void, KernelFailure> {
-        for (auto* fill : {zeros, invisible})
-          if (auto x = kg::Fill(context, fill); !x) return x;
-        for (auto* concat : {padded_k, padded_v, padded_mask, owner_mask})
-          if (auto x = kg::Concat(context, concat); !x) return x;
-        if (auto x = (d == 256 ? kg::FlashAttnMmaGqa2(context, whole)
-                               : kg::FlashAttnMma(context, whole));
-            !x)
-          return x;
-        return kg::FlashAttnOwnerRoots(context, in);
-      };
-      std::vector<float> prior;
-      std::optional<kg::CapturedGraph> graph;
-      for (std::size_t pass = 0; pass < 3; ++pass) {
-        if (pass != 0) {
-          const auto begin = pass == 1 ? 0U : n(d * kvh * short_cells);
-          const auto end = pass == 1 ? n(d * kvh * short_cells) : kdata.size();
-          for (std::size_t i = begin; i < end; ++i) {
-            kdata[i] = ggml_fp32_to_fp16(ggml_fp16_to_fp32(kdata[i]) * 0.75F);
-            vdata[i] = ggml_fp32_to_fp16(ggml_fp16_to_fp32(vdata[i]) + 0.125F);
-          }
-        }
-        std::vector<ggml_fp16_t> pk(n(d * kvh * cells * 2), 0), pv(pk.size(), 0);
-        std::vector<ggml_fp16_t> mask(n(cells * 32 * 2), ggml_fp32_to_fp16(-INFINITY));
-        for (std::size_t owner = 0; owner < 2; ++owner) {
-          const auto count = owner == 0 ? short_cells : cells;
-          const auto begin = owner == 0 ? 0U : n(d * kvh * short_cells);
-          const auto length = n(d * kvh * count);
-          const auto prefix = [&](const auto& data) {
-            return std::span(data).subspan(begin, length);
-          };
-          const auto copy = [&](ggml_tensor* tensor, auto data) {
-            return cudaMemcpyAsync(tensor->data, data.data(), data.size_bytes(),
-                                   cudaMemcpyHostToDevice, stream);
-          };
-          ASSERT_EQ(copy(raw_k[owner], prefix(kdata)), cudaSuccess);
-          ASSERT_EQ(copy(raw_v[owner], prefix(vdata)), cudaSuccess);
-          std::ranges::copy(prefix(kdata),
-                            pk.begin() + static_cast<std::ptrdiff_t>(owner * n(d * kvh * cells)));
-          std::ranges::copy(prefix(vdata),
-                            pv.begin() + static_cast<std::ptrdiff_t>(owner * n(d * kvh * cells)));
-          const auto visible = (owner == 0 ? 260 : 772) - static_cast<int>(pass);
-          std::fill_n(mask.begin() + static_cast<std::ptrdiff_t>(owner * n(cells * 32)), visible,
-                      0);
-          std::vector<ggml_fp16_t> own_mask(n(count * 32), ggml_fp32_to_fp16(-INFINITY));
-          std::fill_n(own_mask.begin(), visible, 0);
-          ASSERT_EQ(copy(masks[owner], std::span(own_mask)), cudaSuccess);
-        }
-        ASSERT_EQ(cudaMemcpyAsync(physical_k->data, pk.data(), ggml_nbytes(physical_k),
-                                  cudaMemcpyHostToDevice, stream),
-                  cudaSuccess);
-        ASSERT_EQ(cudaMemcpyAsync(physical_v->data, pv.data(), ggml_nbytes(physical_v),
-                                  cudaMemcpyHostToDevice, stream),
-                  cudaSuccess);
-        ASSERT_EQ(cudaMemcpyAsync(physical_mask->data, mask.data(), ggml_nbytes(physical_mask),
-                                  cudaMemcpyHostToDevice, stream),
-                  cudaSuccess);
-        ASSERT_TRUE(run(**paid));
-        const auto eager = Download(in.output);
-        const auto expected = Download(whole);
-        ASSERT_EQ(std::memcmp(eager.data(), expected.data(), eager.size() * sizeof(float)), 0);
-        ASSERT_TRUE(std::ranges::all_of(eager, [](float x) { return std::isfinite(x); }));
-        std::vector<double> want(n(d * heads * 2));
-        for (std::int64_t owner = 0; owner < 2; ++owner)
-          for (std::int64_t head = 0; head < heads; ++head) {
-            const auto visible = (owner == 0 ? 260 : 772) - static_cast<int>(pass);
-            std::vector<double> scores(n(visible));
-            double largest = -std::numeric_limits<double>::infinity();
-            for (std::int64_t cell = 0; cell < visible; ++cell) {
-              double dot = 0;
-              for (std::int64_t i = 0; i < d; ++i)
-                dot +=
-                    static_cast<double>(qdata[n((owner * heads + head) * d + i)]) *
-                    ggml_fp16_to_fp32(pk[n(((owner * cells + cell) * kvh + head / gqa) * d + i)]);
-              scores[n(cell)] = dot;
-              largest = std::max(largest, dot);
-            }
-            double sum = 0;
-            for (double score : scores) sum += std::exp(score - largest);
-            for (std::int64_t cell = 0; cell < visible; ++cell)
-              for (std::int64_t i = 0; i < d; ++i)
-                want[n((owner * heads + head) * d + i)] +=
-                    std::exp(scores[n(cell)] - largest) / sum *
-                    ggml_fp16_to_fp32(pv[n(((owner * cells + cell) * kvh + head / gqa) * d + i)]);
-          }
-        ExpectNmse(eager, want, kFlashAttnNmse, "unequal padded owner FP64");
-        if (pass != 0) EXPECT_NE(eager, prior);
-        if (!graph) {
-          auto captured = (*paid)->Capture(run);
-          ASSERT_TRUE(captured);
-          graph.emplace(std::move(*captured));
-        }
-        for (int replay = 0; replay < 2; ++replay) {
-          ASSERT_EQ(cudaMemsetAsync(zeros->data, 0xFF, ggml_nbytes(zeros), stream), cudaSuccess);
-          ASSERT_EQ(cudaMemsetAsync(invisible->data, 0, ggml_nbytes(invisible), stream),
-                    cudaSuccess);
-          ASSERT_TRUE((*paid)->Launch(*graph));
-          const auto actual = Download(in.output);
-          EXPECT_EQ(std::memcmp(actual.data(), eager.data(), actual.size() * sizeof(float)), 0);
-          EXPECT_EQ(Download<ggml_fp16_t>(zeros),
-                    std::vector<ggml_fp16_t>(n(d * kvh * (cells - short_cells)), 0));
-          EXPECT_EQ(Download<ggml_fp16_t>(owner_mask), mask);
-          EXPECT_EQ(Download<ggml_fp16_t>(padded_k),
-                    std::vector<ggml_fp16_t>(
-                        pk.begin(), pk.begin() + static_cast<std::ptrdiff_t>(n(d * kvh * cells))));
-        }
-        EXPECT_EQ(raw_k[0]->ne[2], short_cells);
-        EXPECT_EQ(raw_k[1]->ne[2], cells);
-        EXPECT_EQ(Download(raw_q), qdata);
-        for (std::size_t owner = 0; owner < 2; ++owner) {
-          const auto count = owner == 0 ? short_cells : cells;
-          const auto begin = owner == 0 ? 0U : n(d * kvh * short_cells);
-          for (const auto& source :
-               {std::pair{raw_k[owner], &kdata}, std::pair{raw_v[owner], &vdata}})
-            EXPECT_EQ(Download<ggml_fp16_t>(source.first),
-                      std::vector<ggml_fp16_t>(
-                          source.second->begin() + static_cast<std::ptrdiff_t>(begin),
-                          source.second->begin() +
-                              static_cast<std::ptrdiff_t>(begin + n(d * kvh * count))));
-          std::vector<ggml_fp16_t> original_mask(n(count * 32), ggml_fp32_to_fp16(-INFINITY));
-          std::fill_n(original_mask.begin(), (owner == 0 ? 260 : 772) - static_cast<int>(pass), 0);
-          EXPECT_EQ(Download<ggml_fp16_t>(masks[owner]), original_mask);
-        }
-        std::cout << "GEMMA4_UNEQUAL_PADDING heads=" << heads << " d=" << d << " pass=" << pass
-                  << " source_cells=512/1024 common_cells=1024"
-                  << " columns=" << plan->columns << " blocks=" << plan->blocks
-                  << " scan=" << plan->mask_prepass << " scratch=" << scratch << '\n';
-        prior = eager;
-      }
-    }
+    for (const std::int64_t d : {256, 512})
+      UnequalOwnerPaddingControl(heads, d, 0.0625F, 0.25F, 0, "unequal padded owner FP64",
+                                 "GEMMA4");
 }
 
 TEST_F(GgmlExtOpsTest, Gemma4BoundedOwnerRootsMatchBothHeadDimensionsAndThePaddedOracle) {
@@ -6632,205 +6378,8 @@ TEST_F(GgmlExtOpsTest, Gemma2PackedPrefillMatchesTheSoftcappedPhysicalStream) {
 
 TEST_F(GgmlExtOpsTest, Gemma2UnequalOwnerPaddingMatchesTheSoftcappedCommonStream) {
   if (ComputeCapability() != 1210) GTEST_SKIP() << "GB10 two-owner control";
-  constexpr std::int64_t d = 256, heads = 8, kvh = 4, short_cells = 512, cells = 1024;
-  const auto n = [](std::int64_t x) { return static_cast<std::size_t>(x); };
-  auto arena = TensorArena::Create(96).value();
-  auto* ctx = arena.context();
-  auto qdata = Normal(741, n(d * heads * 2), 0.75F);
-  auto kdata = Halves(Normal(742, n(d * kvh * (short_cells + cells)), 1.5F));
-  auto vdata = Halves(Normal(743, n(d * kvh * (short_cells + cells)), 0.25F));
-  auto* raw_q = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, d, heads, 1, 2), qdata);
-  auto* q = ggml_permute(ctx, raw_q, 0, 2, 1, 3);
-  TensorArena::Bind(q, reinterpret_cast<std::uintptr_t>(raw_q->data));
-  std::array<ggml_tensor*, 2> raw_k{}, raw_v{}, masks{};
-  for (std::size_t owner = 0; owner < 2; ++owner) {
-    const auto count = owner == 0 ? short_cells : cells;
-    const auto begin = owner == 0 ? 0 : n(d * kvh * short_cells);
-    const auto slice = [&](const auto& data) {
-      return std::vector<ggml_fp16_t>(
-          data.begin() + static_cast<std::ptrdiff_t>(begin),
-          data.begin() + static_cast<std::ptrdiff_t>(begin + n(d * kvh * count)));
-    };
-    raw_k[owner] = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, count, 1), slice(kdata));
-    raw_v[owner] = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, count, 1), slice(vdata));
-    masks[owner] = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, count, 32, 1, 1));
-  }
-  const auto filled = [&](std::array<std::int64_t, 4> dims, float value) {
-    auto* out = ggml_fill(ctx, ggml_new_tensor(ctx, GGML_TYPE_F16, 4, dims.data()), value);
-    out->src[0] = nullptr;  // shape-only template; fill reads no source
-    return Place(out);
-  };
-  auto* zeros = filled({d, kvh, cells - short_cells, 1}, 0);
-  auto* invisible = filled({cells - short_cells, 32, 1, 1}, -INFINITY);
-  auto* padded_k = Place(ggml_concat(ctx, raw_k[0], zeros, 2));
-  auto* padded_v = Place(ggml_concat(ctx, raw_v[0], zeros, 2));
-  auto* padded_mask = Place(ggml_concat(ctx, masks[0], invisible, 0));
-  auto* owner_mask = Place(ggml_concat(ctx, padded_mask, masks[1], 3));
-  kg::FlashAttnOwners in;
-  in.q = q;
-  in.mask = owner_mask;
-  in.output = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, d, heads, 1, 2));
-  in.owner_count = in.logical_cohort = 2;
-  in.logit_softcap = 50;
-  for (std::size_t owner = 0; owner < 2; ++owner) {
-    auto* key = owner == 0 ? padded_k : raw_k[1];
-    auto* value = owner == 0 ? padded_v : raw_v[1];
-    in.k[owner] = ggml_permute(ctx, key, 0, 2, 1, 3);
-    in.v[owner] = ggml_permute(ctx, value, 0, 2, 1, 3);
-    TensorArena::Bind(const_cast<ggml_tensor*>(in.k[owner]),
-                      reinterpret_cast<std::uintptr_t>(key->data));
-    TensorArena::Bind(const_cast<ggml_tensor*>(in.v[owner]),
-                      reinterpret_cast<std::uintptr_t>(value->data));
-  }
-  auto* physical_k = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, cells, 2));
-  auto* physical_v = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, cells, 2));
-  auto* physical_mask = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, cells, 32, 1, 2));
-  auto* k = ggml_permute(ctx, physical_k, 0, 2, 1, 3);
-  auto* v = ggml_permute(ctx, physical_v, 0, 2, 1, 3);
-  TensorArena::Bind(k, reinterpret_cast<std::uintptr_t>(physical_k->data));
-  TensorArena::Bind(v, reinterpret_cast<std::uintptr_t>(physical_v->data));
-  auto* whole = Place(ggml_flash_attn_ext(ctx, q, k, v, physical_mask, 1, 0, 50));
-  ggml_prec_set_acc(whole, GGML_PREC_F32);
-  auto plan = kg::PlanFlashAttnMmaGqa2(launch(), whole);
-  auto owners = kg::PlanFlashAttnOwners(launch(), in);
-  ASSERT_TRUE(plan);
-  ASSERT_TRUE(owners);
-  EXPECT_EQ(plan->columns, 4);
-  EXPECT_EQ(owners->original.columns, plan->columns);
-  EXPECT_EQ(owners->cohort_blocks, plan->blocks);
-  EXPECT_EQ(owners->original.mask_prepass, plan->mask_prepass);
-  EXPECT_TRUE(plan->mask_prepass);
-  const auto shape = kg::detail::FlashAttnMmaShapeGqa2(4, launch().device(), true);
-  ASSERT_TRUE(shape);
-  EXPECT_EQ(owners->original_blocks_per_sm, shape->blocks_per_sm);
-  EXPECT_GT(owners->owner_blocks_per_sm, 0);
-  const auto scratch = std::max(plan->scratch, owners->original.scratch);
-  auto paid = LaunchContext::Create(launch().device(), *execution_, stream_,
-                                    {.base = Allocate(scratch), .size = Bytes(scratch)});
-  ASSERT_TRUE(paid);
-  const auto submission = execution_->Submission(stream_);
-  ASSERT_TRUE(submission);
-  const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
-  const auto run = [&](LaunchContext& context) -> std::expected<void, KernelFailure> {
-    for (auto* fill : {zeros, invisible})
-      if (auto x = kg::Fill(context, fill); !x) return x;
-    for (auto* concat : {padded_k, padded_v, padded_mask, owner_mask})
-      if (auto x = kg::Concat(context, concat); !x) return x;
-    if (auto x = kg::FlashAttnMmaGqa2(context, whole); !x) return x;
-    return kg::FlashAttnOwnerRoots(context, in);
-  };
-  std::vector<float> prior;
-  std::optional<kg::CapturedGraph> graph;
-  for (std::size_t pass = 0; pass < 3; ++pass) {
-    if (pass != 0) {
-      const auto begin = pass == 1 ? 0U : n(d * kvh * short_cells);
-      const auto end = pass == 1 ? n(d * kvh * short_cells) : kdata.size();
-      for (std::size_t i = begin; i < end; ++i) {
-        kdata[i] = ggml_fp32_to_fp16(ggml_fp16_to_fp32(kdata[i]) * 0.75F);
-        vdata[i] = ggml_fp32_to_fp16(ggml_fp16_to_fp32(vdata[i]) + 0.125F);
-      }
-    }
-    std::vector<ggml_fp16_t> pk(n(d * kvh * cells * 2), 0), pv(pk.size(), 0);
-    std::vector<ggml_fp16_t> mask(n(cells * 32 * 2), ggml_fp32_to_fp16(-INFINITY));
-    for (std::size_t owner = 0; owner < 2; ++owner) {
-      const auto count = owner == 0 ? short_cells : cells;
-      const auto begin = owner == 0 ? 0U : n(d * kvh * short_cells);
-      const auto length = n(d * kvh * count);
-      const auto prefix = [&](const auto& data) { return std::span(data).subspan(begin, length); };
-      const auto copy = [&](ggml_tensor* tensor, auto data) {
-        return cudaMemcpyAsync(tensor->data, data.data(), data.size_bytes(), cudaMemcpyHostToDevice,
-                               stream);
-      };
-      ASSERT_EQ(copy(raw_k[owner], prefix(kdata)), cudaSuccess);
-      ASSERT_EQ(copy(raw_v[owner], prefix(vdata)), cudaSuccess);
-      std::ranges::copy(prefix(kdata),
-                        pk.begin() + static_cast<std::ptrdiff_t>(owner * n(d * kvh * cells)));
-      std::ranges::copy(prefix(vdata),
-                        pv.begin() + static_cast<std::ptrdiff_t>(owner * n(d * kvh * cells)));
-      const auto visible = (owner == 0 ? 260 : 772) - static_cast<int>(pass);
-      std::fill_n(mask.begin() + static_cast<std::ptrdiff_t>(owner * n(cells * 32)), visible, 0);
-      std::vector<ggml_fp16_t> own_mask(n(count * 32), ggml_fp32_to_fp16(-INFINITY));
-      std::fill_n(own_mask.begin(), visible, 0);
-      ASSERT_EQ(copy(masks[owner], std::span(own_mask)), cudaSuccess);
-    }
-    ASSERT_EQ(cudaMemcpyAsync(physical_k->data, pk.data(), ggml_nbytes(physical_k),
-                              cudaMemcpyHostToDevice, stream),
-              cudaSuccess);
-    ASSERT_EQ(cudaMemcpyAsync(physical_v->data, pv.data(), ggml_nbytes(physical_v),
-                              cudaMemcpyHostToDevice, stream),
-              cudaSuccess);
-    ASSERT_EQ(cudaMemcpyAsync(physical_mask->data, mask.data(), ggml_nbytes(physical_mask),
-                              cudaMemcpyHostToDevice, stream),
-              cudaSuccess);
-    ASSERT_TRUE(run(**paid));
-    const auto eager = Download(in.output);
-    const auto expected = Download(whole);
-    ASSERT_EQ(std::memcmp(eager.data(), expected.data(), eager.size() * sizeof(float)), 0);
-    ASSERT_TRUE(std::ranges::all_of(eager, [](float x) { return std::isfinite(x); }));
-    std::vector<double> want(n(d * heads * 2));
-    for (std::int64_t owner = 0; owner < 2; ++owner)
-      for (std::int64_t head = 0; head < heads; ++head) {
-        const auto visible = (owner == 0 ? 260 : 772) - static_cast<int>(pass);
-        std::vector<double> scores(n(visible));
-        double largest = -std::numeric_limits<double>::infinity();
-        for (std::int64_t cell = 0; cell < visible; ++cell) {
-          double dot = 0;
-          for (std::int64_t i = 0; i < d; ++i)
-            dot += static_cast<double>(qdata[n((owner * heads + head) * d + i)]) *
-                   ggml_fp16_to_fp32(pk[n(((owner * cells + cell) * kvh + head / 2) * d + i)]);
-          scores[n(cell)] = 50.0 * std::tanh(dot / 50.0);
-          largest = std::max(largest, scores[n(cell)]);
-        }
-        double sum = 0;
-        for (double score : scores) sum += std::exp(score - largest);
-        for (std::int64_t cell = 0; cell < visible; ++cell)
-          for (std::int64_t i = 0; i < d; ++i)
-            want[n((owner * heads + head) * d + i)] +=
-                std::exp(scores[n(cell)] - largest) / sum *
-                ggml_fp16_to_fp32(pv[n(((owner * cells + cell) * kvh + head / 2) * d + i)]);
-      }
-    ExpectNmse(eager, want, kFlashAttnNmse, "softcap50 unequal padded owner FP64");
-    if (pass != 0) EXPECT_NE(eager, prior);
-    if (!graph) {
-      auto captured = (*paid)->Capture(run);
-      ASSERT_TRUE(captured);
-      graph.emplace(std::move(*captured));
-    }
-    for (int replay = 0; replay < 2; ++replay) {
-      ASSERT_EQ(cudaMemsetAsync(zeros->data, 0xFF, ggml_nbytes(zeros), stream), cudaSuccess);
-      ASSERT_EQ(cudaMemsetAsync(invisible->data, 0, ggml_nbytes(invisible), stream), cudaSuccess);
-      ASSERT_TRUE((*paid)->Launch(*graph));
-      const auto actual = Download(in.output);
-      EXPECT_EQ(std::memcmp(actual.data(), eager.data(), actual.size() * sizeof(float)), 0);
-      EXPECT_EQ(Download<ggml_fp16_t>(zeros),
-                std::vector<ggml_fp16_t>(n(d * kvh * (cells - short_cells)), 0));
-      EXPECT_EQ(Download<ggml_fp16_t>(owner_mask), mask);
-      EXPECT_EQ(Download<ggml_fp16_t>(padded_k),
-                std::vector<ggml_fp16_t>(
-                    pk.begin(), pk.begin() + static_cast<std::ptrdiff_t>(n(d * kvh * cells))));
-    }
-    EXPECT_EQ(raw_k[0]->ne[2], short_cells);
-    EXPECT_EQ(raw_k[1]->ne[2], cells);
-    EXPECT_EQ(Download(raw_q), qdata);
-    for (std::size_t owner = 0; owner < 2; ++owner) {
-      const auto count = owner == 0 ? short_cells : cells;
-      const auto begin = owner == 0 ? 0U : n(d * kvh * short_cells);
-      for (const auto& source : {std::pair{raw_k[owner], &kdata}, std::pair{raw_v[owner], &vdata}})
-        EXPECT_EQ(
-            Download<ggml_fp16_t>(source.first),
-            std::vector<ggml_fp16_t>(
-                source.second->begin() + static_cast<std::ptrdiff_t>(begin),
-                source.second->begin() + static_cast<std::ptrdiff_t>(begin + n(d * kvh * count))));
-      std::vector<ggml_fp16_t> original_mask(n(count * 32), ggml_fp32_to_fp16(-INFINITY));
-      std::fill_n(original_mask.begin(), (owner == 0 ? 260 : 772) - static_cast<int>(pass), 0);
-      EXPECT_EQ(Download<ggml_fp16_t>(masks[owner]), original_mask);
-    }
-    std::cout << "GEMMA2_UNEQUAL_PADDING pass=" << pass
-              << " source_cells=512/1024 common_cells=1024"
-              << " columns=" << plan->columns << " blocks=" << plan->blocks
-              << " scan=" << plan->mask_prepass << " scratch=" << scratch << '\n';
-    prior = eager;
-  }
+  UnequalOwnerPaddingControl(8, 256, 0.75F, 1.5F, 50, "softcap50 unequal padded owner FP64",
+                             "GEMMA2");
 }
 
 void GgmlExtOpsTest::BoundedOwnerControl(std::uint32_t cap) {

@@ -290,6 +290,18 @@ downgrade a heavy-path change to the light loop on their own.
   identities and retrieval/supply instructions with the replay harness.
 - **Tests travel with behaviour.** A behaviour change without a test needs a
   stated reason in the handoff note.
+- **What to test, where** (owner, 2026-10-26). Unit tests pin a module's
+  contract, in that module's test executable, on the fake backend or the
+  CPU where they can. Each end-to-end behaviour (serving, a swap, a restart,
+  a spill) has one integration test, which does not re-assert what the unit
+  tests pin. Input variants of one code path are a table, a parameterized
+  test or one helper called per case, not copied bodies. A frozen digest,
+  checkpoint pin or reference value lives in one place (`tests/unit/data/`,
+  a fixture header) and other tests read it from there. A skip is only an
+  environment gate; a one-off diagnostic is a `benchmarks/` harness, not a
+  `DISABLED_` test. Before removing or merging a test, show from coverage
+  and from its assertions that another test covers it
+  ([test audit](experiments/test-audit/README.md) has the coverage build).
 - **At most about two streams of work at once** (D-084), each in its own
   worktree and its own copy on a Spark (synced with `rsync -rlpc
   --exclude=.git --exclude=/build`). Check `git status` first; if there

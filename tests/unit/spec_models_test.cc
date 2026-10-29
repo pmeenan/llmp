@@ -8,7 +8,7 @@
 // (spec_fixtures.h, tests/support/families/gemma.h; spec_test), every
 // binding resolved in its artifact, bound to each artifact's ID.
 // Serving lays each one's state out with every tensor on its own extents.
-// Needs the model files (label `models`); skipped without them.
+// Needs the model files (label `models`); fails without them.
 
 #include <gtest/gtest.h>
 #include <unistd.h>

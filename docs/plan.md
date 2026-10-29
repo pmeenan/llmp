@@ -918,7 +918,7 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
 - [x] **F9 Import throughput and leftovers:** one parallel post-write hash
       pass, reuse provenance, unknown-key policy, fuzzing of the newer
       routes, component-declared import transforms.
-- [ ] **F14 Test-suite audit:** obsolete, disabled and ignored tests deleted;
+- [x] **F14 Test-suite audit:** obsolete, disabled and ignored tests deleted;
       redundant unit tests (covered lines and assertions already held by
       another test) merged or removed and input variants made table tests,
       with per-file line and branch coverage of `src/` measured before and

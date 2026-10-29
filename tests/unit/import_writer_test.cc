@@ -254,6 +254,37 @@ class ImportWriterTest : public fixtures::ScratchTest {
   WriteOptions Options(std::string_view store = "store") {
     return {.store = dir_ / store, .build = "test", .metadata_bytes = std::uint64_t{1} << 30U};
   }
+  // Normalizes `input` within its own bound into `plan`; its placement,
+  // funded with 2 GiB of metadata, is `want` (but for the metadata bytes),
+  // and one byte less refuses both the inspection and the write, before
+  // the store `name` exists.
+  template <typename Input>
+  void ExpectPlacementFundedBeforeEffects(Input input,
+                                          const publication_detail::PlacementSummary& want,
+                                          std::string_view name,
+                                          std::optional<NormalizedPlan>& plan) {
+    auto cost = NormalizationBound(input);
+    ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
+    auto normalized = Normalize(std::move(input), {cost->metadata_bytes, cost->work_units});
+    ASSERT_TRUE(normalized) << test_support::Failed(normalized, &Error::ToString).value_or("");
+    plan.emplace(std::move(*normalized));
+    const auto layout = publication_detail::InspectPlacement(*plan, std::uint64_t{2} << 30U);
+    ASSERT_TRUE(layout) << test_support::Failed(layout, &Error::ToString).value_or("");
+    EXPECT_EQ(layout->copies, want.copies);
+    EXPECT_EQ(layout->destinations, want.destinations);
+    EXPECT_EQ(layout->tables, want.tables);
+    EXPECT_EQ(layout->row_tables, want.row_tables);
+    EXPECT_EQ(layout->globals, want.globals);
+    EXPECT_EQ(layout->layers, want.layers);
+    EXPECT_EQ(layout->heads, want.heads);
+    EXPECT_EQ(layout->expert_groups, want.expert_groups);
+    EXPECT_FALSE(publication_detail::InspectPlacement(*plan, layout->metadata_bytes - 1));
+    const auto destination = dir_ / name;
+    EXPECT_FALSE(WriteArtifact(
+        *plan,
+        {.store = destination, .build = "test", .metadata_bytes = layout->metadata_bytes - 1}));
+    EXPECT_FALSE(std::filesystem::exists(destination));
+  }
 };
 TEST_F(ImportWriterTest, BuildProvenanceDoesNotChangeIdentityOrWeakenReceipts) {
   auto plan = Plan();
@@ -1541,31 +1572,26 @@ TEST_F(ImportPartWriterTest, UndefinedBlockScalesCannotPublish) {
   }
 }
 TEST_F(ImportWriterTest, QwenSideTablePlacementAndCompleteExpertCoverageAreFundedBeforeEffects) {
-  auto input = test_support::Qwen38GgufCheckpoint();
-  const auto cost = NormalizationBound(input);
-  ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
-  auto plan = Normalize(std::move(input), {cost->metadata_bytes, cost->work_units});
-  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
-  constexpr std::uint64_t funding = std::uint64_t{2} << 30U;
-  const auto layout = publication_detail::InspectPlacement(*plan, funding);
-  ASSERT_TRUE(layout) << test_support::Failed(layout, &Error::ToString).value_or("");
-  EXPECT_EQ(layout->copies, 1224U);
-  EXPECT_EQ(layout->destinations, 1224U + 48U * 3U * 511U);
-  EXPECT_EQ(layout->tables, 2U);      // resident embedding and independently paged side table
-  EXPECT_EQ(layout->row_tables, 2U);  // embedding plus side.ngram, unchanged encoding
-  EXPECT_EQ(layout->globals, 0U);     // residual.hc mixing has no weights
-  EXPECT_EQ(layout->layers, 48U);
-  EXPECT_EQ(layout->heads, 1U);
-  EXPECT_EQ(layout->expert_groups, 48U * 512U);
-  EXPECT_FALSE(publication_detail::InspectPlacement(*plan, layout->metadata_bytes - 1));
-  const auto destination = dir_ / "qwen-unfunded";
-  auto written = WriteArtifact(
-      *plan, {.store = destination, .build = "test", .metadata_bytes = layout->metadata_bytes - 1});
-  EXPECT_FALSE(written);
-  EXPECT_FALSE(std::filesystem::exists(destination));
+  std::optional<NormalizedPlan> plan;
+  ExpectPlacementFundedBeforeEffects(test_support::Qwen38GgufCheckpoint(),
+                                     {.copies = 1224U,
+                                      .destinations = 1224U + 48U * 3U * 511U,
+                                      // resident embedding and independently paged side table
+                                      .tables = 2U,
+                                      .globals = 0U,  // residual.hc mixing has no weights
+                                      .layers = 48U,
+                                      .heads = 1U,
+                                      .expert_groups = 48U * 512U,
+                                      // embedding plus side.ngram, unchanged encoding
+                                      .row_tables = 2U},
+                                     "qwen-unfunded", plan);
+  ASSERT_TRUE(plan);
   // With placement funded the synthetic source still cannot publish: it has
   // no parsed file receipt. The writer refuses before creating a destination.
-  written = WriteArtifact(
+  const auto destination = dir_ / "qwen-unfunded";
+  const auto layout = publication_detail::InspectPlacement(*plan, std::uint64_t{2} << 30U);
+  ASSERT_TRUE(layout);
+  const auto written = WriteArtifact(
       *plan, {.store = destination, .build = "test", .metadata_bytes = layout->metadata_bytes});
   ASSERT_FALSE(written);
   EXPECT_EQ(written.error().reason, "a parsed source lacks a valid identity receipt");
@@ -1573,27 +1599,17 @@ TEST_F(ImportWriterTest, QwenSideTablePlacementAndCompleteExpertCoverageAreFunde
 }
 
 TEST_F(ImportWriterTest, Dsv4HashTablesHaveExclusiveGroupsAndCompleteExpertSlices) {
-  auto input = test_support::Dsv4GgufCheckpoint();
-  auto cost = NormalizationBound(input);
-  ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
-  auto plan = Normalize(std::move(input), {cost->metadata_bytes, cost->work_units});
-  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
-  auto layout = publication_detail::InspectPlacement(*plan, std::uint64_t{2} << 30U);
-  ASSERT_TRUE(layout) << test_support::Failed(layout, &Error::ToString).value_or("");
-  EXPECT_EQ(layout->copies, 1328U);
-  EXPECT_EQ(layout->destinations, 1328U + 43U * 3U * 255U);
-  EXPECT_EQ(layout->tables, 4U);
-  EXPECT_EQ(layout->row_tables, 4U);
-  EXPECT_EQ(layout->globals, 0U);
-  EXPECT_EQ(layout->layers, 43U);
-  EXPECT_EQ(layout->heads, 1U);
-  EXPECT_EQ(layout->expert_groups, 43U * 256U);
-  EXPECT_FALSE(publication_detail::InspectPlacement(*plan, layout->metadata_bytes - 1));
-  const auto destination = dir_ / "dsv4-unfunded";
-  EXPECT_FALSE(WriteArtifact(
-      *plan,
-      {.store = destination, .build = "test", .metadata_bytes = layout->metadata_bytes - 1}));
-  EXPECT_FALSE(std::filesystem::exists(destination));
+  std::optional<NormalizedPlan> plan;
+  ExpectPlacementFundedBeforeEffects(test_support::Dsv4GgufCheckpoint(),
+                                     {.copies = 1328U,
+                                      .destinations = 1328U + 43U * 3U * 255U,
+                                      .tables = 4U,
+                                      .globals = 0U,
+                                      .layers = 43U,
+                                      .heads = 1U,
+                                      .expert_groups = 43U * 256U,
+                                      .row_tables = 4U},
+                                     "dsv4-unfunded", plan);
 }
 
 TEST_F(ImportWriterTest, PlacementAcceptsTheReaderShardCountBeyond256Files) {
@@ -1620,52 +1636,33 @@ TEST_F(ImportWriterTest, PlacementAcceptsTheReaderShardCountBeyond256Files) {
 }
 
 TEST_F(ImportWriterTest, Qwen2PlacementAndCompleteLayerCoverageAreFundedBeforeEffects) {
-  auto input = test_support::Qwen2GgufCheckpoint();
-  auto cost = NormalizationBound(input);
-  ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
-  auto plan = Normalize(std::move(input), {cost->metadata_bytes, cost->work_units});
-  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
-  auto layout = publication_detail::InspectPlacement(*plan, std::uint64_t{2} << 30U);
-  ASSERT_TRUE(layout) << test_support::Failed(layout, &Error::ToString).value_or("");
-  EXPECT_EQ(layout->copies, 291U);
-  EXPECT_EQ(layout->destinations, 291U);
-  EXPECT_EQ(layout->tables, 1U);
-  EXPECT_EQ(layout->row_tables, 1U);
-  EXPECT_EQ(layout->globals, 0U);
-  EXPECT_EQ(layout->layers, 24U);
-  EXPECT_EQ(layout->heads, 1U);
-  EXPECT_EQ(layout->expert_groups, 0U);
-  EXPECT_FALSE(publication_detail::InspectPlacement(*plan, layout->metadata_bytes - 1));
-  const auto destination = dir_ / "qwen2-unfunded";
-  EXPECT_FALSE(WriteArtifact(
-      *plan,
-      {.store = destination, .build = "test", .metadata_bytes = layout->metadata_bytes - 1}));
-  EXPECT_FALSE(std::filesystem::exists(destination));
+  std::optional<NormalizedPlan> plan;
+  ExpectPlacementFundedBeforeEffects(test_support::Qwen2GgufCheckpoint(),
+                                     {.copies = 291U,
+                                      .destinations = 291U,
+                                      .tables = 1U,
+                                      .globals = 0U,
+                                      .layers = 24U,
+                                      .heads = 1U,
+                                      .expert_groups = 0U,
+                                      .row_tables = 1U},
+                                     "qwen2-unfunded", plan);
 }
 
 TEST_F(ImportWriterTest, Qwen2Exl3PlacementAndMultipartCopyCoverageAreFundedBeforeEffects) {
   for (const bool rate_4_5 : {false, true}) {
-    auto input = test_support::Qwen2Exl3Checkpoint(rate_4_5);
-    auto cost = NormalizationBound(input);
-    ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
-    auto plan = Normalize(std::move(input), {cost->metadata_bytes, cost->work_units});
-    ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
-    auto layout = publication_detail::InspectPlacement(*plan, std::uint64_t{2} << 30U);
-    ASSERT_TRUE(layout) << test_support::Failed(layout, &Error::ToString).value_or("");
-    EXPECT_EQ(layout->copies, 798U);
-    EXPECT_EQ(layout->destinations, 798U);
-    EXPECT_EQ(layout->tables, 1U);
-    EXPECT_EQ(layout->row_tables, 1U);
-    EXPECT_EQ(layout->globals, 0U);
-    EXPECT_EQ(layout->layers, 24U);
-    EXPECT_EQ(layout->heads, 1U);
-    EXPECT_EQ(layout->expert_groups, 0U);
-    EXPECT_FALSE(publication_detail::InspectPlacement(*plan, layout->metadata_bytes - 1));
-    const auto destination = dir_ / (rate_4_5 ? "qwen2-exl3-45" : "qwen2-exl3-40");
-    EXPECT_FALSE(WriteArtifact(
-        *plan,
-        {.store = destination, .build = "test", .metadata_bytes = layout->metadata_bytes - 1}));
-    EXPECT_FALSE(std::filesystem::exists(destination));
+    SCOPED_TRACE(rate_4_5 ? "4.5 bpw" : "4.0 bpw");
+    std::optional<NormalizedPlan> plan;
+    ExpectPlacementFundedBeforeEffects(test_support::Qwen2Exl3Checkpoint(rate_4_5),
+                                       {.copies = 798U,
+                                        .destinations = 798U,
+                                        .tables = 1U,
+                                        .globals = 0U,
+                                        .layers = 24U,
+                                        .heads = 1U,
+                                        .expert_groups = 0U,
+                                        .row_tables = 1U},
+                                       rate_4_5 ? "qwen2-exl3-45" : "qwen2-exl3-40", plan);
   }
 }
 

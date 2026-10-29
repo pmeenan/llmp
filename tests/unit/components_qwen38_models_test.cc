@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The Qwen3.8 mappings on the published v1 artifacts (label `models`; each
-// case skips when the store or its artifact is absent): the native
+// case fails when the store or its artifact is absent): the native
 // ModelOpt import (d145900e), the GGUF quantization's (18a67153) and the
 // ModelOpt MTP drafter (316caa59) composed with its approved ModelOpt
 // target. Each target's stored spec is validated against its tensors; the

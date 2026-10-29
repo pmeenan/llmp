@@ -68,11 +68,6 @@ std::string HeaderLine(std::string_view source,
                        const std::vector<std::pair<std::string, std::string>>& loaded);
 std::string ChunkLine(const Chunk& chunk);
 std::string EndChunkLine();
-// Where one operation of a plan begins, inside a chunk: the operation's
-// name in the plan's record and its layer (-1 outside the layers). The
-// EXL3 plan comparator (docs/experiments/backend-proof-p3/op_plan_compare.py)
-// holds each operation's events to the record's.
-std::string OpLine(std::string_view name, int layer);
 std::string EventLine(const Event& event);
 
 // plan_record_sample.txt: the lines these write for the first seven
