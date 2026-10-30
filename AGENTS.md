@@ -438,7 +438,7 @@ reviewed ([M3.5 record](docs/m35-record.md)): the physical memory modes
 generic mapping-driven import route (D-125), numerics as per-device component
 data (D-126), the image pipeline as data, the IR trait table, bounded
 tool-call interpretation on the chat route ([tool-calls.md](docs/tool-calls.md)),
-and the 2026-10 foundation review's fixes F1–F15, with the final checks
+and the 2026-10 foundation reviews' fixes F1–F20, with the final checks
 against M3.6 passing after F15 and the workstation sanitizer tier clean
 (F10), and plans building a third faster since F16. Still open:
 U7 (fast paths by capability) and U9, then M3.5's remaining families,

@@ -123,6 +123,10 @@ The entries below record each change; the record of the milestone is
 
 ### Changed
 
+- Fused inference memoization belongs to each paid compilation, with lazy
+  byte-bounded LRU eviction and live/peak statistics. Thread-local state retains
+  only its routing pointer; no cache survives compilation. Matched Qwen3.8 and
+  DeepSeek screens preserve planning speed and exact responses.
 - Image import indexes source and expanded tensors once, replacing repeated
   inventory scans while preserving duplicate, part and raw-dimension checks.
 - On the GB10, GGUF decode products of two to eight rows (C2/C4 waves,

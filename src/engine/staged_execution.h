@@ -32,6 +32,9 @@ struct StagedProgram {
   std::shared_ptr<const planner::NumericalQualifications> numerical{};
   std::uint16_t weights = 0;
   std::uint32_t observation = 0;
+  // Source-paid byte budget within its retained compiler inventory. Builds
+  // sharing this inventory run serially on the staged executor driver.
+  std::uint64_t compiler_memo_bytes = 0;
   // Source role indices are local to this graph, even when component numbers
   // coincide with another stage. The retained owner authenticates this map.
   kernels::Addresses addresses;

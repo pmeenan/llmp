@@ -30,6 +30,7 @@
 #include "engine/paged_weights.h"
 #include "engine/ple_rows.h"
 #include "format/tensor_format.h"
+#include "ir/infer.h"
 #include "planner/construction.h"
 #include "planner/plan.h"
 #include "planner/policy.h"
@@ -74,7 +75,7 @@ constexpr std::uint64_t kLaneScratchBytes = 4ULL * 1024ULL * 1024ULL;
 // before any BuildStep/lowering. Graph maxima are the existing IR contract;
 // native lowering admits its own actual operation and saved-root inventory.
 struct ServingConstruction {
-  std::uint64_t compiler = 0, retained = 0;
+  std::uint64_t compiler = 0, retained = 0, memo = 0;
 };
 std::expected<ServingConstruction, std::string> ServingConstructionBytes(
     const spec::ModelSpec& model, const ja::Artifact& target, const ja::Artifact* draft) {
@@ -96,7 +97,16 @@ std::expected<ServingConstruction, std::string> ServingConstructionBytes(
       !add(tensors, planner::kConstructionGraphTensorBytes) ||
       !add(1, kServingReaderScratchBytes) || !add(1, *numerical))
     return Error("component IR compiler payment overflows");
-  ServingConstruction result{.compiler = bytes};
+  std::uint64_t memo = 0;
+  for (const auto& stage : model.stages) {
+    std::uint64_t components = 0;
+    spec::EachComponent(stage, [&](const auto&, const auto&) { ++components; });
+    const auto bound = ir::InferenceScope::WorkingSetBytes(components);
+    if (!bound) return Error("component inference working set overflows");
+    memo = std::max(memo, *bound);
+  }
+  if (!add(1, memo)) return Error("component inference payment overflows");
+  ServingConstruction result{.compiler = bytes, .memo = memo};
   bytes = 0;
   // The complete spec and canonical/digest copies, parameter/role maps and
   // retained source bindings. Serialization is still inside the parser loan.
@@ -154,7 +164,7 @@ struct ComponentHold {
   // Refund this build's charge only after its graph/binding/backend owners die.
   std::shared_ptr<ConstructionCharge> automatic_construction;
   std::shared_ptr<engine::SharedCompilerAllowance> compiler;
-  std::uint64_t compiler_bytes = 0;
+  std::uint64_t compiler_bytes = 0, compiler_memo_bytes = 0;
   std::shared_ptr<ConstructionCharge> kv_encoding_charge;
   std::shared_ptr<ConstructionCharge> setup_charge;
   std::unique_ptr<StoredBindingPayment> stored_payment;
@@ -396,7 +406,8 @@ std::expected<std::unique_ptr<engine::StepSource>, std::string> SealComponentSou
          .require_capture = false,
          .validate_program = options.validate_program,
          .compiler = hold.compiler,
-         .compiler_bytes = hold.compiler_bytes});
+         .compiler_bytes = hold.compiler_bytes,
+         .compiler_memo_bytes = hold.compiler_memo_bytes});
     if (!made) return Error(made.error());
     sources.push_back(std::move(*made));
   }
@@ -830,6 +841,7 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
         return Error(paid.error());
       hold->compiler = options.shared_compiler;
       hold->compiler_bytes = bytes->compiler;
+      hold->compiler_memo_bytes = bytes->memo;
       // Preserve the conservative whole-extent footprint for each live build,
       // including its local charge owner. Pool capacity is a node-lifetime
       // reservation; failures release local use so retries can reuse it.

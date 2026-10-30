@@ -12,11 +12,13 @@
 #include <expected>
 #include <format>
 #include <limits>
+#include <memory>
+#include <new>
 #include <span>
 #include <string>
-#include <unordered_map>
 #include <utility>
 
+#include "base/check.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "format/tensor_format.h"
@@ -1561,23 +1563,168 @@ FusedResult DecomposedOutputs(const FusedQuery& q) {
   return r;
 }
 
-// Each decomposition is built once per query (M2), not at every Emit and
-// Verify of every graph a plan makes. The cache is the thread's own, so
-// planning on several threads shares nothing, and it holds only what
-// DecomposedOutputs returns for its key, so a lookup returns what building
-// it would: results do not depend on what was asked before. It is cleared
-// when full.
-constexpr std::size_t kFusedCacheEntries = 512;
+}  // namespace
 
-FusedResult CachedDecomposition(const FusedQuery& q) {
-  thread_local std::unordered_map<FusedQuery, FusedResult, FusedQueryHash> cache;
-  if (const auto found = cache.find(q); found != cache.end()) return found->second;
-  // A nested fused kind's inference reenters the cache: no iterator is
-  // held across it.
-  FusedResult r = DecomposedOutputs(q);
-  if (cache.size() >= kFusedCacheEntries) cache.clear();
-  cache.emplace(q, r);
-  return r;
+namespace detail {
+
+// Every entry is fixed size: failed decompositions, with their variable error
+// strings, are recomputed. Bucket and node allocations are admitted before new;
+// 64 bytes per allocation conservatively cover allocator bookkeeping/alignment.
+class InferenceCache {
+ public:
+  static constexpr std::uint64_t kAllocation = 64;
+  struct Entry {
+    FusedQuery query;
+    Inferred result;
+    std::size_t hash;
+    Entry* bucket_next = nullptr;
+    Entry* older = nullptr;
+    Entry* newer = nullptr;
+  };
+  static constexpr std::uint64_t kEntryBytes = sizeof(Entry) + kAllocation;
+  static constexpr std::uint64_t kBucketBytes = sizeof(Entry*) + kAllocation;
+  static std::uint64_t ControlBytes() { return sizeof(InferenceCache) + kAllocation; }
+
+  InferenceCache(std::uint64_t limit, InferenceMemoStats& stats) : limit_(limit), stats_(stats) {
+    AddBytes(ControlBytes());
+  }
+  ~InferenceCache() {
+    while (oldest_) EraseOldest(false);
+    stats_.bytes = 0;
+  }
+  FusedResult Infer(const FusedQuery& query) {
+    const auto hash = FusedQueryHash{}(query);
+    if (Entry* entry = Find(query, hash)) {
+      Touch(*entry);
+      ++stats_.hits;
+      return entry->result;
+    }
+    ++stats_.misses;
+    // Nested decompositions can insert/evict entries and grow buckets. No
+    // entry, bucket reference or iterator survives the recursive inference.
+    auto result = DecomposedOutputs(query);
+    if (!result) return result;
+    if (!buckets_) Rehash(1);
+    if (!buckets_) return result;
+    if (stats_.entries >= bucket_count_ && bucket_count_ <= SIZE_MAX / 2) {
+      // Rehash is optional: a small budget keeps using its current chains.
+      Rehash(2 * bucket_count_);
+    }
+    while (limit_ - stats_.bytes < kEntryBytes && oldest_) EraseOldest(true);
+    if (limit_ - stats_.bytes < kEntryBytes) return result;
+    auto* entry = new (std::nothrow) Entry{query, *result, hash};
+    if (!entry) return result;
+    const auto bucket = hash % bucket_count_;
+    entry->bucket_next = buckets_[bucket];
+    buckets_[bucket] = entry;
+    AddBytes(kEntryBytes);
+    ++stats_.entries;
+    Touch(*entry);
+    return result;
+  }
+
+ private:
+  Entry* Find(const FusedQuery& query, std::size_t hash) const {
+    if (!buckets_) return nullptr;
+    for (Entry* entry = buckets_[hash % bucket_count_]; entry; entry = entry->bucket_next)
+      if (entry->hash == hash && entry->query == query) return entry;
+    return nullptr;
+  }
+  void AddBytes(std::uint64_t bytes) {
+    stats_.bytes += bytes;
+    stats_.peak_bytes = std::max(stats_.peak_bytes, stats_.bytes);
+  }
+  void Touch(Entry& entry) {
+    if (newest_ == &entry) return;
+    if (entry.older) entry.older->newer = entry.newer;
+    if (entry.newer) entry.newer->older = entry.older;
+    if (oldest_ == &entry) oldest_ = entry.newer;
+    entry.older = newest_;
+    entry.newer = nullptr;
+    if (newest_) newest_->newer = &entry;
+    newest_ = &entry;
+    if (!oldest_) oldest_ = &entry;
+  }
+  void EraseOldest(bool eviction) {
+    Entry* entry = oldest_;
+    Entry** link = &buckets_[entry->hash % bucket_count_];
+    while (*link != entry) link = &(*link)->bucket_next;
+    *link = entry->bucket_next;
+    oldest_ = entry->newer;
+    if (oldest_)
+      oldest_->older = nullptr;
+    else
+      newest_ = nullptr;
+    delete entry;
+    stats_.bytes -= kEntryBytes;
+    --stats_.entries;
+    if (eviction) ++stats_.evictions;
+  }
+  void Rehash(std::size_t count) {
+    if (count > (UINT64_MAX - kAllocation) / sizeof(Entry*)) return;
+    const auto bytes = count * sizeof(Entry*) + kAllocation;
+    // Include simultaneous old/new bucket arrays and leave one node's room.
+    if (bytes > limit_ - stats_.bytes || kEntryBytes > limit_ - stats_.bytes - bytes) return;
+    std::unique_ptr<Entry*[]> next(new (std::nothrow) Entry* [count] {});
+    if (!next) return;
+    AddBytes(bytes);
+    for (Entry* entry = oldest_; entry; entry = entry->newer) {
+      auto& bucket = next[entry->hash % count];
+      entry->bucket_next = bucket;
+      bucket = entry;
+    }
+    buckets_.swap(next);
+    if (next) stats_.bytes -= bucket_count_ * sizeof(Entry*) + kAllocation;
+    bucket_count_ = count;
+  }
+  const std::uint64_t limit_;
+  InferenceMemoStats& stats_;
+  std::unique_ptr<Entry*[]> buckets_;
+  std::size_t bucket_count_ = 0;
+  Entry* oldest_ = nullptr;
+  Entry* newest_ = nullptr;
+};
+
+// Routing only: ownership and all storage belong to the synchronous compiler.
+thread_local InferenceCache* active_inference = nullptr;
+}  // namespace detail
+
+InferenceScope::InferenceScope(std::uint64_t byte_limit) : previous_(detail::active_inference) {
+  stats_.byte_limit = byte_limit;
+  if (byte_limit >= MinimumBytes())
+    cache_.reset(new (std::nothrow) detail::InferenceCache(byte_limit, stats_));
+  detail::active_inference = cache_.get();
+}
+InferenceScope::~InferenceScope() {
+  base::Check(detail::active_inference == cache_.get(), "inference scope leaves its compiler");
+  detail::active_inference = previous_;
+}
+void InferenceScope::Release() {
+  base::Check(detail::active_inference == cache_.get(), "inference scope releases its compiler");
+  detail::active_inference = nullptr;
+  cache_.reset();
+}
+std::uint64_t InferenceScope::MinimumBytes() {
+  return detail::InferenceCache::ControlBytes() + detail::InferenceCache::kBucketBytes +
+         detail::InferenceCache::kEntryBytes;
+}
+
+std::optional<std::uint64_t> InferenceScope::WorkingSetBytes(std::uint64_t components) {
+  if (components == 0) return std::uint64_t{0};
+  // One fixed-size result per component plus old/new bucket growth overlap.
+  // Several components often share one query; misses never affect correctness.
+  constexpr auto unit = detail::InferenceCache::kEntryBytes + 3 * sizeof(void*);
+  std::uint64_t bytes = 0;
+  if (__builtin_mul_overflow(components, std::uint64_t{unit}, &bytes) ||
+      __builtin_add_overflow(bytes, MinimumBytes(), &bytes))
+    return {};
+  return bytes;
+}
+
+namespace {
+FusedResult CachedDecomposition(const FusedQuery& query) {
+  return detail::active_inference ? detail::active_inference->Infer(query)
+                                  : DecomposedOutputs(query);
 }
 
 Out InferFused(const Ctx& c) {

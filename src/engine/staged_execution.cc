@@ -17,6 +17,7 @@
 #include "engine/graph_plan.h"
 #include "engine/program_lifecycle.h"
 #include "engine/support.h"
+#include "ir/infer.h"
 #include "providers/device_runtime.h"
 #include "scheduler/programs.h"
 
@@ -160,6 +161,7 @@ struct StagedExecution::State {
   }
   std::expected<std::unique_ptr<kn::StepProgram>, std::string> Build(std::size_t stage,
                                                                      bool measuring) const {
+    ir::InferenceScope inference(parts.stages.at(stage).compiler_memo_bytes);
     const auto& graph = *parts.stages.at(stage).graph;
     const en::GraphBuildIO io{graph.graph(), graph.graph().inputs(), graph.graph().outputs(),
                               graph.weights()};

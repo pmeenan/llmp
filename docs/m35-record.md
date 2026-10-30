@@ -31,7 +31,7 @@ removed and that the files are in Git at `1564dcd6`).
 | `ca32156b..265c821a` | U1–U10 and the memory modes; the first, reviewed fix pass `b7e6143b`, `f8f106a8`, `7c96e27b`, `265c821a` |
 | `265c821a..1564dcd6` (2026-10-28) | The foundation review's F1–F13 fixes, one reviewed commit each |
 | `1564dcd6..c36589b2` (2026-10-28) | F14 and F10a; F10b's final checks ran on `c36589b2` (2026-10-29) |
-| `c36589b2..` (2026-10-29/30) | F10b's record, then F15's fixes of what it found, F10c and F16 |
+| `c36589b2..` (2026-10-29/30) | F10b's record, F15's fixes, F10c/F16 and the follow-up review fixes F17–F20 |
 
 Open at this record: U7 (fast paths by capability; only U7a's first GDN-gate
 spike is done) and U9 (M4 entry); the
@@ -99,7 +99,8 @@ fixed; each slice landed as one reviewed commit, with verification in batches
 | F16 | `098fcf89` | Plans build about a third faster with every layout unchanged: [F16](#f16-lowering-placement-cost-2026-10-30). |
 | F17 | `ccd645a8` | Parser ownership and output funding: [F17](#f17-parser-ownership-and-output-funding-2026-10-30). |
 | F18 | `7c73a033` | Image import funding and tensor indexes: [F18](#f18-image-import-funding-and-indexes-2026-10-30). |
-| F19 | this commit | Owned-region pool transfers: [F19](#f19-owned-region-pool-transfers-2026-10-30). |
+| F19 | `c5c59052` | Owned-region pool transfers: [F19](#f19-owned-region-pool-transfers-2026-10-30). |
+| F20 | this commit | Paid compiler-owned inference memoization: [F20](#f20-owned-inference-memoization-2026-10-30). |
 
 ## F10a hygiene (2026-10-28)
 
@@ -523,6 +524,70 @@ with zero additional creates or releases. Tests also cover consumed-credit
 pressure, rollback, drains, unsupported transfers and retained unknown work.
 The final merged image geometry/swap and LLM spill/restart controls pass on
 both Sparks; all model checks are summarized with F20 below.
+
+## F20: owned inference memoization (2026-10-30)
+
+Each compiler owns a lazy, byte-bounded fused-inference memo. TLS retains only
+its routing pointer. Successes have fixed-size entries, errors are recomputed,
+and individual LRU eviction replaces the 512-entry clear. Allocation accounting
+includes control storage and simultaneous old/new bucket arrays. Scopes expose
+live/peak bytes, entries, hits, misses and evictions. Nested compilers restore
+their enclosing scope; recursive inference shares the active one.
+
+Automatic token compilation and image phases have a distinct paid memo subset.
+The budget derives from actual component inventory, with no execution limit on
+query count. Fixed diagnostic startup optionally borrows backend capacity while
+building/planning, then destroys and refunds its cache before required lowering
+and reporting. A refusal computes uncached, and releasing an inner cache does
+not expose its enclosing compiler until the inner scope ends.
+
+Cold probes found at most 23 distinct queries per build on Qwen3.8 native and
+DeepSeek. Their component-derived budgets are 840,320 and 757,728 bytes. A short
+Qwen run measured 65,384 peak bytes, at most 23 entries, 42,289 hits, 549 misses
+and zero evictions over 41 compilation scopes. DeepSeek's peak was not measured.
+
+The coarse matched screen on `spark-b` uses the existing speed-gate client,
+corpus, pinned artifacts and SDK, C1/C2, 18,000 prompt characters, 32 output
+tokens, one warm-up and one measured pass. Actual prompts are 4,371–5,196 Qwen
+tokens and 4,146–4,862 DeepSeek tokens. ABBA compares an incremental locked build
+from the complete `098fcf89` source snapshot with the initial cache change;
+bookends then check the final phase-separation implementation. The baseline's
+generated GGML module digest matches the digest recomputed from that snapshot.
+
+| Family | Baseline mean ms/plan | Initial ABBA candidate | Final bookend |
+| --- | ---: | ---: | ---: |
+| Qwen3.8 native + MTP | 16.486 | 16.178 | 16.222 |
+| DeepSeek plain waves + DSpark | 104.500 | 103.857 | 103.179 |
+
+Every response digest and usage record matches across ABBA and final bookends;
+ABBA end-to-end metrics stay within about 3%. This preserves planning speed at
+the coarse regression-screen scope, not a strict 1% migration qualification.
+Executable SHA-256s: baseline
+`be1130469e346128339feeb60fd7c626885465f85761149bfb61c52fd1024eec`,
+initial candidate
+`f74e75218cce3e986bd069822788e12e7872854112973ef81e32bdd3d5bb00b4`,
+final candidate
+`e4472c4e89a30d0dfd7cebc034525c02c257ef3b60259b85de1b43125e3312f3`.
+The Qwen statistics runtime completed normally; its temporary harness then
+failed while averaging zero measured passes, so subsequent statistics steps
+were not used. Raw receipts and measurements remain outside Git.
+
+Final merged F17–F20 checks (2026-10-30):
+
+- `spark`: native build and shared `-LE 'models|timing'`, 4,003/4,003; selected
+  Qwen3.8, dense-decoder and image/import controls, 41/41.
+- `spark-b`: native build and selected DeepSeek, Gemma and EXL3 controls, 31/31.
+  The model union includes frozen image pixels, full heads/state, peer refusal,
+  paused output, spill/restart and geometry changes. Both initial model jobs hit
+  their 600-second supervision limits; only interrupted/unrun cases resumed.
+  All 72 unique selected tests pass without skips or test failures.
+- Workstation, under `hostlock shared`: F17–F19 ASan/UBSan, 606 pass and one
+  missing-composition skip (that case passes on `spark`); F20 targeted IR,
+  planner and ownership ASan/UBSan, 203/203.
+- Cross-built ThreadSanitizer on `spark`: three API cases repeated ten times
+  and seven memo/stride/thread cases repeated five times, all pass. Frozen
+  Qwen3.8/DeepSeek placements are unchanged. The final native cache-focused
+  builder set on `spark-b` passes 103/103 without skips.
 
 ## Owner decisions and standing rules so far
 

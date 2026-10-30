@@ -3076,6 +3076,21 @@ accounted when use ends. The [DeepSeek service screen](experiments/m36-dsv4-targ
 passes serial speculative execution but finds a concurrent-state capacity wall;
 shared construction alone does not qualify joined serving or family migration.
 
+Token compilation and each image compiler phase own their fused-inference
+memoization. TLS holds only the current scope's routing pointer; storage is
+lazy, byte bounded and destroyed at scope exit. Only fixed-size successful
+results are retained, with individual LRU eviction and live/peak byte, entry,
+hit/miss and eviction counters. Component inventory determines a separately
+paid memo subset of construction capacity; bucket replacement includes old/new
+overlap. Nested compilers own independent scopes and restore their enclosing
+scope, while recursive fused decompositions share the active compiler's cache.
+
+Fixed diagnostic startup can optionally borrow canonical backend capacity for
+graph construction and planning, then destroys and refunds the cache before
+mandatory lowering/report payments. Releasing a cache keeps inference uncached
+until that compiler scope ends. Sources without memo funding compute normally
+without caching. Program, graph and artifact identities do not depend on reuse.
+
 The approved DeepSeek V4 GGUF target also consumes ordinary native publication
 and stored bindings (N4b9). Bounded integer/real metadata lists preserve all
 43 layers and source constants; exact source receipts, complete inventory and

@@ -360,16 +360,10 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> LowerComponent
   return result;
 }
 
-std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildComponentProgram(
+std::expected<planner::StepPlan, std::string> PlanComponentProgram(
     const GraphBuildIO& io, const kernels::StepBackend& backend, const planner::Policy& policy,
     const kernels::Addresses& addresses, planner::PlanOptions options,
-    std::optional<kernels::TokenLowerInput> token, const kernels::ProgramValidator& validate,
-    std::shared_ptr<const kernels::BackendOwner> report_owner,
-    const kernels::ExecutionResources* resources) {
-  if (!backend.lower) return std::unexpected("a component graph needs a backend lowerer");
-  if (resources &&
-      (!*resources || !resources->parent() || &backend != &resources->parent()->backend()))
-    return std::unexpected("private lowering resources differ from the canonical planning backend");
+    std::optional<kernels::TokenLowerInput> token) {
   if (token && (&token->step.graph != &io.graph || options.shape != &token->shape))
     return std::unexpected("token lowering metadata differs from the planned graph or shape");
   if (!token && (options.shape != nullptr || options.state_spans))
@@ -397,7 +391,20 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildComponent
     proved_owners = std::move(*proved);
     options.owner_products = &*proved_owners;
   }
-  auto plan = PlanComponentGraph(io, backend, policy, addresses, std::move(options));
+  return PlanComponentGraph(io, backend, policy, addresses, std::move(options));
+}
+
+std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildComponentProgram(
+    const GraphBuildIO& io, const kernels::StepBackend& backend, const planner::Policy& policy,
+    const kernels::Addresses& addresses, planner::PlanOptions options,
+    std::optional<kernels::TokenLowerInput> token, const kernels::ProgramValidator& validate,
+    std::shared_ptr<const kernels::BackendOwner> report_owner,
+    const kernels::ExecutionResources* resources) {
+  if (!backend.lower) return std::unexpected("a component graph needs a backend lowerer");
+  if (resources &&
+      (!*resources || !resources->parent() || &backend != &resources->parent()->backend()))
+    return std::unexpected("private lowering resources differ from the canonical planning backend");
+  auto plan = PlanComponentProgram(io, backend, policy, addresses, std::move(options), token);
   if (!plan) return std::unexpected(std::move(plan.error()));
   const kernels::LowerInput input{*plan, io, addresses, token};
   return LowerComponentPlan(input, backend, policy, validate, std::move(report_owner), resources);

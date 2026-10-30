@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "base/sha256.h"
+#include "expected_error.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "format/tensor_format.h"
@@ -1022,7 +1023,185 @@ TEST(IrTest, ViewsAreAlignedToTheirUnits) {
 // A fused node's inference sees a strided source as its expansion does
 // (L3), and is remembered by what decides it, never by the node: two
 // stores of one shape into two caches each view their own cache.
+// Deliberately build a fresh graph each time: memoization carries shape facts,
+// never tensor identities or a graph's storage. Full verification reuses the
+// same query and must return the uncached shape/stride/alias results.
+std::expected<Graph, VerifyError> MemoGraph(float eps) {
+  Builder builder;
+  const auto x = builder.Input(F32({8, 4}));
+  const auto weight = builder.Weight(F32({8}), WeightRef{.role = 1});
+  builder.Output(
+      builder.Fused(FusedKind::kRmsNormMul, std::array{x, weight}, NormParams{.eps = eps})[0]);
+  return std::move(builder).Finish();
+}
+
+TEST(IrTest, CompilerMemoHasAByteBudgetAndEvictsOnlyTheLeastRecentResult) {
+  const auto budget = InferenceScope::WorkingSetBytes(1);
+  ASSERT_TRUE(budget);
+  InferenceScope scope(*budget);
+  ASSERT_TRUE(MemoGraph(1e-6F));
+  ASSERT_TRUE(MemoGraph(2e-6F));
+  ASSERT_EQ(scope.stats().entries, 2U);
+  const auto hits = scope.stats().hits;
+  ASSERT_TRUE(MemoGraph(1e-6F));  // Make the first query most recent.
+  EXPECT_EQ(scope.stats().hits, hits + 1);
+  ASSERT_TRUE(MemoGraph(3e-6F));
+  EXPECT_EQ(scope.stats().entries, 2U);
+  EXPECT_EQ(scope.stats().evictions, 1U);
+  ASSERT_TRUE(MemoGraph(1e-6F));
+  EXPECT_EQ(scope.stats().hits, hits + 2);
+  const auto misses = scope.stats().misses;
+  ASSERT_TRUE(MemoGraph(2e-6F));  // The evicted query is recomputed.
+  EXPECT_EQ(scope.stats().misses, misses + 1);
+  EXPECT_LE(scope.stats().bytes, *budget);
+  EXPECT_LE(scope.stats().peak_bytes, *budget);
+}
+
+TEST(IrTest, CompilerMemoScopesOwnTheirStorageAndRestoreTheirEnclosingCompiler) {
+  const auto budget = InferenceScope::WorkingSetBytes(8);
+  ASSERT_TRUE(budget);
+  InferenceScope outer(*budget);
+  auto reference = MemoGraph(1e-6F);
+  ASSERT_TRUE(reference);
+  EXPECT_EQ(outer.stats().misses, 1U);
+  {
+    InferenceScope inner(*budget);
+    auto graph = MemoGraph(1e-6F);
+    ASSERT_TRUE(graph);
+    EXPECT_EQ(graph->Digest(), reference->Digest());
+    EXPECT_EQ(inner.stats().misses, 1U);
+    EXPECT_EQ(inner.stats().hits, 0U);
+    EXPECT_TRUE(Verify(*graph));
+    EXPECT_EQ(inner.stats().hits, 1U);
+    EXPECT_EQ(outer.stats().hits, 0U);
+    inner.Release();
+    EXPECT_EQ(inner.stats().bytes, 0U);
+    EXPECT_EQ(inner.stats().entries, 0U);
+    EXPECT_TRUE(MemoGraph(1e-6F));
+    EXPECT_EQ(inner.stats().hits, 1U);
+    EXPECT_EQ(outer.stats().hits, 0U);  // Released phase cannot borrow the outer cache.
+  }
+  {
+    InferenceScope disabled(0);
+    auto graph = MemoGraph(1e-6F);
+    ASSERT_TRUE(graph);
+    EXPECT_EQ(graph->Digest(), reference->Digest());
+    EXPECT_TRUE(Verify(*graph));
+    EXPECT_EQ(disabled.stats().bytes, 0U);
+    EXPECT_EQ(outer.stats().hits, 0U);
+  }
+  EXPECT_TRUE(MemoGraph(1e-6F));
+  EXPECT_EQ(outer.stats().hits, 1U);
+  EXPECT_EQ(outer.stats().misses, 1U);
+}
+
+TEST(IrTest, CompilerMemoMatchesUncachedResultsAndDoesNotCacheFailureStrings) {
+  const auto budget = InferenceScope::WorkingSetBytes(32);
+  ASSERT_TRUE(budget);
+  std::vector<base::Sha256Digest> uncached;
+  {
+    InferenceScope disabled(0);
+    for (std::size_t i = 0; i < 32; ++i) {
+      auto graph = MemoGraph(static_cast<float>(i + 1) * 1e-6F);
+      ASSERT_TRUE(graph);
+      ASSERT_TRUE(Verify(*graph));
+      uncached.push_back(graph->Digest());
+    }
+  }
+  InferenceScope memo(*budget);
+  for (std::size_t i = 0; i < uncached.size(); ++i) {
+    auto graph = MemoGraph(static_cast<float>(i + 1) * 1e-6F);
+    ASSERT_TRUE(graph);
+    EXPECT_TRUE(Verify(*graph));
+    EXPECT_EQ(graph->Digest(), uncached[i]);
+  }
+  EXPECT_EQ(memo.stats().misses, uncached.size());
+  EXPECT_EQ(memo.stats().hits, uncached.size());
+  const auto before = memo.stats().entries;
+  for (int i = 0; i < 2; ++i) {
+    auto failed = MemoGraph(-1.0F);
+    EXPECT_FALSE(failed);
+  }
+  EXPECT_EQ(memo.stats().entries, before);
+  EXPECT_LE(memo.stats().peak_bytes, *budget);
+  EXPECT_FALSE(InferenceScope::WorkingSetBytes(UINT64_MAX));
+}
+
+TEST(IrTest, CompilerMemoHandlesNestedFusedInferenceAtTheMinimumByteBudget) {
+  const auto graph = [] {
+    Builder builder;
+    const auto carry = builder.Input(F32({8, 4}));
+    const auto branch = builder.Input(F32({8, 4}));
+    const auto gate = builder.Input(F32({8}));
+    const auto modulation = builder.Input(F32({8}));
+    const auto out = builder.Fused(FusedKind::kGatedResidualModulateSplit,
+                                   std::array{carry, branch, gate, modulation},
+                                   SplitModulateParams{.eps = 1e-6F});
+    builder.Output(out[0]);
+    builder.Output(out[1]);
+    return std::move(builder).Finish();
+  };
+  std::optional<base::Sha256Digest> digest;
+  for (const auto budget : {InferenceScope::MinimumBytes() - 1, InferenceScope::MinimumBytes(),
+                            *InferenceScope::WorkingSetBytes(8)}) {
+    InferenceScope scope(budget);
+    auto made = graph();
+    ASSERT_TRUE(made) << test_support::Failed(made, &VerifyError::detail).value_or("");
+    EXPECT_TRUE(Verify(*made));
+    if (!digest) digest = made->Digest();
+    EXPECT_EQ(*digest, made->Digest());
+    EXPECT_LE(scope.stats().peak_bytes, budget);
+    if (budget == InferenceScope::MinimumBytes()) {
+      EXPECT_EQ(scope.stats().entries, 1U);
+      EXPECT_EQ(scope.stats().misses, 3U);
+      EXPECT_EQ(scope.stats().evictions, 2U);
+      EXPECT_EQ(scope.stats().hits, 1U);
+    } else if (budget < InferenceScope::MinimumBytes()) {
+      EXPECT_EQ(scope.stats().bytes, 0U);
+    }
+  }
+}
+
+TEST(IrTest, CompilerMemoHasNoFixedEntryCountCliff) {
+  const auto budget = InferenceScope::WorkingSetBytes(600);
+  ASSERT_TRUE(budget);
+  InferenceScope scope(*budget);
+  for (std::size_t i = 0; i < 600; ++i) ASSERT_TRUE(MemoGraph(static_cast<float>(i + 1) * 1e-6F));
+  EXPECT_EQ(scope.stats().entries, 600U);
+  EXPECT_EQ(scope.stats().evictions, 0U);
+  EXPECT_TRUE(MemoGraph(1e-6F));
+  EXPECT_EQ(scope.stats().hits, 1U);
+  EXPECT_LE(scope.stats().peak_bytes, *budget);
+}
+
+TEST(IrTest, ConcurrentCompilersHaveIndependentMemoStorage) {
+  const auto budget = InferenceScope::WorkingSetBytes(16);
+  ASSERT_TRUE(budget);
+  std::array<InferenceMemoStats, 2> stats{};
+  std::array<bool, 2> valid{true, true};
+  std::array<std::thread, 2> workers;
+  for (std::size_t t = 0; t < workers.size(); ++t) {
+    workers[t] = std::thread([&, t] {
+      InferenceScope scope(*budget);
+      for (std::size_t i = 0; i < 64; ++i) {
+        auto graph = MemoGraph(static_cast<float>(i % 8 + 1) * 1e-6F);
+        valid[t] = valid[t] && graph.has_value();
+        if (graph) valid[t] = valid[t] && Verify(*graph).has_value();
+      }
+      stats[t] = scope.stats();
+    });
+  }
+  for (auto& worker : workers) worker.join();
+  for (std::size_t t = 0; t < workers.size(); ++t) {
+    EXPECT_TRUE(valid[t]);
+    EXPECT_EQ(stats[t].misses, 8U);
+    EXPECT_EQ(stats[t].hits, 120U);
+    EXPECT_LE(stats[t].peak_bytes, *budget);
+  }
+}
+
 TEST(IrTest, FusedInferenceUsesRealStridesAndRemembersOnlyWhatDecidesIt) {
+  InferenceScope inference(*InferenceScope::WorkingSetBytes(16));
   Builder b;
   const TensorId root = b.Input(F32({16, 4}));
   const TensorId rows = b.View(root, ShapeOf({8, 4}), {4, 64, 256, 256}, 32);

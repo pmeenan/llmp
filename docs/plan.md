@@ -729,9 +729,10 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       while region growth is charged before physical allocation, with explicit
       ownership through rollback and retirement and no speculative refill credit
       ([record](m35-record.md#f19-owned-region-pool-transfers-2026-10-30)).
-- [ ] **F20 Owned inference memoization:** replace the thread-local 512-entry
+- [x] **F20 Owned inference memoization:** replace the thread-local 512-entry
       cache with paid compiler-owned storage, resource-based eviction and
-      observable bytes; retain the measured planning improvement.
+      observable bytes; retain the measured planning improvement
+      ([record](m35-record.md#f20-owned-inference-memoization-2026-10-30)).
 - [x] **F12 Known model-test failures and swap continuation:** every model
       test that already failed at `265c821a` (stale frozen digests, a Gemma Q8
       cache admission, Gemma 4 tool rendering, the gemma2 store artifact

@@ -119,6 +119,9 @@ struct ComponentSourceOptions {
   // transfer into an independently paid live plan/future.
   std::shared_ptr<SharedCompilerAllowance> compiler{};
   std::uint64_t compiler_bytes = 0;
+  // Memoization subset of compiler_bytes, separately included in its payment.
+  // Zero disables caching for an unfunded diagnostic source.
+  std::uint64_t compiler_memo_bytes = 0;
 };
 
 class ComponentStepSource final : public StepSource {

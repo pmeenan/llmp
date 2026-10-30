@@ -32,6 +32,14 @@ std::expected<planner::StepPlan, std::string> PlanComponentGraph(
     const GraphBuildIO& io, const kernels::StepBackend& backend, const planner::Policy& policy,
     const kernels::Addresses& addresses, planner::PlanOptions options = {});
 
+// The typed program planning phase, including token metadata validation and
+// owner-product proofs. It performs no backend lowering/report allocation, so
+// a caller may release an optional compiler loan before LowerComponentPlan.
+std::expected<planner::StepPlan, std::string> PlanComponentProgram(
+    const GraphBuildIO& io, const kernels::StepBackend& backend, const planner::Policy& policy,
+    const kernels::Addresses& addresses, planner::PlanOptions options,
+    std::optional<kernels::TokenLowerInput> token = std::nullopt);
+
 // Lower and report an already-owned plan. This consumes the exact plan and
 // typed input supplied by the caller; it never replans or clones the graph.
 // The source graph, backend, policy, address bindings, token metadata, report

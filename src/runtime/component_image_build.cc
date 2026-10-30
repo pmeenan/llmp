@@ -17,6 +17,7 @@
 #include "chat/chat.h"
 #include "engine/device_backend.h"
 #include "engine/support.h"
+#include "ir/infer.h"
 #include "planner/construction.h"
 #include "planner/policy.h"
 #include "platform/files.h"
@@ -138,6 +139,7 @@ struct ImageGeometryOwner {
   std::shared_ptr<ImageGenerationModel> model;
   std::array<std::map<ir::WeightRef, std::uint32_t>, 3> resources;
   std::array<std::shared_ptr<const co::SpatialGraph>, 3> graphs;
+  std::array<std::uint64_t, 3> compiler_memo_bytes{};
 };
 
 // Two complete owner/return representations, doubled vector capacities for
@@ -158,8 +160,12 @@ std::uint64_t SourceOwnerBytes(const md::ImageProfile& p) {
 // each actual LowerInput by the backend funder, including replacement geometry.
 // Reports stream lazily from the retained typed inventory; no serialized report
 // copy is constructed. Captures retain EngineImage's separate PlanAccount.
-std::expected<std::uint64_t, std::string> CompilerBound(const spec::ModelSpec& mapping,
-                                                        std::size_t roles, std::size_t ports) {
+struct CompilerConstruction {
+  std::uint64_t bytes = 0, memo = 0;
+};
+std::expected<CompilerConstruction, std::string> CompilerBound(const spec::ModelSpec& mapping,
+                                                               std::size_t roles,
+                                                               std::size_t ports) {
   std::uint64_t primitives = 0, components = 0;
   const auto add = [](std::uint64_t a, std::uint64_t b, std::uint64_t& out) {
     return !__builtin_add_overflow(a, b, &out);
@@ -188,7 +194,9 @@ std::expected<std::uint64_t, std::string> CompilerBound(const spec::ModelSpec& m
   const auto numerical = planner::NumericalConstructionBytes(nodes);
   if (!numerical || !add(result, *numerical, result))
     return Error("image numerical compiler bound overflows");
-  return result;
+  const auto memo = ir::InferenceScope::WorkingSetBytes(components);
+  if (!memo || !add(result, *memo, result)) return Error("image inference working set overflows");
+  return CompilerConstruction{result, *memo};
 }
 std::expected<std::vector<co::BoundTensor>, std::string> Table(
     std::span<const md::ImageTensor> tensors, const artifact::Artifact& artifact) {
@@ -529,11 +537,13 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
     // Compilation is serial on the model owner. Retained old/candidate graph
     // descriptors each have their own BuildSpatialStep payment; this common
     // two-program compiler scratch ceiling is held once at its high-water.
-    if (*compiler > model->compiler_limits[i]) {
-      if (!model->paid.Add(*compiler - model->compiler_limits[i]))
+    if (compiler->bytes > model->compiler_limits[i]) {
+      if (!model->paid.Add(compiler->bytes - model->compiler_limits[i]))
         return Error("image complete compiler owners are not prepaid");
-      model->compiler_limits[i] = *compiler;
+      model->compiler_limits[i] = compiler->bytes;
     }
+    held->compiler_memo_bytes[i] = compiler->memo;
+    ir::InferenceScope inference(compiler->memo);
     const std::array<std::span<const co::BoundTensor>, 1> tables{model->tables[i]};
     const std::array owners{co::SpatialOwner{0, primary[i]}};
     auto graph = co::BuildSpatialStep(
@@ -577,6 +587,7 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
   for (std::size_t i = 0; i < 3; ++i) {
     ImageStage stage;
     stage.graph = held->graphs[i];
+    stage.compiler_memo_bytes = held->compiler_memo_bytes[i];
     auto numerical =
         AdmittedImageNumerics(model->family->spec, *source->composition, stage.graph->graph(),
                               *mappings[i], static_cast<std::uint16_t>(i), model->backend->device(),

@@ -15,6 +15,7 @@
 
 #include "engine/component_source.h"
 #include "expected_error.h"
+#include "ir/infer.h"
 
 namespace {
 namespace en = llmp::engine;
@@ -364,9 +365,11 @@ struct DeclaredFakeBackend final : llmp::kernels::BackendOwner {
   }
   const llmp::kernels::StepBackend& backend() const override { return table; }
   bool Charge(std::uint64_t bytes) const override {
+    ++charge_attempts;
     if (allowance) return allowance->Charge(bytes);
     if (bytes > ceiling - paid) return false;
     paid += bytes;
+    high_water = std::max(high_water, paid);
     return true;
   }
   void Release(std::uint64_t bytes) const override {
@@ -385,7 +388,7 @@ struct DeclaredFakeBackend final : llmp::kernels::BackendOwner {
   std::shared_ptr<en::ExecutionMetadataAllowance> allowance;
   llmp::kernels::StepBackend table;
   ex::BackendDeclaration declaration{Seal("recipe"), Seal("build"), Seal("config")};
-  mutable std::uint64_t paid = 0, queries = 0;
+  mutable std::uint64_t paid = 0, queries = 0, charge_attempts = 0, high_water = 0;
   std::uint64_t ceiling = 1U << 20;
   bool ready = true;
 };
@@ -479,6 +482,8 @@ TEST_F(SourceIdentityTest, SharedCompilerChargePrecedesGraphAndReturnsOnBuildRef
   ASSERT_TRUE(compiler->Reserve(catalog, node, bytes, 2 * bytes, 2 * bytes, bytes));
   const auto usable = bytes - en::ExecutionMetadataAllowance::OverheadBytes();
   spec.stages.resize(1);
+  spec.stages[0].heads.final_norm =
+      llmp::spec::ComponentRef{.kind = "norm.rms", .params = {{"eps", 1e-6}}};
   auto declared = en::NumericalDomain::Create({Stage(0, "target")});
   ASSERT_TRUE(declared);
   auto table = owners[0]->backend();
@@ -493,7 +498,8 @@ TEST_F(SourceIdentityTest, SharedCompilerChargePrecedesGraphAndReturnsOnBuildRef
        .backend = std::move(table),
        .execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*declared)),
        .compiler = compiler,
-       .compiler_bytes = usable});
+       .compiler_bytes = usable,
+       .compiler_memo_bytes = *llmp::ir::InferenceScope::WorkingSetBytes(1)});
   ASSERT_TRUE(source) << Failed(source).value_or("");
   ASSERT_TRUE((*source)->PrepareExecution());
   {
@@ -505,10 +511,119 @@ TEST_F(SourceIdentityTest, SharedCompilerChargePrecedesGraphAndReturnsOnBuildRef
   }
   // This deliberately incomplete spec fails BuildStep. Its paid temporary
   // compiler use must return even on that early graph-construction failure.
+  const auto attempts = owners[0]->charge_attempts;
   auto program = (*source)->Build(Shape(), {});
   ASSERT_FALSE(program);
   EXPECT_NE(program.error(), "compiler construction exceeds its shared payment");
+  EXPECT_EQ(owners[0]->charge_attempts, attempts);  // No second memo payment.
   EXPECT_TRUE(compiler->Acquire(usable));
+}
+
+class MemoFundingProgram final : public llmp::kernels::StepProgram {
+ public:
+  std::uint64_t scratch_bytes() const override { return 0; }
+  std::uint64_t host_bytes() const override { return sizeof(*this); }
+  std::uint64_t launches() const override { return 1; }
+  std::span<const llmp::kernels::InputSlot> inputs() const override { return {}; }
+  std::span<const llmp::kernels::OutputSlot> outputs() const override { return {}; }
+  std::span<const llmp::kernels::TensorUse> tensors() const override { return {}; }
+  std::expected<void, llmp::kernels::StepFailure> Bind(llmp::kernels::StepLaunch&) override {
+    return {};
+  }
+  std::expected<void, llmp::kernels::StepFailure> Run(
+      llmp::kernels::StepLaunch&, llmp::providers::NativeStream) const override {
+    return {};
+  }
+};
+
+TEST_F(SourceIdentityTest, ManualMemoCannotConsumeMandatoryLoweringOrReportCapacity) {
+  auto rows = Implementation("fake.get_rows");
+  rows.operation = llmp::ir::Primitive(llmp::ir::Op::kGetRows);
+  rows.capability = ex::Capability{.op = rows.operation};
+  auto made = ex::Registry::Create({rows});
+  ASSERT_TRUE(made);
+  registry = std::make_unique<ex::Registry>(std::move(*made));
+  owners[0] = std::make_shared<DeclaredFakeBackend>(*registry);
+  spec.stages.resize(1);
+  spec.stages[0].embedding = llmp::spec::ComponentRef{
+      .kind = "embedding.token", .weights = {{.role = "table", .tensor = "embedding"}}};
+  auto declared = en::NumericalDomain::Create({Stage(0, "target")});
+  ASSERT_TRUE(declared);
+  domain = std::make_shared<const en::NumericalDomain>(std::move(*declared));
+  std::array tensors{llmp::components::BoundTensor{
+      .name = "embedding",
+      .format = llmp::ir::Dense(llmp::format::Encoding::kF32, llmp::ir::ShapeOf({8, 16}))}};
+  std::uint64_t mandatory = 0;
+  owners[0]->table.lower = [&](const llmp::kernels::LowerInput&)
+      -> std::expected<std::unique_ptr<llmp::kernels::StepProgram>, std::string> {
+    if (!owners[0]->Charge(mandatory)) return std::unexpected("mandatory test lowering refused");
+    owners[0]->Release(mandatory);
+    return std::make_unique<MemoFundingProgram>();
+  };
+  auto table = owners[0]->backend();
+  table.owner = owners[0];
+  auto source = en::ComponentStepSource::Create({.spec = &spec,
+                                                 .bindings = {.tensors = tensors, .state = &layout},
+                                                 .bound_digest = spec.Digest(),
+                                                 .slots = 1,
+                                                 .policy = pl::Policy{},
+                                                 .backend = table,
+                                                 .execution_domain = domain});
+  ASSERT_TRUE(source) << Failed(source).value_or("");
+  ASSERT_TRUE((*source)->PrepareExecution());
+  const auto baseline = owners[0]->paid;
+  const auto memo = *llmp::ir::InferenceScope::WorkingSetBytes(1);
+  auto shape = Shape();
+  shape.segments.resize(1);
+  shape.segments[0].past = 0;
+  shape.segments[0].read_cells = 16;
+  shape.segments[0].outputs = 0;
+  const auto build = [&] { return (*source)->Build(shape, {}); };
+  auto measured = build();
+  ASSERT_TRUE(measured) << Failed(measured).value_or("");
+  const auto report = owners[0]->paid - baseline;
+  measured->reset();
+  EXPECT_EQ(owners[0]->paid, baseline);
+  // Both memo and mandatory lowering individually fit, but cannot coexist.
+  mandatory = std::max(memo, report);
+  owners[0]->ceiling = baseline + mandatory;
+  auto tight = build();
+  ASSERT_TRUE(tight) << Failed(tight).value_or("");
+  tight->reset();
+  EXPECT_EQ(owners[0]->paid, baseline);
+  // No room for memoization: the same valid source still plans and lowers.
+  ASSERT_LT(report, memo);
+  mandatory = 0;
+  owners[0]->ceiling = baseline + report;
+  auto uncached = build();
+  ASSERT_TRUE(uncached) << Failed(uncached).value_or("");
+  uncached->reset();
+  EXPECT_EQ(owners[0]->paid, baseline);
+}
+
+TEST_F(SourceIdentityTest, OptionalManualInferencePaymentBalancesAndRefusalStillBuildsUncached) {
+  spec.stages.resize(1);
+  auto declared = en::NumericalDomain::Create({Stage(0, "target")});
+  ASSERT_TRUE(declared);
+  domain = std::make_shared<const en::NumericalDomain>(std::move(*declared));
+  spec.stages[0].heads.final_norm =
+      llmp::spec::ComponentRef{.kind = "norm.rms", .params = {{"eps", 1e-6}}};
+  auto source = Source(0);
+  ASSERT_TRUE(source) << Failed(source).value_or("");
+  ASSERT_TRUE((*source)->PrepareExecution());
+  const auto paid = owners[0]->paid;
+  const auto attempts = owners[0]->charge_attempts;
+  auto first = (*source)->Build(Shape(), {});
+  ASSERT_FALSE(first);  // Missing embedding/weights, after memo admission.
+  EXPECT_EQ(owners[0]->paid, paid);
+  EXPECT_GT(owners[0]->high_water, paid);
+  EXPECT_EQ(owners[0]->charge_attempts, attempts + 1);
+  owners[0]->ceiling = paid;  // The optional payment now refuses.
+  auto refused = (*source)->Build(Shape(), {});
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error(), first.error());
+  EXPECT_EQ(owners[0]->paid, paid);
+  EXPECT_EQ(owners[0]->charge_attempts, attempts + 2);
 }
 
 TEST(ExecutionMetadataAllowanceTest, RefusesBeforeCatalogOrAllocationWithoutHeadroom) {

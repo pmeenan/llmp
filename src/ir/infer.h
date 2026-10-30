@@ -13,6 +13,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <memory>
+#include <optional>
 #include <span>
 
 #include "format/encoding.h"
@@ -21,6 +23,46 @@
 #include "ir/verify.h"
 
 namespace llmp::ir {
+
+namespace detail {
+class InferenceCache;
+}
+
+struct InferenceMemoStats {
+  std::uint64_t byte_limit = 0, bytes = 0, peak_bytes = 0;
+  std::uint64_t entries = 0, hits = 0, misses = 0, evictions = 0;
+};
+
+// A synchronous compiler's memoization over all its builders, rewrites and
+// verifications. The caller prepays byte_limit separately from its other
+// construction inventories. Storage is lazy, byte bounded and LRU; zero
+// disables memoization. No cache survives the scope. A nested compiler owns
+// its own budget and restores the outer scope, while fused decompositions
+// share this scope. Concurrent scopes share no storage.
+class InferenceScope {
+ public:
+  explicit InferenceScope(std::uint64_t byte_limit);
+  ~InferenceScope();
+  InferenceScope(const InferenceScope&) = delete;
+  InferenceScope& operator=(const InferenceScope&) = delete;
+  InferenceScope(InferenceScope&&) = delete;
+  InferenceScope& operator=(InferenceScope&&) = delete;
+  const InferenceMemoStats& stats() const { return stats_; }
+  // Destroy every memo allocation, leaving inference uncached until this scope
+  // ends. An optional compiler loan may be returned only after this call.
+  void Release();
+  // Includes the control allocation, one hash bucket and one result node.
+  static std::uint64_t MinimumBytes();
+  // A working-set allowance sized from the source's real component inventory,
+  // not the IR's maximum graph size. It is a byte budget, not an entry cap;
+  // pressure evicts individually even when a component has several queries.
+  static std::optional<std::uint64_t> WorkingSetBytes(std::uint64_t components);
+
+ private:
+  InferenceMemoStats stats_;
+  std::unique_ptr<detail::InferenceCache> cache_;
+  detail::InferenceCache* previous_ = nullptr;
+};
 
 struct Inferred {
   std::array<TensorDesc, kMaxOutputs> out{};

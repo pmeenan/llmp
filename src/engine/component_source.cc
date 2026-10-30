@@ -13,9 +13,43 @@
 #include "engine/graph_plan.h"
 #include "format/tensor_format.h"
 #include "ir/graph.h"
+#include "ir/infer.h"
 #include "planner/plan.h"
 
 namespace llmp::engine {
+
+namespace {
+// Manual startup has no shared compiler ceiling. Its canonical backend can
+// optionally fund this acceleration; refusal changes only reuse, never whether
+// a graph is accepted. The automatic path already paid this category.
+class OptionalInferencePayment {
+ public:
+  explicit OptionalInferencePayment(const ComponentSourceOptions& options) {
+    if (options.compiler || !options.backend.owner) return;
+    std::uint64_t count = 0;
+    spec::EachComponent(options.spec->stages.at(options.stage),
+                        [&](const auto&, const auto&) { ++count; });
+    const auto bytes = ir::InferenceScope::WorkingSetBytes(count);
+    if (bytes && *bytes != 0 && options.backend.owner->Charge(*bytes)) {
+      owner_ = options.backend.owner;
+      bytes_ = *bytes;
+    }
+  }
+  ~OptionalInferencePayment() { Release(); }
+  void Release() {
+    if (owner_) owner_->Release(bytes_);
+    owner_.reset();
+    bytes_ = 0;
+  }
+  OptionalInferencePayment(const OptionalInferencePayment&) = delete;
+  OptionalInferencePayment& operator=(const OptionalInferencePayment&) = delete;
+  std::uint64_t bytes() const { return bytes_; }
+
+ private:
+  std::shared_ptr<const kernels::BackendOwner> owner_;
+  std::uint64_t bytes_ = 0;
+};
+}  // namespace
 
 SharedCompilerAllowance::Use::Use(Use&& other) noexcept
     : owner_(std::move(other.owner_)), bytes_(other.bytes_), thread_(other.thread_) {}
@@ -60,6 +94,9 @@ std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSo
     ComponentSourceOptions options) {
   if (static_cast<bool>(options.compiler) != (options.compiler_bytes != 0))
     return std::unexpected("a compiler source needs both its owner and byte bound");
+  if (options.compiler_memo_bytes > options.compiler_bytes ||
+      (options.compiler_memo_bytes != 0 && !options.compiler))
+    return std::unexpected("inference memoization needs its compiler payment");
   if (options.backend.owner) {
     auto owner = options.backend.owner;
     // Retain just the owned table, avoiding another allocation/copy of its
@@ -491,6 +528,8 @@ std::expected<std::vector<CommitBuffer>, std::string> ComponentStepSource::Commi
     if (!paid) return std::unexpected(paid.error());
     compiler.emplace(std::move(*paid));
   }
+  OptionalInferencePayment memo_payment(o_);
+  ir::InferenceScope inference(o_.compiler ? o_.compiler_memo_bytes : memo_payment.bytes());
   planner::StepShape shape{
       .stage = stage,
       .phase = planner::Phase::kVerify,
@@ -537,6 +576,8 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
     if (!paid) return std::unexpected(paid.error());
     compiler.emplace(std::move(*paid));
   }
+  OptionalInferencePayment memo_payment(o_);
+  ir::InferenceScope inference(o_.compiler ? o_.compiler_memo_bytes : memo_payment.bytes());
   // The narrowed final layer is the policy's (planner/pattern.h
   // narrow_final).
   auto step = shape.phase == planner::Phase::kCommit
@@ -603,10 +644,20 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
                                     .alignment_staged = std::move(aligned_staged),
                                     .observed_bound_model = o_.bound_digest,
                                     .observed_model_spec = semantic_identity_};
-  auto program = BuildComponentProgram(
-      io, Backend(), step_policy, addresses, std::move(plan_options),
-      kernels::TokenLowerInput{*step, shape, o_.bindings.state->context, state_spans},
-      o_.validate_program, o_.backend.owner, resources);
+  const kernels::TokenLowerInput token{*step, shape, o_.bindings.state->context, state_spans};
+  auto plan =
+      PlanComponentProgram(io, Backend(), step_policy, addresses, std::move(plan_options), token);
+  if (!plan) return std::unexpected(std::move(plan.error()));
+  if (!o_.compiler) {
+    // A manual backend's optional memo loan must never compete with its
+    // mandatory lowering/report loans. Planning is complete; destroy the
+    // cache before returning its payment and asking for backend storage.
+    inference.Release();
+    memo_payment.Release();
+  }
+  const kernels::LowerInput input{*plan, io, addresses, token};
+  auto program = LowerComponentPlan(input, Backend(), step_policy, o_.validate_program,
+                                    o_.backend.owner, resources);
   if (program && compiler) {
     auto held = std::make_shared<SharedCompilerAllowance::Use>(std::move(*compiler));
     if (!(**program).HoldConstruction(std::move(held)))
