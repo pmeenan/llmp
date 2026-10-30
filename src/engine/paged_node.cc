@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
+#include "engine/execution_contract.h"
 #include "engine/paged_node_internal.h"
 
 namespace llmp::engine {
@@ -250,6 +251,16 @@ Status PagedNode::Open() {
   counting_ = std::make_unique<CountingStorage>(*storage_, settings_.hold_reads,
                                                 settings_.hold_cancellable);
   domain_ = catalog_.AddDomain("gb10");
+  // Fixed node runtime metadata is part of the startup occupancy, before
+  // choosing/filling the pool and before BackingService constructs its ledger.
+  // The existing metadata owner also pays its own catalog/control overhead.
+  const auto pool_bytes = sc::HandleReserve::MetadataBytes();
+  auto pool_metadata = ExecutionMetadataAllowance::AdmitInBudget(
+      catalog_, domain_, ExecutionMetadataAllowance::OverheadBytes() + pool_bytes, UINT64_MAX,
+      nullptr);
+  if (!pool_metadata) return Error(pool_metadata.error());
+  pool_metadata_ = std::move(*pool_metadata);
+  base::Check(pool_metadata_->Charge(pool_bytes), "fixed pool metadata was prepaid");
   // The zone first: a persistent pool, mapped before anything pages.
   return MapResident(zone_, "the landing zone", settings_.slots * settings_.slot_bytes,
                      providers::BackingKind::kHost, MemoryClass::kStaging,
@@ -481,6 +492,9 @@ Status PagedNode::Start(Bytes budget, std::optional<NodePool> pool) {
                                   : settings_.handle_reserve;
   sc::ReserveSettings reserve{
       .allocation_class = device_class_, .size = Bytes(kPagedExtent), .count = ceiling};
+  if (!pool_metadata_ || !pool_metadata_->HeldBy(catalog_, domain_) ||
+      pool_metadata_->used() < sc::HandleReserve::MetadataBytes())
+    return Error("the backing lane's transfer ledger has no fixed metadata payment");
   backing_lane_ = std::make_unique<sc::BackingService>(
       memory_.get(), *board_, sc::QueueSettings{.capacity = 256, .reserved = 16, .batch = 32},
       reserve, settings_.diagnostic_backing_timing);

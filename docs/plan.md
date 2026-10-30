@@ -725,9 +725,10 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       checkpoint copies; index source and expanded tensors once while retaining
       duplicate and provenance checks
       ([record](m35-record.md#f18-image-import-funding-and-indexes-2026-10-30)).
-- [ ] **F19 Owned-region backing transfers:** preserve warmed pool handles
+- [x] **F19 Owned-region backing transfers:** preserve warmed pool handles
       while region growth is charged before physical allocation, with explicit
-      ownership through rollback and retirement and no speculative refill credit.
+      ownership through rollback and retirement and no speculative refill credit
+      ([record](m35-record.md#f19-owned-region-pool-transfers-2026-10-30)).
 - [ ] **F20 Owned inference memoization:** replace the thread-local 512-entry
       cache with paid compiler-owned storage, resource-based eviction and
       observable bytes; retain the measured planning improvement.

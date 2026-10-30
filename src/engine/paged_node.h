@@ -1222,6 +1222,9 @@ class PagedNode {
   // Catalog/span vector capacity remains node-owned after geometry retirement.
   std::shared_ptr<scheduler::EvictionReceipt> eviction_receipt_;  // driver only
   std::uint64_t region_metadata_bytes_ = 0;
+  // Fixed runtime metadata admitted at Open, before a backing lane can allocate
+  // its shared transfer ledger (also in shared mode). Retained with the node.
+  std::shared_ptr<ExecutionMetadataAllowance> pool_metadata_;
   std::uint64_t host_charged_ = 0;  // the extent's size: whole extents past the floor
   std::uint64_t host_overcharges_ = 0;
   catalog::ExtentId host_extent_;

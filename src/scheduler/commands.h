@@ -13,10 +13,12 @@
 #define LLMP_SCHEDULER_COMMANDS_H_
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <variant>
 #include <vector>
@@ -102,6 +104,39 @@ struct BackingWork {
   bool reuse = false;  // kMap: map a handed-off backing
 };
 
+// The overlap between already charged region extents and the pool's empty
+// backing. Growth starts with one pending transfer per admitted extent; taking
+// backing consumes it, and returning backing during rollback adds it again.
+// Retirement starts empty and records only backing actually returned. The
+// catalog owner settles this token with publication or rollback. Unknown work
+// retains it with its complete transition. The shared ledger outlives the lane.
+class RegionPoolTransfer {
+ public:
+  // Token, shared ledger and conservative allocator/control metadata. Covered
+  // by an owned region's fixed construction envelope, including the first use.
+  static constexpr std::uint64_t kMetadataBytes = 512;
+  ~RegionPoolTransfer();
+  RegionPoolTransfer(const RegionPoolTransfer&) = delete;
+  RegionPoolTransfer& operator=(const RegionPoolTransfer&) = delete;
+  void Settle();
+  std::size_t pending() const;
+
+ private:
+  struct State {
+    mutable std::mutex mutex;
+    std::size_t pending = 0;
+    std::atomic<std::uint64_t> version = 0;
+  };
+  RegionPoolTransfer(std::shared_ptr<State> state, std::size_t count, bool growing);
+  void ConsumeLocked();
+  void ReturnLocked();
+  std::shared_ptr<State> state_;
+  const std::size_t count_;
+  std::size_t pending_;
+  bool settled_ = false;
+  friend class HandleReserve;
+};
+
 // Virtual address operations use the same provider lane as physical backing.
 // The caller prepays and retains this result until positive operation retirement;
 // it must not inspect it while the lane can still write it. A reservation holds
@@ -118,6 +153,7 @@ struct RegionResult {
   // are the new handles only; on retire they are the exact owned handles.
   std::vector<providers::BackingId> backings;
   std::size_t mapped = 0;
+  std::shared_ptr<RegionPoolTransfer> pool_transfer;
 };
 struct RegionWork {
   enum class Kind : std::uint8_t { kReserve, kFree, kGrow, kRetire };

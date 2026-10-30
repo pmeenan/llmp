@@ -98,7 +98,8 @@ fixed; each slice landed as one reviewed commit, with verification in batches
 | F10c | `ea1bbf5e` | The workstation `native` and `cpu-asan` tiers: [F10c](#f10c-workstation-tiers-2026-10-29); RE-051 fixed and the nine sanitizer findings it hid. |
 | F16 | `098fcf89` | Plans build about a third faster with every layout unchanged: [F16](#f16-lowering-placement-cost-2026-10-30). |
 | F17 | `ccd645a8` | Parser ownership and output funding: [F17](#f17-parser-ownership-and-output-funding-2026-10-30). |
-| F18 | this commit | Image import funding and tensor indexes: [F18](#f18-image-import-funding-and-indexes-2026-10-30). |
+| F18 | `7c73a033` | Image import funding and tensor indexes: [F18](#f18-image-import-funding-and-indexes-2026-10-30). |
+| F19 | this commit | Owned-region pool transfers: [F19](#f19-owned-region-pool-transfers-2026-10-30). |
 
 ## F10a hygiene (2026-10-28)
 
@@ -503,6 +504,25 @@ units. A raw-contract plan grows from 76,150,667 to 165,701,569 units when
 bindings double from 1,024 to 2,048 (2.18×). These are deterministic charged
 work counts, not measured timing improvements. Existing artifact identities
 and published specs are unchanged.
+
+## F19: owned-region pool transfers (2026-10-30)
+
+A region transfer token joins catalog admission to exact physical pool
+ownership. Growth begins with admitted but untaken backing; a take or successful
+creation consumes overlap under the pool mutex. Rollback and retirement add
+only backing actually returned. Settlement accompanies the catalog transition;
+unknown work retains the token and complete owner. Overlap protects retention,
+never refill grants, and pressure drains still release backing. The shared
+ledger is prepaid as fixed node runtime metadata before pool construction and
+headroom sizing, including shared mode. The reserve remains noncopyable.
+
+On `spark`, the native runtime build, 26 memory-mode tests and 139 page-in tests
+pass without skips. The managed fake-node regression keeps a warmed pool's
+20 handles through mapping ten extents and retirement (20 → 10 → 20 available),
+with zero additional creates or releases. Tests also cover consumed-credit
+pressure, rollback, drains, unsupported transfers and retained unknown work.
+The final merged image geometry/swap and LLM spill/restart controls pass on
+both Sparks; all model checks are summarized with F20 below.
 
 ## Owner decisions and standing rules so far
 

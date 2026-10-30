@@ -707,6 +707,15 @@ availability then reads a few GiB by design: judging it against the margin
 again refused a fresh Gemma 3 plan in the near-8K swap beside Qwen3.8
 (3.7 GB available, 35 GB of the budget free).
 
+Owned-region growth charges its loading extents before taking pool backing.
+A paid transfer token tracks only the resulting overlap: a pool take or
+successful creation consumes it, and a successful return during rollback or
+retirement restores it. This protects retained handles without authorizing
+refills. The token settles with the catalog publication or rollback; unknown
+work retains its complete owner. Pressure drains override retention. The pool's
+shared ledger has a fixed runtime metadata payment before startup headroom is
+calculated, including shared-machine mode.
+
 **Spill writes only what changed** (D-055 as amended). Each runner
 records what was written to a slot's state since its spill file last held
 it: the first position a job wrote from (covering the ranges writes from

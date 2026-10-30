@@ -67,7 +67,8 @@ std::expected<void, providers::Failure> UndoCarry(providers::DeviceMemory* memor
   }
   while (!result.backings.empty()) {
     const auto backing = result.backings.back();
-    if (reserve != nullptr && reserve->Keep(work.allocation_class, Bytes(extent), backing)) {
+    if (reserve != nullptr &&
+        reserve->Keep(work.allocation_class, Bytes(extent), backing, result.pool_transfer.get())) {
       result.backings.pop_back();
       continue;
     }
@@ -139,6 +140,13 @@ void CarryRegion(providers::DeviceMemory* memory, CompletionBoard& board, Operat
     }
     const auto count = work.size.value() / extent;
     const bool growing = work.kind == RegionWork::Kind::kGrow;
+    if (result.pool_transfer &&
+        (reserve == nullptr || !reserve->Holds(work.allocation_class, Bytes(extent)) ||
+         !reserve->OwnsTransfer(*result.pool_transfer))) {
+      fail({.error = providers::ProviderError::kInvalid,
+            .detail = "owned region has a foreign or settled pool transfer"});
+      return;
+    }
     if ((growing && (!result.backings.empty() || result.backings.capacity() < count)) ||
         (!growing && (result.backings.size() != count || result.mapped != count))) {
       fail({.error = providers::ProviderError::kInvalid,
@@ -163,13 +171,15 @@ void CarryRegion(providers::DeviceMemory* memory, CompletionBoard& board, Operat
       for (std::uint64_t i = 0; i < count; ++i) {
         std::optional<providers::BackingId> backing;
         if (reserve != nullptr && reserve->Holds(work.allocation_class, Bytes(extent))) {
-          backing = reserve->Take(work.allocation_class, Bytes(extent));
+          backing = reserve->Take(work.allocation_class, Bytes(extent), result.pool_transfer.get());
         }
         if (!backing) {
           if (creates != nullptr) creates->Attempt(false);
           auto created = memory->Create(work.allocation_class, Bytes(extent));
           if (creates != nullptr) creates->Completed(false);
-          if (reserve != nullptr) reserve->Created();
+          // A failed create still invalidates the refill grant, but did not
+          // consume any of the region's admitted physical transfer.
+          if (reserve != nullptr) reserve->Created(created ? result.pool_transfer.get() : nullptr);
           if (!created) {
             if (creates != nullptr) creates->Failed(false, created.error());
             failure = created.error();
@@ -597,7 +607,70 @@ BackingCreateCounts BackingCreateCounters::Counts() const {
   return result;
 }
 
-std::optional<providers::BackingId> HandleReserve::Take(std::size_t allocation_class, Bytes size) {
+RegionPoolTransfer::RegionPoolTransfer(std::shared_ptr<State> state, std::size_t count,
+                                       bool growing)
+    : state_(std::move(state)), count_(count), pending_(growing ? count : 0) {
+  // HandleReserve holds the shared mutex while constructing the token.
+  base::Check(pending_ <= SIZE_MAX - state_->pending, "region pool overlap fits");
+  state_->pending += pending_;
+  ++state_->version;
+}
+
+RegionPoolTransfer::~RegionPoolTransfer() {
+  std::lock_guard lock(state_->mutex);
+  base::Check(settled_, "region pool transfer settles with its catalog transition");
+}
+
+void RegionPoolTransfer::ConsumeLocked() {
+  base::Check(!settled_ && pending_ != 0 && state_->pending != 0,
+              "region backing consumes one pending pool transfer");
+  --pending_;
+  --state_->pending;
+  ++state_->version;
+}
+
+void RegionPoolTransfer::ReturnLocked() {
+  base::Check(!settled_ && pending_ < count_ && state_->pending != SIZE_MAX,
+              "region backing returns within its admitted transfer");
+  ++pending_;
+  ++state_->pending;
+  ++state_->version;
+}
+
+void RegionPoolTransfer::Settle() {
+  std::lock_guard lock(state_->mutex);
+  if (settled_) return;
+  base::Check(state_->pending >= pending_, "settled pool overlap remains owned");
+  state_->pending -= pending_;
+  pending_ = 0;
+  settled_ = true;
+  ++state_->version;
+}
+
+std::size_t RegionPoolTransfer::pending() const {
+  std::lock_guard lock(state_->mutex);
+  return pending_;
+}
+
+std::shared_ptr<RegionPoolTransfer> HandleReserve::BeginTransfer(std::size_t allocation_class,
+                                                                 Bytes size, std::size_t count,
+                                                                 bool growing) {
+  static_assert(sizeof(RegionPoolTransfer) + sizeof(RegionPoolTransfer::State) + 4 * 64 <=
+                RegionPoolTransfer::kMetadataBytes);
+  std::lock_guard lock(mutex_);
+  if (!managed_ || settings_.count == 0 || allocation_class != settings_.allocation_class ||
+      size != settings_.size || count == 0)
+    return {};
+  return std::shared_ptr<RegionPoolTransfer>(new RegionPoolTransfer(transfers_, count, growing));
+}
+
+bool HandleReserve::OwnsTransfer(const RegionPoolTransfer& transfer) const {
+  std::lock_guard lock(mutex_);
+  return transfer.state_ == transfers_ && !transfer.settled_;
+}
+
+std::optional<providers::BackingId> HandleReserve::Take(std::size_t allocation_class, Bytes size,
+                                                        RegionPoolTransfer* transfer) {
   std::lock_guard lock(mutex_);
   if (settings_.count == 0 || allocation_class != settings_.allocation_class ||
       size != settings_.size || kept_.empty()) {
@@ -605,17 +678,20 @@ std::optional<providers::BackingId> HandleReserve::Take(std::size_t allocation_c
   }
   const providers::BackingId backing = kept_.back();
   kept_.pop_back();
+  if (transfer != nullptr) transfer->ConsumeLocked();
   ++version_;
   return backing;
 }
 
-bool HandleReserve::Keep(std::size_t allocation_class, Bytes size, providers::BackingId backing) {
+bool HandleReserve::Keep(std::size_t allocation_class, Bytes size, providers::BackingId backing,
+                         RegionPoolTransfer* transfer) {
   std::lock_guard lock(mutex_);
   if (settings_.count == 0 || allocation_class != settings_.allocation_class ||
       size != settings_.size || HeldLocked() >= ceiling_) {
     return false;
   }
   kept_.push_back(backing);
+  if (transfer != nullptr) transfer->ReturnLocked();
   ++version_;
   return true;
 }
@@ -660,6 +736,10 @@ bool HandleReserve::Rebalance(std::size_t headroom, std::size_t transients, std:
     if (seen != nullptr) *seen = version_;
     return false;
   }
+  // Region transfers count only the backing not yet taken, or already
+  // returned but still charged. They protect retention, never refill grants.
+  transients =
+      transients > SIZE_MAX - transfers_->pending ? SIZE_MAX : transients + transfers_->pending;
   const std::size_t allowed = headroom > SIZE_MAX - transients ? SIZE_MAX : headroom + transients;
   // Never past its ceiling either: a drain's shed the provider refused is
   // shed again here, after the lane's next command.

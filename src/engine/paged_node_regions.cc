@@ -437,6 +437,7 @@ Status PagedNode::GrowMapped(Mapped& mapped, std::uint64_t bytes, providers::Bac
   static_assert(sizeof(catalog::ExtentView) + sizeof(Span) + 4 * sizeof(providers::BackingId) +
                     4 * sizeof(ExtentId) <=
                 512);
+  static_assert(sizeof(sc::RegionResult) + sc::RegionPoolTransfer::kMetadataBytes + 4 * 64 <= 4096);
   if (count > (UINT64_MAX - 4096) / 1024) return Error("owned-region metadata overflows");
   std::uint64_t catalog_storage = 0;
   if (auto read = RegionCatalog(
@@ -467,6 +468,8 @@ Status PagedNode::GrowMapped(Mapped& mapped, std::uint64_t bytes, providers::Bac
   region_metadata_bytes_ += growth;
   auto result = std::make_shared<sc::RegionResult>();
   const auto new_count = static_cast<std::size_t>(added / kPagedExtent);
+  const auto allocation_class =
+      kind == providers::BackingKind::kDevice ? device_class_ : host_class_;
   result->backings.reserve(new_count);
   mapped.backings.reserve(static_cast<std::size_t>(count));
   mapped.extents.reserve(static_cast<std::size_t>(count));
@@ -481,6 +484,7 @@ Status PagedNode::GrowMapped(Mapped& mapped, std::uint64_t bytes, providers::Bac
       base::Check(catalog_.RemoveExtent(ticket.extent).has_value(), "owned growth rollback extent");
     }
     tickets.clear();
+    if (result->pool_transfer) result->pool_transfer->Settle();
   };
   auto admitted = RegionCatalog(
       [&]() -> Status {
@@ -508,6 +512,8 @@ Status PagedNode::GrowMapped(Mapped& mapped, std::uint64_t bytes, providers::Bac
           }
           tickets.push_back(*ticket);
         }
+        result->pool_transfer = scheduler_->BeginRegionTransfer(
+            domain_, allocation_class, Bytes(kPagedExtent), new_count, true);
         return {};
       },
       "admitting owned-region growth");
@@ -545,8 +551,6 @@ Status PagedNode::GrowMapped(Mapped& mapped, std::uint64_t bytes, providers::Bac
     mapped.base = result->base;
     mapped.capacity_bytes = rounded;
   }
-  const auto allocation_class =
-      kind == providers::BackingKind::kDevice ? device_class_ : host_class_;
   mapped.allocation_class = allocation_class;
   auto grown = Region({.kind = sc::RegionWork::Kind::kGrow,
                        .size = Bytes(added),
@@ -602,6 +606,7 @@ Status PagedNode::GrowMapped(Mapped& mapped, std::uint64_t bytes, providers::Bac
                    .owner = owner});
           at += kPagedExtent;
         }
+        if (result->pool_transfer) result->pool_transfer->Settle();
         SortSpans();
         return {};
       },
@@ -620,6 +625,7 @@ Status PagedNode::RetireMapped(Mapped& mapped) {
     return Error("owned mapping cannot retire with pending work or managed backing");
   // Metadata for this temporary copy is held in the mapping's growth charge,
   // or its original setup construction allowance. No payload copy is made.
+  static_assert(sizeof(sc::RegionResult) + sc::RegionPoolTransfer::kMetadataBytes + 4 * 64 <= 4096);
   auto result = std::make_shared<sc::RegionResult>();
   result->backings = mapped.backings;
   result->mapped = result->backings.size();
@@ -638,6 +644,8 @@ Status PagedNode::RetireMapped(Mapped& mapped) {
           }
           tickets.push_back(*ticket);
         }
+        result->pool_transfer = scheduler_->BeginRegionTransfer(
+            domain_, mapped.allocation_class, Bytes(kPagedExtent), tickets.size(), false);
         return {};
       },
       "excluding new owned-region borrowers");
@@ -654,6 +662,7 @@ Status PagedNode::RetireMapped(Mapped& mapped) {
     auto restored = RegionCatalog(
         [&]() -> Status {
           for (auto ticket : tickets) (void)catalog_.CancelEvict(ticket);
+          if (result->pool_transfer) result->pool_transfer->Settle();
           return {};
         },
         "undoing untouched owned-region retirement");
@@ -666,6 +675,7 @@ Status PagedNode::RetireMapped(Mapped& mapped) {
           if (!catalog_.CompleteEvict(ticket) || !catalog_.RemoveExtent(ticket.extent))
             return Error("forgetting retired owned-region extent");
         }
+        if (result->pool_transfer) result->pool_transfer->Settle();
         EraseSpans([&](const Span& span) {
           return std::ranges::find(mapped.extents, span.extent) != mapped.extents.end();
         });

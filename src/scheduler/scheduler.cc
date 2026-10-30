@@ -1108,6 +1108,15 @@ Bytes Scheduler::SetBudget(Bytes budget, catalog::DomainId domain) {
   return applied;
 }
 
+std::shared_ptr<RegionPoolTransfer> Scheduler::BeginRegionTransfer(catalog::DomainId domain,
+                                                                   std::size_t allocation_class,
+                                                                   Bytes size, std::size_t count,
+                                                                   bool growing) {
+  if (!settings_.pool_domain || *settings_.pool_domain != domain || lanes_.backing == nullptr)
+    return {};
+  return lanes_.backing->BeginRegionTransfer(allocation_class, size, count, growing);
+}
+
 std::optional<std::expected<void, Fault>> Scheduler::Stopped() const {
   if (!stopping_ || board_.open() > quarantined_ || !cancels_.empty() || !controls_.drained() ||
       !loads_.empty() || !evictions_.empty()) {

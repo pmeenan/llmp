@@ -693,6 +693,11 @@ class Scheduler {
   // beyond the idle, reclaimable ones; architecture.md's budget reduction).
   // Returns the budget applied.
   base::Bytes SetBudget(base::Bytes budget, catalog::DomainId domain);
+  // Within the region's catalog admission/publication transaction. Only this
+  // domain's actual dedicated pool can carry its extent-sized backing.
+  std::shared_ptr<RegionPoolTransfer> BeginRegionTransfer(catalog::DomainId domain,
+                                                          std::size_t allocation_class, Bytes size,
+                                                          std::size_t count, bool growing);
 
  private:
   std::expected<void, WorkError> CheckRequestLease(std::uint64_t request, catalog::LeaseId lease);

@@ -24,6 +24,7 @@
 
 #include "base/bytes.h"
 #include "config/node_config.h"
+#include "engine/execution_contract.h"
 #include "engine/paged_node.h"
 #include "providers/device_runtime.h"
 #include "providers/fake/fake_device_memory.h"
@@ -76,6 +77,218 @@ class Lane {
 
 sc::ReserveSettings Pool(std::size_t ceiling) {
   return {.allocation_class = 0, .size = Bytes(kExtent), .count = ceiling};
+}
+
+bool RunRegion(sc::BackingService& lane, sc::CompletionBoard& board, sc::RegionWork work) {
+  const auto operation = board.Open();
+  if (lane.Submit({.operation = operation, .work = std::move(work)}) !=
+      llmp::base::PushResult::kAccepted)
+    return false;
+  (void)lane.Turn();
+  const auto seen = board.Harvest(4);
+  (void)board.Close(operation);
+  return seen.size() == 1 && seen[0].terminal &&
+         seen[0].terminal->outcome == sc::Outcome::kSucceeded;
+}
+
+// These direct-lane controls stand in for catalog transactions: settle every
+// test token even when a test assertion returns before its explicit publication.
+struct SettleTransfer {
+  std::shared_ptr<sc::RegionPoolTransfer> transfer;
+  ~SettleTransfer() {
+    if (transfer) transfer->Settle();
+  }
+};
+
+TEST(BackingServicePool, RegionTransfersPreserveOnlyBackingStillCountedTwice) {
+  pr::fake::FakeDeviceMemory memory(2_MiB, 32_MiB);
+  const auto place = memory.Reserve(Bytes(3 * kExtent)).value();
+  llmp::base::WakeFlag wake;
+  sc::CompletionBoard board(16, wake);
+  sc::BackingService lane(&memory, board, {}, Pool(4));
+  ASSERT_EQ(lane.Preallocate(4), 4U);
+  lane.ManageReserve(0);
+  auto result = std::make_shared<sc::RegionResult>();
+  result->backings.reserve(3);
+  result->pool_transfer = lane.BeginRegionTransfer(0, Bytes(kExtent), 3, true);
+  SettleTransfer growth{result->pool_transfer};
+  ASSERT_TRUE(growth.transfer);
+  // BeginLoad charged three, but the lane has not taken their backing yet.
+  lane.Rebalance(Bytes(kExtent), 0);
+  EXPECT_FALSE(lane.Turn());
+  EXPECT_EQ(lane.ReserveAvailable(), 4U);
+  EXPECT_TRUE(RunRegion(lane, board,
+                        {.kind = sc::RegionWork::Kind::kGrow,
+                         .size = Bytes(3 * kExtent),
+                         .extent_size = Bytes(kExtent),
+                         .offset = {},
+                         .allocation_class = 0,
+                         .reservation = place,
+                         .result = result}));
+  EXPECT_EQ(growth.transfer->pending(), 0U);
+  EXPECT_EQ(lane.ReserveAvailable(), 1U);
+  EXPECT_EQ(lane.create_counts().post_init_creates(), 0U);
+  EXPECT_EQ(memory.released_backings(), 0U);
+  // Consumed transfers must not shelter this remaining handle from unrelated
+  // pressure while the region is still awaiting catalog publication.
+  lane.Rebalance(Bytes(), 0);
+  EXPECT_TRUE(lane.Turn());
+  EXPECT_EQ(lane.ReserveAvailable(), 0U);
+  EXPECT_EQ(memory.released_backings(), 1U);
+  growth.transfer->Settle();
+
+  result->pool_transfer = lane.BeginRegionTransfer(0, Bytes(kExtent), 3, false);
+  SettleTransfer retirement{result->pool_transfer};
+  ASSERT_TRUE(retirement.transfer);
+  EXPECT_EQ(retirement.transfer->pending(), 0U);
+  EXPECT_TRUE(RunRegion(lane, board,
+                        {.kind = sc::RegionWork::Kind::kRetire,
+                         .size = Bytes(3 * kExtent),
+                         .extent_size = Bytes(kExtent),
+                         .offset = {},
+                         .allocation_class = 0,
+                         .reservation = place,
+                         .result = result}));
+  EXPECT_EQ(retirement.transfer->pending(), 3U);
+  lane.Rebalance(Bytes(), 0);  // EVICTING still charges all three.
+  EXPECT_FALSE(lane.Turn());
+  EXPECT_EQ(lane.ReserveAvailable(), 3U);
+  retirement.transfer->Settle();  // CompleteEvict restores three headroom.
+  lane.Rebalance(Bytes(3 * kExtent), 0);
+  EXPECT_FALSE(lane.Turn());
+  EXPECT_EQ(lane.create_counts().post_init_creates(), 0U);
+  EXPECT_TRUE(memory.Free(place));
+  lane.Close();
+  lane.Run();
+  EXPECT_TRUE(lane.ReleaseReserve());
+  EXPECT_EQ(memory.backings(), 0U);
+}
+
+TEST(BackingServicePool, RefusedRegionGrowthReturnsItsConsumedTransferUntilRollback) {
+  for (const bool drained : {false, true}) {
+    SCOPED_TRACE(drained);
+    pr::fake::FakeDeviceMemory memory(2_MiB, 32_MiB);
+    const auto place = memory.Reserve(Bytes(3 * kExtent)).value();
+    llmp::base::WakeFlag wake;
+    sc::CompletionBoard board(16, wake);
+    sc::BackingService lane(&memory, board, {}, Pool(4));
+    ASSERT_EQ(lane.Preallocate(4), 4U);
+    lane.ManageReserve(0);
+    auto result = std::make_shared<sc::RegionResult>();
+    result->backings.reserve(3);
+    result->pool_transfer = lane.BeginRegionTransfer(0, Bytes(kExtent), 3, true);
+    SettleTransfer transfer{result->pool_transfer};
+    ASSERT_TRUE(transfer.transfer);
+    if (drained) EXPECT_EQ(lane.DrainReserve(0), 4U);
+    memory.FailNext(pr::fake::Operation::kMap, ProviderError::kFailed);
+    lane.Rebalance(Bytes(kExtent), 0);
+    EXPECT_FALSE(RunRegion(lane, board,
+                           {.kind = sc::RegionWork::Kind::kGrow,
+                            .size = Bytes(3 * kExtent),
+                            .extent_size = Bytes(kExtent),
+                            .offset = {},
+                            .allocation_class = 0,
+                            .reservation = place,
+                            .result = result}));
+    EXPECT_EQ(result->outcome, sc::RegionResult::Outcome::kRolledBack);
+    EXPECT_TRUE(result->backings.empty());
+    EXPECT_EQ(result->mapped, 0U);
+    // Drained: the new handle is released, and only the two untouched
+    // admissions remain. Otherwise the taken handle was kept again.
+    EXPECT_EQ(transfer.transfer->pending(), drained ? 2U : 3U);
+    lane.Rebalance(Bytes(kExtent), 0);
+    EXPECT_FALSE(lane.Turn());
+    EXPECT_EQ(lane.ReserveAvailable(), drained ? 0U : 4U);
+    EXPECT_EQ(lane.create_counts().ordinary_attempts, drained ? 1U : 0U);
+    transfer.transfer->Settle();  // FailLoad refunds the admission.
+    lane.Rebalance(Bytes(4 * kExtent), 0);
+    EXPECT_FALSE(lane.Turn());  // a drain remains authoritative
+    EXPECT_TRUE(memory.Free(place));
+    lane.Close();
+    lane.Run();
+    EXPECT_TRUE(lane.ReleaseReserve());
+    EXPECT_EQ(memory.backings(), 0U);
+  }
+}
+
+TEST(BackingServicePool, RegionTransfersAreScopedToTheManagedPoolAndCanOutliveItsLane) {
+  pr::fake::FakeDeviceMemory memory(2_MiB, 32_MiB);
+  llmp::base::WakeFlag wake;
+  sc::CompletionBoard board(16, wake);
+  std::shared_ptr<sc::RegionPoolTransfer> retained;
+  {
+    sc::BackingService lane(&memory, board, {}, Pool(4));
+    EXPECT_FALSE(lane.BeginRegionTransfer(0, Bytes(kExtent), 1, true));
+    lane.ManageReserve(0);
+    EXPECT_FALSE(lane.BeginRegionTransfer(1, Bytes(kExtent), 1, true));
+    EXPECT_FALSE(lane.BeginRegionTransfer(0, Bytes(2 * kExtent), 1, true));
+    retained = lane.BeginRegionTransfer(0, Bytes(kExtent), 3, true);
+    ASSERT_TRUE(retained);
+    lane.Rebalance(Bytes(), 0);
+    EXPECT_FALSE(lane.Turn());  // overlap never grants refill
+    EXPECT_EQ(memory.created_backings(), 0U);
+    lane.Close();
+    lane.Run();
+    EXPECT_TRUE(lane.ReleaseReserve());
+  }
+  EXPECT_EQ(retained->pending(), 3U);
+  retained->Settle();  // the ledger survives provider/lane teardown
+  EXPECT_EQ(retained->pending(), 0U);
+  sc::BackingService shared(&memory, board, {}, Pool(0));
+  shared.ManageReserve(0);
+  EXPECT_FALSE(shared.BeginRegionTransfer(0, Bytes(kExtent), 1, true));
+  shared.Close();
+  shared.Run();
+}
+
+TEST(BackingServicePool, UnknownRegionWorkRetainsUnconsumedTransfersAndPhysicalOwnership) {
+  std::shared_ptr<sc::RegionPoolTransfer> retained;
+  {
+    pr::fake::FakeDeviceMemory memory(2_MiB, 32_MiB);
+    const auto place = memory.Reserve(Bytes(3 * kExtent)).value();
+    llmp::base::WakeFlag wake;
+    sc::CompletionBoard board(16, wake);
+    sc::BackingService lane(&memory, board, {}, Pool(4));
+    ASSERT_EQ(lane.Preallocate(4), 4U);
+    lane.ManageReserve(0);
+    auto result = std::make_shared<sc::RegionResult>();
+    result->backings.reserve(3);
+    result->pool_transfer = lane.BeginRegionTransfer(0, Bytes(kExtent), 3, true);
+    retained = result->pool_transfer;
+    ASSERT_TRUE(retained);
+    memory.FailNext(pr::fake::Operation::kSetAccess, ProviderError::kUnknown, true);
+    const auto operation = board.Open();
+    ASSERT_EQ(lane.Submit({.operation = operation,
+                           .work = sc::RegionWork{.kind = sc::RegionWork::Kind::kGrow,
+                                                  .size = Bytes(3 * kExtent),
+                                                  .extent_size = Bytes(kExtent),
+                                                  .offset = {},
+                                                  .allocation_class = 0,
+                                                  .reservation = place,
+                                                  .result = result}}),
+              llmp::base::PushResult::kAccepted);
+    EXPECT_TRUE(lane.Turn());
+    const auto seen = board.Harvest(4);
+    ASSERT_EQ(seen.size(), 1U);
+    ASSERT_TRUE(seen[0].terminal);
+    EXPECT_FALSE(seen[0].terminal->no_further_access);
+    EXPECT_EQ(result->outcome, sc::RegionResult::Outcome::kUnknown);
+    EXPECT_EQ(result->backings.size(), 1U);
+    EXPECT_EQ(result->mapped, 1U);
+    EXPECT_EQ(retained->pending(), 2U);
+    lane.Rebalance(Bytes(kExtent), 0);
+    EXPECT_FALSE(lane.Turn());
+    EXPECT_EQ(lane.ReserveAvailable(), 3U);
+    EXPECT_EQ(memory.released_backings(), 0U);
+    EXPECT_FALSE(memory.RangeOf(place));
+    lane.Close();
+    lane.Run();
+    EXPECT_TRUE(lane.ReleaseReserve());
+    EXPECT_EQ(memory.backings(), 1U);  // the uncertain mapped handle is retained
+    // Only the enclosing fake owner's destruction reclaims its OS resources.
+    // No provider retirement or catalog rollback is claimed while it lives.
+  }
+  retained->Settle();
 }
 
 TEST(BackingServicePool, PreallocatedHandlesAreTakenAndKeptOneForOne) {
@@ -601,6 +814,33 @@ TEST_F(PagedNodePool, ADedicatedPoolFillsTheHeadroomAtStart) {
   EXPECT_TRUE(WithinBudget());
 }
 
+TEST_F(PagedNodePool, OwnedRegionsRecycleTheDedicatedPoolAcrossCatalogTransactions) {
+  Open(en::NodePool{.ceiling = Bytes(64 * kExtent), .fill = true}, 20);
+  node_->Run();
+  en::Mapped region;
+  const auto created = node_->backing_create_counts().post_init_creates();
+  const auto released = node_->ReleasedBackings();
+  ASSERT_TRUE(node_->MapResident(region, "owned region", 10 * kExtent, pr::BackingKind::kDevice,
+                                 llmp::catalog::MemoryClass::kScratch,
+                                 llmp::catalog::Recovery::kPinned, 0));
+  EXPECT_EQ(node_->ReserveAvailable(), 10U);
+  EXPECT_EQ(node_->LiveBackings(), fixed_backings_ + 20U);
+  EXPECT_EQ(node_->backing_create_counts().post_init_creates(), created);
+  EXPECT_EQ(node_->ReleasedBackings(), released);
+  EXPECT_TRUE(node_->Call(
+      [&]() -> en::Status {
+        EXPECT_FALSE(node_->scheduler().BeginRegionTransfer({}, node_->device_class(),
+                                                            Bytes(kExtent), 1, true));
+        return {};
+      },
+      "refusing another domain's pool transfer"));
+  ASSERT_TRUE(node_->RetireMapped(region));
+  EXPECT_TRUE(Holds(20));
+  EXPECT_TRUE(WithinBudget());
+  EXPECT_EQ(node_->backing_create_counts().post_init_creates(), created);
+  EXPECT_EQ(node_->ReleasedBackings(), released);
+}
+
 // A2: charges outside the pool (plans, graphs, token and request memory,
 // pinned staging) take budget the pool held: it gives that much back, so
 // physical use never exceeds the budget as they grow, and grows back as
@@ -704,6 +944,25 @@ TEST(PagedNodeModes, TheBudgetBeforeRunIsAppliedAtOnce) {
   EXPECT_EQ(node.SetBudget(original).value_or(Bytes()), original);
   EXPECT_EQ(node.budget(), original);
   EXPECT_TRUE(node.TearDown({}));
+}
+
+TEST(PagedNodeModes, TransferLedgerIsPaidInFixedMetadataBeforeEitherMemoryModeStarts) {
+  for (const bool dedicated : {false, true}) {
+    SCOPED_TRACE(dedicated);
+    en::PagedNode node(en::NodeSettings{.compute_streams = 1, .slots = 1, .slot_bytes = kExtent});
+    ASSERT_TRUE(node.Open());
+    const auto metadata =
+        en::ExecutionMetadataAllowance::OverheadBytes() + sc::HandleReserve::MetadataBytes();
+    const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+    EXPECT_EQ(fixed, node.zone().bytes + metadata);
+    ASSERT_TRUE(node.Start(
+        Bytes(fixed + 4 * kExtent),
+        dedicated ? std::optional(en::NodePool{.ceiling = Bytes(4 * kExtent), .fill = true})
+                  : std::nullopt));
+    EXPECT_EQ(node.catalog().OccupancyOf(node.domain()).Total().value(), fixed);
+    EXPECT_EQ(node.ReserveAvailable(), dedicated ? 4U : 0U);
+    EXPECT_TRUE(node.TearDown({}));
+  }
 }
 
 // ---- the runtime's policy

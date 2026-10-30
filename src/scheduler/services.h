@@ -165,16 +165,32 @@ class HandleReserve {
  public:
   explicit HandleReserve(ReserveSettings settings)
       : settings_(settings), ceiling_(settings.count) {}
+  HandleReserve(const HandleReserve&) = delete;
+  HandleReserve& operator=(const HandleReserve&) = delete;
+  HandleReserve(HandleReserve&&) = delete;
+  HandleReserve& operator=(HandleReserve&&) = delete;
+  // One shared State allocation, including its shared_ptr control block and
+  // allocator/alignment allowance. The node pays this before lane construction,
+  // even without a dedicated pool; standalone lanes are their caller's.
+  static constexpr std::uint64_t MetadataBytes() { return sizeof(RegionPoolTransfer::State) + 64; }
   bool Holds(std::size_t allocation_class, Bytes size) const {
     std::lock_guard lock(mutex_);
     return settings_.count != 0 && allocation_class == settings_.allocation_class &&
            size == settings_.size;
   }
   // One of that class and size, if any is kept.
-  std::optional<providers::BackingId> Take(std::size_t allocation_class, Bytes size);
+  std::optional<providers::BackingId> Take(std::size_t allocation_class, Bytes size,
+                                           RegionPoolTransfer* transfer = nullptr);
   // Keeps `backing` (of that class and size) if the reserve is short of
   // its ceiling.
-  bool Keep(std::size_t allocation_class, Bytes size, providers::BackingId backing);
+  bool Keep(std::size_t allocation_class, Bytes size, providers::BackingId backing,
+            RegionPoolTransfer* transfer = nullptr);
+  // Called with catalog admission on the scheduler's thread. A token protects
+  // shedding overlap only, never refill capacity; unsupported/unmanaged pools
+  // have none. The caller prepays the token and its shared control metadata.
+  std::shared_ptr<RegionPoolTransfer> BeginTransfer(std::size_t allocation_class, Bytes size,
+                                                    std::size_t count, bool growing);
+  bool OwnsTransfer(const RegionPoolTransfer& transfer) const;
   // Startup preallocation's (BackingService::Preallocate).
   void KeepUnchecked(providers::BackingId backing) {
     std::lock_guard lock(mutex_);
@@ -183,9 +199,10 @@ class HandleReserve {
   }
   // A create the lane made for anything but the pool (a load's own):
   // it took headroom the grant may have counted on.
-  void Created() {
+  void Created(RegionPoolTransfer* transfer = nullptr) {
     std::lock_guard lock(mutex_);
     if (managed_ && grant_ != 0) --grant_;
+    if (transfer != nullptr) transfer->ConsumeLocked();
   }
   // A refill may start now: one create is counted in flight, and the
   // grant (managed) is used by one.
@@ -261,7 +278,11 @@ class HandleReserve {
   // create in flight is shed when it ends (EndRefill), so it is not.
   std::size_t HeldLocked() const { return kept_.size() + lost_ + (drained_ ? 0 : creating_); }
 
-  mutable std::mutex mutex_;
+  // Tokens retain only this ledger, never the lane or its provider. Taking or
+  // returning backing and updating its transfer share exactly this mutex.
+  std::shared_ptr<RegionPoolTransfer::State> transfers_ =
+      std::make_shared<RegionPoolTransfer::State>();
+  std::mutex& mutex_ = transfers_->mutex;
   ReserveSettings settings_;
   std::size_t ceiling_ = 0;
   std::vector<providers::BackingId> kept_;
@@ -275,7 +296,7 @@ class HandleReserve {
   bool shed_refused_ = false;
   // SetCeiling's, until RestoreCeiling: no refill.
   bool drained_ = false;
-  std::atomic<std::uint64_t> version_ = 0;
+  std::atomic<std::uint64_t>& version_ = transfers_->version;
 
   friend class BackingService;
 };
@@ -649,6 +670,10 @@ class BackingService {
   // occupancy, and the page-ins and evictions in flight
   // (HandleReserve::Rebalance). Wakes the lane if the pool has work for it.
   void Rebalance(Bytes headroom, std::size_t transients);
+  std::shared_ptr<RegionPoolTransfer> BeginRegionTransfer(std::size_t allocation_class, Bytes size,
+                                                          std::size_t count, bool growing) {
+    return reserve_.BeginTransfer(allocation_class, size, count, growing);
+  }
   // Any thread but the lane's: the pool's ceiling lowered to `ceiling`
   // and the pool drained until RestoreReserve (it creates nothing
   // meanwhile, so it never grows back), and what it held past the

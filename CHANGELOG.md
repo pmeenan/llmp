@@ -163,6 +163,9 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Owned-region growth and retirement retain warmed pool handles while their
+  catalog charges overlap physical transfers, avoiding release/recreate churn.
+  Pressure drains still release backing and transfer credit never funds refills.
 - Image import funds retained metadata, ignored descriptors, JSON parsing and
   flattened keys before allocation; text descriptors are priced before synthesis,
   and scalar-only recipe lookups are included in the work bound.
