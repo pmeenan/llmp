@@ -36,6 +36,7 @@
 #include "image_family.h"
 #include "image_published.h"
 #include "image_recipes.h"
+#include "import/image_pipeline.h"
 #include "import/stage_recipe.h"
 #include "ir/graph.h"
 #include "runtime/approvals.h"
@@ -197,6 +198,157 @@ void Set(Values& values, std::string_view key, sp::ParamValue value) {
 }
 void Drop(Values& values, std::string_view key) {
   std::erase_if(values, [&](const sp::SourceValue& v) { return v.key == key; });
+}
+
+TEST(ImageFamily, PipelineBoundFundsRetainedMetadataBeforeFamilyConstruction) {
+  namespace im = llmp::import;
+  const auto temp =
+      std::filesystem::temp_directory_path() / std::format("llmp-image-bound-{}", ::getpid());
+  std::error_code ignored;
+  std::filesystem::remove_all(temp, ignored);
+  std::filesystem::create_directories(temp, ignored);
+  const std::string scheduler = R"({"num_train_timesteps":1000,"base_image_seq_len":256,
+    "max_image_seq_len":8192,"base_shift":0.5,"max_shift":0.9,"shift_terminal":0.02,
+    "time_shift_type":"exponential","use_dynamic_shifting":true,"invert_sigmas":false,
+    "stochastic_sampling":false})";
+  const auto scheduler_path = temp / "scheduler.json";
+  {
+    std::ofstream out(scheduler_path);
+    out << scheduler;
+  }
+  im::Checkpoint source{.container = "diffusers", .architecture = "QwenImage21Pipeline"};
+  source.files.push_back({.name = "scheduler/scheduler_config.json",
+                          .path = scheduler_path,
+                          .bytes = scheduler.size()});
+  const Toy toy;
+  auto family = toy.Synthesize();
+  ASSERT_TRUE(family) << family.error();
+  const auto& mapping = sp::mappings::QwenImage21Mapping();
+  const auto profile = sp::ImageProfileOf(*family, mapping);
+  ASSERT_TRUE(profile);
+  const std::array values{toy.text, toy.flow, toy.vae};
+  for (std::size_t i = 0; i < mapping.components.size(); ++i) {
+    const auto& rule = mapping.components[i];
+    im::Checkpoint component{.role = std::string(rule.role),
+                             .container = "safetensors",
+                             .architecture = std::string(rule.architectures.front())};
+    for (const auto& entry : values[i])
+      component.metadata.push_back(
+          {.key = entry.key,
+           .value = std::visit([](const auto& v) -> im::MetaValue { return v; }, entry.value)});
+    std::ranges::sort(component.metadata, {}, &im::MetaEntry::key);
+    std::vector<md::ImageTensor> tensors;
+    if (i == 0) {
+      tensors = md::TextEncoderTensors(profile->text, mapping.names.text);
+    } else {
+      const auto expansion = llmp::test_support::QwenImageStage(*family, *profile, rule.role);
+      ASSERT_TRUE(expansion) << expansion.error();
+      for (const auto& tensor : expansion->tensors)
+        tensors.push_back(
+            {.name = tensor.name, .dtype = {}, .shape = tensor.shape, .part = tensor.part});
+    }
+    component.files.push_back({.name = "model.safetensors"});
+    for (const auto& tensor : tensors) {
+      std::vector<std::uint64_t> dims(tensor.shape.rbegin(), tensor.shape.rend());
+      const auto format =
+          llmp::ir::Dense(llmp::format::Encoding::kF32, *llmp::format::ShapeOf(dims));
+      const auto bytes = llmp::format::PartsOf(format)->Find(tensor.part)->bytes;
+      component.tensors.push_back({.name = tensor.name,
+                                   .format = format,
+                                   .part = tensor.part,
+                                   .extent = {.offset = component.files[0].bytes, .bytes = bytes},
+                                   .dims = tensor.shape});
+      component.files[0].bytes += bytes;
+    }
+    if (i == 2) {
+      const auto header = llmp::test_support::QwenImageVaeSourceOf(profile->vae);
+      const auto conv =
+          std::ranges::find(component.tensors, "decoder.conv_in.weight", &im::Tensor::name);
+      ASSERT_NE(conv, component.tensors.end());
+      conv->dims = header.tensors[0].dims;
+    }
+    source.components.push_back(std::move(component));
+  }
+  // File identity must match the descriptor (the in-memory components need
+  // no payload reads for planning).
+  const auto opened = im::OpenCheckpointFile(scheduler_path, 0);
+  ASSERT_TRUE(opened);
+  source.files[0].device = opened->device;
+  source.files[0].inode = opened->inode;
+  const auto ordinary = im::ImagePipelineBound(source);
+  ASSERT_TRUE(ordinary) << ordinary.error().ToString();
+  ASSERT_TRUE(im::PlanImagePipeline(source, {ordinary->metadata_bytes, ordinary->work_units}));
+
+  // The text inventory is derived from config, independent of how few
+  // tensors a malformed source supplies. Refuse representation and budget
+  // violations before allocating those derived descriptors.
+  for (const auto layers : {300, 4096}) {
+    auto sparse = source;
+    sparse.components[0].tensors.clear();
+    const auto entry = std::ranges::find(sparse.components[0].metadata,
+                                         "text_config.num_hidden_layers", &im::MetaEntry::key);
+    ASSERT_NE(entry, sparse.components[0].metadata.end());
+    entry->value = std::int64_t{layers};
+    const auto refused = im::PlanImagePipeline(sparse, {ordinary->metadata_bytes, UINT64_MAX});
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().rule, im::Rule::kBounds);
+    EXPECT_EQ(refused.error().reason, layers == 300
+                                          ? "image pipeline text spec exceeds normalization limits"
+                                          : "cannot bound the text encoder's spec");
+  }
+  EXPECT_FALSE(sp::ImageTextSpecBound(md::ImageTextProfile{.layers = 4096}));
+  EXPECT_EQ(sp::ImageTextSpecBound(profile->text),
+            sp::ImageTextSpecBound(profile->text,
+                                   md::TextEncoderTensors(profile->text, mapping.names.text)));
+
+  constexpr std::size_t kPayload = 8U << 20U;
+  const std::array<im::MetaValue, 4> metadata{
+      std::string(kPayload, 'x'), std::vector<std::int64_t>(kPayload / 8, 7),
+      std::vector<double>(kPayload / 8, 0.5), std::vector<std::string>{std::string(kPayload, 'x')}};
+  for (const auto& value : metadata) {
+    source.components[0].metadata.push_back({.key = "_name_or_path", .value = value});
+    std::ranges::sort(source.components[0].metadata, {}, &im::MetaEntry::key);
+    const auto cost = im::ImagePipelineBound(source);
+    ASSERT_TRUE(cost) << cost.error().ToString();
+    EXPECT_GE(cost->metadata_bytes, ordinary->metadata_bytes + kPayload);
+    const auto refused = im::PlanImagePipeline(source, {ordinary->metadata_bytes, UINT64_MAX});
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().rule, im::Rule::kBounds);
+    const auto planned = im::PlanImagePipeline(source, {cost->metadata_bytes, cost->work_units});
+    ASSERT_TRUE(planned) << planned.error().ToString();
+    const auto* retained = planned->components[0].checkpoint.FindValue("_name_or_path");
+    ASSERT_NE(retained, nullptr);
+    EXPECT_EQ(*retained, value);
+    ASSERT_EQ(planned->files.size(), 1U);
+    EXPECT_EQ(planned->files[0].parsed.bytes, scheduler.size());
+    EXPECT_EQ(planned->files[0].parsed.sha256, llmp::base::Sha256().Update(scheduler).Finish());
+    std::erase_if(source.components[0].metadata,
+                  [](const auto& entry) { return entry.key == "_name_or_path"; });
+  }
+  // Dotted-key flattening repeats a shared object prefix for every leaf.
+  // Its output can be much larger than both input and JSON parse tables.
+  std::string prefixed = scheduler.substr(0, scheduler.rfind('}'));
+  prefixed += ",\"" + std::string(512, 'p') + "\":{";
+  for (unsigned i = 0; i < 1024; ++i) {
+    if (i != 0) prefixed += ',';
+    prefixed += std::format("\"k{}\":1", i);
+  }
+  prefixed += "}}";
+  {
+    std::ofstream out(scheduler_path);
+    out << prefixed;
+  }
+  source.files[0].bytes = prefixed.size();
+  const auto flattened = im::ImagePipelineBound(source);
+  ASSERT_TRUE(flattened) << flattened.error().ToString();
+  EXPECT_GT(flattened->metadata_bytes, ordinary->metadata_bytes + 1024U * 512U);
+  EXPECT_FALSE(im::PlanImagePipeline(source, {ordinary->metadata_bytes, UINT64_MAX}));
+  const auto large_file_plan =
+      im::PlanImagePipeline(source, {flattened->metadata_bytes, flattened->work_units});
+  ASSERT_TRUE(large_file_plan) << large_file_plan.error().ToString();
+  EXPECT_EQ(large_file_plan->files[0].parsed.sha256,
+            llmp::base::Sha256().Update(prefixed).Finish());
+  std::filesystem::remove_all(temp, ignored);
 }
 
 TEST(ImageFamily, EveryMappingIsValidAndFoundByItsArchitecture) {

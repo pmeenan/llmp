@@ -97,7 +97,8 @@ fixed; each slice landed as one reviewed commit, with verification in batches
 | F15a | `e4e5d8e1` | MTP prompt catch-up, prefill lookahead bounds, a chunk-weighted gate decode rate: every F10b speed failure passes against M3.6. |
 | F10c | `ea1bbf5e` | The workstation `native` and `cpu-asan` tiers: [F10c](#f10c-workstation-tiers-2026-10-29); RE-051 fixed and the nine sanitizer findings it hid. |
 | F16 | `098fcf89` | Plans build about a third faster with every layout unchanged: [F16](#f16-lowering-placement-cost-2026-10-30). |
-| F17 | this commit | Parser ownership and output funding: [F17](#f17-parser-ownership-and-output-funding-2026-10-30). |
+| F17 | `ccd645a8` | Parser ownership and output funding: [F17](#f17-parser-ownership-and-output-funding-2026-10-30). |
+| F18 | this commit | Image import funding and tensor indexes: [F18](#f18-image-import-funding-and-indexes-2026-10-30). |
 
 ## F10a hygiene (2026-10-28)
 
@@ -479,6 +480,29 @@ under cross-built ThreadSanitizer, pass without race reports. The merged
 F17–F20 native shared set passes 4,003/4,003, without skips. Targeted workstation
 ASan/UBSan checks of F17–F19 pass 606 tests; one published-image admission test
 skips because the workstation lacks its composition, and passes on `spark`.
+
+## F18: image import funding and indexes (2026-10-30)
+
+Image preflight prices all copied metadata values, lists, paths, ignored tensor
+headers and skipped inventories before family synthesis. JSON text and parse
+workspace are funded before reading; flattened key/payload bytes are counted
+before materialization. Planning consumes the same funded family and parsed
+file receipts. The text encoder's profile-only bound precedes descriptor
+synthesis, including oversized or sparse-source refusal paths.
+
+Borrowed source-name indexes and an expanded `(name, part)` index replace
+repeated tensor scans, preserving ambiguity and raw-dimension checks. Recipe
+work accounting visits source-reference leaves in scalar parameters, conditions,
+raw axes, groups, controls and geometry. Conservative multiplicity includes
+repeated passes and lazy branches without forcing dormant template evaluation.
+
+Native checks pass 44 focused tests without skips, and the real Qwen-Image
+pipeline import proof passes on the final merged tree. Work-bound counts for
+256/512/1,024 source tensors are 706,550 / 1,558,674 / 3,614,370 comparison
+units. A raw-contract plan grows from 76,150,667 to 165,701,569 units when
+bindings double from 1,024 to 2,048 (2.18×). These are deterministic charged
+work counts, not measured timing improvements. Existing artifact identities
+and published specs are unchanged.
 
 ## Owner decisions and standing rules so far
 

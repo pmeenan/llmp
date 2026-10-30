@@ -266,7 +266,7 @@ std::unique_ptr<SyntheticContracts> MakeSyntheticContracts(std::size_t count, bo
   return out;
 }
 
-TEST(MingVae, RawContractScansAndEvaluatedWeightLookupsArePaid) {
+TEST(MingVae, RawContractIndexesAndEvaluatedWeightLookupsArePaid) {
   constexpr std::uint64_t kBindings = 1024;
   auto synthetic = MakeSyntheticContracts(kBindings, true);
   ASSERT_NE(synthetic, nullptr);
@@ -274,13 +274,18 @@ TEST(MingVae, RawContractScansAndEvaluatedWeightLookupsArePaid) {
   ASSERT_TRUE(cost) << cost.error().reason;
   constexpr std::uint64_t kNameBytes = 200;
   const auto tree_comparisons = 4U * (std::bit_width(kBindings) + 1U) * kBindings;
-  const auto expected_scan = kBindings * kBindings * kNameBytes;
-  const auto source_scans = 2U * kBindings * kBindings * kNameBytes;
-  const auto set_scan = tree_comparisons * kNameBytes;
-  // The expansion's own counted comparisons: each binding's shared-tensor
-  // identity scan of those before it.
-  const auto identity_scans = kBindings * (kBindings - 1) / 2 * (kNameBytes + 1);
-  EXPECT_GE(cost->work_units, expected_scan + source_scans + set_scan + identity_scans);
+  // Expected bindings, source tensors, and exact-contract identities each
+  // use an ordered name index. The funded work includes those logarithmic
+  // comparisons, not the old cross-product of both inventories.
+  const auto index_work = 3 * tree_comparisons * kNameBytes;
+  EXPECT_GE(cost->work_units, index_work);
+  RecordProperty("contract_work_1024", std::to_string(cost->work_units));
+  auto doubled = MakeSyntheticContracts(2 * kBindings, true);
+  ASSERT_NE(doubled, nullptr);
+  const auto doubled_cost = normalization_detail::Bound(doubled->source, doubled->mapping);
+  ASSERT_TRUE(doubled_cost) << doubled_cost.error().reason;
+  RecordProperty("contract_work_2048", std::to_string(doubled_cost->work_units));
+  EXPECT_LT(doubled_cost->work_units, 3 * cost->work_units);
 
   const auto one_short = normalization_detail::Build(
       Checkpoint(synthetic->source), synthetic->mapping,
@@ -299,8 +304,7 @@ TEST(MingVae, RawContractScansAndEvaluatedWeightLookupsArePaid) {
       normalization_detail::Bound(no_contracts->source, no_contracts->mapping);
   ASSERT_TRUE(no_contract_cost) << no_contract_cost.error().reason;
   constexpr std::uint64_t kSmallBindings = 16;
-  const auto empty_contract_lookup_floor =
-      kSmallBindings * (kSmallBindings - 1) / 2 * (kNameBytes + 1);
+  const auto empty_contract_lookup_floor = kSmallBindings * (kNameBytes + 1);
   EXPECT_GE(no_contract_cost->work_units, empty_contract_lookup_floor);
 }
 

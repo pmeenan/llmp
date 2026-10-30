@@ -123,6 +123,8 @@ The entries below record each change; the record of the milestone is
 
 ### Changed
 
+- Image import indexes source and expanded tensors once, replacing repeated
+  inventory scans while preserving duplicate, part and raw-dimension checks.
 - On the GB10, GGUF decode products of two to eight rows (C2/C4 waves,
   speculative verify) now run GGML's MMVQ where it measured faster than
   `llmp.vecq` (Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q4_K, Q5_K, Q6_K, IQ4_NL: C4
@@ -161,6 +163,9 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Image import funds retained metadata, ignored descriptors, JSON parsing and
+  flattened keys before allocation; text descriptors are priced before synthesis,
+  and scalar-only recipe lookups are included in the work bound.
 - Large streaming requests validate their model and context before sending an
   SSE success response, including clients that half-close while parsing.
 - Chat output pays for fixed state and the next causal unit instead of

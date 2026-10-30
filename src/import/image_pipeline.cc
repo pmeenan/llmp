@@ -5,14 +5,18 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <map>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -45,10 +49,46 @@ const Checkpoint* FindComponent(const Checkpoint& source, std::string_view role)
   return nullptr;
 }
 
+// FlattenMetadata keeps dotted keys in a map, then a metadata vector, and
+// ValuesOf copies those into a growing SourceValue table. Count the parsed
+// tree without constructing any keys or values; shared object prefixes can
+// otherwise amplify a tiny JSON file into a large flattened inventory.
+std::optional<std::uint64_t> FlatBytes(base::json::Value value, std::uint64_t key_bytes = 0) {
+  std::uint64_t total = 0;
+  const auto add = [&](std::uint64_t bytes) {
+    return !__builtin_add_overflow(total, bytes, &total);
+  };
+  if (value.is_object()) {
+    for (std::size_t i = 0; i < value.size(); ++i) {
+      const auto name = value.key(i);
+      if (name.contains('.')) continue;
+      const auto size = key_bytes + (key_bytes != 0 ? 1 : 0) + name.size();
+      if (size > kMaxKeyBytes) return std::nullopt;
+      const auto bytes = FlatBytes(value.member(i), size);
+      if (!bytes || !add(*bytes)) return std::nullopt;
+    }
+  } else {
+    if (!add(4 * (key_bytes + 1 + sizeof(MetaEntry) + sizeof(spec::SourceValue) + 64)))
+      return std::nullopt;
+    if (value.is_string()) {
+      if (!add(4 * (value.string().size() + 1))) return std::nullopt;
+    } else if (value.is_array()) {
+      // Even a string list (not read by ValuesOf) is materialized by the
+      // flattener. Mixed arrays allocate no more than this same bound.
+      if (!add(value.size() * 4 * sizeof(std::string))) return std::nullopt;
+      for (std::size_t i = 0; i < value.size(); ++i)
+        if (value.at(i).is_string() && !add(4 * (value.at(i).string().size() + 1)))
+          return std::nullopt;
+    }
+  }
+  return total;
+}
+
 // A kept pipeline file's members as source values (flattened as a
 // config.json's), re-checking its identity and recording its parsed receipt.
 std::expected<std::vector<spec::SourceValue>, Error> FileValues(
-    std::vector<SourceFile>& pipeline_files, std::string_view name) {
+    std::vector<SourceFile>& pipeline_files, std::string_view name, std::uint64_t metadata_limit,
+    std::uint64_t& file_metadata) {
   const auto found = std::ranges::find(pipeline_files, name, &SourceFile::name);
   if (found == pipeline_files.end()) return Bad("the pipeline lacks a file its mapping reads");
   const auto index = static_cast<std::uint64_t>(found - pipeline_files.begin());
@@ -75,6 +115,10 @@ std::expected<std::vector<spec::SourceValue>, Error> FileValues(
                                        .max_values = std::size_t{1} << 16U,
                                        .max_string_bytes = text->size()});
   if (!doc) return Bad("a pipeline file its mapping reads is not valid JSON");
+  const auto bytes = FlatBytes(doc->root());
+  if (!bytes || __builtin_add_overflow(file_metadata, *bytes, &file_metadata) ||
+      file_metadata > metadata_limit)
+    return Bad("flattened pipeline metadata exceeds normalization limits", Rule::kBounds);
   auto metadata = FlattenMetadata(doc->root());
   if (!metadata) return std::unexpected(metadata.error());
   Checkpoint flat;
@@ -86,7 +130,9 @@ std::expected<std::vector<spec::SourceValue>, Error> FileValues(
 // configs and the kept files the mapping reads.
 std::expected<spec::ModelSpec, Error> Family(const Checkpoint& source,
                                              const spec::ImageMapping& mapping,
-                                             std::vector<SourceFile>& pipeline_files) {
+                                             std::vector<SourceFile>& pipeline_files,
+                                             std::uint64_t metadata_limit,
+                                             std::uint64_t& file_metadata) {
   std::vector<std::vector<spec::SourceValue>> values;
   std::vector<spec::ImageComponentSource> components;
   values.reserve(mapping.components.size());
@@ -109,7 +155,7 @@ std::expected<spec::ModelSpec, Error> Family(const Checkpoint& source,
   file_values.reserve(names.size());
   std::vector<spec::ImageSource> files;
   for (const auto name : names) {
-    auto read = FileValues(pipeline_files, name);
+    auto read = FileValues(pipeline_files, name, metadata_limit, file_metadata);
     if (!read) return std::unexpected(read.error());
     file_values.push_back(std::move(*read));
     files.push_back({.name = name, .values = file_values.back()});
@@ -244,11 +290,12 @@ std::expected<ComponentPlan, Error> PlanComponent(
   }
   std::vector<PhysicalExtent> source_extents;
   source_extents.reserve(comp.tensors.size());
-  std::set<std::string_view> source_names;
+  std::map<std::string_view, const Tensor*, std::less<>> source_names;
   for (std::size_t i = 0; i < comp.tensors.size(); ++i) {
     const auto& tensor = comp.tensors[i];
     if (tensor.name.empty() || !NoControlCharacters(tensor.name) ||
-        !source_names.insert(tensor.name).second || tensor.extent.file >= comp.files.size())
+        !source_names.emplace(tensor.name, &tensor).second ||
+        tensor.extent.file >= comp.files.size())
       return std::unexpected(
           Error{.rule = Rule::kBounds,
                 .reason = "an image source tensor has an invalid or duplicate name/file",
@@ -285,9 +332,9 @@ std::expected<ComponentPlan, Error> PlanComponent(
   // Every tensor is one the stage reads or one its mapping leaves out by
   // name: another (an extra norm or bias of a variant) would run with
   // different math than the checkpoint's, as the LLM route refuses.
-  std::set<std::string_view> read;
+  std::map<std::string_view, format::PartRole, std::less<>> read;
   for (const auto& need : expected_tensors)
-    if (!read.insert(need.name).second)
+    if (!read.emplace(need.name, need.part).second)
       return Bad("an image stage binds one physical source tensor more than once");
   for (std::size_t i = 0; i < comp.tensors.size(); ++i) {
     const std::string_view name = comp.tensors[i].name;
@@ -315,7 +362,8 @@ std::expected<ComponentPlan, Error> PlanComponent(
   std::uint64_t payload = 0;
 
   for (const auto& need : expected_tensors) {
-    const Tensor* found = comp.FindTensor(need.name);
+    const auto source = source_names.find(need.name);
+    const Tensor* found = source == source_names.end() ? nullptr : source->second;
     if (!found) return Bad("a component lacks a tensor its mapping names");
     const auto shape = found->format.shape;
     if (shape.rank != need.shape.size())
@@ -347,22 +395,13 @@ std::expected<ComponentPlan, Error> PlanComponent(
     if (contract.source_dims.empty()) continue;
     if (!checked_source_shapes.emplace(contract.name, contract.part).second)
       return Bad("a recipe repeats an exact raw source-dimension contract");
-    const auto expected_count =
-        std::ranges::count_if(expected_tensors, [&](const model::ImageTensor& tensor) {
-          return tensor.name == contract.name && tensor.part == contract.part;
-        });
-    if (expected_count != 1)
+    const auto binding = read.find(contract.name);
+    if (binding == read.end() || binding->second != contract.part)
       return Bad("a raw source-dimension contract has no unique physical tensor binding");
-    const auto found = std::ranges::find_if(comp.tensors, [&](const Tensor& tensor) {
-      return tensor.name == contract.name && tensor.part == contract.part;
-    });
-    if (found == comp.tensors.end())
+    const auto source = source_names.find(contract.name);
+    if (source == source_names.end() || source->second->part != contract.part)
       return Bad("a raw source-dimension contract has no source tensor");
-    if (std::ranges::count_if(std::ranges::subrange(found, comp.tensors.end()),
-                              [&](const Tensor& tensor) {
-                                return tensor.name == contract.name && tensor.part == contract.part;
-                              }) != 1)
-      return Bad("a raw source-dimension contract has ambiguous source tensors");
+    const auto* found = source->second;
     if (found->dims != contract.source_dims)
       return Bad("a source tensor's raw header dimensions differ from its recipe contract");
   }
@@ -433,14 +472,18 @@ std::expected<ComponentPlan, Error> PlanSpatialComponent(const Checkpoint& compo
   return plan;
 }
 
-std::expected<NormalizationCost, Error> ImagePipelineBound(const Checkpoint& source,
-                                                           NormalizationLimits limits) {
+namespace {
+// Planning consumes the same family and parsed file receipts whose
+// allocations were counted; it never reopens a JSON source after funding.
+std::expected<NormalizationCost, Error> ImagePipelineBoundImpl(
+    const Checkpoint& source, NormalizationLimits limits,
+    std::optional<std::expected<spec::ModelSpec, Error>>& prepared_family,
+    std::vector<SourceFile>& prepared_files) {
   if (!IsImagePipeline(source)) {
     return Bad("not a diffusers pipeline with an image mapping", Rule::kContainer);
   }
   const auto& mapping = *spec::FindImageMapping(source.architecture);
   std::uint64_t total_payload = 0;
-  std::uint64_t total_tensors = 0;
   for (const auto& comp : source.components) {
     const auto rule =
         std::ranges::find(mapping.components, comp.role, &spec::ImageComponentRule::role);
@@ -448,38 +491,118 @@ std::expected<NormalizationCost, Error> ImagePipelineBound(const Checkpoint& sou
         rule != mapping.components.end() ? spec::ImportOf(*rule) : spec::ComponentImport{};
     for (const auto& t : comp.tensors) {
       if (IgnoredTensor(parts.ignored_tensors, parts.ignored_tensor_prefixes, t.name)) continue;
-      if (__builtin_add_overflow(total_payload, t.extent.bytes, &total_payload) ||
-          __builtin_add_overflow(total_tensors, std::uint64_t{1}, &total_tensors)) {
+      if (__builtin_add_overflow(total_payload, t.extent.bytes, &total_payload)) {
         return Bad("image pipeline payload exceeds 64-bit bounds", Rule::kBounds);
       }
     }
   }
+  // Pay all source-derived storage before Family copies config values or
+  // reads a mapped JSON file. Ignored weights still live in each returned
+  // checkpoint, and provenance can contain arbitrarily large strings/lists.
+  // This walk borrows source storage and performs no source-sized allocations.
   std::uint64_t metadata_bytes = 65536;
-  std::uint64_t tensor_meta = 0;
-  std::uint64_t file_meta = 0;
-  if (__builtin_mul_overflow(total_tensors, std::uint64_t{2048}, &tensor_meta) ||
-      __builtin_mul_overflow(static_cast<std::uint64_t>(source.files.size()), std::uint64_t{4096},
-                             &file_meta) ||
-      __builtin_add_overflow(metadata_bytes, tensor_meta, &metadata_bytes) ||
-      __builtin_add_overflow(metadata_bytes, file_meta, &metadata_bytes)) {
-    return Bad("image pipeline metadata bound overflows", Rule::kBounds);
+  bool funded = metadata_bytes <= limits.metadata_bytes;
+  const auto charge = [&](std::uint64_t count, std::uint64_t each = 1) {
+    std::uint64_t bytes = 0;
+    if (__builtin_mul_overflow(count, each, &bytes) ||
+        __builtin_add_overflow(metadata_bytes, bytes, &metadata_bytes) ||
+        metadata_bytes > limits.metadata_bytes)
+      funded = false;
+    return funded;
+  };
+  const auto inventory = [&](const Checkpoint& checkpoint) {
+    if (!charge(sizeof(Checkpoint)) ||
+        !charge(checkpoint.role.size() + checkpoint.container.size() +
+                    checkpoint.architecture.size() + checkpoint.quantization.size(),
+                2))
+      return false;
+    for (const auto& entry : checkpoint.metadata) {
+      // A checkpoint copy, ValuesOf's growing table and value payload, and
+      // the family evaluator's temporary values. String-list provenance is
+      // copied even though ValuesOf does not interpret it.
+      if (!charge(sizeof(MetaEntry) + sizeof(spec::SourceValue), 4) ||
+          !charge(entry.key.size() + 1, 4))
+        return false;
+      std::visit(
+          [&](const auto& value) {
+            using T = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<T, std::string>) {
+              (void)charge(value.size() + 1, 4);
+            } else if constexpr (std::is_same_v<T, std::vector<std::string>>) {
+              if (!charge(value.size(), 4 * sizeof(std::string))) return;
+              for (const auto& text : value)
+                if (!charge(text.size() + 1, 4)) return;
+            } else if constexpr (std::is_same_v<T, std::vector<std::int64_t>> ||
+                                 std::is_same_v<T, std::vector<double>>) {
+              (void)charge(value.size(), 4 * sizeof(typename T::value_type));
+            }
+          },
+          entry.value);
+      if (!funded) return false;
+    }
+    for (const auto& tensor : checkpoint.tensors)
+      if (!charge(2048) || !charge(tensor.name.size() + 1, 4) ||
+          !charge(tensor.dims.size(), 2 * sizeof(std::uint64_t)))
+        return false;
+    for (const auto& file : checkpoint.files)
+      if (!charge(sizeof(SourceFile) + 64, 2) || !charge(file.name.size() + 1, 2) ||
+          !charge(file.path.native().size() + 1, 4 * sizeof(std::filesystem::path) + 64))
+        return false;
+    for (const auto& skipped : checkpoint.skipped_tensors)
+      if (!charge(sizeof(SkippedTensor) + 64) || !charge(skipped.name.size() + 1)) return false;
+    for (const auto& skipped : checkpoint.skipped)
+      if (!charge(sizeof(SkippedFile) + 64) || !charge(skipped.name.size() + 1)) return false;
+    return funded;
+  };
+  if (!inventory(source))
+    return Bad("image pipeline source metadata exceeds normalization limits", Rule::kBounds);
+  for (const auto& comp : source.components) {
+    if (!comp.components.empty()) return Bad("an image component contains nested checkpoints");
+    if (!inventory(comp))
+      return Bad("image pipeline source metadata exceeds normalization limits", Rule::kBounds);
   }
-  std::uint64_t work_units = total_tensors;
+  for (const auto& file : source.files) {
+    const bool read = std::ranges::any_of(mapping.params,
+                                          [&](const auto& rule) {
+                                            return !rule.file.empty() && rule.file == file.name;
+                                          }) ||
+                      std::ranges::any_of(mapping.requirements, [&](const auto& rule) {
+                        return !rule.file.empty() && rule.file == file.name;
+                      });
+    if (!read) continue;
+    if (file.bytes > kMaxPipelineFileBytes)
+      return Bad("a mapped image pipeline file exceeds the reader bound", Rule::kBounds);
+    const auto parsing = base::json::ParseWorkingBytesBound(static_cast<std::size_t>(file.bytes));
+    // Pay text and JSON tables before opening it. FileValues then counts
+    // the actual flattened keys and payloads before materializing them.
+    if (!parsing || !charge(*parsing) || !charge(file.bytes))
+      return Bad("image pipeline file parsing exceeds normalization limits", Rule::kBounds);
+  }
+  std::uint64_t work_units = metadata_bytes;
   if (source.components.size() == mapping.components.size() && !source.files.empty()) {
     std::vector<SourceFile> pipeline_files = source.files;
-    if (auto family = Family(source, mapping, pipeline_files)) {
+    std::uint64_t file_metadata = 0;
+    auto family = Family(source, mapping, pipeline_files, limits.metadata_bytes - metadata_bytes,
+                         file_metadata);
+    if (!charge(file_metadata))
+      return Bad("image pipeline file metadata exceeds normalization limits", Rule::kBounds);
+    if (!family && family.error().rule == Rule::kBounds) return std::unexpected(family.error());
+    work_units = metadata_bytes;
+    if (family) {
       for (const auto& rule : mapping.components) {
         if (TextEncoderRule(rule)) {
           // Its spec's mapping bound, as ImageTextSpec pays it.
           const auto profile = spec::ImageProfileOf(*family, mapping);
           if (!profile) return Bad("the family spec does not read back");
-          const auto tensors = model::TextEncoderTensors(profile->text, mapping.names.text);
-          const auto text_bound = spec::ImageTextSpecBound(profile->text, tensors);
+          const auto text_bound = spec::ImageTextSpecBound(profile->text);
           if (!text_bound) return Bad("cannot bound the text encoder's spec", Rule::kBounds);
-          if (__builtin_add_overflow(metadata_bytes, *text_bound, &metadata_bytes) ||
-              __builtin_add_overflow(work_units, std::uint64_t{tensors.size()}, &work_units)) {
+          if (!charge(*text_bound))
+            return Bad("image pipeline text spec exceeds normalization limits", Rule::kBounds);
+          const auto tensors = model::TextEncoderTensors(profile->text, mapping.names.text);
+          if (!spec::ImageTextSpecBound(profile->text, tensors))
+            return Bad("the text encoder's source descriptors exceed their bound", Rule::kBounds);
+          if (__builtin_add_overflow(work_units, std::uint64_t{tensors.size()}, &work_units))
             return Bad("image pipeline recipe bound overflows", Rule::kBounds);
-          }
           continue;
         }
         const auto* recipe = spec::ImportOf(rule).recipe;
@@ -494,6 +617,16 @@ std::expected<NormalizationCost, Error> ImagePipelineBound(const Checkpoint& sou
           return Bad("image stage recipe exceeds the metadata budget", Rule::kBounds);
         }
         std::uint64_t recipe_work = 0;
+        std::uint64_t key_bytes = 0;
+        for (const auto& entry : comp->metadata)
+          if (__builtin_add_overflow(key_bytes,
+                                     static_cast<std::uint64_t>(entry.key.size()) +
+                                         preflight->max_source_key_bytes + 1,
+                                     &key_bytes))
+            return Bad("image pipeline source-key work bound overflows", Rule::kBounds);
+        if (__builtin_mul_overflow(key_bytes, preflight->source_value_lookups, &key_bytes) ||
+            __builtin_add_overflow(work_units, key_bytes, &work_units))
+          return Bad("image pipeline source-key work bound overflows", Rule::kBounds);
         if (__builtin_add_overflow(preflight->visited_steps, preflight->tensor_bindings,
                                    &recipe_work) ||
             __builtin_add_overflow(recipe_work, preflight->expansion_work, &recipe_work))
@@ -504,6 +637,27 @@ std::expected<NormalizationCost, Error> ImagePipelineBound(const Checkpoint& sou
         }
       }
     }
+    prepared_family = std::move(family);
+    prepared_files = std::move(pipeline_files);
+  }
+  for (const auto& comp : source.components) {
+    // PlanComponent's ordered name indexes and raw-contract lookups. File
+    // aliases still compare paths pairwise, bounded independently of names.
+    std::uint64_t max_name = 0, max_path = 0, bytes = 0;
+    for (const auto& tensor : comp.tensors)
+      max_name = std::max(max_name, static_cast<std::uint64_t>(tensor.name.size()));
+    for (const auto& file : comp.files)
+      max_path = std::max(max_path, static_cast<std::uint64_t>(file.path.native().size()));
+    const auto depth = static_cast<std::uint64_t>(std::bit_width(comp.tensors.size())) + 1;
+    if (__builtin_mul_overflow(static_cast<std::uint64_t>(comp.tensors.size()), 16 * depth,
+                               &bytes) ||
+        __builtin_mul_overflow(bytes, max_name + 1, &bytes) ||
+        __builtin_add_overflow(work_units, bytes, &work_units) ||
+        __builtin_mul_overflow(static_cast<std::uint64_t>(comp.files.size()),
+                               static_cast<std::uint64_t>(comp.files.size()), &bytes) ||
+        __builtin_mul_overflow(bytes, max_path + 32, &bytes) ||
+        __builtin_add_overflow(work_units, bytes, &work_units))
+      return Bad("image pipeline name-index work bound overflows", Rule::kBounds);
   }
   if (metadata_bytes > limits.metadata_bytes || work_units > limits.work_units) {
     return Bad("image pipeline exceeds normalization limits", Rule::kBounds);
@@ -515,9 +669,20 @@ std::expected<NormalizationCost, Error> ImagePipelineBound(const Checkpoint& sou
   };
 }
 
+}  // namespace
+
+std::expected<NormalizationCost, Error> ImagePipelineBound(const Checkpoint& source,
+                                                           NormalizationLimits limits) {
+  std::optional<std::expected<spec::ModelSpec, Error>> family;
+  std::vector<SourceFile> files;
+  return ImagePipelineBoundImpl(source, limits, family, files);
+}
+
 std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& source,
                                                           NormalizationLimits limits) {
-  auto bound = ImagePipelineBound(source, limits);
+  std::optional<std::expected<spec::ModelSpec, Error>> prepared_family;
+  std::vector<SourceFile> pipeline_files;
+  auto bound = ImagePipelineBoundImpl(source, limits, prepared_family, pipeline_files);
   if (!bound) return std::unexpected(bound.error());
   const auto& mapping = *spec::FindImageMapping(source.architecture);
   std::set<std::string_view> mapped_roles;
@@ -527,8 +692,8 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
     if (!std::ranges::contains(mapping.components, component.role, &spec::ImageComponentRule::role))
       return Bad("the image source contains a component role its mapping does not account for");
   }
-  std::vector<SourceFile> pipeline_files = source.files;
-  auto family = Family(source, mapping, pipeline_files);
+  if (!prepared_family) return Bad("the pipeline lacks its mapped components or files");
+  auto family = std::move(*prepared_family);
   if (!family) return std::unexpected(family.error());
   const auto profile = spec::ImageProfileOf(*family, mapping);
   if (!profile) return Bad("the family spec does not read back");

@@ -41,11 +41,12 @@ struct StageRecipePreflight {
   std::uint64_t max_weight_role_bytes = 0;
   std::uint64_t max_source_key_bytes = 0;
   std::uint64_t visited_steps = 0;
-  // The environment's value reads across counting and expansion (each a
-  // scan of the source's metadata: normalization's comparison-work bound).
+  // Potential source-value leaves, with conservative multiplicity across
+  // counting/preflight and expansion. Payload-only reads and lazy branches
+  // are included; each read scans metadata (normalization's work bound).
   std::uint64_t source_value_lookups = 0;
-  // The expansion's own name comparisons (shared-tensor identity and
-  // evaluated-weight lookups), in byte-comparison units.
+  // Source-tensor index construction/queries and expansion's shared-tensor
+  // index/evaluated-weight lookups, in byte-comparison units.
   std::uint64_t expansion_work = 0;
   std::uint64_t metadata_bytes = 0;
   std::uint64_t stream_width = 0;

@@ -684,14 +684,12 @@ std::expected<NormalizationCost, Error> SpatialRecipeBound(const Checkpoint& sou
   std::uint64_t source_name_bytes = 0, max_source_name_bytes = 0;
   std::uint64_t source_metadata_key_bytes = 0;
   std::uint64_t source_path_bytes = 0;
-  std::uint64_t max_source_rank = 0;
   for (const auto& tensor : source.tensors) {
     if (__builtin_add_overflow(payload, tensor.extent.bytes, &payload))
       return Bad("configured spatial payload exceeds 64-bit bounds", Rule::kBounds);
     const auto tensor_name_bytes = static_cast<std::uint64_t>(tensor.name.size());
     source_name_bytes = arithmetic.Add(source_name_bytes, tensor_name_bytes);
     max_source_name_bytes = std::max(max_source_name_bytes, tensor_name_bytes);
-    max_source_rank = std::max(max_source_rank, static_cast<std::uint64_t>(tensor.dims.size()));
     const auto source_copy =
         arithmetic.Add(sizeof(Tensor), arithmetic.Mul(tensor.dims.size(), sizeof(std::uint64_t)));
     const auto descriptor = arithmetic.Add(
@@ -742,21 +740,25 @@ std::expected<NormalizationCost, Error> SpatialRecipeBound(const Checkpoint& sou
       arithmetic.Add(source_metadata_key_bytes,
                      arithmetic.Mul(source.metadata.size(), recipe->max_source_key_bytes));
   const auto source_searches = arithmetic.Mul(metadata_lookup_bytes, recipe->source_value_lookups);
-  const auto tensor_searches = arithmetic.Mul(source_name_bytes, recipe->tensor_bindings);
+  const auto source_depth = static_cast<std::uint64_t>(std::bit_width(source.tensors.size())) + 1;
+  const auto binding_depth =
+      static_cast<std::uint64_t>(std::bit_width(recipe->tensor_bindings)) + 1;
+  const auto tensor_searches =
+      arithmetic.Mul(arithmetic.Mul(4 * source_depth, recipe->tensor_bindings),
+                     arithmetic.Add(max_source_name_bytes, recipe->max_tensor_name_bytes));
   const auto omission_rules = static_cast<std::uint64_t>(mapping.ignored_tensors.size() +
                                                          mapping.ignored_tensor_prefixes.size());
   const auto omission_searches =
       arithmetic.Add(arithmetic.Mul(source_name_bytes, omission_rules),
                      arithmetic.Mul(ignored_pattern_bytes, source.tensors.size()));
   const auto shared_raw_dimension_checks =
-      arithmetic.Mul(arithmetic.Mul(recipe->raw_dimension_axes, recipe->raw_dimension_axes),
-                     sizeof(std::uint64_t));
+      arithmetic.Mul(recipe->raw_dimension_axes, 2 * sizeof(std::uint64_t));
   const auto raw_contract_expected_scan =
-      arithmetic.Mul(arithmetic.Mul(recipe->raw_dimension_contracts, recipe->tensor_bindings),
+      arithmetic.Mul(arithmetic.Mul(recipe->raw_dimension_contracts, 4 * binding_depth),
                      recipe->max_tensor_name_bytes);
-  const auto raw_contract_source_scan = arithmetic.Mul(
-      arithmetic.Mul(arithmetic.Mul(recipe->raw_dimension_contracts, source.tensors.size()), 2),
-      std::max(recipe->max_tensor_name_bytes, max_source_name_bytes));
+  const auto raw_contract_source_scan =
+      arithmetic.Mul(arithmetic.Mul(recipe->raw_dimension_contracts, 4 * source_depth),
+                     std::max(recipe->max_tensor_name_bytes, max_source_name_bytes));
   const auto raw_contract_name_comparisons = arithmetic.Mul(
       arithmetic.Mul(std::uint64_t{4}, arithmetic.Add(static_cast<std::uint64_t>(std::bit_width(
                                                           recipe->raw_dimension_contracts)),
@@ -784,17 +786,13 @@ std::expected<NormalizationCost, Error> SpatialRecipeBound(const Checkpoint& sou
       arithmetic.Mul(sort_work, 2 * sizeof(std::uint64_t) + sizeof(std::uint32_t)),
       arithmetic.Mul(source_sort_work, 2 * sizeof(std::uint64_t) + sizeof(std::uint32_t)));
   const auto validation_name_work = arithmetic.Add(source_name_bytes, source_name_set_work);
-  // Each contracted binding can scan the matching header axes, while the
-  // recipe evaluates and retains each declared raw axis once. Charge both
-  // sides of those exact rank/axis comparisons in byte-comparison units.
+  // A vector equality first compares ranks, then visits axes only when
+  // ranks match. Sum the declared axes; there is no cross-product of ranks.
   const auto raw_dimension_work =
-      arithmetic.Mul(sizeof(std::uint64_t),
-                     arithmetic.Add(recipe->raw_dimension_axes,
-                                    arithmetic.Mul(recipe->raw_dimension_axes, max_source_rank)));
-  // Each raw-axis contract also walks the declared tensor inventory, scans
-  // source names for its exact/suffix match, and inserts its name into the
-  // contract set: byte-comparison bounds beside the expansion's own counted
-  // shared-tensor and evaluated-weight lookups (expansion_work).
+      arithmetic.Mul(recipe->raw_dimension_axes, 2 * sizeof(std::uint64_t));
+  // Each raw-axis contract looks up its binding and source in their name
+  // indexes, then inserts its name into the contract set. Expansion's own
+  // source/shared-tensor index work is counted in expansion_work.
   const auto work = arithmetic.Add(
       arithmetic.Add(arithmetic.Add(source_searches, tensor_searches),
                      arithmetic.Add(omission_searches, recipe->expansion_work)),

@@ -2109,8 +2109,13 @@ TEST_F(ImportWriterTest, ImagePipelineValidationAndBound) {
   auto bound = ImagePipelineBound(pipeline);
   ASSERT_TRUE(bound);
   EXPECT_EQ(bound->payload_bytes, 350U);
-  EXPECT_EQ(bound->work_units, 3U);
-  EXPECT_EQ(bound->metadata_bytes, 65536U + 3U * 2048U);
+  EXPECT_GE(bound->work_units, 4U);
+  EXPECT_GT(bound->metadata_bytes, 65536U + 4U * 2048U);
+  auto ignored_growth = pipeline;
+  ignored_growth.components[1].tensors.back().name.append(4096, 'x');
+  const auto larger = ImagePipelineBound(ignored_growth);
+  ASSERT_TRUE(larger);
+  EXPECT_GE(larger->metadata_bytes, bound->metadata_bytes + 4096U);
   EXPECT_FALSE(ImagePipelineBound(
       pipeline, {.metadata_bytes = bound->metadata_bytes - 1, .work_units = bound->work_units}));
   EXPECT_FALSE(ImagePipelineBound(

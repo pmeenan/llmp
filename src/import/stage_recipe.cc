@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -95,14 +96,58 @@ std::expected<Datum, std::string> DatumOf(const MetaValue& value, std::string_vi
 
 namespace {
 
+// Sorted borrowed pointers keep source-tensor lookup logarithmic without
+// copying names. Count and Expand pay this inventory before constructing it.
+class SourceTensorIndex {
+ public:
+  explicit SourceTensorIndex(std::span<const import::Tensor> tensors) {
+    entries_.reserve(tensors.size());
+    for (const auto& tensor : tensors)
+      if (tensor.part == format::PartRole::kData) entries_.push_back(&tensor);
+    std::ranges::sort(entries_, [&](const auto* a, const auto* b) {
+      Compare(a->name, b->name);
+      return a->name < b->name;
+    });
+  }
+  std::expected<const import::Tensor*, std::string> Find(std::string_view name) const {
+    const auto it = std::ranges::lower_bound(
+        entries_, name,
+        [&](std::string_view a, std::string_view b) {
+          Compare(a, b);
+          return a < b;
+        },
+        [](const auto* tensor) { return std::string_view(tensor->name); });
+    if (it == entries_.end()) return nullptr;
+    Compare((*it)->name, name);
+    if ((*it)->name != name) return nullptr;
+    if (it + 1 != entries_.end()) Compare((*(it + 1))->name, name);
+    if (it + 1 != entries_.end() && (*(it + 1))->name == name)
+      return Fail(std::format("source tensor '{}' is ambiguous", name));
+    return *it;
+  }
+
+  std::optional<std::uint64_t> Work() const {
+    return overflow_ ? std::nullopt : std::optional(work_);
+  }
+
+ private:
+  void Compare(std::string_view a, std::string_view b) const {
+    if (__builtin_add_overflow(work_, static_cast<std::uint64_t>(std::max(a.size(), b.size()) + 1),
+                               &work_))
+      overflow_ = true;
+  }
+  std::vector<const import::Tensor*> entries_;
+  mutable std::uint64_t work_ = 0;
+  mutable bool overflow_ = false;
+};
+
 // One environment: the family's parameters ("<kind>.<param>"), the source's
 // config keys and tensors (raw dimensions, outermost first), the bound
 // indices. A name both a family parameter and a source key is ambiguous.
 class RecipeEnv final : public Env {
  public:
   RecipeEnv(const ModelSpec& family, std::span<const MetaEntry> values,
-            std::span<const import::Tensor> tensors, std::string_view container,
-            const Indices& indices)
+            const SourceTensorIndex& tensors, std::string_view container, const Indices& indices)
       : family_(family),
         values_(values),
         tensors_(tensors),
@@ -140,12 +185,9 @@ class RecipeEnv final : public Env {
   }
   std::expected<std::optional<TensorDims>, std::string> Tensor(
       std::string_view name) const override {
-    const import::Tensor* found = nullptr;
-    for (const auto& tensor : tensors_) {
-      if (tensor.name != name || tensor.part != format::PartRole::kData) continue;
-      if (found) return Fail(std::format("source tensor '{}' is ambiguous", name));
-      found = &tensor;
-    }
+    const auto source = tensors_.Find(name);
+    if (!source) return std::unexpected(source.error());
+    const auto* found = *source;
     if (!found) return std::optional<TensorDims>();
     TensorDims dims;
     if (found->dims.size() > dims.dims.size())
@@ -160,14 +202,18 @@ class RecipeEnv final : public Env {
  private:
   const ModelSpec& family_;
   std::span<const MetaEntry> values_;
-  std::span<const import::Tensor> tensors_;
+  const SourceTensorIndex& tensors_;
   std::string_view container_;
   const Indices& indices_;
 };
 
 // The bytes a template's substitution makes with the indices bound now.
+// A bound-only walk prices lazy expression branches without resolving them:
+// an unbound index can expand to at most 20 decimal digits. Invalid templates
+// remain errors only when the ordinary evaluator actually selects them.
 std::expected<std::uint64_t, std::string> SubstitutedBytes(std::string_view pattern,
-                                                           const Indices& indices) {
+                                                           const Indices& indices,
+                                                           bool bound_only = false) {
   std::uint64_t bytes = 0;
   for (std::size_t at = 0; at < pattern.size();) {
     if (pattern[at] != '{') {
@@ -176,10 +222,16 @@ std::expected<std::uint64_t, std::string> SubstitutedBytes(std::string_view patt
       continue;
     }
     const auto end = pattern.find('}', at + 1);
-    if (end == std::string_view::npos) return Fail("recipe template has an unclosed substitution");
+    if (end == std::string_view::npos) {
+      if (!bound_only) return Fail("recipe template has an unclosed substitution");
+      if (!AddBound(static_cast<std::uint64_t>(pattern.size() - at), bytes))
+        return Fail("recipe template byte bound overflows");
+      return bytes;
+    }
     const auto index = indices.Find(pattern.substr(at + 1, end - at - 1));
-    if (!index) return Fail("recipe template names an unbound index");
-    bytes += std::to_string(*index).size();
+    if (!index && !bound_only) return Fail("recipe template names an unbound index");
+    if (!AddBound(index ? static_cast<std::uint64_t>(std::to_string(*index).size()) : 20, bytes))
+      return Fail("recipe template byte bound overflows");
     at = end + 1;
   }
   return bytes;
@@ -599,7 +651,7 @@ std::expected<NodeCost, std::string> CostOf(const RecipeNode& node, const Env& e
     const auto axes = *contracted ? weight.source_dims.size() : 0;
     ++cost.weights;
     cost.raw_axes += axes;
-    if (!AddBound(2 * *role + 3 * *tensor + *stage, cost.weight_bytes))
+    if (!AddBound(2 * *role + 4 * *tensor + *stage, cost.weight_bytes))
       return Fail("recipe tensor metadata bound overflows");
     if (weights)
       weights->push_back(
@@ -616,12 +668,42 @@ struct CountPolicy {
   static constexpr bool kEvaluates = true;
   const Env& env;
   const Indices& indices;
-  std::uint64_t lookups = 0;
   std::uint64_t metadata = 0;
+  std::uint64_t source_tensors = 0;
+  std::uint64_t max_source_tensor_name_bytes = 0;
   StageRecipePreflight out{};
 
-  EvalOptions options() { return {.strict = true, .lookups = &lookups}; }
+  EvalOptions options() { return {.strict = true}; }
+  // PayloadBound deliberately does not evaluate scalar tensor expressions,
+  // and its env.Value calls bypass EvalOptions::lookups. Price AST leaves
+  // instead of inferring expansion's reads from those observed in Count.
+  // Eight passes cover Count's payload/control/CostOf reads (including the
+  // repeated preflight at expansion) and Expand's CostOf/evaluation reads.
+  Status SourceReads(const RecipeValue& value) {
+    return VisitExpr(value, [&](const Expr& expression) -> Status {
+      if (expression.kind == ExprKind::kValue) {
+        if (!AddBound(8, out.source_value_lookups))
+          return Fail("recipe source-value lookup work overflows");
+        return {};
+      }
+      if (expression.kind != ExprKind::kTensorPresent && expression.kind != ExprKind::kTensorRank &&
+          expression.kind != ExprKind::kTensorDim)
+        return {};
+      const auto query_bytes = SubstitutedBytes(expression.name, indices, true);
+      if (!query_bytes) return std::unexpected(query_bytes.error());
+      const auto compared = std::max(max_source_tensor_name_bytes, *query_bytes);
+      const auto comparisons = static_cast<std::uint64_t>(std::bit_width(source_tensors)) + 3;
+      std::uint64_t bytes = 0;
+      if (__builtin_add_overflow(compared, std::uint64_t{1}, &bytes) ||
+          __builtin_mul_overflow(bytes, comparisons, &bytes) ||
+          __builtin_mul_overflow(bytes, std::uint64_t{8}, &bytes) ||
+          !AddBound(bytes, out.expansion_work))
+        return Fail("recipe source-tensor lookup work overflows");
+      return {};
+    });
+  }
   Status Expression(const RecipeValue& value, bool scalar) {
+    if (auto paid = SourceReads(value); !paid) return paid;
     auto payload = PayloadBound(value, env);
     if (!payload) return std::unexpected(payload.error());
     if (scalar && *payload != 0) return Fail("recipe control value must be a scalar expression");
@@ -671,10 +753,12 @@ struct CountPolicy {
     std::uint64_t node_roles = 0;
     for (const auto& w : weights) node_roles += w.role_bytes + w.tensor_bytes;
     for (const auto& w : weights) {
-      // Its shared-tensor identity scan of the bindings before it, and its
-      // evaluated contract's lookup among the node's own weights.
+      // Its shared-tensor index lookup, and its evaluated contract's
+      // lookup among the node's own (catalog-bounded) weight roles.
       std::uint64_t identity = 0, lookup = 0;
-      if (__builtin_mul_overflow(out.tensor_bindings, w.tensor_bytes + 1, &identity) ||
+      if (__builtin_mul_overflow(
+              4 * (static_cast<std::uint64_t>(std::bit_width(out.tensor_bindings)) + 1),
+              w.tensor_bytes + 1, &identity) ||
           __builtin_mul_overflow(static_cast<std::uint64_t>(weights.size()), node_roles + 6,
                                  &lookup) ||
           !AddBound(identity, out.expansion_work) || !AddBound(lookup, out.expansion_work))
@@ -736,15 +820,15 @@ struct ExpandPolicy {
   const Indices& indices;
   std::uint64_t paid;
   std::uint64_t estimate = 0;
-  std::uint64_t lookups = 0;
   Stage stage;
   std::map<std::string, BoundValue, std::less<>> values;
   std::vector<components::SpatialOperand> geometry;
   std::vector<components::SpatialOperand> host_ports;
   std::vector<std::string> created;
   std::vector<RecipeExpansion::Tensor> tensors;
+  std::map<std::pair<std::string, format::PartRole>, std::size_t> tensor_index;
 
-  EvalOptions options() { return {.strict = true, .lookups = &lookups}; }
+  EvalOptions options() { return {.strict = true}; }
   bool Charge(std::uint64_t amount) { return AddBound(amount, estimate) && estimate <= paid; }
   Status Expression(const RecipeValue&, bool) { return {}; }
   Status Template(std::string_view, std::span<const std::string_view>) { return {}; }
@@ -895,15 +979,14 @@ struct ExpandPolicy {
       std::vector<std::uint64_t> dimensions;
       dimensions.reserve(shape->rank);
       for (std::size_t d = shape->rank; d > 0; --d) dimensions.push_back(shape->ne[d - 1]);
-      const auto previous = std::ranges::find_if(tensors, [&](const RecipeExpansion::Tensor& t) {
-        return t.name == weight.tensor && t.part == weight.part;
-      });
+      const auto [entry, inserted] =
+          tensor_index.try_emplace(std::pair(weight.tensor, weight.part), tensors.size());
       const auto declared = std::ranges::find_if(evaluated, [&](const EvaluatedWeightStorage& w) {
         return w.role == weight.role && w.tensor == weight.tensor && w.part == weight.part;
       });
       if (declared == evaluated.end())
         return Fail("recipe weight lost its evaluated source-dimension contract");
-      if (previous == tensors.end())
+      if (inserted)
         tensors.push_back({.name = weight.tensor,
                            .shape = std::move(dimensions),
                            .group = node.group,
@@ -912,14 +995,18 @@ struct ExpandPolicy {
                            .source_dims = std::move(declared->source_dims),
                            .experts = weight.experts,
                            .stage = std::string(weight.stage)});
-      else if (previous->shape != dimensions || previous->group != node.group ||
-               previous->layer != group_index || previous->experts != weight.experts ||
-               previous->stage != weight.stage)
+      else if (tensors[entry->second].shape != dimensions ||
+               tensors[entry->second].group != node.group ||
+               tensors[entry->second].layer != group_index ||
+               tensors[entry->second].experts != weight.experts ||
+               tensors[entry->second].stage != weight.stage)
         return Fail("shared recipe tensor has inconsistent role-derived binding");
       else if (!declared->source_dims.empty()) {
-        if (!previous->source_dims.empty() && previous->source_dims != declared->source_dims)
+        if (!tensors[entry->second].source_dims.empty() &&
+            tensors[entry->second].source_dims != declared->source_dims)
           return Fail("shared recipe tensor has conflicting raw source dimensions");
-        if (previous->source_dims.empty()) previous->source_dims = std::move(declared->source_dims);
+        if (tensors[entry->second].source_dims.empty())
+          tensors[entry->second].source_dims = std::move(declared->source_dims);
       }
     }
     GraphLink link;
@@ -978,7 +1065,8 @@ Status Check(const StageRecipe& recipe) {
   CheckPolicy policy;
   const ModelSpec none{};
   Indices indices;
-  const RecipeEnv env(none, {}, {}, {}, indices);
+  const SourceTensorIndex tensors({});
+  const RecipeEnv env(none, {}, tensors, {}, indices);
   Walker<CheckPolicy> walker(policy, env, indices);
   return walker.Steps(recipe.steps);
 }
@@ -989,8 +1077,21 @@ std::expected<StageRecipePreflight, std::string> Count(const StageRecipe& recipe
                                                        const Source& source) {
   if (auto ok = Check(recipe); !ok) return std::unexpected(ok.error());
   Indices indices;
-  const RecipeEnv env(family, source.values, source.tensors, source.container, indices);
-  CountPolicy policy{.env = env, .indices = indices, .lookups = 0, .metadata = 4096, .out = {}};
+  const SourceTensorIndex tensors(source.tensors);
+  const RecipeEnv env(family, source.values, tensors, source.container, indices);
+  CountPolicy policy{.env = env,
+                     .indices = indices,
+                     .metadata = 4096 + source.tensors.size() * sizeof(const import::Tensor*),
+                     .source_tensors = static_cast<std::uint64_t>(source.tensors.size()),
+                     .max_source_tensor_name_bytes = 0,
+                     .out = {}};
+  for (const auto& tensor : source.tensors)
+    policy.max_source_tensor_name_bytes = std::max(policy.max_source_tensor_name_bytes,
+                                                   static_cast<std::uint64_t>(tensor.name.size()));
+  if (auto paid = RecipeExpressions(
+          recipe, [&](const RecipeValue& value) { return policy.SourceReads(value); });
+      !paid)
+    return std::unexpected(paid.error());
   auto width_payload = PayloadBound(recipe.stream_width, env);
   if (!width_payload || *width_payload != 0)
     return Fail(width_payload ? "stage stream width must be a scalar expression"
@@ -1047,10 +1148,14 @@ std::expected<StageRecipePreflight, std::string> Count(const StageRecipe& recipe
     out.max_source_key_bytes =
         std::max(out.max_source_key_bytes, static_cast<std::uint64_t>(name.size()));
   out.visited_steps = walker.visited();
-  // Counting's reads, then expansion's: its payload bounds and evaluations
-  // read no more than counting did, twice over.
-  if (__builtin_mul_overflow(policy.lookups, std::uint64_t{3}, &out.source_value_lookups))
-    return Fail("stage recipe source lookup work overflows");
+  // Index construction and observed Count queries supplement the static
+  // leaf bound above. Scalar reads used only by Expand are already paid;
+  // this observation is never their source of funding.
+  const auto tensor_work = tensors.Work();
+  std::uint64_t reads = 0;
+  if (!tensor_work || __builtin_mul_overflow(*tensor_work, std::uint64_t{3}, &reads) ||
+      !AddBound(reads, out.expansion_work))
+    return Fail("stage recipe tensor lookup work overflows");
   out.metadata_bytes = metadata;
   out.stream_width = static_cast<std::uint64_t>(*width);
   return out;
@@ -1063,6 +1168,11 @@ std::expected<StageRecipePreflight, std::string> PreflightStageRecipe(
     std::span<const MetaEntry> source_values, std::span<const Tensor> source_tensors,
     std::string_view source_container) {
   if (metadata_bytes == 0) return Bad("stage recipe header or prepaid metadata bound is invalid");
+  std::uint64_t index_bytes = 0;
+  if (__builtin_mul_overflow(static_cast<std::uint64_t>(source_tensors.size()),
+                             std::uint64_t{sizeof(const Tensor*)}, &index_bytes) ||
+      index_bytes > metadata_bytes)
+    return Bad("source tensor index exceeds its prepaid metadata bound");
   auto counted = Count(recipe, family, {source_values, source_tensors, source_container});
   if (!counted) return Bad(counted.error());
   if (counted->metadata_bytes > metadata_bytes)
@@ -1078,12 +1188,12 @@ std::expected<spec::RecipeExpansion, std::string> ExpandStageRecipe(
                                         source_tensors, source_container);
   if (!preflight) return std::unexpected(preflight.error());
   Indices indices;
-  const RecipeEnv env(family, source_values, source_tensors, source_container, indices);
+  const SourceTensorIndex tensors(source_tensors);
+  const RecipeEnv env(family, source_values, tensors, source_container, indices);
   ExpandPolicy expander{.env = env,
                         .indices = indices,
                         .paid = metadata_bytes,
                         .estimate = 0,
-                        .lookups = 0,
                         .stage = {.name = std::string(recipe.name),
                                   .role = recipe.role,
                                   .artifact = recipe.artifact,
@@ -1092,7 +1202,8 @@ std::expected<spec::RecipeExpansion, std::string> ExpandStageRecipe(
                         .geometry = {},
                         .host_ports = {},
                         .created = {},
-                        .tensors = {}};
+                        .tensors = {},
+                        .tensor_index = {}};
   expander.geometry.reserve(static_cast<std::size_t>(preflight->expanded_nodes + 1));
   expander.host_ports.reserve(recipe.host_ports.size());
   auto primary = EvalShape(recipe.primary_input.shape, env, expander.options());
@@ -1146,7 +1257,8 @@ std::expected<std::set<std::string_view>, std::string> RecipeValueNames(
   CollectPolicy policy;
   Indices indices;
   const ModelSpec none{};
-  const RecipeEnv env(none, {}, {}, {}, indices);
+  const SourceTensorIndex tensors({});
+  const RecipeEnv env(none, {}, tensors, {}, indices);
   if (auto ok = RecipeExpressions(recipe,
                                   [&](const RecipeValue& v) { return policy.Expression(v, true); });
       !ok)

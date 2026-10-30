@@ -27,6 +27,10 @@ struct SpatialComposition {
 // Source text encoder as a stateless typed graph: primary I32 IDs, extra
 // I32 positions and explicit causal F32 mask. Exports pre-final-norm features
 // after the source prompt prefix; no generation head or token cache is implied.
+// Price the derived source inventory and graph before materializing their
+// descriptors. The span overload also checks supplied descriptor bounds.
+std::expected<std::uint64_t, std::string> ImageTextSpecBound(
+    const model::ImageTextProfile& profile);
 std::expected<std::uint64_t, std::string> ImageTextSpecBound(
     const model::ImageTextProfile& profile, std::span<const model::ImageTensor> tensors);
 std::expected<SpatialComposition, std::string> ImageTextSpec(

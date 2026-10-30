@@ -720,10 +720,11 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       the I/O owner after validation; fund decoder and unread output capacity
       as it grows instead of reserving `32 * max_tokens` for every request
       ([record](m35-record.md#f17-parser-ownership-and-output-funding-2026-10-30)).
-- [ ] **F18 Image import bounds and tensor indexes:** include complete source
+- [x] **F18 Image import bounds and tensor indexes:** include complete source
       metadata and parsing workspace before family synthesis or retained
       checkpoint copies; index source and expanded tensors once while retaining
-      duplicate and provenance checks.
+      duplicate and provenance checks
+      ([record](m35-record.md#f18-image-import-funding-and-indexes-2026-10-30)).
 - [ ] **F19 Owned-region backing transfers:** preserve warmed pool handles
       while region growth is charged before physical allocation, with explicit
       ownership through rollback and retirement and no speculative refill credit.

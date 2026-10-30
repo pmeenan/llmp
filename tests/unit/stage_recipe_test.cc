@@ -83,6 +83,173 @@ TEST(StageRecipe, ExpandsFiniteRepeatAndCarriesHostPortOnlyToFirstIteration) {
   EXPECT_EQ(expanded->stage.exports, (std::vector<std::uint16_t>{2}));
 }
 
+TEST(StageRecipe, TensorIndexWorkGrowsWithLookupDepth) {
+  static constexpr auto width = spec::ex::TensorDim("weight.{i}", 0);
+  static constexpr std::array params{spec::RecipeParam{.name = "in_channels", .value = width},
+                                     spec::RecipeParam{.name = "out_channels", .value = width}};
+  static constexpr std::array weights{spec::RecipeWeight{.role = "weight", .tensor = "weight.{i}"}};
+  static constexpr spec::RecipeNode node{
+      .name = "step.{i}",
+      .component_kind = "projection.spatial",
+      .params = params,
+      .weights = weights,
+      .input = {.kind = spec::RecipeRefKind::kNamedValue, .name = "in.{i}"}};
+  static constexpr std::array body{
+      spec::RecipeStep{.kind = spec::RecipeStep::Kind::kNode, .node = &node}};
+  auto repeat = kRepeat;
+  repeat.body = body;
+  const std::array steps{
+      spec::RecipeStep{.kind = spec::RecipeStep::Kind::kRepeat, .repeat = &repeat}};
+  auto recipe = kRecipe;
+  recipe.steps = steps;
+  std::uint64_t previous = 0;
+  for (const auto count : {256U, 512U, 1024U}) {
+    std::vector<Tensor> source;
+    for (unsigned i = 0; i < count; ++i)
+      source.push_back({.name = "weight." + std::to_string(i), .dims = {1, 1}});
+    repeat.count = spec::ex::I(count);
+    const auto cost = PreflightStageRecipe(recipe, {}, 1U << 24U, {}, source);
+    ASSERT_TRUE(cost) << cost.error();
+    RecordProperty("lookup_work_" + std::to_string(count), std::to_string(cost->expansion_work));
+    if (previous != 0) EXPECT_LT(cost->expansion_work, 3 * previous);
+    previous = cost->expansion_work;
+    const auto expanded = ExpandStageRecipe(recipe, {}, cost->metadata_bytes, {}, source);
+    ASSERT_TRUE(expanded) << expanded.error();
+    EXPECT_EQ(expanded->tensors.size(), count);
+  }
+}
+
+TEST(StageRecipe, WeightFreeScalarLookupsAndLazyBranchesAreFunded) {
+  static constexpr auto zero = spec::ex::I(0);
+  static constexpr auto one = spec::ex::I(1);
+  static constexpr auto two = spec::ex::I(2);
+  static constexpr auto yes = spec::ex::B(true);
+  static constexpr auto tensor = spec::ex::TensorDim("header", 0);
+  static constexpr auto value = spec::ex::V("rows");
+  static constexpr std::string_view unchosen_name = "a.much.longer.absent.header";
+  static constexpr auto missing = spec::ex::TensorDim(unchosen_name, 0);
+  static constexpr spec::RecipeValue lazy{
+      .kind = spec::ExprKind::kSelect, .left = &yes, .right = &value, .alternate = &missing};
+  static constexpr auto templated = spec::ex::TensorDim("header.{i}", 0);
+  static constexpr auto unbound = spec::ex::TensorDim("header.{unused}", 0);
+  static constexpr auto malformed = spec::ex::TensorDim("header.{unused", 0);
+  static constexpr spec::RecipeValue lazy_unbound{
+      .kind = spec::ExprKind::kSelect, .left = &yes, .right = &two, .alternate = &unbound};
+  static constexpr spec::RecipeValue lazy_malformed{
+      .kind = spec::ExprKind::kSelect, .left = &yes, .right = &two, .alternate = &malformed};
+  constexpr unsigned kCount = 32;
+  const std::array config{MetaEntry{.key = "rows", .value = std::int64_t{2}}};
+  const std::array expressions{tensor, value, lazy, templated, lazy_unbound, lazy_malformed};
+  for (std::size_t test = 0; test < expressions.size(); ++test) {
+    SCOPED_TRACE(test);
+    const std::array params{spec::RecipeParam{.name = "start", .value = zero},
+                            spec::RecipeParam{.name = "rows", .value = expressions[test]},
+                            spec::RecipeParam{.name = "input_rows", .value = two}};
+    const spec::RecipeNode node{
+        .name = "step.{i}",
+        .component_kind = "slice.spatial",
+        .params = params,
+        .input = {.kind = spec::RecipeRefKind::kNamedValue, .name = "in.{i}"}};
+    const std::array body{spec::RecipeStep{.kind = spec::RecipeStep::Kind::kNode, .node = &node}};
+    auto repeat = kRepeat;
+    repeat.count = spec::ex::I(kCount);
+    repeat.body = body;
+    repeat.input = {.kind = spec::RecipeRefKind::kStageInput};
+    const std::array steps{
+        spec::RecipeStep{.kind = spec::RecipeStep::Kind::kRepeat, .repeat = &repeat}};
+    const spec::RecipeSpatialShape shape{
+        .width = one, .height = two, .channels = one, .images = one};
+    const std::array outputs{shape};
+    auto recipe = kRecipe;
+    recipe.primary_input.shape = shape;
+    recipe.expected_outputs = outputs;
+    recipe.steps = steps;
+    std::vector<Tensor> source{{.name = "header", .dims = {2}}};
+    if (test == 3) {
+      source.clear();
+      for (unsigned i = 0; i < kCount; ++i)
+        source.push_back({.name = "header." + std::to_string(i), .dims = {2}});
+    }
+    const auto cost = PreflightStageRecipe(recipe, {}, 1U << 20U, config, source);
+    ASSERT_TRUE(cost) << cost.error();
+    EXPECT_EQ(cost->tensor_bindings, 0U);
+    // Value-only parameters were read by PayloadBound without incrementing
+    // EvalOptions::lookups. Tensor-only parameters were never read in Count.
+    EXPECT_EQ(cost->source_value_lookups, test == 1 || test == 2 ? 8U * kCount : 0U);
+    if (test != 1) {
+      const auto max_name = test == 2   ? unchosen_name.size()
+                            : test == 3 ? 9U
+                            : test == 4 ? 7U + 20U
+                            : test == 5 ? malformed.name.size()
+                                        : 6U;
+      const auto comparisons = static_cast<std::uint64_t>(std::bit_width(source.size())) + 3;
+      EXPECT_GE(cost->expansion_work, 8U * kCount * comparisons * (max_name + 1));
+    }
+    const auto expanded = ExpandStageRecipe(recipe, {}, cost->metadata_bytes, config, source);
+    ASSERT_TRUE(expanded) << expanded.error();
+    EXPECT_EQ(expanded->stage.layers[0].components.size(), kCount);
+    // Pricing a lazy branch must not resolve it, while selecting that same
+    // unbound/malformed template still reaches the evaluator's refusal.
+    if (test >= 4) {
+      auto active_params = params;
+      active_params[1].value = test == 4 ? unbound : malformed;
+      auto active_node = node;
+      active_node.params = active_params;
+      const std::array active_body{
+          spec::RecipeStep{.kind = spec::RecipeStep::Kind::kNode, .node = &active_node}};
+      repeat.body = active_body;
+      EXPECT_FALSE(ExpandStageRecipe(recipe, {}, cost->metadata_bytes, config, source));
+    }
+  }
+}
+
+TEST(StageRecipe, SourceReadsInDimensionsGroupsAndControlAreFunded) {
+  static constexpr auto one = spec::ex::I(1);
+  static constexpr auto two = spec::ex::I(2);
+  static constexpr auto dim = spec::ex::TensorDim("header", 0);
+  static constexpr spec::RecipeValue present{.kind = spec::ExprKind::kTensorPresent,
+                                             .name = "header"};
+  static constexpr std::array params{spec::RecipeParam{.name = "in_channels", .value = two},
+                                     spec::RecipeParam{.name = "out_channels", .value = two}};
+  static constexpr std::array axes{dim, dim};
+  static constexpr std::array weights{spec::RecipeWeight{
+      .role = "weight", .tensor = "weight.{i}", .source_dims = axes, .source_dims_when = &present}};
+  static constexpr spec::RecipeNode node{
+      .name = "step.{i}",
+      .component_kind = "projection.spatial",
+      .params = params,
+      .weights = weights,
+      .input = {.kind = spec::RecipeRefKind::kNamedValue, .name = "in.{i}"},
+      .group = spec::RecipeGroupKind::kLayer,
+      .group_index = {.kind = spec::ExprKind::kSubtract, .left = &dim, .right = &two}};
+  static constexpr std::array body{
+      spec::RecipeStep{.kind = spec::RecipeStep::Kind::kNode, .node = &node}};
+  auto repeat = kRepeat;
+  repeat.count = dim;
+  repeat.body = body;
+  repeat.input = {.kind = spec::RecipeRefKind::kStageInput};
+  const std::array steps{
+      spec::RecipeStep{.kind = spec::RecipeStep::Kind::kRepeat, .repeat = &repeat}};
+  const spec::RecipeSpatialShape shape{.width = one, .height = one, .channels = two, .images = one};
+  const std::array outputs{shape};
+  auto recipe = kRecipe;
+  recipe.stream_width = two;
+  recipe.primary_input.shape = shape;
+  recipe.expected_outputs = outputs;
+  recipe.steps = steps;
+  const std::array source{Tensor{.name = "header", .dims = {2}}};
+  const auto cost = PreflightStageRecipe(recipe, {}, 1U << 20U, {}, source);
+  ASSERT_TRUE(cost) << cost.error();
+  // One repeat-control read, then four leaves in each of two nodes:
+  // two raw axes, their condition, and the group index.
+  EXPECT_GE(cost->expansion_work, 8U * (1U + 2U * 4U) * 4U * 7U);
+  const auto expanded = ExpandStageRecipe(recipe, {}, cost->metadata_bytes, {}, source);
+  ASSERT_TRUE(expanded) << expanded.error();
+  ASSERT_EQ(expanded->tensors.size(), 2U);
+  EXPECT_EQ(expanded->tensors[0].source_dims, (std::vector<std::uint64_t>{2, 2}));
+  EXPECT_EQ(expanded->tensors[0].layer, 0U);
+}
+
 TEST(StageRecipe, ExpandsTypedStandaloneSourceScalarAndListValues) {
   static constexpr spec::RecipeValue dim = spec::ex::V("in_channels");
   static constexpr spec::RecipeValue widths = spec::ex::V("widths");
@@ -615,7 +782,7 @@ TEST(StageRecipe, TemporalKernelChecksRawRankFiveChannelFactorization) {
   EXPECT_NE(wrong_factorization.error().reason.find("raw header dimensions"), std::string::npos);
 }
 
-TEST(StageRecipe, ManyGeneratedTensorNamesAreChargedQuadraticallyBeforeBuild) {
+TEST(StageRecipe, ManyGeneratedTensorNamesAreChargedBeforeBuild) {
   static constexpr spec::RecipeValue one{.literal = std::int64_t{1}};
   static constexpr spec::RecipeValue count{.literal = std::int64_t{32}};
   static constexpr std::array params{spec::RecipeParam{.name = "in_channels", .value = one},
@@ -1039,6 +1206,21 @@ TEST(StageRecipe, ConditionsAndOneEnvironmentServeEverySource) {
   EXPECT_EQ(component.Find("silu"), nullptr);
   EXPECT_EQ(component.Find("in_channels")->value, (spec::ParamValue{std::int64_t{4}}));
   EXPECT_TRUE(plain->tensors[0].source_dims.empty());
+  // Indexing preserves name/part ambiguity rules, including a non-data
+  // companion with the same logical name and an unrelated duplicate name.
+  std::vector<Tensor> indexed(two_d.begin(), two_d.end());
+  indexed.push_back({.name = "proj.weight", .part = format::PartRole::kTensorScale, .dims = {1}});
+  indexed.push_back({.name = "unused", .dims = {1}});
+  indexed.push_back({.name = "unused", .dims = {2}});
+  EXPECT_TRUE(ExpandStageRecipe(recipe, {}, 1U << 20U, config, indexed));
+  indexed.push_back(two_d[0]);
+  const auto ambiguous = ExpandStageRecipe(recipe, {}, 1U << 20U, config, indexed);
+  ASSERT_FALSE(ambiguous);
+  EXPECT_NE(ambiguous.error().find("ambiguous"), std::string::npos);
+  const auto unfunded_index =
+      PreflightStageRecipe(recipe, {}, indexed.size() * sizeof(const Tensor*) - 1, config, indexed);
+  ASSERT_FALSE(unfunded_index);
+  EXPECT_NE(unfunded_index.error().find("source tensor index"), std::string::npos);
 
   const std::array flagged{MetaEntry{.key = "extra", .value = true},
                            MetaEntry{.key = "width", .value = std::int64_t{4}}};

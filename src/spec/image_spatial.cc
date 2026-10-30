@@ -27,19 +27,29 @@ const model::ImageTensor& TextGlobalOf(std::span<const model::ImageTensor> tenso
                                        model::TextGlobal role) {
   return tensors[static_cast<std::size_t>(role)];
 }
+std::expected<std::uint64_t, std::string> TextBound(const model::ImageTextProfile& p,
+                                                    std::uint64_t tensors) {
+  const auto components = std::uint64_t{p.layers} * 2 + 2;
+  if (!p.layers || components > kMaxComponents || tensors > 4096 ||
+      std::uint64_t{p.layers} * kTextTensors + 1 > tensors)
+    return std::unexpected("text mapping exceeds component/source representation");
+  return 4096 * components + 1024 * tensors + 65536;
+}
 }  // namespace
 
+std::expected<std::uint64_t, std::string> ImageTextSpecBound(const model::ImageTextProfile& p) {
+  return TextBound(p, std::uint64_t{p.layers} * kTextTensors +
+                          static_cast<std::size_t>(model::TextGlobal::kCount));
+}
 std::expected<std::uint64_t, std::string> ImageTextSpecBound(
     const model::ImageTextProfile& p, std::span<const model::ImageTensor> tensors) {
-  const auto components = std::uint64_t{p.layers} * 2 + 2;
-  if (!p.layers || components > kMaxComponents || tensors.size() > 4096 ||
-      std::uint64_t{p.layers} * 11 + 1 > tensors.size())
-    return std::unexpected("text mapping exceeds component/source representation");
+  auto bound = TextBound(p, tensors.size());
+  if (!bound) return std::unexpected(bound.error());
   for (const auto& tensor : tensors)
     if (tensor.name.empty() || tensor.name.size() > 256 || tensor.shape.empty() ||
         tensor.shape.size() > 4)
       return std::unexpected("text mapping source descriptor is unbounded");
-  return 4096 * components + 1024 * tensors.size() + 65536;
+  return bound;
 }
 std::expected<SpatialComposition, std::string> ImageTextSpec(
     const model::ImageTextProfile& p, std::uint32_t rows, std::uint32_t drop,
