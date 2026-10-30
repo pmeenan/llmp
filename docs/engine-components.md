@@ -624,6 +624,14 @@ primitive ids). It is deterministic. The steps:
 - **Lanes** (`lanes.h`) and **placement** (`placement.h`): ports of
   `AssignLanes` and `PlaceActivations` onto the IR's steps (largest first,
   lowest free offset, step lifetimes, regions live for their spans). The
+  fit (`FitIntervals`) finds a short-lived tensor's neighbours by step and
+  scans the placed tensors in offset order only for long lifetimes (lanes'
+  regions); both give the same offsets. A plan places three times: the
+  planner's logical placement (reports, staged roots) and the GGML
+  lowering's physical one before and after its schedule, which share one
+  storage contract and each root's backend facts (`WithinRoot`,
+  `WrittenBytes`): the second drops the reads of what the schedule does not
+  launch and refits over the scheduled steps and regions. The
   implementations that stay on the stream (a borrowed library handle) are
   the caller's `on_stream`: unlike `AssignLanes`, which keeps cuBLAS and
   the BF16 GEMM there by default, the planner knows no module's names, so

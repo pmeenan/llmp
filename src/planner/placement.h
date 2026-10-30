@@ -69,6 +69,24 @@ struct PhysicalStorage {
   std::vector<std::vector<ir::TensorId>> reads;
 };
 
+// The greedy fit that ends PlaceActivations, over known lifetimes: each
+// interval, in the order given, at the lowest offset where none placed
+// before it whose steps meet its own (first <= its last, its first <= last)
+// holds a byte. The offsets are in the intervals' order; the extent is the
+// largest end. Short lifetimes are found by their first steps rather than
+// by scanning every placed interval in offset order (F16); both give the
+// same offsets.
+struct Interval {
+  std::int64_t first = 0;  // steps, inclusive
+  std::int64_t last = 0;
+  std::uint64_t bytes = 0;
+};
+struct Fit {
+  std::vector<std::uint64_t> offsets{};
+  std::uint64_t extent = 0;
+};
+std::expected<Fit, std::string> FitIntervals(std::span<const Interval> intervals);
+
 // `alignment` is a power of two.
 // `preserved`: tensors kept in place between runs of the step (a plan's
 // prologue results the rest reads, its invariant inputs): each lives the

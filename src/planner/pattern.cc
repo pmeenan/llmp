@@ -3155,14 +3155,24 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatternTable(
     for (const NodeId r : a.replaced) rewritten.at(r.v) = true;
   }
   out.applied.reserve(first->applied.size() + second->applied.size());
-  for (Applied& a : first->applied) {
-    std::vector<NodeId> made;
-    made.reserve(second->from.size());
-    for (std::uint32_t j = 0; j < second->from.size(); ++j) {
-      const NodeId mid = second->from[j];
-      if (!rewritten.at(mid.v) && std::ranges::contains(a.made, mid)) made.push_back(NodeId{j});
+  // Each round-0 node's makers, so each round-1 node is asked of its own
+  // makers rather than of every applied rewrite (F16).
+  std::vector<std::vector<std::uint32_t>> makers(first_node_count);
+  for (std::uint32_t k = 0; k < first->applied.size(); ++k)
+    for (const NodeId m : first->applied[k].made) {
+      if (m.v >= makers.size()) continue;  // no round-1 node stands for it
+      auto& list = makers[m.v];
+      if (list.empty() || list.back() != k) list.push_back(k);
     }
-    a.made = std::move(made);
+  std::vector<std::vector<NodeId>> made(first->applied.size());
+  for (std::uint32_t j = 0; j < second->from.size(); ++j) {
+    const NodeId mid = second->from[j];
+    if (rewritten.at(mid.v)) continue;
+    for (const std::uint32_t k : makers.at(mid.v)) made[k].push_back(NodeId{j});
+  }
+  for (std::uint32_t k = 0; k < first->applied.size(); ++k) {
+    Applied& a = first->applied[k];
+    a.made = std::move(made[k]);
     out.applied.push_back(std::move(a));
   }
   // Round 1's: its replaced nodes as the primitive nodes they stood for.

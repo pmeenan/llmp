@@ -69,6 +69,97 @@ std::expected<std::uint64_t, std::string> RootBytes(const ir::TensorDesc& tensor
   return bytes;
 }
 
+std::expected<Fit, std::string> FitIntervals(std::span<const Interval> intervals) {
+  Fit fit;
+  fit.offsets.reserve(intervals.size());
+  if (intervals.empty()) return fit;
+  const auto place = [&](const Interval& v,
+                         std::uint64_t offset) -> std::expected<void, std::string> {
+    if (offset > kMax - v.bytes) return Error("the activation region overflows");
+    fit.offsets.push_back(offset);
+    fit.extent = std::max(fit.extent, offset + v.bytes);
+    return {};
+  };
+  // Short lifetimes (a plan without lanes: a step or a few, a mean of 8 to
+  // 9 in Qwen3.8's) meet few placed intervals each, found by their first
+  // steps; long ones (lanes' regions: means of 60 to 200) meet many, and
+  // sorting those costs more than the scan, which walks every placed
+  // interval below the result (measured on Qwen3.8's plans, F16).
+  constexpr std::int64_t kShort = 32;
+  std::int64_t low = intervals.front().first, high = intervals.front().last;
+  std::uint64_t steps = 0;
+  bool ordered = true;
+  for (const Interval& v : intervals) {
+    low = std::min(low, v.first);
+    high = std::max(high, v.last);
+    ordered = ordered && v.first <= v.last;
+    // Unsigned: a span of the whole int64 range must not overflow.
+    if (ordered) steps += static_cast<std::uint64_t>(v.last) - static_cast<std::uint64_t>(v.first);
+  }
+  const std::uint64_t span = static_cast<std::uint64_t>(high) - static_cast<std::uint64_t>(low);
+  const auto count = static_cast<std::uint64_t>(intervals.size());
+  if (!ordered || steps > 16 * count || span > 4 * count + 1024) {
+    // The scan: every placed interval in offset order, past each whose
+    // steps meet this one's, until one starts beyond the candidate's end.
+    struct Placed {
+      std::uint64_t offset = 0, end = 0;
+      std::int64_t first = 0, last = 0;
+    };
+    std::vector<Placed> placed;
+    placed.reserve(intervals.size());
+    for (const Interval& v : intervals) {
+      std::uint64_t offset = 0;
+      for (const Placed& b : placed) {
+        if (b.offset >= offset + v.bytes) break;
+        if (b.first <= v.last && v.first <= b.last) offset = std::max(offset, b.end);
+      }
+      if (auto placed_at = place(v, offset); !placed_at) return std::unexpected(placed_at.error());
+      const Placed at{offset, offset + v.bytes, v.first, v.last};
+      placed.insert(std::ranges::lower_bound(placed, at.offset, {}, &Placed::offset), at);
+    }
+    return fit;
+  }
+  // By first step those of at most kShort steps (one starting before this
+  // one's first by more ends before it), the longer in one list: together
+  // every placed interval whose steps meet this one's, swept in offset
+  // order to the same lowest free offset the scan finds.
+  const auto position = [&](std::int64_t step) {
+    return static_cast<std::size_t>(static_cast<std::uint64_t>(step) -
+                                    static_cast<std::uint64_t>(low));
+  };
+  std::vector<std::vector<std::uint32_t>> starting(static_cast<std::size_t>(span) + 1);
+  std::vector<std::uint32_t> longer, met;
+  std::vector<std::uint64_t> ends;
+  ends.reserve(intervals.size());
+  for (std::size_t i = 0; i < intervals.size(); ++i) {
+    const Interval& v = intervals[i];
+    const auto meets = [&](std::uint32_t j) {
+      return intervals[j].first <= v.last && v.first <= intervals[j].last;
+    };
+    met.clear();
+    for (const std::uint32_t j : longer)
+      if (meets(j)) met.push_back(j);
+    const std::int64_t from = v.first - low > kShort ? v.first - kShort : low;
+    for (std::size_t q = position(from); q <= position(v.last); ++q)
+      for (const std::uint32_t j : starting[q])
+        if (meets(j)) met.push_back(j);
+    std::ranges::sort(met, {}, [&](std::uint32_t j) { return fit.offsets[j]; });
+    std::uint64_t offset = 0;
+    for (const std::uint32_t j : met) {
+      if (fit.offsets[j] >= offset + v.bytes) break;
+      offset = std::max(offset, ends[j]);
+    }
+    if (auto placed_at = place(v, offset); !placed_at) return std::unexpected(placed_at.error());
+    ends.push_back(offset + v.bytes);
+    const auto id = static_cast<std::uint32_t>(i);
+    if (v.last - v.first > kShort)
+      longer.push_back(id);
+    else
+      starting[position(v.first)].push_back(id);
+  }
+  return fit;
+}
+
 std::expected<Placement, std::string> PlaceActivations(
     const ir::Graph& graph, std::span<const Selected> steps, std::span<const Region> regions,
     std::span<const ir::TensorId> staged, std::uint64_t alignment, const RootBytesOf& written,
@@ -95,7 +186,6 @@ std::expected<Placement, std::string> PlaceActivations(
     std::int64_t last = 0;   // the last step reading it
     std::uint64_t bytes = 0;
     std::uint64_t offset = 0;
-    bool placed = false;
   };
   std::vector<Life> lives;
   std::vector<std::size_t> index(graph.tensor_count(), ~std::size_t{0});
@@ -243,35 +333,14 @@ std::expected<Placement, std::string> PlaceActivations(
   std::ranges::stable_sort(
       order, [&](std::size_t a, std::size_t b) { return lives[a].bytes > lives[b].bytes; });
   Placement placement{.alignment = alignment};
-  struct PlacedSpan {
-    std::uint64_t offset = 0;
-    std::uint64_t end = 0;
-    std::int64_t first = 0;
-    std::int64_t last = 0;
-  };
-  std::vector<PlacedSpan> placed;
-  placed.reserve(lives.size());
-  for (const std::size_t i : order) {
-    Life& life = lives[i];
-    std::uint64_t offset = 0;
-    for (const auto& b : placed) {
-      if (b.offset >= offset + life.bytes) {
-        break;
-      }
-      if (b.first <= life.last && life.first <= b.last) {
-        offset = std::max(offset, b.end);
-      }
-    }
-    if (offset > kMax - life.bytes) {
-      return Error("the activation region overflows");
-    }
-    life.offset = offset;
-    life.placed = true;
-    placement.extent = std::max(placement.extent, offset + life.bytes);
-    PlacedSpan span{offset, offset + life.bytes, life.first, life.last};
-    auto it = std::ranges::lower_bound(placed, span.offset, {}, &PlacedSpan::offset);
-    placed.insert(it, span);
-  }
+  std::vector<Interval> intervals;
+  intervals.reserve(order.size());
+  for (const std::size_t i : order)
+    intervals.push_back({.first = lives[i].first, .last = lives[i].last, .bytes = lives[i].bytes});
+  auto fit = FitIntervals(intervals);
+  if (!fit) return std::unexpected(std::move(fit.error()));
+  for (std::size_t k = 0; k < order.size(); ++k) lives[order[k]].offset = fit->offsets[k];
+  placement.extent = fit->extent;
   placement.offsets.reserve(lives.size());
   for (const Life& life : lives) {
     placement.offsets.emplace_back(life.tensor, life.offset);

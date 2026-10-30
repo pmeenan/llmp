@@ -31,11 +31,10 @@ removed and that the files are in Git at `1564dcd6`).
 | `ca32156b..265c821a` | U1–U10 and the memory modes; the first, reviewed fix pass `b7e6143b`, `f8f106a8`, `7c96e27b`, `265c821a` |
 | `265c821a..1564dcd6` (2026-10-28) | The foundation review's F1–F13 fixes, one reviewed commit each |
 | `1564dcd6..c36589b2` (2026-10-28) | F14 and F10a; F10b's final checks ran on `c36589b2` (2026-10-29) |
-| `c36589b2..` (2026-10-29) | F10b's record, then F15's fixes of what it found |
+| `c36589b2..` (2026-10-29/30) | F10b's record, then F15's fixes of what it found, F10c and F16 |
 
 Open at this record: U7 (fast paths by capability; only U7a's first GDN-gate
-spike is done) and U9 (M4 entry); the lowering's physical-placement cost
-(F16, from F15 below); the
+spike is done) and U9 (M4 entry); the
 families, formats and media items that M3.5 has always owned ([plan](plan.md)).
 The regressions F10b's final checks found are fixed or explained by F15
 ([F15](#f15-regressions-found-by-the-final-checks-2026-10-29)).
@@ -96,7 +95,8 @@ fixed; each slice landed as one reviewed commit, with verification in batches
 | F10b | `79c6586a` | The closeout checks: [campaign final verification](#campaign-final-verification-f10b-2026-10-29); not passed. |
 | F15b | `3c9a938f` | Prompt scores explained (RE-063); wide-output GLU rank rows (an `n` band): the Gemma 4 31B assistant screen −2.01% against M3.6. |
 | F15a | `e4e5d8e1` | MTP prompt catch-up, prefill lookahead bounds, a chunk-weighted gate decode rate: every F10b speed failure passes against M3.6. |
-| F10c | this commit | The workstation `native` and `cpu-asan` tiers: [F10c](#f10c-workstation-tiers-2026-10-29); RE-051 fixed and the nine sanitizer findings it hid. |
+| F10c | `ea1bbf5e` | The workstation `native` and `cpu-asan` tiers: [F10c](#f10c-workstation-tiers-2026-10-29); RE-051 fixed and the nine sanitizer findings it hid. |
+| F16 | this commit | Plans build about a third faster with every layout unchanged: [F16](#f16-lowering-placement-cost-2026-10-30). |
 
 ## F10a hygiene (2026-10-28)
 
@@ -338,7 +338,7 @@ Left as a follow-up: a target plan's lowering costs about 7 ms more than at
 `53c2610b` (46 → 59 ms a Qwen3.8 prefill plan at HEAD, 73 ms at `d3374c67`):
 `d3374c67`'s physical placement runs twice (`planner::PlaceActivations`'
 greedy fit), and its first result lays out DeepSeek's HC carries, so it cannot
-simply be skipped. The plan carries it as F16, ahead of M3.5's other work.
+simply be skipped. F16 took it up ([F16](#f16-lowering-placement-cost-2026-10-30)).
 
 Checked on the merged tree (2026-10-29): `spark-b`, the shared set 3,974 of
 3,974, `-L models -R Qwen38` 32 of 32 and `Dsv4` 21 of 21; `spark`, the
@@ -380,6 +380,84 @@ Checked on the tree merged with F16 (2026-10-30): `spark`, the shared set
 3,977 of 3,977 and `-L models -R Qwen38` 32 of 32; `spark-b`, `Dsv4` 21 of
 21; no skips.
 
+## F16: lowering placement cost (2026-10-30)
+
+F15's follow-up, one builder and one review-and-challenge pass. Time per
+step of a Qwen3.8 native prefill plan at `e4e5d8e1`, from temporary
+instrumentation on `spark-b` (since removed), 61 ms in all:
+
+- **Graph digests, 13 ms.** The hasher fed SHA-256 a byte at a time: 5.1 ms
+  for the source graph in `Plan()`, 5.5 ms more when `LowerComponentPlan`
+  hashed the source again (the clone never carried its digest back), and
+  2.7 ms for the planned graph.
+- **The planner's pattern step, 14 ms.** `fusions::GroupedProductOf` scanned
+  the graph for every product before its cheap checks (about 28% of `Plan`
+  in `perf`), and the merge of the pattern rounds asked every rewrite of
+  every node.
+- **Placement, 4.6 ms** for all three fits (the planner's logical one and
+  the lowering's two physical ones, before and after its schedule), plus root
+  lookups and a storage contract built twice.
+
+The fix, with every output identical:
+
+- `src/ir/graph.cc`: the hasher gathers fields into 512-byte blocks;
+  `PlanComponentGraph` digests the source before cloning it, so it is hashed
+  once a plan.
+- `src/kernels/ggml/lower.cc`: the physical storage contract is built once
+  (the second placement drops the reads of steps the schedule does not
+  launch), `WithinRoot` and `WrittenBytes` are memoized per root, a plan
+  without a prologue skips the preserved-root scan, and `WithinRoot` checks
+  the gated-norm chain's shape before counting readers.
+- `src/planner/placement.{h,cc}`: `FitIntervals` indexes short lifetimes by
+  their first step and keeps the offset-ordered scan for plans whose mean
+  lifetime is over 16 steps (lanes). A segment tree was 2× faster on prefill
+  plans but 2.7× slower on verify plans, measured on 400 real fit inputs,
+  and was rejected. The first placement stays: it lays out DeepSeek's HC
+  carries and the provisional bind.
+- `src/planner/fusions.cc`, `src/planner/pattern.cc`: cheap operand checks
+  before the graph scans; the pattern merge indexes each node's makers.
+
+Plan time, Qwen3.8 native, median per plan (ms, same instrumentation,
+`spark-b`; all-cell runs vary by about ±5 ms):
+
+| Plan | `e4e5d8e1` | F16 |
+| --- | --- | --- |
+| Prefill target (≥512 rows) | 58.4 (all cells), 61.2 (C1) | 38.8–40.6 (all cells) |
+| Decode target, 1 row | 42.2 | 27.7 |
+| Verify, 2–8 rows | 48.6 | 34.6 |
+| Verify, 9–511 rows | 73.4 | 52.0 |
+| Draft | 4.4 | 2.8 |
+
+Planning per gate run, uninstrumented: Qwen3.8 native 6.19 → 4.47 s (24.8 →
+17.7 ms a plan), DeepSeek 8.91 → 7.04 s (127.5 → 100.5 ms), Qwen3.8 GGUF
+2.00 → 1.36 s, Gemma 4 26B 2.07 → 1.61 s, Gemma 3 1.31 → 1.01 s, Gemma 2
+1.57 → 1.30 s. The target, `53c2610b`'s 46 ms a prefill plan, is met.
+
+Gates, tier 1 against `e4e5d8e1` built on the same host after a cache drop
+(every family, since the digest change moves every family's plan time by
+more than 1 ms):
+
+| Family (host) | Blocks | Result |
+| --- | --- | --- |
+| Qwen3.8 native (`spark-b`) | 4 | every mean ≤ +0.11% (C4 decode +0.65% at 2 blocks) |
+| DeepSeek plain (`spark-b`) | 4 | pass; C4 decode +0.05% (+0.55% at 2 blocks) |
+| Gemma 2 (`spark`) | 6 | pass; C1 prefill +0.39% (+0.71% at 2 blocks, +0.51% at 4) |
+| Gemma 3, Gemma 4 26B, Gemma 4 31B, Qwen3.8 GGUF, Qwen-Image (`spark`) | 2 | every mean ≤ +0.17%; the image pixels match the frozen pin in both arms |
+
+Tests: placement pins (`tests/support/placement_digest.h`, recorded with the
+old placement code) for the three Qwen3.8 forms and DeepSeek's target and
+draft shapes, including the `sinkhorn_hc_pre` carry path; and
+`PlannerPlacementTest.TheIndexedFitPlacesEveryIntervalWhereTheScanDid`
+against the scan on 400 random interval sets. No frozen digest changed. The
+review found no defect; it made the fit's step-length sum unsigned (an int64
+overflow no real plan reaches, confirmed under UBSan) and checked the fit
+against a copy of the old scan on 200,000 fuzzed sets.
+
+Checked on the tree merged with F10c (2026-10-30): `spark`, the shared set
+3,977 of 3,977 and `-L models -R Qwen38` 32 of 32; `spark-b`, `Dsv4` 21 of
+21; no skips. The builder's gate trees and records on both Sparks
+(`~/.local/share/llmp/f16-gate`, `~/src/llmp-f16base`) are deleted.
+
 ## Owner decisions and standing rules so far
 
 - D-124 accepted 2026-10-25 as amended; D-121 (choose the better architecture,
@@ -393,7 +471,7 @@ Checked on the tree merged with F16 (2026-10-30): `spark`, the shared set
 ## Handed on
 
 Carried by the plan: U7 (b-e) and U9; the families, formats, media and
-tool-call qualification work; the lowering's physical-placement cost (F16).
+tool-call qualification work.
 Candidates noted while writing
 this record: `docs/experiments/fusion-ranks/READY-MATRIX-RESULTS.md` (86 KB) and
 the other U6 reports repeat registration hashes and review wording and could be

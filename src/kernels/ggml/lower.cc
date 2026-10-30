@@ -502,6 +502,11 @@ class Lowering {
   std::expected<void, KernelFailure> CheckQsaInputs();
   void Needed();
   std::expected<void, KernelFailure> PlacePhysical();
+  // WithinRoot and WrittenBytes of a planned root, each computed once: both
+  // physical placements, both binds and the report ask again (F16).
+  TensorId Within(TensorId root);
+  std::uint64_t Written(TensorId root);
+  std::uint8_t& Known(TensorId root);
   ggml_tensor* Part(TensorId planned, format::PartRole role) const;
   ggml_tensor* StoredInto(const ggml_tensor* leaf) const;
   void Inside(ggml_tensor* t, TensorId root, std::uint64_t offset);
@@ -542,6 +547,12 @@ class Lowering {
   std::vector<planner::Region> physical_regions_;
   std::vector<bool> physical_no_launch_;
   bool scheduled_ = false;
+  // PlacePhysical's storage contract, made by its first run; the second
+  // drops the reads of what the schedule does not launch.
+  planner::PhysicalStorage physical_;
+  std::vector<TensorId> within_;              // by planned tensor, where known_ says
+  std::vector<std::uint64_t> written_;        // by planned tensor, where known_ says
+  std::vector<std::uint8_t> known_;           // bit 0: within_, bit 1: written_
   std::vector<ggml_tensor*> made_;            // by planned tensor
   std::vector<TensorId> primitive_;           // by planned tensor: the primitive's, where it is one
   std::vector<std::vector<NodeId>> readers_;  // by planned tensor (roots and views alike)
@@ -2430,12 +2441,12 @@ std::expected<void, KernelFailure> Lowering::Bind() {
     // What the placement made room for: the tensor's own bytes, or what the
     // module writes (WrittenBytes), which the plan was made with.
     const auto own = planner::RootBytes(p_.tensor(t));
-    if (!own || ggml_nbytes(g) > std::max(*own, WrittenBytes(p_, t))) {
+    if (!own || ggml_nbytes(g) > std::max(*own, Written(t))) {
       return Refused(std::format(
           "{} ({}, {}) writes {} bytes, more than its place holds ({}: {} bytes, {} written)",
           ggml_op_desc(g), g->op == GGML_OP_CUSTOM ? static_cast<int>(LlmpOpOf(g)) : -1,
           ggml_type_name(g->type), ggml_nbytes(g), ir::OpKeyName(p_.node(p_.producer(t)).key),
-          own ? *own : 0, WrittenBytes(p_, t)));
+          own ? *own : 0, Written(t)));
     }
     TensorArena::Bind(g, base + offset);
   }
@@ -4084,45 +4095,80 @@ void Lowering::Needed() {
   }
 }
 
+std::uint8_t& Lowering::Known(TensorId root) {
+  if (known_.empty()) {
+    known_.assign(p_.tensor_count(), 0);
+    within_.resize(p_.tensor_count());
+    written_.resize(p_.tensor_count());
+  }
+  return known_.at(root.v);
+}
+
+TensorId Lowering::Within(TensorId root) {
+  auto& known = Known(root);
+  if ((known & 1U) == 0) {
+    within_[root.v] = WithinRoot(p_, root);
+    known |= 1U;
+  }
+  return within_[root.v];
+}
+
+std::uint64_t Lowering::Written(TensorId root) {
+  auto& known = Known(root);
+  if ((known & 2U) == 0) {
+    written_[root.v] = WrittenBytes(p_, root);
+    known |= 2U;
+  }
+  return written_[root.v];
+}
+
 std::expected<void, KernelFailure> Lowering::PlacePhysical() {
   // CheckQsaInputs and Needed authenticated the selected kernels' implicit
   // positions/cache semantics. These are physical facts of those recipes;
   // their proof-only operands remain in p_, not in the funded device arena.
-  planner::PhysicalStorage physical;
-  physical.materialized.resize(p_.tensor_count(), false);
-  physical.reads.resize(p_.nodes().size());
-  for (std::uint32_t i = 0; i < p_.nodes().size(); ++i) {
-    const auto& n = p_.nodes()[i];
-    if (!needed_[i]) continue;
-    for (const auto t : n.outputs()) physical.materialized[t.v] = true;
-    auto& reads = physical.reads[i];
-    if (scheduled_ && physical_no_launch_[i]) continue;
-    if (const auto folded = folded_.find(i); folded != folded_.end()) {
-      reads.push_back(p_.node(folded->second).out[0]);
-      continue;
-    }
-    for (std::size_t j = 0; j < n.nsrc; ++j) {
-      const auto t = n.src[j];
-      if (!t.valid()) continue;
-      if (n.key == ir::Fused(FusedKind::kBlockSparseAttention) && j >= 4 && j <= 7) {
-        if (j == 4) reads.push_back(p_.root(t));
+  // Nothing they read changes between the two runs (before and after the
+  // schedule), so the first makes the contract and the second only drops
+  // the reads of what the schedule does not launch.
+  auto& physical = physical_;
+  if (physical.materialized.empty()) {
+    physical.materialized.resize(p_.tensor_count(), false);
+    physical.reads.resize(p_.nodes().size());
+    for (std::uint32_t i = 0; i < p_.nodes().size(); ++i) {
+      const auto& n = p_.nodes()[i];
+      if (!needed_[i]) continue;
+      for (const auto t : n.outputs()) physical.materialized[t.v] = true;
+      auto& reads = physical.reads[i];
+      if (scheduled_ && physical_no_launch_[i]) continue;
+      if (const auto folded = folded_.find(i); folded != folded_.end()) {
+        reads.push_back(p_.node(folded->second).out[0]);
         continue;
       }
-      if (n.key == ir::Fused(FusedKind::kMeanPoolNormRopeStore) && (j == 3 || j == 4)) continue;
-      if (n.key == ir::Primitive(Op::kMaskBuild) && j == 0 &&
-          n.Params<ir::MaskParams>().exact_rows && options_.device_masks) {
-        reads.push_back(exact_mask_positions_.at(n.out[0].v));
-        continue;
+      for (std::size_t j = 0; j < n.nsrc; ++j) {
+        const auto t = n.src[j];
+        if (!t.valid()) continue;
+        if (n.key == ir::Fused(FusedKind::kBlockSparseAttention) && j >= 4 && j <= 7) {
+          if (j == 4) reads.push_back(p_.root(t));
+          continue;
+        }
+        if (n.key == ir::Fused(FusedKind::kMeanPoolNormRopeStore) && (j == 3 || j == 4)) continue;
+        if (n.key == ir::Primitive(Op::kMaskBuild) && j == 0 &&
+            n.Params<ir::MaskParams>().exact_rows && options_.device_masks) {
+          reads.push_back(exact_mask_positions_.at(n.out[0].v));
+          continue;
+        }
+        reads.push_back(t);
+        // A combined expert-reduction/post launch also consumes the reduction's
+        // sources at the post. The backend owns this recipe and its extra reads.
+        const auto& made = p_.node(p_.producer(p_.root(t)));
+        if (n.key == ir::Fused(FusedKind::kHcNormPost) &&
+            made.key == ir::Fused(FusedKind::kMoeCombine))
+          for (const auto extra : made.sources())
+            if (extra.valid()) reads.push_back(extra);
       }
-      reads.push_back(t);
-      // A combined expert-reduction/post launch also consumes the reduction's
-      // sources at the post. The backend owns this recipe and its extra reads.
-      const auto& made = p_.node(p_.producer(p_.root(t)));
-      if (n.key == ir::Fused(FusedKind::kHcNormPost) &&
-          made.key == ir::Fused(FusedKind::kMoeCombine))
-        for (const auto extra : made.sources())
-          if (extra.valid()) reads.push_back(extra);
     }
+  } else if (scheduled_) {
+    for (std::uint32_t i = 0; i < p_.nodes().size(); ++i)
+      if (physical_no_launch_[i]) physical.reads[i].clear();
   }
   std::vector<TensorId> staged, preserved;
   for (const auto& [t, offset] : plan_.placement.offsets) {
@@ -4140,14 +4186,17 @@ std::expected<void, KernelFailure> Lowering::PlacePhysical() {
   }
   const auto preserve_result = [&](TensorId t) {
     auto root = p_.root(t);
-    if (const auto holder = WithinRoot(p_, root); holder.valid()) root = holder;
+    if (const auto holder = Within(root); holder.valid()) root = holder;
     if (prologue_nodes[p_.producer(root).v]) preserved.push_back(root);
   };
-  for (std::uint32_t i = 0; i < physical.reads.size(); ++i)
-    if (!prologue_nodes[i])
-      for (const auto t : physical.reads[i]) preserve_result(t);
-  for (const auto list : {p_.outputs(), p_.keep()}) {
-    for (const auto t : list) preserve_result(t);
+  // Only a prologue's results are kept between runs.
+  if (!plan_.prologue.empty()) {
+    for (std::uint32_t i = 0; i < physical.reads.size(); ++i)
+      if (!prologue_nodes[i])
+        for (const auto t : physical.reads[i]) preserve_result(t);
+    for (const auto list : {p_.outputs(), p_.keep()}) {
+      for (const auto t : list) preserve_result(t);
+    }
   }
   auto alignment = plan_.placement.alignment;
   for (const auto& fact : plan_.root_alignments) {
@@ -4159,8 +4208,16 @@ std::expected<void, KernelFailure> Lowering::PlacePhysical() {
                                 : std::span<const planner::Selected>(plan_.steps);
   const auto regions = scheduled_ ? std::span<const planner::Region>(physical_regions_)
                                   : std::span<const planner::Region>(plan_.regions);
-  auto placed = planner::PlaceActivations(p_, steps, regions, staged, alignment, &WrittenBytes,
-                                          &WithinRoot, preserved, &physical);
+  // The memos answer for the planned graph, the only one placed here.
+  auto placed = planner::PlaceActivations(
+      p_, steps, regions, staged, alignment,
+      [this](const ir::Graph& graph, TensorId root) {
+        return &graph == &p_ ? Written(root) : WrittenBytes(graph, root);
+      },
+      [this](const ir::Graph& graph, TensorId root) {
+        return &graph == &p_ ? Within(root) : WithinRoot(graph, root);
+      },
+      preserved, &physical);
   if (!placed) return Refused(std::format("physical storage: {}", placed.error()));
   placement_ = std::move(*placed);
   out_.logical_extent = plan_.placement.extent;
@@ -5871,7 +5928,7 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
                                    .component = p_.node(producer).component,
                                    .backend_tensor = concrete->id,
                                    .offset = offset,
-                                   .bytes = std::max(*bytes, WrittenBytes(p_, root)),
+                                   .bytes = std::max(*bytes, Written(root)),
                                    .ne = desc.shape().ne,
                                    .nb = desc.nb,
                                    .encoding = desc.format.encoding});
@@ -6016,13 +6073,18 @@ ir::TensorId WithinRoot(const ir::Graph& graph, ir::TensorId root) {
       return count + (std::ranges::contains(graph.outputs(), t) ? 1 : 0) +
              (std::ranges::contains(graph.keep(), t) ? 1 : 0);
     };
+    // The chain's shape first: counting a tensor's readers scans the graph,
+    // and most preparations read no gated norm.
     ir::TensorId t = n.src[0];
-    while (graph.node(graph.producer(t)).key == ir::Primitive(Op::kReshape)) {
-      if (readers(t) != 1) return {};
+    while (graph.node(graph.producer(t)).key == ir::Primitive(Op::kReshape))
       t = graph.node(graph.producer(t)).src[0];
-    }
     const ir::Node& from = graph.node(graph.producer(t));
-    if (from.key == ir::Fused(FusedKind::kNormGate) && readers(t) == 1) return from.out[0];
+    if (from.key != ir::Fused(FusedKind::kNormGate)) return {};
+    for (ir::TensorId r = n.src[0];; r = graph.node(graph.producer(r)).src[0]) {
+      if (readers(r) != 1) return {};
+      if (r == t) break;
+    }
+    return from.out[0];
   }
   return {};
 }

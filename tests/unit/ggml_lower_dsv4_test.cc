@@ -35,6 +35,7 @@
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
+#include "placement_digest.h"
 #include "planner/pattern.h"
 #include "planner/plan.h"
 #include "planner/policy.h"
@@ -718,9 +719,18 @@ TEST(GgmlLowerDsv4Test, ComponentSourcesForwardBankLayoutFactsAndRejectMissingBi
   }
 }
 
+// Each test's lowered steps' logical and physical activation layouts, as
+// the lowering placed them before F16 made placement faster
+// (PlacementDigest).
+constexpr std::string_view kFrozenPrimitivePlacements =
+    "c73451c82f3d59ab7116b61eed371181708b1dfe139729b49b1c9d4a45fdc1b6";
+constexpr std::string_view kFrozenLocalFormPlacements =
+    "f194eb6afebe7847e38f34738b00e894e776430dbc97967418e01cf0c7d2ead3";
+
 TEST(GgmlLowerDsv4Test, PrimitiveTargetAndDraftStepsLowerWithTypedInputs) {
   Fixture f;
   ASSERT_TRUE(f.Init());
+  llmp::test_support::PlacementDigest placements;
   const std::array<const md::StateLayoutDerived*, 2> layouts{&f.layouts[0], &f.layouts[1]};
   const std::array<std::span<const co::BoundTensor>, 2> tensors{f.target_source.tensors,
                                                                 f.draft_source.tensors};
@@ -780,6 +790,9 @@ TEST(GgmlLowerDsv4Test, PrimitiveTargetAndDraftStepsLowerWithTypedInputs) {
         auto lowered = kg::LowerStep({*plan, *step, shape, {}, 65536}, registry, Device(),
                                      {.device_masks = device_masks});
         ASSERT_TRUE(lowered) << lowered.error().detail;
+        placements.Add(std::format("{} {} {} {} {}", shape.stage, shape.rows(),
+                                   shape.segments.size(), indexer, device_masks),
+                       *plan, *lowered);
         for (const auto* node : lowered->nodes) {
           std::expected<void, kg::KernelFailure> valid;
           switch (node->op) {
@@ -819,11 +832,13 @@ TEST(GgmlLowerDsv4Test, PrimitiveTargetAndDraftStepsLowerWithTypedInputs) {
       }
     }
   }
+  EXPECT_EQ(placements.Hex(), kFrozenPrimitivePlacements);
 }
 
 TEST(GgmlLowerDsv4Test, OptInLocalFormsLowerActualTargetAndDraftFragments) {
   Fixture f;
   ASSERT_TRUE(f.Init());
+  llmp::test_support::PlacementDigest placements;
   const std::array<const md::StateLayoutDerived*, 2> layouts{&f.layouts[0], &f.layouts[1]};
   const std::array<std::span<const co::BoundTensor>, 2> tensors{f.target_source.tensors,
                                                                 f.draft_source.tensors};
@@ -876,11 +891,15 @@ TEST(GgmlLowerDsv4Test, OptInLocalFormsLowerActualTargetAndDraftFragments) {
       EXPECT_GT(count, 0) << "the actual component fragment must select its local form";
       auto lowered = kg::LowerStep({*plan, *step, shape, {}, 65536}, f.registry, Device());
       ASSERT_TRUE(lowered) << lowered.error().detail;
+      placements.Add(
+          std::format("{} {} {} {}", shape.stage, shape.rows(), shape.segments.size(), form), *plan,
+          *lowered);
       // LowerStep calls the actual CheckDsv4* launch validators, including
       // packed carry copies and the disjoint HC post/norm output pair.
       EXPECT_EQ(lowered->outputs.size(), shape.segments.size());
     }
   }
+  EXPECT_EQ(placements.Hex(), kFrozenLocalFormPlacements);
 }
 
 TEST(GgmlLowerDsv4Test, RoundedIndexScoreUsesFundedPrimitiveRoundTripWithoutNativeScore) {

@@ -4821,6 +4821,80 @@ TEST(PlannerPlacementTest, AChainReusesBytesAndInputsLiveFromTheStart) {
   EXPECT_EQ(bare.placement.extent, 512U);
 }
 
+// The scan PlaceActivations' fit was until F16: every placed interval in
+// offset order, past each whose steps meet, until one starts beyond the
+// candidate's end.
+Fit ScanFit(std::span<const Interval> intervals) {
+  struct Span {
+    std::uint64_t offset, end;
+    std::int64_t first, last;
+  };
+  std::vector<Span> placed;
+  Fit fit;
+  for (const Interval& v : intervals) {
+    std::uint64_t offset = 0;
+    for (const Span& b : placed) {
+      if (b.offset >= offset + v.bytes) break;
+      if (b.first <= v.last && v.first <= b.last) offset = std::max(offset, b.end);
+    }
+    fit.offsets.push_back(offset);
+    fit.extent = std::max(fit.extent, offset + v.bytes);
+    const Span span{offset, offset + v.bytes, v.first, v.last};
+    placed.insert(std::ranges::lower_bound(placed, span.offset, {}, &Span::offset), span);
+  }
+  return fit;
+}
+
+TEST(PlannerPlacementTest, TheIndexedFitPlacesEveryIntervalWhereTheScanDid) {
+  // Lifetimes as plans have them: mostly a step or a few, some to the end,
+  // staged inputs from -1, long regions rare (the index by first step) or
+  // common (the scan), some at the index's 32-step boundary, sizes largest
+  // first with ties (alignment multiples), zero-byte roots; and the scan's
+  // other cases (an interval ending before it begins, lifetimes far longer
+  // than the intervals are many).
+  std::uint64_t state = 0x9e3779b97f4a7c15ULL;
+  const auto next = [&](std::uint64_t bound) {
+    state ^= state << 13U;
+    state ^= state >> 7U;
+    state ^= state << 17U;
+    return bound == 0 ? 0 : state % bound;
+  };
+  for (int round = 0; round < 400; ++round) {
+    SCOPED_TRACE(round);
+    const std::size_t count = 1 + next(round < 300 ? 300 : 2000);
+    const std::int64_t end = static_cast<std::int64_t>(1 + next(round % 7 == 6 ? 100000 : 900));
+    // Long lifetimes rare (the index's plans) or common (the scan's).
+    const std::uint64_t long_odds = round % 3 == 0 ? 4 : round % 3 == 1 ? 40 : 1000;
+    std::vector<Interval> intervals;
+    for (std::size_t i = 0; i < count; ++i) {
+      std::int64_t first = static_cast<std::int64_t>(next(static_cast<std::uint64_t>(end)));
+      if (next(long_odds) == 0) first = -1;
+      std::int64_t last = first + static_cast<std::int64_t>(next(next(long_odds) == 0 ? 400 : 4));
+      if (next(long_odds * 2) == 0) last = end;
+      if (next(8) == 0) last = first + 32 + static_cast<std::int64_t>(next(2));  // the boundary
+      last = std::min(last, end);
+      if (round % 50 == 49 && next(30) == 0) std::swap(first, last);
+      intervals.push_back({.first = first, .last = last, .bytes = 256 * next(64)});
+    }
+    std::ranges::stable_sort(intervals, std::ranges::greater{}, &Interval::bytes);
+    const auto fit = FitIntervals(intervals);
+    ASSERT_TRUE(fit) << fit.error();
+    const Fit scan = ScanFit(intervals);
+    ASSERT_EQ(fit->offsets, scan.offsets);
+    ASSERT_EQ(fit->extent, scan.extent);
+  }
+  EXPECT_TRUE(FitIntervals({})->offsets.empty());
+  const std::array overflow{Interval{.first = 0, .last = 0, .bytes = UINT64_MAX},
+                            Interval{.first = 0, .last = 0, .bytes = 256}};
+  EXPECT_FALSE(FitIntervals(overflow));
+  // A lifetime over the whole int64 range (the sanitizer tier's check).
+  const std::array wide{Interval{.first = INT64_MIN, .last = INT64_MAX, .bytes = 256},
+                        Interval{.first = 0, .last = 0, .bytes = 256}};
+  const auto wide_fit = FitIntervals(wide);
+  ASSERT_TRUE(wide_fit) << wide_fit.error();
+  EXPECT_EQ(wide_fit->offsets, ScanFit(wide).offsets);
+}
+
 TEST(PlannerPlacementTest, StepsNeverShareLiveBytes) {
   const ex::Registry r = Registry();
   for (const std::uint64_t rows : {1U, 4U, 32U}) {

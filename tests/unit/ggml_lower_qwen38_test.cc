@@ -55,6 +55,7 @@
 #include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate_ext.h"
+#include "placement_digest.h"
 #include "planner/plan.h"
 #include "planner/policy.h"
 #include "planner/step_shape.h"
@@ -576,15 +577,31 @@ void ExpectSaveRowsLive(const Lowered& l) {
 
 class GgmlLowerQwen38 : public testing::TestWithParam<fx::Form> {};
 
+// Every case's logical and physical activation layouts, as the lowering
+// placed them before F16 made placement faster (PlacementDigest).
+std::string_view FrozenPlacements(fx::Form form) {
+  switch (form) {
+    case fx::Form::kCutlass:
+      return "8b36406448fb59c338c26dfcfa424045be44cdbc49fb626a8cbe8bed69fba757";
+    case fx::Form::kGgmlExperts:
+      return "ec6cea2c916431e5cd043d56364fcee642846e77d961a22a6645e0f5221efc0d";
+    case fx::Form::kGguf:
+      return "a58c733945bd90e28d3f1f4cfe37212ece841c15d3a64e8b9a3841780d345a25";
+  }
+  return "";
+}
+
 TEST_P(GgmlLowerQwen38, SetupShapesLowerToTheFastFormsGraphs) {
   const Import& im = ImportOf(GetParam());
   const ex::Registry registry = PlanningRegistry();
   std::size_t shapes = 0, launches = 0;
   std::set<std::string> applied;
+  llmp::test_support::PlacementDigest placements;
   for (const Case& c : Cases(im)) {
     SCOPED_TRACE(std::format("{} {}", FormName(im.form), c.Name()));
     const Lowered w = Lower(im, c, registry);
     ASSERT_TRUE(w.lowered.has_value());
+    placements.Add(c.Name(), *w.plan, *w.lowered);
     ExpectSaveRowsLive(w);
     applied.insert(w.applied.begin(), w.applied.end());
     ASSERT_FALSE(w.lowered->nodes.empty());
@@ -599,6 +616,7 @@ TEST_P(GgmlLowerQwen38, SetupShapesLowerToTheFastFormsGraphs) {
   std::println("{}: {} lowered steps, {} launches; patterns:{}", FormName(im.form), shapes,
                launches, patterns);
   EXPECT_GT(shapes, 0U);
+  EXPECT_EQ(placements.Hex(), FrozenPlacements(im.form));
 }
 
 INSTANTIATE_TEST_SUITE_P(Qwen38, GgmlLowerQwen38,

@@ -440,7 +440,7 @@ data (D-126), the image pipeline as data, the IR trait table, bounded
 tool-call interpretation on the chat route ([tool-calls.md](docs/tool-calls.md)),
 and the 2026-10 foundation review's fixes F1–F15, with the final checks
 against M3.6 passing after F15 and the workstation sanitizer tier clean
-(F10). Still open: the lowering's placement cost (F16), before
+(F10), and plans building a third faster since F16. Still open:
 U7 (fast paths by capability) and U9, then M3.5's remaining families,
 formats, the importer's per-family normalizers, MLX serving qualification,
 batching gaps, media inputs, Clef/Jev and media generation routes (D-101),

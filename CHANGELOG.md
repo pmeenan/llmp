@@ -147,6 +147,17 @@ The entries below record each change; the record of the milestone is
   the registry is indexed by operation (the served plans build 17% to 36%
   faster). Graph digests now hash each operation's stable name, so plan keys
   and graph digests change once; outputs do not.
+- Planning is cheaper again: a graph digest gathers its fields before
+  hashing them (it fed SHA-256 a byte at a time) and the source graph is
+  hashed once a plan instead of twice; the lowering's physical placements
+  share one storage contract and each root's backend facts; activation
+  placement finds a short-lived tensor's neighbours by step; and two planner
+  passes no longer scan the whole graph for every product or applied
+  rewrite. A Qwen3.8 native prefill plan builds in about 39 ms instead of
+  58–61 and a decode plan in 28 instead of 42; a speed-gate run's planning
+  falls from 6.2 to 4.5 s on Qwen3.8 native, 8.9 to 7.0 s on DeepSeek, 2.0
+  to 1.4 s on Qwen3.8 GGUF and 2.1 to 1.6 s on Gemma 4 26B. Every
+  activation layout, plan and output is unchanged.
 
 ### Fixed
 

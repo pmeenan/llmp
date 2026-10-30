@@ -3279,15 +3279,17 @@ std::optional<GroupedProduct> GroupedProductOf(const ir::Graph& g, NodeId produc
   if (params.accumulate != ir::Accumulate::kDefault || params.hint != ir::ProductHint::kNone ||
       params.arithmetic != ir::ProductArithmetic::kImplementation)
     return std::nullopt;
-  const auto output_id = only(product.out[0]);
-  if (!output_id || !is(*output_id, Op::kPermute)) return std::nullopt;
-  const auto& output = g.node(*output_id);
-  if (output.Params<ir::PermuteParams>().axes != swap) return std::nullopt;
+  // The operands' producers first: `only` scans the graph, and planning
+  // asks of every product, most of which are no grouped product (F16).
   const auto input_id = made(product.src[1]);
   const auto weight_id = made(product.src[0]);
   if (!is(input_id, Op::kPermute) || !is(weight_id, Op::kReshape) ||
-      g.node(input_id).Params<ir::PermuteParams>().axes != swap ||
-      only(product.src[1]) != product_id)
+      g.node(input_id).Params<ir::PermuteParams>().axes != swap)
+    return std::nullopt;
+  const auto output_id = only(product.out[0]);
+  if (!output_id || !is(*output_id, Op::kPermute)) return std::nullopt;
+  const auto& output = g.node(*output_id);
+  if (output.Params<ir::PermuteParams>().axes != swap || only(product.src[1]) != product_id)
     return std::nullopt;
   const auto assembly = only(output.out[0]);
   if (!assembly || !is(*assembly, Op::kCont)) return std::nullopt;

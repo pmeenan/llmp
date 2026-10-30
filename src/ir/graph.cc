@@ -168,9 +168,15 @@ std::string_view Graph::name(TensorId id) const {
 
 namespace {
 
+// The digest's byte stream, gathered into whole blocks before SHA-256 sees
+// it: a graph hashes as hundreds of thousands of one- to eight-byte fields,
+// and Sha256::Update per field cost more than the compression (F16).
 class Hasher {
  public:
-  void U8(std::uint8_t v) { Bytes(std::as_bytes(std::span(&v, 1))); }
+  void U8(std::uint8_t v) {
+    if (used_ == buffer_.size()) Flush();
+    buffer_[used_++] = static_cast<std::byte>(v);
+  }
   void U16(std::uint16_t v) {
     U8(static_cast<std::uint8_t>(v));
     U8(static_cast<std::uint8_t>(v >> 8U));
@@ -183,7 +189,17 @@ class Hasher {
     U32(static_cast<std::uint32_t>(v));
     U32(static_cast<std::uint32_t>(v >> 32U));
   }
-  void Bytes(std::span<const std::byte> b) { sha_.Update(b); }
+  void Bytes(std::span<const std::byte> b) {
+    if (b.size() > buffer_.size() - used_) {
+      Flush();
+      if (b.size() >= buffer_.size()) {
+        sha_.Update(b);
+        return;
+      }
+    }
+    std::ranges::copy(b, buffer_.begin() + static_cast<std::ptrdiff_t>(used_));
+    used_ += b.size();
+  }
   // Text, length-prefixed: no two sequences of texts hash alike.
   void Text(std::string_view text) {
     U32(static_cast<std::uint32_t>(text.size()));
@@ -195,10 +211,20 @@ class Hasher {
     Text(OpName(key.op));
     Text(FusedKindName(key.fused));
   }
-  base::Sha256Digest Finish() { return sha_.Finish(); }
+  base::Sha256Digest Finish() {
+    Flush();
+    return sha_.Finish();
+  }
 
  private:
+  void Flush() {
+    sha_.Update(std::span(buffer_.data(), used_));
+    used_ = 0;
+  }
+
   base::Sha256 sha_;
+  std::array<std::byte, 512> buffer_{};
+  std::size_t used_ = 0;
 };
 
 void Format(Hasher& h, const format::TensorFormat& f) {

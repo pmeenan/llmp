@@ -701,14 +701,20 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       against `53c2610b`, and the prompt-score change is the scoring geometry
       (RE-063) ([record](m35-record.md#f15-regressions-found-by-the-final-checks-2026-10-29)).
       Follow-up: F16.
-- [ ] **F16 Lowering placement cost** (follow-on to F15, before M3.5's other
-      work resumes): `d3374c67`'s physical placement
+- [x] **F16 Lowering placement cost** (follow-on to F15, before M3.5's other
+      work resumes; completed 2026-10-30): `d3374c67`'s physical placement
       (`planner::PlaceActivations`' greedy fit) runs twice a plan, about 7 ms
       of a Qwen3.8 prefill plan's 59 (46 ms at `53c2610b`). Its first result
       lays out DeepSeek's HC carries, so it cannot simply be dropped: run the
       fit once (or make the second pass incremental) with layouts unchanged,
       and show plan time at or below `53c2610b`'s, with the lowering, prefill
       and DeepSeek tests and a speed gate of the families whose plans changed.
+      Status: placement was 4.6 ms of the 61; graph digests (13 ms, SHA-256
+      fed a byte at a time, the source hashed twice) and two planner scans
+      (14 ms) cost more. All three are fixed with layouts and digests
+      unchanged: a Qwen3.8 native prefill plan builds in 39–41 ms, and every
+      family's gate passes against `e4e5d8e1`
+      ([record](m35-record.md#f16-lowering-placement-cost-2026-10-30)).
 - [x] **F12 Known model-test failures and swap continuation:** every model
       test that already failed at `265c821a` (stale frozen digests, a Gemma Q8
       cache admission, Gemma 4 tool rendering, the gemma2 store artifact

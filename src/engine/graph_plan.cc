@@ -209,6 +209,10 @@ std::expected<planner::StepPlan, std::string> PlanComponentGraph(
     const kernels::Addresses& addresses, planner::PlanOptions options) {
   auto prepared = PrepareComponentPlanOptions(io, backend, addresses, std::move(options));
   if (!prepared) return std::unexpected(std::move(prepared.error()));
+  // Digest the source before cloning it: the clone carries the digest, so
+  // planning and LowerComponentPlan's check of the plan against its source
+  // hash the graph once between them (F16).
+  (void)io.graph.Digest();
   auto plan = planner::Plan(io.graph.Clone(), *backend.registry, backend.device, policy, *prepared);
   if (!plan)
     return std::unexpected(std::format("planning a step ({}): {}",
