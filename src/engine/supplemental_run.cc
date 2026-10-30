@@ -8,6 +8,8 @@
 #include <utility>
 #include <vector>
 
+#include "base/process_retention.h"
+
 namespace llmp::engine {
 namespace sc = scheduler;
 
@@ -146,7 +148,10 @@ std::expected<std::unique_ptr<SupplementalRun>, std::string> SupplementalRun::Cr
   auto state = std::shared_ptr<State>(new State, [](State* s) {
     // A dropped ticket is not a retirement certificate. Keep the entire source
     // owner, counter and charge if an offered operation still may touch them.
-    if (s->held && s->offered) return;
+    if (s->held && s->offered) {
+      base::RetainForProcess(s);
+      return;
+    }
     auto funder = std::move(s->allowance);
     auto saved_capacity = std::move(s->capacity);
     const auto charge = s->charge;

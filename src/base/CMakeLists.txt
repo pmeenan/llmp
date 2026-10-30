@@ -10,8 +10,9 @@ add_library(llmp_surface_versions INTERFACE)
 target_include_directories(llmp_surface_versions INTERFACE "${PROJECT_SOURCE_DIR}/src")
 
 # Invariant checks (check.h), typed identities (ids.h), byte counts
-# (bytes.h) and SHA-256 (sha256.h).
-add_library(llmp_base STATIC check.cc sha256.cc sha256_aarch64.cc)
+# (bytes.h), process-lifetime retention (process_retention.h) and SHA-256
+# (sha256.h).
+add_library(llmp_base STATIC check.cc process_retention.cc sha256.cc sha256_aarch64.cc)
 target_include_directories(llmp_base PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_base PRIVATE llmp_warnings)
 

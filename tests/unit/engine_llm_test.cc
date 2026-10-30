@@ -2087,12 +2087,29 @@ TEST_F(EngineLlmTest, ADirectoryUnwritableAfterTheChecksKeepsNothingAndStarts) {
   (void)::close(dir);
 }
 
+// Setup-only controls still own real runner mappings, staging and callbacks.
+// Retire through the node while the serving adapter remains alive, including
+// an early ASSERT return; dropping the adapter never authenticates a fence.
+class SetupNodeRetirement {
+ public:
+  explicit SetupNodeRetirement(en::PagedNode& owner) : node_(owner) {}
+  ~SetupNodeRetirement() {
+    const auto retired = node_.TearDown({});
+    EXPECT_TRUE(retired) << Why(retired);
+  }
+
+ private:
+  en::PagedNode& node_;
+};
+
 // An adapter without its parts, or whose parts are refused, refuses Setup
 // with its reason; nothing else runs.
 TEST_F(EngineLlmTest, SetupRefusesWhatItCannotBuild) {
   en::PagedNode node(
       en::NodeSettings{.compute_streams = 1, .slots = 2, .copy_lane = true, .slot_bytes = kExtent});
   ASSERT_TRUE(node.Open());
+  // The adapters below hold no runner, so retiring after them is safe.
+  const SetupNodeRetirement retirement(node);
   rt::Llm unbuilt(node, entry_, Settings(false), roles_, 0, {});
   EXPECT_FALSE(unbuilt.Setup());
   rt::Llm refused(node, entry_, Settings(false), roles_, 0,
@@ -2115,21 +2132,6 @@ TEST_F(EngineLlmTest, SetupRefusesWhatItCannotBuild) {
   EXPECT_FALSE(unbuilt.has_paged());
   EXPECT_FALSE(refused.has_paged());
 }
-
-// Setup-only controls still own real runner mappings, staging and callbacks.
-// Retire through the node while the serving adapter remains alive, including
-// an early ASSERT return; dropping the adapter never authenticates a fence.
-class SetupNodeRetirement {
- public:
-  explicit SetupNodeRetirement(en::PagedNode& owner) : node_(owner) {}
-  ~SetupNodeRetirement() {
-    const auto retired = node_.TearDown({});
-    EXPECT_TRUE(retired) << Why(retired);
-  }
-
- private:
-  en::PagedNode& node_;
-};
 
 // A request's thinking when it names none: the slice's default (DeepSeek
 // V4's on, as its M3 class served it), the template's own when unset, and

@@ -393,7 +393,12 @@ class DecodingFixture : public ::testing::Test {
     composer_.emplace(std::move(*composer));
   }
   void TearDown() override {
-    if (runner_ == nullptr) return;
+    if (runner_ == nullptr) {
+      // A refused Setup leaves an opened node that never started.
+      auto closed = node_.TearDown({});
+      EXPECT_TRUE(closed) << llmp::test_support::Failed(closed).value_or("");
+      return;
+    }
     if (node_.InRequest(0)) EXPECT_TRUE(node_.EndRequest(0));
     std::array<en::PagedModel*, 1> models = {runner_.get()};
     auto closed = node_.TearDown(models);

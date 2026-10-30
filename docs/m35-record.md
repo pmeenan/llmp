@@ -34,8 +34,8 @@ removed and that the files are in Git at `1564dcd6`).
 | `c36589b2..` (2026-10-29) | F10b's record, then F15's fixes of what it found |
 
 Open at this record: U7 (fast paths by capability; only U7a's first GDN-gate
-spike is done) and U9 (M4 entry); the workstation `native`/`cpu-asan` tier
-confirmations of F10; the lowering's physical-placement cost (F15, below); the
+spike is done) and U9 (M4 entry); the lowering's physical-placement cost
+(F16, from F15 below); the
 families, formats and media items that M3.5 has always owned ([plan](plan.md)).
 The regressions F10b's final checks found are fixed or explained by F15
 ([F15](#f15-regressions-found-by-the-final-checks-2026-10-29)).
@@ -95,7 +95,8 @@ fixed; each slice landed as one reviewed commit, with verification in batches
 | F14 | `faa99893` | The test-suite audit: dead helpers out, duplicated bodies shared. |
 | F10b | `79c6586a` | The closeout checks: [campaign final verification](#campaign-final-verification-f10b-2026-10-29); not passed. |
 | F15b | `3c9a938f` | Prompt scores explained (RE-063); wide-output GLU rank rows (an `n` band): the Gemma 4 31B assistant screen −2.01% against M3.6. |
-| F15a | this commit | MTP prompt catch-up, prefill lookahead bounds, a chunk-weighted gate decode rate: every F10b speed failure passes against M3.6. |
+| F15a | `e4e5d8e1` | MTP prompt catch-up, prefill lookahead bounds, a chunk-weighted gate decode rate: every F10b speed failure passes against M3.6. |
+| F10c | this commit | The workstation `native` and `cpu-asan` tiers: [F10c](#f10c-workstation-tiers-2026-10-29); RE-051 fixed and the nine sanitizer findings it hid. |
 
 ## F10a hygiene (2026-10-28)
 
@@ -337,7 +338,7 @@ Left as a follow-up: a target plan's lowering costs about 7 ms more than at
 `53c2610b` (46 → 59 ms a Qwen3.8 prefill plan at HEAD, 73 ms at `d3374c67`):
 `d3374c67`'s physical placement runs twice (`planner::PlaceActivations`'
 greedy fit), and its first result lays out DeepSeek's HC carries, so it cannot
-simply be skipped.
+simply be skipped. The plan carries it as F16, ahead of M3.5's other work.
 
 Checked on the merged tree (2026-10-29): `spark-b`, the shared set 3,974 of
 3,974, `-L models -R Qwen38` 32 of 32 and `Dsv4` 21 of 21; `spark`, the
@@ -345,6 +346,39 @@ targeted rank, lowering, prefill, decoding and scoring tests 343 of 343,
 `Gemma4` 20 of 20 and `GemmaAssistantV1|GemmaNativeV1|DenseDecoder|Gemma31`
 4 of 4; no skips. The swap table was not rerun: its exact continuations are
 the kept-conversation model tests above.
+
+## F10c: workstation tiers (2026-10-29)
+
+F10's last item: the cuBLAS RUNPATH and `-fno-sanitize=function` fixes (F13)
+and the importer under ASan, confirmed on the workstation (Ubuntu 26.04.1,
+glibc 2.43) with `tools/build test --locked --fresh <preset>` under
+`hostlock shared`.
+
+- **`native`** on `e4e5d8e1`: 3,506 of 3,506 passed, GPU tests skipped by the
+  preset. The CUDA test binaries, the cuBLAS ones included, load and run.
+- **`cpu-asan`**, first run: 591 of 3,443 failed. Every server, lane or
+  engine test whose threads end died in ASan's thread teardown (RE-051:
+  `InstallThreadSignalStack` replaced the stack ASan had installed, which ASan
+  then failed to unmap). The importer mutation test
+  (`ImportAdversarialTest.ConcurrentMutationDuringStreamingDetected`) passed.
+- **After the RE-051 fix**, nine failures remained, none seen before because no
+  sanitizer run had got that far:
+
+  | Finding | Where | Fix |
+  | --- | --- | --- |
+  | Signed overflow (UB) | `api_test.cc`, a test's ID generator | 64-bit product |
+  | Invalid `ggml_type` load (UB) | `gemma_moe_test.cc` wrote `-1` | `GGML_TYPE_COUNT`, a valid enumerator that is no type |
+  | Use-after-free | `plan_cache_test.cc` read an entry after reclaiming it | keep the serial |
+  | Timing-mark leaks (3 tests) | fixtures whose refused `Setup` never tore the opened node down | tear down the unstarted node |
+  | Leaks of deliberate retention (3 tests) | a dropped supplemental run's state, a retired ring and its landings after an unknown completion, never freed by design but unreachable | `base::RetainForProcess` keeps them reachable (docs/engine.md, "Unproven work") |
+
+- **`cpu-asan`, final:** 3,445 of 3,445 passed. In both presets, the two skips
+  (`QwenImage.InstalledComponentsBind`, `ImageFamily.ThePublishedPipelineIsAdmitted`)
+  need the published Qwen-Image store, which only the Sparks hold.
+
+Checked on the tree merged with F16 (2026-10-30): `spark`, the shared set
+3,977 of 3,977 and `-L models -R Qwen38` 32 of 32; `spark-b`, `Dsv4` 21 of
+21; no skips.
 
 ## Owner decisions and standing rules so far
 
@@ -359,7 +393,7 @@ the kept-conversation model tests above.
 ## Handed on
 
 Carried by the plan: U7 (b-e) and U9; the families, formats, media and
-tool-call qualification work; the lowering's physical-placement cost (F15).
+tool-call qualification work; the lowering's physical-placement cost (F16).
 Candidates noted while writing
 this record: `docs/experiments/fusion-ranks/READY-MATRIX-RESULTS.md` (86 KB) and
 the other U6 reports repeat registration hashes and review wording and could be

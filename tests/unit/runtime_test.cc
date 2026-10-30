@@ -22,6 +22,7 @@
 #include <array>
 #include <chrono>
 #include <csignal>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -450,6 +451,36 @@ TEST(CrashPolicy, AThreadsStackOverflowStillExits) {
   });
   EXPECT_TRUE(WIFEXITED(status)) << "wait status " << status;
   EXPECT_EQ(WEXITSTATUS(status), llmp::platform::kFatalSignalExitBase + SIGSEGV);
+}
+
+// A stack the thread already has is kept, so a sanitizer that unmaps its
+// own stack when the thread ends finds it there (RE-051); a thread with none
+// gets one.
+TEST(CrashPolicy, AThreadKeepsTheSignalStackItHas) {
+  const int status = CrashChild([] {
+    std::thread worker([] {
+      alignas(16) static std::array<std::byte, std::size_t{64} * 1024> theirs{};
+      stack_t none{};
+      none.ss_flags = SS_DISABLE;
+      stack_t given{};
+      given.ss_sp = theirs.data();
+      given.ss_size = theirs.size();
+      stack_t after_none{};
+      stack_t after_given{};
+      // The child ends with _exit, before any sanitizer's thread teardown
+      // could unmap these stacks.
+      const bool ok =
+          ::sigaltstack(&none, nullptr) == 0 && llmp::platform::InstallThreadSignalStack() &&
+          ::sigaltstack(nullptr, &after_none) == 0 && (after_none.ss_flags & SS_DISABLE) == 0 &&
+          ::sigaltstack(&given, nullptr) == 0 && llmp::platform::InstallThreadSignalStack() &&
+          ::sigaltstack(nullptr, &after_given) == 0;
+      ::_exit(ok && after_given.ss_sp == theirs.data() && after_none.ss_sp != theirs.data() ? 0
+                                                                                            : 1);
+    });
+    worker.join();
+  });
+  ASSERT_TRUE(WIFEXITED(status)) << "wait status " << status;
+  EXPECT_EQ(WEXITSTATUS(status), 0);
 }
 
 TEST(CrashPolicy, MarkingTwiceIsFine) {

@@ -366,7 +366,7 @@ give a new allocation. Another process's own memory still counts, as it
 should (D-102: a real resource). Test: `Meminfo.PerCpuListPages`
 (`platform_test.cc`).
 
-## RE-051: ASan dies at the exit of every thread that installed llmpalooza's signal stack  (2026-10-09, status: worked-around)
+## RE-051: ASan dies at the exit of every thread that installed llmpalooza's signal stack  (2026-10-09, status: fixed 2026-10-29)
 
 Environment: `spark` (GB10, kernel 7.0.0-1019-nvidia), the SDK's Clang
 22.1.8 with `-fsanitize=address,undefined` (a `spark-native` build of
@@ -389,6 +389,11 @@ new thread none), or the sanitizer test presets set `use_sigaltstack=0`.
 Until then an ASan run of any test that ends such a thread fails this way
 (observed with the GPU serving tests; the `check:spark` and `check:full`
 ASan tiers were not run to see which of theirs do).
+Fixed 2026-10-29 (F10): `InstallThreadSignalStack` keeps a stack the thread
+already has (`CrashPolicy.AThreadKeepsTheSignalStackItHas`). The workstation
+`cpu-asan` tier had failed 591 of 3,443 tests this way, which hid nine real
+sanitizer findings behind it (two UBs, a use-after-free and six leaks in
+tests or deliberate retention; [record](m35-record.md#f10c-workstation-tiers-2026-10-29)).
 
 ## RE-050: Qwen3.8's output head is wider than its tokenizer.json  (2026-10-08, status: fixed 2026-10-26, on the device 2026-10-28)
 

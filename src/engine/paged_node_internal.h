@@ -33,6 +33,7 @@
 #include "base/bounded_queue.h"
 #include "base/bytes.h"
 #include "base/check.h"
+#include "base/process_retention.h"
 #include "catalog/catalog.h"
 #include "engine/live_state.h"
 #include "engine/paged_node.h"

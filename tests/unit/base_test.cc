@@ -14,6 +14,7 @@
 #include <string_view>
 #include <vector>
 
+#include "base/process_retention.h"
 #include "base/report.h"
 #include "base/sha256.h"
 #include "base/sha256_internal.h"
@@ -88,6 +89,16 @@ std::string Sha256Hex(std::string_view text) {
 }
 
 // FIPS 180-4's examples (NIST's SHA-256 example values).
+// An owner kept for the process stays reachable and is counted; a null one
+// is not kept.
+TEST(ProcessRetention, KeepsEachOwnerAndIgnoresNull) {
+  const auto before = llmp::base::ProcessRetained();
+  static const int owner = 0;
+  llmp::base::RetainForProcess(&owner);
+  llmp::base::RetainForProcess(nullptr);
+  EXPECT_EQ(llmp::base::ProcessRetained(), before + 1);
+}
+
 TEST(Sha256, MatchesTheStandardsExamples) {
   EXPECT_EQ(Sha256Hex(""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
   EXPECT_EQ(Sha256Hex("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");

@@ -594,15 +594,16 @@ TEST(PlanCacheTest, AReclaimFindsItsPlanAmongARunnersCaches) {
   Cache a(&ledger.account);
   PlanCache<int, 2> b(&ledger.account);
   a.Add(1, Plan(1), 10);
-  auto& kept = b.Add(1, Plan(2), 20);
+  // The serial, not the entry: reclaiming frees the entry.
+  const auto serial = b.Add(1, Plan(2), 20).serial;
   std::array<en::PlanCacheBase*, 2> caches = {&a, &b};
   std::vector<ReclaimCandidate> candidates;
   en::CollectPlans(caches, 3, false, candidates);
   ASSERT_EQ(candidates.size(), 2U);
-  EXPECT_EQ(en::ReclaimPlan(caches, ReclaimKind::kPlan, kept.serial), 20U);
+  EXPECT_EQ(en::ReclaimPlan(caches, ReclaimKind::kPlan, serial), 20U);
   EXPECT_EQ(b.size(), 0U);
   EXPECT_EQ(a.size(), 1U);
-  EXPECT_EQ(en::ReclaimPlan(caches, ReclaimKind::kPlan, kept.serial), 0U);
+  EXPECT_EQ(en::ReclaimPlan(caches, ReclaimKind::kPlan, serial), 0U);
   EXPECT_EQ(ledger.charged, 10U);
 }
 

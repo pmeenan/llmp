@@ -37,7 +37,8 @@ std::expected<void, std::string> MarkNonDumpable();
 
 // Gives the calling thread its own alternate signal stack, so the handler
 // runs after a stack overflow there. Every thread llmpalooza starts calls it
-// before anything else; the stack lives as long as the thread.
+// before anything else; the stack lives as long as the thread. A stack the
+// thread already has (only a sanitizer's can be there) is kept (RE-051).
 std::expected<void, std::string> InstallThreadSignalStack();
 
 // Installs the policy for the calling process. `name` starts the line the

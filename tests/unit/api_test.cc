@@ -445,7 +445,7 @@ TEST(ChatRequest, AcceptsLargeCodingTextWithinBoundedIntake) {
   std::string ids;
   ids.reserve(std::size_t{8} << 20U);
   for (int i = 0; i < 1'048'576; ++i) {
-    ids += std::format("{}{}", i == 0 ? "" : ",", (i * 7919) % 100000);
+    ids += std::format("{}{}", i == 0 ? "" : ",", (std::int64_t{i} * 7919) % 100000);
   }
   auto literal = api::ParseCompletionRequest(
       std::format(R"({{"model":"m","prompt":[{}],"max_tokens":0}})", ids));

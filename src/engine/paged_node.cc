@@ -423,8 +423,11 @@ bool PagedNode::RetireRing(std::unique_ptr<providers::Storage> ring,
     }
   }
   // Destroying a ring with reads in flight is fatal (UringStorage), and
-  // closing it would not stop them landing: it is never destroyed.
+  // closing it would not stop them landing: it is never destroyed, nor are
+  // its landings freed.
   retired_rings_.push_back(ring.release());
+  base::RetainForProcess(retired_rings_.back());
+  for (void* const landing : landings) base::RetainForProcess(landing);
   return true;
 }
 

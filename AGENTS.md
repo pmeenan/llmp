@@ -439,12 +439,12 @@ generic mapping-driven import route (D-125), numerics as per-device component
 data (D-126), the image pipeline as data, the IR trait table, bounded
 tool-call interpretation on the chat route ([tool-calls.md](docs/tool-calls.md)),
 and the 2026-10 foundation review's fixes F1–F15, with the final checks
-against M3.6 passing after F15. Still open: the workstation tier
-confirmations (F10), U7 (fast paths by capability) and U9,
-then M3.5's remaining families, formats, the importer's per-family
-normalizers, MLX serving qualification, batching gaps, media inputs, Clef/Jev
-and media generation routes (D-101), plus the items taken from
-[DeepInfer](docs/deepinfer-assessment.md) and [Flare](docs/flare-assessment.md);
+against M3.6 passing after F15 and the workstation sanitizer tier clean
+(F10). Still open: the lowering's placement cost (F16), before
+U7 (fast paths by capability) and U9, then M3.5's remaining families,
+formats, the importer's per-family normalizers, MLX serving qualification,
+batching gaps, media inputs, Clef/Jev and media generation routes (D-101),
+plus the items taken from [DeepInfer](docs/deepinfer-assessment.md) and [Flare](docs/flare-assessment.md);
 see [plan.md](docs/plan.md) and [model-support.md](docs/model-support.md).
 
 The runtime serves Chat Completions and literal Completions with target

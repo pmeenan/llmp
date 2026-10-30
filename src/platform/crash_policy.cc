@@ -87,6 +87,18 @@ std::expected<void, std::string> MarkNonDumpable() {
 }
 
 std::expected<void, std::string> InstallThreadSignalStack() {
+  // A stack already installed is kept. Linux gives a new thread none, so
+  // only a sanitizer's can be there, and the sanitizer unmaps whatever stack
+  // is installed when the thread ends: replacing it ended every ASan run of
+  // a thread that called this (RE-051). The handler needs far less than any
+  // stack sigaltstack accepts.
+  stack_t current{};
+  if (::sigaltstack(nullptr, &current) != 0) {
+    return std::unexpected("cannot read the signal stack: " + Errno(errno));
+  }
+  if ((current.ss_flags & SS_DISABLE) == 0) {
+    return {};
+  }
   // Freed never: a thread's handler may run until the thread's very end.
   alignas(16) thread_local std::array<std::byte, kAltStackSize> stack_memory{};
   stack_t stack{};

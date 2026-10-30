@@ -681,7 +681,7 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       component: every greedy argmax reads each row's first tokenizer-size
       logits in place, so padded heads (Qwen3.8, Qwen2.5) keep device greedy
       in joined waves (RE-050).
-- [ ] **F10 Hygiene, docs and final checks:** raw experiment dumps and unused
+- [x] **F10 Hygiene, docs and final checks:** raw experiment dumps and unused
       scripts removed, one test-store resolver, `m35-record.md`, doc drift;
       the cuBLAS RUNPATH and `-fno-sanitize=function` fixes confirmed in the
       `native` and `cpu-asan` tiers with the importer mutation test under
@@ -690,16 +690,25 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       the full Spark check set and a speed confirmation of every family.
       Status (2026-10-29): hygiene, docs, the Spark check set, the IQ2_XXS
       score and the swap table are done; the speed confirmation's failures are
-      F15's, now fixed; the workstation `native`/`cpu-asan` tier confirmations
-      are still owed.
+      F15's, now fixed (F16 carries its lowering-cost follow-up); the
+      workstation `native` tier passes 3,506/3,506 and `cpu-asan` 3,445/3,445
+      after fixing RE-051 and the nine findings it hid
+      ([record](m35-record.md#f10c-workstation-tiers-2026-10-29)).
 - [x] **F15 Regressions found by the final checks** (2026-10-29): the MTP
       drafter's prompt rows written again, prefill lookahead bounded to the
       plans a cohort will use, wide-output GLU rank rows, and a gate decode
       rate that SSE coalescing cannot skew; every F10b speed failure passes
       against `53c2610b`, and the prompt-score change is the scoring geometry
       (RE-063) ([record](m35-record.md#f15-regressions-found-by-the-final-checks-2026-10-29)).
-      Follow-up: the lowering's physical placement (`d3374c67`) runs twice a
-      plan, about 7 ms of a target plan's 59.
+      Follow-up: F16.
+- [ ] **F16 Lowering placement cost** (follow-on to F15, before M3.5's other
+      work resumes): `d3374c67`'s physical placement
+      (`planner::PlaceActivations`' greedy fit) runs twice a plan, about 7 ms
+      of a Qwen3.8 prefill plan's 59 (46 ms at `53c2610b`). Its first result
+      lays out DeepSeek's HC carries, so it cannot simply be dropped: run the
+      fit once (or make the second pass incremental) with layouts unchanged,
+      and show plan time at or below `53c2610b`'s, with the lowering, prefill
+      and DeepSeek tests and a speed gate of the families whose plans changed.
 - [x] **F12 Known model-test failures and swap continuation:** every model
       test that already failed at `265c821a` (stale frozen digests, a Gemma Q8
       cache admission, Gemma 4 tool rendering, the gemma2 store artifact

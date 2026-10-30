@@ -136,7 +136,7 @@ TEST_F(GemmaMoe, RoutingRefusesAliasesStaleViewsEndOverflowAndBadMetadata) {
     EXPECT_FALSE(kg::CheckGemmaRouting(d));
   }
   *x = xs;
-  x->type = static_cast<ggml_type>(-1);
+  x->type = GGML_TYPE_COUNT;  // a valid enumerator, but no tensor type
   EXPECT_FALSE(kg::CheckGemmaRouting(d));
   *x = xs;
   x->nb[1] += 4;

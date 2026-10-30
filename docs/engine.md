@@ -865,7 +865,9 @@ stream fence proves a read, so the table refuses until its ring's completions
 have been harvested and discarded (`ModelRunner::SettleRowReads`), at its next
 step's planning or at the fence's acknowledgement. Each owner kind has a
 recover-then-serve test (direct step, runner, row table, prompt batch, staged
-image, LiveState).
+image, LiveState). What is never freed (a retired ring and its landings, a
+dropped supplemental run's state while its operation may still run) is kept
+by `base::RetainForProcess`, reachable until the process ends, not dropped.
 
 A producer-minted private execution view preserves the canonical registry,
 selection policy and numerical authority while owning distinct binding storage
