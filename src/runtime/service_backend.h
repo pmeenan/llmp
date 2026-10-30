@@ -43,6 +43,10 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       if (options.sampling) {
         options.seed = request.seed.value_or(RandomSeed());
       }
+      if (this->literal == nullptr)
+        options.prepare_output = [this](std::uint32_t tokens) {
+          return output.PrepareUnit(tokens);
+        };
       options.on_tokens = [this](std::span<const std::int32_t> fresh) {
         if (!FundTokens(true)) {
           return false;

@@ -2785,6 +2785,27 @@ TEST_F(GrowingServerTest, AParseWaitingForGrowthHoldsUpNoOther) {
   }
 }
 
+TEST_F(GrowingServerTest, HalfClosedStreamWaitsForParserMemoryBeforeValidation) {
+  StartGrowing(8 * kMiB, {});
+  const int running = Connect(Post(Chat("hang")));
+  WaitStarted();
+  const std::string text(2 * kMiB, 'w');
+  const int waiting = Connect(Post(Chat(text, R"(,"stream":true)", "missing")));
+  ASSERT_EQ(::shutdown(waiting, SHUT_WR), 0);
+  std::string response;
+  ReadUntil(waiting, response, "\r\n\r\n");
+  EXPECT_EQ(response, "HTTP/1.1 102 Processing\r\n\r\n");
+  EXPECT_EQ(backend_.granted.load(), 8 * kMiB);  // parser still awaits growth
+  backend_.release.store(true);
+  response.clear();
+  EXPECT_THAT(ReadResponse(waiting, response),
+              AllOf(StartsWith("HTTP/1.1 404 "), HasSubstr("model_not_found")));
+  (void)::close(waiting);
+  response.clear();
+  EXPECT_THAT(ReadResponse(running, response), StartsWith("HTTP/1.1 200 "));
+  (void)::close(running);
+}
+
 // A parse waiting for growth whose client left is given up at once, not
 // when the memory grows: its body's charge goes back while the driver is
 // still held.
@@ -3709,6 +3730,40 @@ TEST_F(ServerTest, AHalfClosedClientGetsItsResponse) {
   EXPECT_THAT(got.substr(std::min(got.size(), kInterim.size())),
               AllOf(StartsWith("HTTP/1.1 200 OK\r\n"), HasSubstr("Connection: close\r\n"),
                     HasSubstr(R"("content":"block")")));
+}
+
+// Bodies at the off-thread threshold and above can half-close before the
+// parser returns. Stream preference is published only after route validation;
+// an interim probe while parsing must not commit a successful SSE response.
+TEST_F(ServerTest, LargeHalfClosedStreamsValidateBeforeSendingTheirStart) {
+  constexpr std::string_view kInterim = "HTTP/1.1 102 Processing\r\n\r\n";
+  for (const bool literal : {false, true}) {
+    for (const auto model : {"alpha", "missing", "tiny"}) {
+      SCOPED_TRACE(std::format("literal={} model={}", literal, model));
+      const std::string content(100 * 1024, 'v');
+      const std::string body =
+          literal ? std::format(R"({{"model":"{}","prompt":"{}","stream":true}})", model, content)
+                  : Chat(content, R"(,"stream":true)", model);
+      const int fd = Connect(literal ? Literal(body) : Post(body));
+      ASSERT_EQ(::shutdown(fd, SHUT_WR), 0);
+      std::string response;
+      while (Recv(fd, response)) {
+      }
+      (void)::close(fd);
+      if (response.starts_with(kInterim)) response.erase(0, kInterim.size());
+      if (literal) {
+        EXPECT_THAT(response, AllOf(StartsWith("HTTP/1.1 400 "), HasSubstr("stream=false")));
+      } else if (std::string_view(model) == "alpha") {
+        EXPECT_THAT(response, AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("model":"alpha")"),
+                                    HasSubstr("data: [DONE]")));
+        EXPECT_THAT(response, ::testing::Not(HasSubstr(R"("model":"")")));
+      } else {
+        EXPECT_THAT(response, StartsWith(std::string_view(model) == "missing" ? "HTTP/1.1 404 "
+                                                                              : "HTTP/1.1 400 "));
+        EXPECT_THAT(response, ::testing::Not(HasSubstr("text/event-stream")));
+      }
+    }
+  }
 }
 
 // A client that closes entirely while a stream waits for its first token

@@ -1775,9 +1775,9 @@ TEST_F(LlmScores, ResumableVerifySettlesTheFullAcceptedPrefixAfterVisibleStop) {
 
 class LlmTools : public LlmScores {
  protected:
-  void QwenChat() {
+  void QwenChat(std::uint32_t context = 4096) {
     score_width_ = 265;
-    StartScores(false, 1, 4096, 32);
+    StartScores(false, 1, context, 32);
     const auto text = ts::ReadFile(ts::DataDir() + "/chat/templates/qwen3.8.jinja");
     ASSERT_TRUE(text);
     auto spec = ByteTokenizerSpec();
@@ -2735,8 +2735,223 @@ TEST_F(LlmTools, PreparedOutputPaymentFollowsPausedStateAfterRequestRetires) {
   EXPECT_EQ(memory.used(), 0U);
 }
 
-TEST_F(LlmTools, ToolOutputMemoryFollowsGeneratedBytesNotMaxTokens) {
+TEST_F(LlmTools, OutputMemoryFollowsAcceptedBatchesAndSurvivesPlainContinuation) {
+  QwenChat(1'048'576);
+  rt::RequestMemory memory(32 * 1024 * 1024);
+  ToolExchange exchange;
+  exchange.serial = true;
+  exchange.pause_text = true;
+  std::shared_ptr<rt::service_detail::ChatOutput::State> saved;
+  std::uint64_t held = 0;
+  {
+    auto request = rt::api::ParseChatRequest(R"({"model":"m","stream":true,
+      "messages":[{"role":"user","content":"read"}]})",
+                                             &memory);
+    ASSERT_TRUE(request);
+    auto prepared = rt::service_detail::PrepareChat(*llm_, *request, exchange, memory);
+    ASSERT_TRUE(prepared) << prepared.error().message;
+    EXPECT_GT(prepared->max_tokens, 1'000'000U);
+    EXPECT_LT(prepared->output_charge->bytes(), 4096U);
+    rt::service_detail::ChatOutput output(*llm_, exchange, false, nullptr, prepared->output_charge);
+    const std::vector<std::int32_t> ids(128, 'v');
+    ASSERT_FALSE(output.Push(ids));
+    EXPECT_TRUE(output.pending());
+    EXPECT_EQ(prepared->output_charge->unread.bytes(), ids.size() * sizeof(std::int32_t));
+    held = prepared->output_charge->bytes();
+    saved = output.Save();
+  }
+  EXPECT_EQ(memory.used(), held);
+  {
+    rt::service_detail::ChatOutput resumed(*llm_, exchange, false);
+    resumed.Restore(std::move(saved));
+    exchange.pause_text = false;
+    exchange.paused = false;
+    ASSERT_TRUE(resumed.Drain());
+    EXPECT_EQ(exchange.text, std::string(128, 'v'));
+    ASSERT_TRUE(resumed.Finish());
+  }
+  EXPECT_EQ(memory.used(), 0U);
+}
+
+TEST_F(LlmTools, OutputGrowthFundsOldAndNewCapacityBeforeReplacingUnreadTokens) {
   QwenChat();
+  rt::RequestMemory memory(32 * 1024 * 1024);
+  ToolExchange exchange;
+  exchange.serial = true;
+  exchange.pause_text = true;
+  auto request = rt::api::ParseChatRequest(R"({"model":"m","max_tokens":128,
+    "messages":[{"role":"user","content":"read"}]})",
+                                           &memory);
+  ASSERT_TRUE(request);
+  auto prepared = rt::service_detail::PrepareChat(*llm_, *request, exchange, memory);
+  ASSERT_TRUE(prepared) << prepared.error().message;
+  rt::service_detail::ChatOutput output(*llm_, exchange, false, nullptr, prepared->output_charge);
+  const std::vector<std::int32_t> initial(128, 'v');
+  ASSERT_FALSE(output.Push(initial));
+  auto state = output.Save();
+  const auto capacity = state->unread.capacity();
+  const auto unread = state->unread;
+  const auto consumed = state->consumed;
+  rt::MemoryCharge other;
+  ASSERT_TRUE(other.Add(memory, memory.grant() - memory.used() - 128));
+  const std::vector<std::int32_t> suffix(64, 'x');
+  EXPECT_FALSE(output.Push(suffix));
+  ASSERT_TRUE(output.error());
+  EXPECT_EQ(output.error()->code, "request_memory_busy");
+  EXPECT_EQ(state->unread.capacity(), capacity);
+  EXPECT_EQ(state->unread, unread);
+  EXPECT_EQ(state->consumed, consumed);
+  EXPECT_EQ(prepared->output_charge->unread.bytes(), capacity * sizeof(std::int32_t));
+  EXPECT_LE(memory.used(), memory.capacity());
+}
+
+TEST_F(LlmTools, OutputPreparationGrowsTheGrantBeforePublishingItsUnit) {
+  QwenChat();
+  rt::RequestMemory memory(4096, 32 * 1024 * 1024, true);
+  bool preparing = true;
+  unsigned growths = 0;
+  memory.SetDriver(
+      std::this_thread::get_id(),
+      [&](std::uint64_t) {
+        EXPECT_TRUE(preparing);
+        ++growths;
+        return true;
+      },
+      0, std::chrono::milliseconds(0));
+  ToolExchange exchange;
+  auto request = rt::api::ParseChatRequest(R"({"model":"m","max_tokens":128,
+    "messages":[{"role":"user","content":"read"}],
+    "tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]})",
+                                           &memory);
+  ASSERT_TRUE(request);
+  auto prepared = rt::service_detail::PrepareChat(*llm_, *request, exchange, memory);
+  ASSERT_TRUE(prepared) << prepared.error().message;
+  memory.Settle();
+  const auto before = growths;
+  rt::service_detail::ChatOutput output(*llm_, exchange, false, prepared->tools,
+                                        prepared->output_charge);
+  const std::string generated = "<function=lookup><parameter=s>value</parameter></function>";
+  const std::vector<std::int32_t> ids(generated.begin(), generated.end());
+  ASSERT_TRUE(output.PrepareUnit(static_cast<std::uint32_t>(ids.size())));
+  EXPECT_GT(growths, before);
+  const auto paid = memory.used();
+  const auto settled_growths = growths;
+  preparing = false;
+  EXPECT_TRUE(output.Push(ids));
+  EXPECT_EQ(memory.used(), paid);
+  EXPECT_EQ(growths, settled_growths);
+  EXPECT_EQ(exchange.calls.size(), 1U);
+}
+
+TEST_F(LlmTools, OutputPrepaymentCancelsBeforeInitialChoiceOrNextDecodeEffects) {
+  (void)Constraint();
+  auto& branch = BranchAt(0);
+  std::vector<float> last;
+  ASSERT_TRUE(branch.Prefill(std::array<std::int32_t, 1>{'x'}, last));
+  for (const bool initial : {true, false}) {
+    SCOPED_TRACE(initial);
+    rt::GenerateOptions options;
+    options.max_tokens = 8;
+    options.stop = false;
+    unsigned preparations = 0;
+    options.prepare_output = [&](std::uint32_t rows) {
+      EXPECT_EQ(rows, 1U);
+      ++preparations;
+      return !initial && preparations == 1;
+    };
+    rt::Generation generation;
+    if (initial) {
+      generation.tokens = {123};
+      generation.logits = {{1.0F}};
+      generation.stopped = true;
+      generation.steps = 9;
+      generation.drafted = 11;
+    }
+    auto begun = branch.BeginGeneration(last, options, generation);
+    ASSERT_TRUE(begun);
+    const auto accepted = generation.tokens;
+    const auto queued = source_->queued();
+    if (!initial) ASSERT_TRUE((*begun)->RunScalarStep());
+    EXPECT_TRUE((*begun)->done());
+    EXPECT_TRUE(generation.cancelled);
+    if (initial) {
+      EXPECT_TRUE(generation.logits.empty());
+      EXPECT_FALSE(generation.stopped);
+      EXPECT_EQ(generation.steps, 0U);
+      EXPECT_EQ(generation.drafted, 0U);
+    }
+    EXPECT_EQ(generation.tokens, accepted);
+    EXPECT_EQ(generation.tokens.size(), initial ? 0U : 1U);
+    EXPECT_EQ(source_->queued(), queued);
+    ASSERT_TRUE((*begun)->Finish());
+    EXPECT_EQ(State(0), (std::vector<std::int32_t>{'x'}));
+    EXPECT_EQ(branch.history(), (std::vector<std::int32_t>{'x'}));
+  }
+}
+
+TEST_F(LlmTools, OutputPrepaymentBoundsScalarSpeculativeAndCertainPublication) {
+  for (const bool speculative : {false, true}) {
+    auto constraint = Constraint(speculative);
+    auto& branch = BranchAt(0);
+    std::vector<float> last;
+    ASSERT_TRUE(branch.Prefill(std::array<std::int32_t, 1>{'x'}, last));
+    rt::GenerateOptions options;
+    options.max_tokens = 8;
+    options.stop = false;
+    options.tool_sampling = constraint;
+    std::uint32_t bound = 0;
+    std::size_t published = 0;
+    unsigned preparations = 0;
+    options.prepare_output = [&](std::uint32_t tokens) {
+      ++preparations;
+      bound = tokens;
+      published = 0;
+      return true;
+    };
+    options.on_tokens = [&](std::span<const std::int32_t> fresh) {
+      published += fresh.size();
+      EXPECT_LE(published, bound);
+      return true;
+    };
+    rt::Generation generation;
+    ASSERT_TRUE(branch.Generate(last, options, generation));
+    EXPECT_EQ(generation.tokens.size(), 8U);
+    EXPECT_GT(preparations, 1U);
+    Stop();
+  }
+}
+
+TEST_F(LlmScores, RefusedOutputPreparationLeavesItsWavePeerRunning) {
+  StartScores(false, 2);
+  std::array<rt::GenerateOptions, 2> options;
+  std::array<rt::Generation, 2> generations;
+  std::array<std::unique_ptr<rt::Llm::GenerationSession>, 2> owned;
+  unsigned prepares = 0;
+  options[0].prepare_output = [&](std::uint32_t) { return ++prepares == 1; };
+  for (std::size_t i = 0; i < owned.size(); ++i) {
+    options[i].max_tokens = 4;
+    options[i].stop = false;
+    auto& branch = BranchAt(static_cast<std::uint32_t>(i));
+    std::vector<float> last;
+    ASSERT_TRUE(branch.Prefill(Prompt(1, 3), last));
+    auto begun = branch.BeginGeneration(last, options[i], generations[i]);
+    ASSERT_TRUE(begun);
+    owned[i] = std::move(*begun);
+  }
+  const auto refused_tokens = generations[0].tokens;
+  std::array<rt::Llm::GenerationSession*, 2> sessions{owned[0].get(), owned[1].get()};
+  ASSERT_TRUE(llm_->RunGenerationWave(sessions));
+  EXPECT_TRUE(owned[0]->done());
+  EXPECT_TRUE(generations[0].cancelled);
+  EXPECT_EQ(generations[0].tokens, refused_tokens);
+  EXPECT_GT(generations[1].tokens.size(), refused_tokens.size());
+  ASSERT_TRUE(owned[0]->Finish());
+  owned[1]->Cancel();
+  ASSERT_TRUE(owned[1]->Finish());
+}
+
+TEST_F(LlmTools, ToolOutputMemoryFollowsGeneratedBytesNotMaxTokens) {
+  QwenChat(1'048'576);
   // A small request pool: the old prepayment (about 1,200 x the longest token
   // x max_tokens, and max_tokens omitted is the rest of the context) refused
   // this request or grew the pool by reclaiming other models (B2).
@@ -2751,7 +2966,8 @@ TEST_F(LlmTools, ToolOutputMemoryFollowsGeneratedBytesNotMaxTokens) {
   auto prepared = rt::service_detail::PrepareChat(*llm_, *request, exchange, memory);
   ASSERT_TRUE(prepared) << prepared.error().message;
   ASSERT_TRUE(prepared->tools);
-  EXPECT_GT(prepared->max_tokens, 2000U);  // the rest of the context
+  EXPECT_GT(prepared->max_tokens, 1'000'000U);  // the rest of the context
+  EXPECT_LT(prepared->output_charge->bytes(), 4096U);
   const auto initial = prepared->tools->charge.bytes();
   EXPECT_LT(initial, std::uint64_t{1} << 20U);
   rt::service_detail::ChatOutput output(*llm_, exchange, false, prepared->tools,

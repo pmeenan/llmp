@@ -56,9 +56,18 @@ struct ChatTools {
   std::shared_ptr<chat::ToolSampling> sampling;
 };
 // Grows `tools.charge` to fund an open call (or held text) of `open` bytes:
-// within the grant when it fits, else past it while the request pool's capacity
-// holds it (the grant follows at the driver's next settle), else a refusal.
-std::optional<api::Error> FundToolOutput(ChatTools& tools, std::size_t open);
+// within the current grant during a model unit. Preparation between completed
+// units can pass granted=false to grow the paid grant through reclaim.
+std::optional<api::Error> FundToolOutput(ChatTools& tools, std::size_t open, bool granted = true);
+
+// Decoder state and its largest accepted causal batch. The batch grows before
+// allocation and its payment stays with paused/yielded output.
+struct ChatOutputMemory {
+  RequestMemory* memory = nullptr;
+  MemoryCharge fixed;
+  MemoryCharge unread;
+  std::uint64_t bytes() const { return fixed.bytes() + unread.bytes(); }
+};
 
 struct ChatPrompt {
   std::shared_ptr<const api::PromptTokens> token_storage;
@@ -68,7 +77,7 @@ struct ChatPrompt {
   bool reasoning = false;
   bool may_reason = false;  // ChatRenderOptions::may_reason
   std::shared_ptr<ChatTools> tools;
-  std::shared_ptr<MemoryCharge> output_charge;
+  std::shared_ptr<ChatOutputMemory> output_charge;
 };
 
 // The context's refusal, for a conversation that cannot fit before it is
@@ -95,11 +104,14 @@ class ChatOutput final {
  public:
   ChatOutput(Llm& model, api::Exchange& exchange, bool reasoning,
              std::shared_ptr<ChatTools> tools = nullptr,
-             std::shared_ptr<MemoryCharge> charge = nullptr)
+             std::shared_ptr<ChatOutputMemory> charge = nullptr)
       : model_(model),
         exchange_(exchange),
         state_(std::make_shared<State>(model.tokenizer(), reasoning, std::move(tools),
                                        std::move(charge))) {}
+  // At a completed model boundary, prepay the next causal unit before any
+  // callback publishes its tokens. Growth may reclaim only here.
+  bool PrepareUnit(std::uint32_t tokens);
   bool Push(std::span<const std::int32_t> fresh);
   bool Drain();
   bool Finish(bool stopped = true);
@@ -108,7 +120,7 @@ class ChatOutput final {
   const std::optional<api::Error>& error() const { return state_->error; }
   struct State {
     State(const tokenizer::Tokenizer& tokenizer, bool reasoning, std::shared_ptr<ChatTools> owner,
-          std::shared_ptr<MemoryCharge> charge)
+          std::shared_ptr<ChatOutputMemory> charge)
         : decoder(tokenizer, {.control_tokens = owner != nullptr}),
           thinking(reasoning),
           tools(std::move(owner)),
@@ -126,7 +138,7 @@ class ChatOutput final {
     // the parser's resulting cancellation is not an output error.
     bool sink_cancelled = false;
     std::shared_ptr<ChatTools> tools;
-    std::shared_ptr<MemoryCharge> output_charge;
+    std::shared_ptr<ChatOutputMemory> output_charge;
     std::optional<chat::ToolInterpreter> parser;
     std::vector<std::int32_t> unread;
     std::size_t consumed = 0;
@@ -141,6 +153,7 @@ class ChatOutput final {
  private:
   chat::ToolInterpreter::Flow Send(chat::ToolEvent event);
   bool Text(std::string_view text);
+  bool ReserveUnread(std::size_t capacity, bool granted = true);
   Llm& model_;
   api::Exchange& exchange_;
   std::shared_ptr<State> state_;

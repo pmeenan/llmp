@@ -158,6 +158,15 @@ Status Llm::GenerationSession::Begin(const std::vector<float>& last, bool resume
     initialized_ = true;
     return {};
   }
+  if (options_.prepare_output && !options_.prepare_output(1)) {
+    out_ = {};  // a fresh request never exposes a caller's previous generation
+    out_.cancelled = true;
+    all_ = branch_.history_;
+    position_ = static_cast<std::uint32_t>(branch_.history_.size());
+    start_ = Clock::now();
+    initialized_ = true;
+    return {};
+  }
   if (options_.tool_sampling)
     options_.tool_sampling->Budget(options_.max_tokens, model_.context_ - branch_.history_.size());
   auto first = model_.Choose(branch_, last, branch_.history_.size());
@@ -225,6 +234,10 @@ std::expected<Llm::GenerationSession::Step, std::string> Llm::GenerationSession:
   const auto step_tokens = certain_rows_ != 0  ? static_cast<std::uint32_t>(certain_rows_ + 1)
                            : model_.speculate_ ? model_.StepTokenBoundFor(branch_, left_)
                                                : 1U;
+  if (options_.prepare_output && !options_.prepare_output(step_tokens)) {
+    out_.cancelled = true;
+    return std::unexpected("generation output preparation cancelled");
+  }
   if (!model_.ReserveTokens(branch_, all_, all_charge_, all_.size() + step_tokens)) {
     refusal_ = "native generation history exceeds the execution budget";
     if (defer_capacity) {
@@ -475,6 +488,7 @@ void Llm::GenerationSession::EndRefused() {
 Status Llm::GenerationSession::RunScalarStep(bool defer_capacity) {
   auto step = PrepareStep(defer_capacity);
   if (!step) {
+    if (out_.cancelled && ran_) return {};
     return std::unexpected(step.error());
   }
   const auto started = Clock::now();

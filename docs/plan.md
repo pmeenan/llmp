@@ -715,6 +715,21 @@ and suggestion to be fixed. Each item lands as one reviewed commit.
       unchanged: a Qwen3.8 native prefill plan builds in 39–41 ms, and every
       family's gate passes against `e4e5d8e1`
       ([record](m35-record.md#f16-lowering-placement-cost-2026-10-30)).
+- [x] **F17 Parser ownership and output continuation funding** (review of
+      `ca32156b..098fcf89`, 2026-10-30): publish parsed channel state only on
+      the I/O owner after validation; fund decoder and unread output capacity
+      as it grows instead of reserving `32 * max_tokens` for every request
+      ([record](m35-record.md#f17-parser-ownership-and-output-funding-2026-10-30)).
+- [ ] **F18 Image import bounds and tensor indexes:** include complete source
+      metadata and parsing workspace before family synthesis or retained
+      checkpoint copies; index source and expanded tensors once while retaining
+      duplicate and provenance checks.
+- [ ] **F19 Owned-region backing transfers:** preserve warmed pool handles
+      while region growth is charged before physical allocation, with explicit
+      ownership through rollback and retirement and no speculative refill credit.
+- [ ] **F20 Owned inference memoization:** replace the thread-local 512-entry
+      cache with paid compiler-owned storage, resource-based eviction and
+      observable bytes; retain the measured planning improvement.
 - [x] **F12 Known model-test failures and swap continuation:** every model
       test that already failed at `265c821a` (stale frozen digests, a Gemma Q8
       cache admission, Gemma 4 tool rendering, the gemma2 store artifact

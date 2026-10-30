@@ -4,6 +4,7 @@
 
 #include <limits>
 
+#include "base/check.h"
 #include "base/report.h"
 #include "base/work_pulse.h"
 #include "platform/sockets.h"
@@ -40,7 +41,7 @@ std::optional<api::Error> FundHistory(MemoryCharge& charge, RequestMemory& memor
   return api::MemoryRefusal(memory, held, "the request token history");
 }
 
-std::optional<api::Error> FundToolOutput(ChatTools& tools, std::size_t open) {
+std::optional<api::Error> FundToolOutput(ChatTools& tools, std::size_t open, bool granted) {
   constexpr std::uint64_t kStep = std::uint64_t{256} << 10U;  // fewer, larger growths
   if (tools.memory == nullptr) return std::nullopt;           // an unfunded direct owner (tests)
   const auto bound = chat::ToolOutputBytes(tools.format, open);
@@ -53,14 +54,8 @@ std::optional<api::Error> FundToolOutput(ChatTools& tools, std::size_t open) {
   const std::uint64_t need = share > most - tools.fixed ? most : tools.fixed + share;
   if (need <= tools.charge.bytes()) return std::nullopt;
   const std::uint64_t more = need - tools.charge.bytes();
-  // Mid-unit: never grown by reclaim here (granted). Past the grant, the
-  // request pool's capacity is the real limit (D-102).
-  if (tools.charge.Add(*tools.memory, more, true)) return std::nullopt;
-  if (tools.memory->used() <= tools.memory->capacity() &&
-      more <= tools.memory->capacity() - tools.memory->used()) {
-    tools.charge.Force(*tools.memory, more);
-    return std::nullopt;
-  }
+  // Only preparation between completed units may grow the backed grant.
+  if (tools.charge.Add(*tools.memory, more, granted)) return std::nullopt;
   return api::MemoryRefusal(*tools.memory, need, "the generated tool call");
 }
 
@@ -274,13 +269,14 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
   // Output batches and decoder carry survive accepted-and-paused callbacks,
   // independently of whether this request declares tools.
   MemoryCharge output_charge;
-  const std::uint64_t output_bytes = sizeof(ChatOutput::State) + sizeof(MemoryCharge) + 128 +
-                                     std::uint64_t{result.max_tokens} * 32 +
+  const std::uint64_t output_bytes = sizeof(ChatOutput::State) + sizeof(ChatOutputMemory) + 128 +
                                      model.tokenizer().longest_token_bytes() * 4;
   if (!output_charge.Add(memory, output_bytes))
     return std::unexpected(
         api::MemoryRefusal(memory, output_bytes, "the generated output continuation"));
-  result.output_charge = std::make_shared<MemoryCharge>(std::move(output_charge));
+  result.output_charge = std::make_shared<ChatOutputMemory>();
+  result.output_charge->memory = &memory;
+  result.output_charge->fixed = std::move(output_charge);
   if (tools) {
     const auto& format = *model.tool_format();
     const auto kind = request.tools->request.choice().kind;
@@ -366,17 +362,83 @@ bool ChatOutput::pending() const {
          (state_->finishing && !state_->finished);
 }
 
+bool ChatOutput::ReserveUnread(std::size_t capacity, bool granted) {
+  if (capacity <= state_->unread.capacity()) return true;
+  const auto owner = state_->output_charge;
+  if (!owner) {  // direct, unfunded module tests
+    state_->unread.reserve(capacity);
+    return true;
+  }
+  const auto most = std::numeric_limits<std::uint64_t>::max();
+  const std::uint64_t bytes =
+      capacity > most / sizeof(std::int32_t) ? most : capacity * sizeof(std::int32_t);
+  MemoryCharge replacement;
+  // Both capacities coexist during replacement. A callback cannot reclaim
+  // native state in the middle of the model unit that produced this batch.
+  if (capacity > most / sizeof(std::int32_t) || !replacement.Add(*owner->memory, bytes, granted)) {
+    state_->error = api::MemoryRefusal(*owner->memory, bytes, "the generated output continuation");
+    return false;
+  }
+  std::vector<std::int32_t> unread;
+  unread.reserve(capacity);
+  base::Check(unread.capacity() == capacity, "output vector exceeded its funded capacity");
+  unread.insert(unread.end(), state_->unread.begin(), state_->unread.end());
+  state_->unread.swap(unread);
+  std::vector<std::int32_t>().swap(unread);
+  owner->unread = std::move(replacement);
+  return true;
+}
+
+bool ChatOutput::PrepareUnit(std::uint32_t tokens) {
+  if (state_->error || state_->finished) return false;
+  if (tokens > state_->unread.max_size() - state_->unread.size()) {
+    state_->error = Failure(500, "generated output exceeds addressable memory", "output_too_large");
+    return false;
+  }
+  if (!ReserveUnread(state_->unread.size() + tokens, false)) return false;
+  if (state_->tools) {
+    const auto longest = model_.tokenizer().longest_token_bytes();
+    std::size_t incoming = 0;
+    std::size_t open = 0;
+    // Invalid input bytes can each decode to a three-byte replacement. Include
+    // the decoder's held UTF-8 tail beside this unit's new bytes.
+    if (__builtin_mul_overflow(std::size_t{tokens} + 4, longest, &incoming) ||
+        __builtin_mul_overflow(incoming, std::size_t{3}, &incoming) ||
+        __builtin_add_overflow(state_->parser->buffered(), incoming, &open)) {
+      state_->error =
+          Failure(500, "generated tool output exceeds addressable memory", "tool_output_invalid");
+      return false;
+    }
+    if (auto refused = FundToolOutput(*state_->tools, open, false)) {
+      state_->error = std::move(refused);
+      return false;
+    }
+  }
+  return true;
+}
+
 bool ChatOutput::Push(std::span<const std::int32_t> fresh) {
   if (state_->error || state_->finished) return false;
+  // Fund before draining: a refused new batch has no token/output effects.
+  if (fresh.size() > state_->unread.max_size() - state_->unread.size()) {
+    state_->error = Failure(500, "generated output exceeds addressable memory", "output_too_large");
+    return false;
+  }
+  if (pending() && !ReserveUnread(state_->unread.size() + fresh.size())) return false;
   // Before another causal unit the adapters must drain any accepted suffix.
   if (pending()) {
-    if (!exchange_.Paused() && !Drain() && !exchange_.Yielding() && !exchange_.Paused())
+    if (!exchange_.Yielding() && !exchange_.Paused() && !Drain() && !exchange_.Yielding() &&
+        !exchange_.Paused())
       return false;
     if (exchange_.Yielding() || pending()) {
+      if (fresh.size() > state_->unread.max_size() - state_->unread.size() ||
+          !ReserveUnread(state_->unread.size() + fresh.size()))
+        return false;
       state_->unread.insert(state_->unread.end(), fresh.begin(), fresh.end());
       return !exchange_.Yielding() && exchange_.Paused();
     }
   }
+  if (!ReserveUnread(fresh.size())) return false;
   state_->unread.assign(fresh.begin(), fresh.end());
   state_->consumed = 0;
   const bool drained = Drain();

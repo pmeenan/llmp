@@ -123,6 +123,7 @@ std::expected<api::Completion, api::Error> NodeBackend::SerialChat(Llm& l,
     options.seed = request.seed.value_or(RandomSeed());
   }
   ChatOutput output(l, exchange, rendered.reasoning, rendered.tools, rendered.output_charge);
+  options.prepare_output = [&](std::uint32_t tokens) { return output.PrepareUnit(tokens); };
   if (rendered.tools) options.tool_sampling = rendered.tools->sampling;
   if (resume != nullptr) {
     output.Restore(resume->output);

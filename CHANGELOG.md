@@ -161,6 +161,11 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Large streaming requests validate their model and context before sending an
+  SSE success response, including clients that half-close while parsing.
+- Chat output pays for fixed state and the next causal unit instead of
+  `32 * max_tokens`; paused output retains its paid capacity, and a growth
+  refusal preserves the completed prefix without failing peer requests.
 - Qwen3.8's MTP drafter writes its own cache for every prompt row again, as
   each prompt chunk commits, so its attention reads the prompt as the target
   saw it. Since the repeat-pending ledger's removal those rows had stayed

@@ -262,9 +262,6 @@ struct Server::Parse {
       return !parsed && parsed.error().code == "request_memory_busy" && may_wait && memory.grows();
     };
     if (parsed) {
-      if (channel) {
-        channel->stream = parsed->stream;
-      }
       const std::uint64_t bytes = literal ? RequestBytes(*literal) : RequestBytes(*parsed);
       if (!request_charge.Add(memory, bytes)) {
         parsed = std::unexpected(MemoryRefusal(memory, bytes, "the parsed request"));

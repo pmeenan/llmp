@@ -6,8 +6,8 @@
 **In progress (written 2026-10-28; M3.5 continues).** This record holds what
 the foundation work of M3.5 proved and where the evidence is: the physical
 memory modes, the generality follow-ups U1–U10 that the 2026-10-20 M3.6 review
-asked for, and the F1–F14 fixes that the 2026-10-25 foundation review asked
-for. It follows [the M3.6 record](m36-record.md). It is not frozen: model
+asked for, and the F-series fixes from the foundation reviews of 2026-10-25 and
+2026-10-30. It follows [the M3.6 record](m36-record.md). It is not frozen: model
 families, the remaining U7 and U9 items, formats and the closeout checks are
 still owned by the living [plan](plan.md), which keeps each item's scope,
 status and exit and links here for the results. The record is frozen when M3.5
@@ -64,7 +64,7 @@ served-model and client qualification is open), prefix reuse
 ARM (`ee300f6e`), seven-day idle conversation retention (`85408951`) and the
 Ubuntu 26 harness restoration (`4a86b43f`).
 
-## Foundation review fixes (F1–F14)
+## Foundation review fixes
 
 A cross-verified review of `ca32156b..265c821a` found that broken image
 serving, the memory modes, the agent (tool-call) path and the exact-site
@@ -96,7 +96,8 @@ fixed; each slice landed as one reviewed commit, with verification in batches
 | F15b | `3c9a938f` | Prompt scores explained (RE-063); wide-output GLU rank rows (an `n` band): the Gemma 4 31B assistant screen −2.01% against M3.6. |
 | F15a | `e4e5d8e1` | MTP prompt catch-up, prefill lookahead bounds, a chunk-weighted gate decode rate: every F10b speed failure passes against M3.6. |
 | F10c | `ea1bbf5e` | The workstation `native` and `cpu-asan` tiers: [F10c](#f10c-workstation-tiers-2026-10-29); RE-051 fixed and the nine sanitizer findings it hid. |
-| F16 | this commit | Plans build about a third faster with every layout unchanged: [F16](#f16-lowering-placement-cost-2026-10-30). |
+| F16 | `098fcf89` | Plans build about a third faster with every layout unchanged: [F16](#f16-lowering-placement-cost-2026-10-30). |
+| F17 | this commit | Parser ownership and output funding: [F17](#f17-parser-ownership-and-output-funding-2026-10-30). |
 
 ## F10a hygiene (2026-10-28)
 
@@ -457,6 +458,27 @@ Checked on the tree merged with F10c (2026-10-30): `spark`, the shared set
 3,977 of 3,977 and `-L models -R Qwen38` 32 of 32; `spark-b`, `Dsv4` 21 of
 21; no skips. The builder's gate trees and records on both Sparks
 (`~/.local/share/llmp/f16-gate`, `~/src/llmp-f16base`) are deleted.
+
+## F17: parser ownership and output funding (2026-10-30)
+
+The parser worker returns its parsed result without changing channel state.
+The I/O owner publishes streaming intent only after model and context
+validation, preserving ordinary HTTP errors for large half-closed requests.
+
+Chat output prepays fixed decoder state and funds unread token capacity and
+conservative tool-parser growth for the next causal unit at a completed
+boundary. Publication uses the backed grant. Replacement pays both old and
+new vector storage, and paused continuations retain their payment. Refusal
+cancels only that request before its next unit; a reused generation result is
+cleared before an initial refusal. The token allowance no longer prepays
+`32 * max_tokens` bytes of output that may never be produced.
+
+On `spark`, native runtime/CLI builds and 155 focused regressions pass without
+skips. Three parser half-close/cancellation regressions, repeated ten times
+under cross-built ThreadSanitizer, pass without race reports. The merged
+F17–F20 native shared set passes 4,003/4,003, without skips. Targeted workstation
+ASan/UBSan checks of F17–F19 pass 606 tests; one published-image admission test
+skips because the workstation lacks its composition, and passes on `spark`.
 
 ## Owner decisions and standing rules so far
 

@@ -443,6 +443,10 @@ struct GenerateOptions {
   // the prefill's logits), a stop token left out; returning false ends
   // the generation after that step, the state holding what it accepted.
   std::function<bool(std::span<const std::int32_t>)> on_tokens;
+  // Called at a completed boundary before sampling/dispatch, with the next
+  // unit's conservative token bound (one for the initial token). It may grow
+  // paid output capacity here. False cancels without running that unit.
+  std::function<bool(std::uint32_t)> prepare_output = nullptr;
   // One natural target row per generated token, including a stop token.
   // False cancels after this completed step. Rows are borrowed only during
   // the call and never accumulated unless keep_logits was also requested.
